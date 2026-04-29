@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: istore-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-istore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-istore}
+      POSTGRES_DB: ${POSTGRES_DB:-istore}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-istore} -d ${POSTGRES_DB:-istore}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: istore-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
+    container_name: istore-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-istore}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-istorepass}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${ISTORE_DATA_ROOT:-./data}/postgres
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${ISTORE_DATA_ROOT:-./data}/redis
+  minio_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${ISTORE_DATA_ROOT:-./data}/minio
+  model_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${ISTORE_DATA_ROOT:-./data}/models
