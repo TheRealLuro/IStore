@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from backend.api.images import router as images_router
 from backend.api.search import router as search_router
+from backend.api.storage import router as storage_router
 from backend.auth.users import auth_backend, fastapi_users
 from backend.db import engine
 from backend.schemas import UserCreate, UserRead, UserUpdate
@@ -23,6 +25,21 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="AI-driven image storage with privacy-compliant face recognition.",
         lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+            "tauri://localhost",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Original-Expired"],
     )
 
     @app.get("/health")
@@ -52,6 +69,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(images_router)
     app.include_router(search_router)
+    app.include_router(storage_router)
 
     return app
 

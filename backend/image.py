@@ -79,6 +79,33 @@ async def _upsert_tags(
         session.add(ImageTag(image_id=image.id, tag_id=tag.id, confidence=score))
 
 
+def _detect_category(content_type: str | None, filename: str | None) -> str:
+    ct = (content_type or "").lower()
+    name = (filename or "").lower()
+    if ct.startswith("image/"):
+        return "image"
+    if ct.startswith("video/"):
+        return "video"
+    if ct in {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+    } or any(name.endswith(ext) for ext in
+              (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+               ".txt", ".md", ".csv")):
+        return "document"
+    if any(name.endswith(ext) for ext in (".mp4", ".mov", ".avi", ".mkv", ".webm")):
+        return "video"
+    return "other"
+
+
 async def store_upload(
     session: AsyncSession,
     user: User,
@@ -87,6 +114,10 @@ async def store_upload(
     content_type: str | None,
 ) -> Image:
     sha = hashlib.sha256(raw_bytes).digest()
+    category = _detect_category(content_type, filename)
+
+    if category != "image":
+        return await _store_non_image(session, user, filename, raw_bytes, content_type, sha, category)
 
     with PILImage.open(BytesIO(raw_bytes)) as pil:
         pil.load()
@@ -121,6 +152,7 @@ async def store_upload(
 
     image = Image(
         user_id=user.id,
+        category="image",
         original_blob_key=original_key,
         served_blob_key=served_key,
         original_filename=filename,
@@ -156,6 +188,50 @@ async def store_upload(
     if vision is not None:
         await _upsert_tags(session, image, vision.tags)
 
+    await session.commit()
+    await session.refresh(image)
+    return image
+
+
+async def _store_non_image(
+    session: AsyncSession,
+    user: User,
+    filename: str | None,
+    raw_bytes: bytes,
+    content_type: str | None,
+    sha: bytes,
+    category: str,
+) -> Image:
+    """Documents / videos / other: stored as-is, no compression, no vision."""
+    safe_name = filename or "upload"
+    original_key = f"users/{user.id}/originals/{uuid4().hex}/{safe_name}"
+    served_key = original_key  # served == original for non-image categories
+
+    storage.put(
+        storage.bucket_originals,
+        original_key,
+        raw_bytes,
+        content_type or "application/octet-stream",
+    )
+
+    image = Image(
+        user_id=user.id,
+        category=category,
+        original_blob_key=original_key,
+        served_blob_key=served_key,
+        original_filename=filename,
+        byte_size_original=len(raw_bytes),
+        byte_size_served=len(raw_bytes),
+        mime_type_original=content_type,
+        mime_type_served=content_type,
+        sha256=sha,
+        codec=None,
+        quality=None,
+        max_dim=None,
+        lossless=None,
+        pending_face_scan=False,
+    )
+    session.add(image)
     await session.commit()
     await session.refresh(image)
     return image

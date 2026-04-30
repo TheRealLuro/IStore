@@ -27,6 +27,7 @@ class ImageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    category: str = "image"
     original_filename: str | None
     width: int | None
     height: int | None
@@ -49,6 +50,13 @@ class ImageRead(BaseModel):
     vision_processed_at: datetime | None = None
 
     uploaded_at: datetime
+
+
+class StorageUsage(BaseModel):
+    used_bytes: int
+    quota_bytes: int
+    by_category: dict[str, int]
+    by_count: dict[str, int]
 
 
 class ImageSearchHit(ImageRead):

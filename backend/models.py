@@ -52,6 +52,10 @@ class Image(Base):
     original_blob_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     served_blob_key: Mapped[str] = mapped_column(Text, nullable=False)
     original_filename: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    thumbnail_blob_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    category: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="image"
+    )
 
     width: Mapped[Optional[int]] = mapped_column(nullable=True)
     height: Mapped[Optional[int]] = mapped_column(nullable=True)
@@ -136,4 +140,120 @@ class ImageTag(Base):
 
     __table_args__ = (
         Index("image_tags_tag_idx", "tag_id", "image_id"),
+    )
+
+
+class ConsentRecord(Base):
+    __tablename__ = "consent_records"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    consent_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_text_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    signature_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ip: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
+class Person(Base):
+    __tablename__ = "persons"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    display_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    centroid_embedding: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(512), nullable=True
+    )
+    face_count: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Face(Base):
+    __tablename__ = "faces"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(512), nullable=False)
+    person_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("persons.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    cluster_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+    quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FaceDetection(Base):
+    __tablename__ = "face_detections"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    bbox_x: Mapped[int] = mapped_column(nullable=False)
+    bbox_y: Mapped[int] = mapped_column(nullable=False)
+    bbox_w: Mapped[int] = mapped_column(nullable=False)
+    bbox_h: Mapped[int] = mapped_column(nullable=False)
+    detection_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    face_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("faces.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    crop_blob_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[Optional[dict]] = mapped_column(
+        "details", Text, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

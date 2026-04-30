@@ -60,11 +60,14 @@ async def list_images(
     content_type: Annotated[str | None, Query(max_length=32)] = None,
     tag: Annotated[str | None, Query(max_length=64)] = None,
     indoor_outdoor: Annotated[str | None, Query(max_length=8)] = None,
+    category: Annotated[str | None, Query(max_length=16)] = None,
 ) -> list[Image]:
     stmt = select(Image).where(
         Image.user_id == user.id,
         Image.deleted_at.is_(None),
     )
+    if category is not None:
+        stmt = stmt.where(Image.category == category)
     if scene is not None:
         stmt = stmt.where(Image.scene_label == scene)
     if content_type is not None:
@@ -133,3 +136,45 @@ async def delete_image(
 
     image.deleted_at = datetime.now(timezone.utc)
     await session.commit()
+
+
+@router.post("/bulk-delete")
+async def bulk_delete(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    ids: list[UUID],
+) -> dict:
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    stmt = select(Image).where(
+        Image.id.in_(ids),
+        Image.user_id == user.id,
+        Image.deleted_at.is_(None),
+    )
+    result = await session.execute(stmt)
+    images = list(result.scalars().all())
+    for img in images:
+        img.deleted_at = now
+    await session.commit()
+    return {"deleted": [str(i.id) for i in images], "count": len(images)}
+
+
+@router.post("/bulk-restore")
+async def bulk_restore(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    ids: list[UUID],
+) -> dict:
+    """Undo bulk-delete within the soft-delete window (used by frontend Undo)."""
+    stmt = select(Image).where(
+        Image.id.in_(ids),
+        Image.user_id == user.id,
+        Image.deleted_at.is_not(None),
+    )
+    result = await session.execute(stmt)
+    images = list(result.scalars().all())
+    for img in images:
+        img.deleted_at = None
+    await session.commit()
+    return {"restored": [str(i.id) for i in images], "count": len(images)}
