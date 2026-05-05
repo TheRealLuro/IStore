@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m pip install \"transformers>=4.45,<5.0\" \"tokenizers>=0.20,<0.22\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_summarize.py -v)",
+      "PowerShell($ps = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | Where-Object { $_ -ne 0 } | Sort-Object -Unique; foreach \\($p in $ps\\) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 600; \\(Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Measure-Object\\).Count)",
+      "PowerShell(Start-Sleep -Seconds 2; \\(Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq \"Listen\" } | Measure-Object\\).Count)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_summarize.py -v --tb=short)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_summarize.py::test_image_branch_splices_named_person -v --tb=long -s)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_summarize.py --tb=short)",
+      "PowerShell($ps = Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | Where-Object { $_ -ne 0 } | Sort-Object -Unique; foreach \\($p in $ps\\) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; \\(Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Where-Object { $_.State -eq \"Listen\" } | Measure-Object\\).Count)",
+      "Bash(.venv/Scripts/python.exe -c \"import transformers; print\\(transformers.__version__\\); from transformers import BlipForConditionalGeneration; print\\('blip ok'\\)\")"
+    ]
+  }
+}

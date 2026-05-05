@@ -3,6 +3,7 @@ from typing import Iterable
 
 from minio import Minio
 from minio.error import S3Error
+from minio.sse import SseKMS, SseS3
 
 from backend.config import settings
 
@@ -18,22 +19,49 @@ class Storage:
         self.bucket_originals = settings.minio_bucket_originals
         self.bucket_served = settings.minio_bucket_served
         self.bucket_faces = settings.minio_bucket_faces
+        self.bucket_quarantine = settings.minio_bucket_quarantine
 
     def _bucket_names(self) -> Iterable[str]:
-        return (self.bucket_originals, self.bucket_served, self.bucket_faces)
+        return (
+            self.bucket_originals,
+            self.bucket_served,
+            self.bucket_faces,
+            self.bucket_quarantine,
+        )
 
     def ensure_buckets(self) -> None:
         for name in self._bucket_names():
             if not self.client.bucket_exists(name):
                 self.client.make_bucket(name)
 
-    def put(self, bucket: str, key: str, data: bytes, content_type: str) -> None:
+    def _sse(self, scope: str = "content"):
+        if settings.minio_sse_mode == "sse-s3":
+            return SseS3()
+        if settings.minio_sse_mode == "sse-kms":
+            key_id = (
+                settings.minio_sse_kms_key_id_biometric
+                if scope == "biometric"
+                else settings.minio_sse_kms_key_id_content
+            )
+            return SseKMS(key_id) if key_id else SseS3()
+        return None
+
+    def put(
+        self,
+        bucket: str,
+        key: str,
+        data: bytes,
+        content_type: str,
+        *,
+        sse_scope: str = "content",
+    ) -> None:
         self.client.put_object(
             bucket,
             key,
             BytesIO(data),
             length=len(data),
             content_type=content_type,
+            sse=self._sse(sse_scope),
         )
 
     def get(self, bucket: str, key: str) -> bytes:

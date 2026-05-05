@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     LargeBinary,
+    SmallInteger,
     String,
     Text,
     TIMESTAMP,
@@ -18,7 +19,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db import Base
@@ -28,6 +29,13 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     __tablename__ = "users"
 
     display_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, server_default="user")
+    age_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    # C8 admin dashboard — per-user storage quota override. NULL means
+    # "use the global default" (DEFAULT_QUOTA_BYTES in api/storage.py).
+    quota_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
     images: Mapped[list["Image"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -70,6 +78,13 @@ class Image(Base):
     max_dim: Mapped[Optional[int]] = mapped_column(nullable=True)
     lossless: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
+    # Phase 5 LinUCB: which arm produced this encoding + the context vector
+    # used at decision time. Replayed by the trainer when feedback arrives.
+    bandit_arm_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+    context_features: Mapped[Optional[list[float]]] = mapped_column(
+        ARRAY(Float), nullable=True
+    )
+
     # Phase 2 vision columns.
     clip_embedding: Mapped[Optional[list[float]]] = mapped_column(
         Vector(768), nullable=True
@@ -86,6 +101,33 @@ class Image(Base):
     vision_processed_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+
+    # Phase 11 — AI Vision content summary. Populated by a BackgroundTask
+    # after upload (see backend/summarize.py). `pending_summary` lets the
+    # frontend show a loading state and the search index re-fetch when
+    # ready, mirroring the pending_face_scan pattern.
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary_topic: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary_points: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
+    pending_summary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
+    summary_generated_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # Phase 12 — folders + project status.
+    folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("folders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    folder: Mapped[Optional["Folder"]] = relationship(back_populates="images")
+    # User-defined project status — free text so the user picks their own
+    # vocabulary ("not started", "in progress", "submitted", etc.). The
+    # color is a lookup key the frontend resolves to a chip tint.
+    status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status_color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     uploaded_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
@@ -108,6 +150,70 @@ class Image(Base):
     __table_args__ = (
         Index("images_user_uploaded_idx", "user_id", desc("uploaded_at")),
     )
+
+
+class Folder(Base):
+    """Phase 12 — user-organized folders.
+
+    Folders sit in their own table because they don't have a blob, MIME
+    type, or any of the other required image fields — co-mingling would
+    make half the columns nullable. Self-FK on `parent_folder_id`
+    supports recursive nesting; `ON DELETE CASCADE` removes the whole
+    subtree when a parent is deleted.
+
+    `status` / `status_color` mirror the same columns on Image so a
+    project label can be applied to either a folder ("Assignment 4 —
+    submitted") or a single document.
+    """
+
+    __tablename__ = "folders"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parent_folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    parent: Mapped[Optional["Folder"]] = relationship(
+        back_populates="children",
+        remote_side="Folder.id",
+    )
+    children: Mapped[list["Folder"]] = relationship(
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status_color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    # Set when this folder was produced by extracting an archive — kept
+    # so we can later offer "re-pack on download" without a separate
+    # table mapping folders → archives.
+    source_archive_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+
+    images: Mapped[list["Image"]] = relationship(back_populates="folder")
 
 
 class Tag(Base):
@@ -157,7 +263,7 @@ class ConsentRecord(Base):
     policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
     policy_text_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
     signature_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    ip: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ip: Mapped[Optional[str]] = mapped_column(INET, nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     granted_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
@@ -241,19 +347,236 @@ class FaceDetection(Base):
     )
 
 
-class AuditLog(Base):
-    __tablename__ = "audit_log"
+class BanditState(Base):
+    """Per-(user, arm) sufficient statistics for disjoint LinUCB.
+
+    `a_matrix` is a d×d float32 matrix; `b_vector` is a d float32 vector.
+    Stored as raw `bytes` (numpy.tobytes); decode with `numpy.frombuffer`.
+    """
+
+    __tablename__ = "bandit_state"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    arm_id: Mapped[int] = mapped_column(primary_key=True)
+    a_matrix: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    b_vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    pulls: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    last_updated: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class BanditGlobalPrior(Base):
+    """Cold-start prior keyed by arm. Bootstrapped offline (Phase 5
+    deliverable: synthetic SSIM/LPIPS-based ratings on a fixture set)."""
+
+    __tablename__ = "bandit_global_prior"
+
+    arm_id: Mapped[int] = mapped_column(primary_key=True)
+    a_matrix: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    b_vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    pulls: Mapped[int] = mapped_column(nullable=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FeedbackEvent(Base):
+    """Append-only reward signals for the LinUCB trainer.
+
+    Reward, arm_id, and context_features are denormalized at ingest time so
+    the trainer's consume loop does no JOINs. `consumed_by_trainer=false`
+    rows are picked up on the next trainer pass; idempotent because the
+    flag flips on success.
+    """
+
+    __tablename__ = "feedback_events"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 'rating' (explicit), 'implicit_negative', 'implicit_positive'
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    rating: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, server_default="1.0")
+    bandit_arm_id: Mapped[int] = mapped_column(nullable=False)
+    context_features: Mapped[list[float]] = mapped_column(
+        ARRAY(Float), nullable=False
+    )
+    reward: Mapped[float] = mapped_column(Float, nullable=False)
+    consumed_by_trainer: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CloudLink(Base):
+    """C2 — third-party storage link (Drive / GitHub / Dropbox / …).
+
+    `encrypted_refresh_token` is a placeholder for the eventual
+    A2/A3-gated implementation: today the column stores a plaintext
+    sentinel value (`"PLACEHOLDER"`); the OAuth callback that fills it
+    is intentionally a stub until secrets-at-rest is in place. Don't
+    ship to production with this column unencrypted.
+    """
+
+    __tablename__ = "cloud_links"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    encrypted_refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    scopes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="pending"
+    )
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CloudFile(Base):
+    """C2 — diff index for synced files. `local_image_id` is NULL until
+    the corresponding image is downloaded and stored locally.
+    `remote_modified` + `sha256` together drive the "should we re-pull
+    this file" decision."""
+
+    __tablename__ = "cloud_files"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    remote_id: Mapped[str] = mapped_column(Text, nullable=False)
+    remote_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    local_image_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    remote_modified: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    sha256: Mapped[Optional[bytes]] = mapped_column(LargeBinary(32), nullable=True)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("cloud_files_user_provider_remote_uq", "user_id", "provider", "remote_id", unique=True),
+    )
+
+
+class SystemConfig(Base):
+    """Admin-managed configuration (key/value), values stored Fernet-
+    ciphertext only. Used for Google OAuth client credentials so the
+    admin can paste them in the UI instead of editing .env, plus the
+    cloud encryption key itself (auto-generated on first need)."""
+
+    __tablename__ = "system_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    encrypted_value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
-    action: Mapped[str] = mapped_column(String(64), nullable=False)
-    details: Mapped[Optional[dict]] = mapped_column(
-        "details", Text, nullable=True
+
+
+class ImageGeo(Base):
+    """C3 — image GPS coordinates extracted from EXIF.
+
+    Sibling table rather than columns on `images` so a clean delete is
+    one statement when the user revokes `gps_retention` consent. PK is
+    image_id (1:1) — every coordinate belongs to exactly one image.
+    `taken_at` stores the EXIF capture timestamp when present; useful
+    for time-aware map clustering later.
+    """
+
+    __tablename__ = "image_geo"
+
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        primary_key=True,
     )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lng: Mapped[float] = mapped_column(Float, nullable=False)
+    taken_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    captured_with: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RecoveryCode(Base):
+    """Phase 13 (C6) — single-use account-recovery codes.
+
+    Generated 8 at a time when the user opts into recovery codes. Codes
+    are hashed (argon2) — only the user ever sees the plaintext. A code
+    is consumed by writing `used_at` and is then dead permanently. We
+    never re-use codes; "regenerate" deletes the prior set.
+    """
+
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PgUUID(as_uuid=True), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

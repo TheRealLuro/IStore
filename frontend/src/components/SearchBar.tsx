@@ -14,16 +14,19 @@ export function SearchBar({ resultsCount }: { resultsCount: number }) {
   const [focused, setFocused] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  // Click-away closes the suggestions dropdown. We deliberately DON'T
+  // clear the query here — clicking a result card or the preview panel
+  // would otherwise wipe the search every time, and you'd lose your place
+  // when scanning multiple matches. Use the X button to clear explicitly.
   useEffect(() => {
     function onClick(e: MouseEvent) {
       if (!containerRef.current?.contains(e.target as Node)) {
         setFocused(false);
-        if (query.length > 0) setQuery("");
       }
     }
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
-  }, [query, setQuery]);
+  }, []);
 
   const showSuggestions = focused && query.length === 0;
 

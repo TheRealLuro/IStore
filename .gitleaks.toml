@@ -1,0 +1,8 @@
+title = "IStore gitleaks config"
+
+[allowlist]
+description = "Synthetic fixtures and placeholders"
+paths = [
+  '''\.env\.example$''',
+  '''SECURITY_REVIEW\.md$''',
+]

@@ -43,9 +43,13 @@ export default {
         "4xl": "28px",
       },
       animation: {
-        "fade-in": "fade-in 200ms ease-out",
-        "slide-in": "slide-in 320ms cubic-bezier(0.16, 1, 0.3, 1)",
-        "scale-in": "scale-in 220ms cubic-bezier(0.16, 1, 0.3, 1)",
+        // iOS-standard easing — long deceleration tail reads as "smooth"
+        // because the eye spends most of the duration on slow movement.
+        // Bumped from 320ms → 520ms; perceived smoothness scales with
+        // duration up to ~600ms, beyond which it just feels sluggish.
+        "fade-in": "fade-in 360ms cubic-bezier(0.32, 0.72, 0, 1)",
+        "slide-in": "slide-in 520ms cubic-bezier(0.32, 0.72, 0, 1)",
+        "scale-in": "scale-in 280ms cubic-bezier(0.32, 0.72, 0, 1)",
       },
       keyframes: {
         "fade-in": {
@@ -53,8 +57,20 @@ export default {
           "100%": { opacity: "1" },
         },
         "slide-in": {
-          "0%": { transform: "translateX(100%)", opacity: "0" },
-          "100%": { transform: "translateX(0)", opacity: "1" },
+          // Subtle scale + slide combines for a softer arrival than pure
+          // off-screen → on-screen. The translateX is enough to read as
+          // "from the right" without the bouncy edge slap.
+          "0%": {
+            transform: "translateX(105%) scale(0.985)",
+            opacity: "0",
+          },
+          "60%": {
+            opacity: "1",
+          },
+          "100%": {
+            transform: "translateX(0) scale(1)",
+            opacity: "1",
+          },
         },
         "scale-in": {
           "0%": { transform: "scale(0.97)", opacity: "0" },

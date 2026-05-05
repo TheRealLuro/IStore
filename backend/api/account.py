@@ -1,0 +1,713 @@
+"""Account-level GDPR endpoints (Phase 8) + recovery codes (Phase 13 / C6).
+
+  POST   /account/delete                       Hard-delete account + data + blobs.
+  GET    /account/export                       GDPR Art. 20 ZIP.
+  POST   /account/recovery-codes/regenerate    8 fresh single-use codes
+                                               (returned once, hashed in DB).
+  POST   /account/recovery-codes/login         Sign in with one code (no JWT
+                                               required — used when the user
+                                               is locked out of their password).
+  POST   /admin/retention/sweep                Drop originals past their TTL.
+
+Deletion is intentionally synchronous and immediate: the user has explicitly
+asked. The audit_log entry is written *first* with non-blob counts so we have
+a record even if a later step fails. FK ON DELETE CASCADE on every per-user
+table handles the row deletion in a single statement.
+
+Recovery codes are 10-character base32 strings (50 bits of entropy each); we
+store an argon2 hash and never the plaintext. Logging in with a code returns
+a fresh JWT and immediately marks the code used.
+"""
+from __future__ import annotations
+
+import io
+import json
+import logging
+import secrets
+import zipfile
+from datetime import datetime, timezone
+from typing import Annotated
+from uuid import UUID
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import delete as sa_delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.audit import add_audit
+from backend.auth.users import current_active_user, get_jwt_strategy
+from backend.db import get_session
+from backend.deletion import hard_delete_images
+from backend.email_send import send_recovery_codes_email
+from backend.models import (
+    AuditLog,
+    ConsentRecord,
+    Face,
+    FaceDetection,
+    Image,
+    Person,
+    RecoveryCode,
+    Tag,
+    User,
+)
+from backend.retention import sweep_expired_originals
+from backend.storage import storage
+from backend.trainer import apply_drift_discount, consume_feedback
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/account", tags=["account"])
+admin_router = APIRouter(prefix="/admin", tags=["admin"])
+
+# Argon2 with default parameters (m=65536 KiB / t=3 / p=4) is comfortably
+# slow on our target hardware — recovery codes are short and one-shot, so
+# the cost of verifying *every* hash on a login attempt is bounded by the
+# number of unused codes per user (≤ 8). Single shared instance avoids
+# re-allocating the parameter struct per call.
+_PASSWORD_HASHER = PasswordHasher()
+RECOVERY_CODE_COUNT = 8
+# 10-char base32 == 50 bits. Brute-forcing one code over the network would
+# need ~10^15 attempts; the recovery-login endpoint is rate-limited at the
+# router level (single guess per (email, code) tuple, no enumeration).
+RECOVERY_CODE_LENGTH = 10
+_RECOVERY_CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"  # base32 minus 0/1/8/9
+
+
+class DeleteResult(BaseModel):
+    deleted_user_id: UUID
+    images_deleted: int
+    faces_deleted: int
+    persons_deleted: int
+    blobs_deleted: int
+    blob_errors: int
+
+
+# ---------- DELETE ACCOUNT ----------
+
+async def _collect_user_blob_keys(
+    session: AsyncSession, user_id: UUID
+) -> tuple[list[tuple[str, str]], int]:
+    """Return [(bucket, key), ...] for every blob owned by the user."""
+    keys: list[tuple[str, str]] = []
+
+    # Originals + served variants from `images`. Both buckets must be hit.
+    img_rows = (
+        await session.execute(
+            select(Image.original_blob_key, Image.served_blob_key, Image.thumbnail_blob_key).where(
+                Image.user_id == user_id
+            )
+        )
+    ).all()
+    for original_key, served_key, thumbnail_key in img_rows:
+        if original_key:
+            keys.append((storage.bucket_originals, original_key))
+        if served_key and served_key != original_key:
+            keys.append((storage.bucket_served, served_key))
+        if thumbnail_key:
+            keys.append((storage.bucket_served, thumbnail_key))
+
+    # Face crops.
+    face_keys = (
+        await session.execute(
+            select(FaceDetection.crop_blob_key).where(
+                FaceDetection.user_id == user_id,
+                FaceDetection.crop_blob_key.is_not(None),
+            )
+        )
+    ).scalars().all()
+    for k in face_keys:
+        keys.append((storage.bucket_faces, k))
+
+    return keys, len(img_rows)
+
+
+@router.post("/delete", response_model=DeleteResult)
+async def delete_account(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DeleteResult:
+    """Hard-delete the calling user's account and every byte of their data.
+
+    Order:
+      1. Pre-count rows for the audit entry.
+      2. Audit-log the deletion intent (user_id will become NULL via FK once
+         the row is gone, but `details` retains the original UUID + counts).
+      3. Delete blobs (best-effort; collect error count).
+      4. Delete the user row → FK CASCADE wipes images, faces, persons,
+         face_detections, consent_records, image_tags.
+    """
+    user_id = user.id
+
+    # 1. Pre-counts.
+    images_count = (
+        await session.execute(
+            select(Image).where(Image.user_id == user_id)
+        )
+    ).all()
+    faces_count = (
+        await session.execute(
+            select(Face).where(Face.user_id == user_id)
+        )
+    ).all()
+    persons_count = (
+        await session.execute(
+            select(Person).where(Person.user_id == user_id)
+        )
+    ).all()
+
+    image_ids = [row[0].id for row in images_count]
+    image_delete = await hard_delete_images(
+        session,
+        user_id=user_id,
+        image_ids=image_ids,
+        audit_action="account.images.delete",
+    )
+    await add_audit(
+        session,
+        user_id=user_id,
+        action="account.delete",
+        details={
+            "user_id": str(user_id),
+            "email": user.email,
+            "images": len(images_count),
+            "faces": len(faces_count),
+            "persons": len(persons_count),
+            "blobs_deleted": image_delete.blobs_deleted,
+            "blob_errors": image_delete.blob_errors,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    await session.execute(sa_delete(User).where(User.id == user_id))
+    await session.flush()
+    remaining = await _verify_account_deleted(session, user_id)
+    if remaining:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Account deletion incomplete: {remaining}",
+        )
+    await session.commit()
+    return DeleteResult(
+        deleted_user_id=user_id,
+        images_deleted=len(images_count),
+        faces_deleted=len(faces_count),
+        persons_deleted=len(persons_count),
+        blobs_deleted=image_delete.blobs_deleted,
+        blob_errors=image_delete.blob_errors,
+    )
+
+    # 2. Collect blob keys (must happen BEFORE delete; rows are cascading).
+    blob_keys, _ = await _collect_user_blob_keys(session, user_id)
+
+    # 3. Audit log first — proof artifact survives even if next steps fail.
+    session.add(
+        AuditLog(
+            user_id=user_id,
+            action="account.delete",
+            details={
+                "user_id": str(user_id),
+                "email": user.email,
+                "images": len(images_count),
+                "faces": len(faces_count),
+                "persons": len(persons_count),
+                "blobs_planned": len(blob_keys),
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    )
+    await session.commit()
+
+    # 4. Drop blobs from MinIO.
+    blobs_deleted = 0
+    blob_errors = 0
+    for bucket, key in blob_keys:
+        try:
+            storage.delete(bucket, key)
+            blobs_deleted += 1
+        except Exception as exc:
+            blob_errors += 1
+            logger.warning("account.delete: blob %s/%s removal failed: %s", bucket, key, exc)
+
+    # 5. Delete the user row. FKs cascade per-table.
+    await session.execute(sa_delete(User).where(User.id == user_id))
+    await session.commit()
+
+    return DeleteResult(
+        deleted_user_id=user_id,
+        images_deleted=len(images_count),
+        faces_deleted=len(faces_count),
+        persons_deleted=len(persons_count),
+        blobs_deleted=blobs_deleted,
+        blob_errors=blob_errors,
+    )
+
+
+async def _verify_account_deleted(session: AsyncSession, user_id: UUID) -> dict[str, int]:
+    checks = {
+        "users": "SELECT count(*) FROM users WHERE id = :uid",
+        "images": "SELECT count(*) FROM images WHERE user_id = :uid",
+        "image_geo": "SELECT count(*) FROM image_geo WHERE user_id = :uid",
+        "face_detections": "SELECT count(*) FROM face_detections WHERE user_id = :uid",
+        "faces": "SELECT count(*) FROM faces WHERE user_id = :uid",
+        "persons": "SELECT count(*) FROM persons WHERE user_id = :uid",
+        "consent_records": "SELECT count(*) FROM consent_records WHERE user_id = :uid",
+        "feedback_events": "SELECT count(*) FROM feedback_events WHERE user_id = :uid",
+        "bandit_state": "SELECT count(*) FROM bandit_state WHERE user_id = :uid",
+        "cloud_links": "SELECT count(*) FROM cloud_links WHERE user_id = :uid",
+        "cloud_files": "SELECT count(*) FROM cloud_files WHERE user_id = :uid",
+        "folders": "SELECT count(*) FROM folders WHERE user_id = :uid",
+        "recovery_codes": "SELECT count(*) FROM recovery_codes WHERE user_id = :uid",
+    }
+    remaining: dict[str, int] = {}
+    for name, sql in checks.items():
+        count = (await session.execute(text(sql), {"uid": user_id})).scalar_one()
+        if count:
+            remaining[name] = int(count)
+    return remaining
+
+
+# ---------- EXPORT ACCOUNT (GDPR Art. 20) ----------
+
+
+def _safe_filename(name: str | None, fallback: str) -> str:
+    """Strip path separators and control chars from user-supplied filenames
+    so they're safe to embed in a ZIP."""
+    if not name:
+        return fallback
+    out = "".join(c for c in name if c.isprintable() and c not in '/\\<>:"|?*')
+    return out.strip() or fallback
+
+
+async def _build_export_zip(
+    session: AsyncSession, user: User
+) -> bytes:
+    """Build the export ZIP fully in memory and return its bytes.
+
+    A pure-streaming implementation is tempting but `zipfile.ZipFile` writes
+    a coherent stream into a single underlying file object — we can't
+    truncate the buffer between entries without corrupting the archive
+    (the central directory at close uses absolute file offsets). Buffering
+    is the simple, correct choice; user data is bounded by what the user
+    has uploaded so memory use is acceptable for v1.
+    """
+    buffer = io.BytesIO()
+    zf = zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_STORED)
+
+    # Build the metadata first so consumers see it without reading blobs.
+    images = (
+        await session.execute(select(Image).where(Image.user_id == user.id))
+    ).scalars().all()
+    persons = (
+        await session.execute(select(Person).where(Person.user_id == user.id))
+    ).scalars().all()
+    faces = (
+        await session.execute(select(Face).where(Face.user_id == user.id))
+    ).scalars().all()
+    detections = (
+        await session.execute(
+            select(FaceDetection).where(FaceDetection.user_id == user.id)
+        )
+    ).scalars().all()
+    consents = (
+        await session.execute(
+            select(ConsentRecord).where(ConsentRecord.user_id == user.id)
+        )
+    ).scalars().all()
+    audits = (
+        await session.execute(
+            select(AuditLog).where(AuditLog.user_id == user.id)
+        )
+    ).scalars().all()
+    image_tag_rows = (
+        await session.execute(
+            select(Image.id, Tag.label).select_from(Image)
+            .join(Image.tags)
+            .join(Tag)
+            .where(Image.user_id == user.id)
+        )
+    ).all()
+    tags_by_image: dict = {}
+    for img_id, label in image_tag_rows:
+        tags_by_image.setdefault(str(img_id), []).append(label)
+
+    metadata = {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "user": {
+            "id": str(user.id),
+            "email": user.email,
+            "display_name": user.display_name,
+        },
+        "images": [
+            {
+                "id": str(i.id),
+                "original_filename": i.original_filename,
+                "category": i.category,
+                "width": i.width,
+                "height": i.height,
+                "byte_size_original": i.byte_size_original,
+                "byte_size_served": i.byte_size_served,
+                "mime_type_original": i.mime_type_original,
+                "mime_type_served": i.mime_type_served,
+                "codec": i.codec,
+                "quality": i.quality,
+                "scene_label": i.scene_label,
+                "content_type": i.content_type,
+                "uploaded_at": i.uploaded_at.isoformat() if i.uploaded_at else None,
+                "deleted_at": i.deleted_at.isoformat() if i.deleted_at else None,
+                "tags": tags_by_image.get(str(i.id), []),
+                "original_retained": i.original_blob_key is not None,
+            }
+            for i in images
+        ],
+        "persons": [
+            {
+                "id": p.id,
+                "display_name": p.display_name,
+                "face_count": p.face_count,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in persons
+        ],
+        "faces": [
+            {
+                "id": f.id,
+                "person_id": f.person_id,
+                "cluster_id": f.cluster_id,
+                "quality_score": f.quality_score,
+                "created_at": f.created_at.isoformat() if f.created_at else None,
+            }
+            for f in faces
+        ],
+        "face_detections": [
+            {
+                "id": d.id,
+                "image_id": str(d.image_id),
+                "face_id": d.face_id,
+                "bbox": [d.bbox_x, d.bbox_y, d.bbox_w, d.bbox_h],
+                "detection_confidence": d.detection_confidence,
+            }
+            for d in detections
+        ],
+        "consent_records": [
+            {
+                "kind": c.consent_kind,
+                "state": c.state,
+                "policy_version": c.policy_version,
+                "policy_text_sha256_hex": c.policy_text_sha256.hex()
+                if c.policy_text_sha256 else None,
+                "signature_text": c.signature_text,
+                "granted_at": c.granted_at.isoformat() if c.granted_at else None,
+                "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+            }
+            for c in consents
+        ],
+        "audit_log": [
+            {
+                "action": a.action,
+                "details": a.details,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in audits
+        ],
+    }
+
+    zf.writestr("metadata.json", json.dumps(metadata, indent=2, default=str))
+
+    # Originals (if still retained) + served variants.
+    for img in images:
+        safe = _safe_filename(img.original_filename, f"image-{img.id}")
+        if img.original_blob_key:
+            try:
+                blob = storage.get(storage.bucket_originals, img.original_blob_key)
+            except Exception as exc:
+                logger.warning("export: original %s missing: %s", img.id, exc)
+                blob = None
+            if blob is not None:
+                zf.writestr(f"originals/{img.id}__{safe}", blob)
+        if img.served_blob_key and img.served_blob_key != img.original_blob_key:
+            try:
+                served = storage.get(storage.bucket_served, img.served_blob_key)
+            except Exception as exc:
+                logger.warning("export: served %s missing: %s", img.id, exc)
+                served = None
+            if served is not None:
+                ext = (img.mime_type_served or "").split("/")[-1] or "bin"
+                zf.writestr(f"served/{img.id}.{ext}", served)
+
+    # Face crops (biometric data — included so the user has the full record;
+    # they can delete the export ZIP afterwards).
+    for det in detections:
+        if not det.crop_blob_key:
+            continue
+        try:
+            crop = storage.get(storage.bucket_faces, det.crop_blob_key)
+        except Exception:
+            continue
+        zf.writestr(f"face_crops/face-{det.face_id}-det-{det.id}.jpg", crop)
+
+    zf.close()
+    return buffer.getvalue()
+
+
+@router.get("/export")
+async def export_account(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """Returns a ZIP of every byte the system holds about the caller."""
+    fname = f"istore-export-{user.id}.zip"
+    blob = await _build_export_zip(session, user)
+    return Response(
+        content=blob,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+# ---------- ADMIN: RETENTION SWEEP ----------
+
+
+class SweepResponse(BaseModel):
+    scanned: int
+    blobs_deleted: int
+    blob_errors: int
+    rows_nulled: int
+    bytes_freed: int
+
+
+@admin_router.post("/retention/sweep", response_model=SweepResponse)
+async def admin_retention_sweep(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SweepResponse:
+    if not user.is_superuser:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Superuser required"
+        )
+    res = await sweep_expired_originals(session)
+    return SweepResponse(
+        scanned=res.scanned,
+        blobs_deleted=res.blobs_deleted,
+        blob_errors=res.blob_errors,
+        rows_nulled=res.rows_nulled,
+        bytes_freed=res.bytes_freed,
+    )
+
+
+class TrainerRunResponse(BaseModel):
+    consumed: int
+    updated_arms: int
+    failed: int
+    drift_applied_rows: int = 0
+
+
+@admin_router.post("/trainer/run", response_model=TrainerRunResponse)
+async def admin_trainer_run(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    apply_drift: bool = False,
+) -> TrainerRunResponse:
+    """Consume pending feedback into bandit_state. Idempotent.
+
+    Pass ?apply_drift=true to also shrink every user's (A, b) toward the
+    prior — typically once per 30 days, not per pass.
+    """
+    if not user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Superuser required")
+    res = await consume_feedback(session)
+    drift_n = 0
+    if apply_drift:
+        drift_n = await apply_drift_discount(session)
+    return TrainerRunResponse(
+        consumed=res.consumed,
+        updated_arms=res.updated_arms,
+        failed=res.failed,
+        drift_applied_rows=drift_n,
+    )
+
+
+# ---------- RECOVERY CODES (Phase 13 / C6) ----------
+
+
+def _generate_code() -> str:
+    """Cryptographically random 10-char base32 code, dash after the 5th char.
+    Format `XXXXX-XXXXX` is human-friendly to write down on paper."""
+    raw = "".join(
+        secrets.choice(_RECOVERY_CODE_ALPHABET) for _ in range(RECOVERY_CODE_LENGTH)
+    )
+    return f"{raw[:5]}-{raw[5:]}"
+
+
+def _normalize_code(code: str) -> str:
+    """Strip whitespace, dashes, and lower → upper so the user can paste
+    in any reasonable form (`abcde-fghij`, `abcdefghij`, `ABCDE FGHIJ`, …)
+    and still match."""
+    return "".join(c for c in code.strip().upper() if c in _RECOVERY_CODE_ALPHABET)
+
+
+class RecoveryCodesResponse(BaseModel):
+    codes: list[str]
+
+
+class RecoveryCodesStatus(BaseModel):
+    has_codes: bool
+    remaining: int
+    generated_at: datetime | None = None
+
+
+@router.get("/recovery-codes", response_model=RecoveryCodesStatus)
+async def recovery_codes_status(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RecoveryCodesStatus:
+    rows = (
+        await session.execute(
+            select(RecoveryCode)
+            .where(RecoveryCode.user_id == user.id)
+            .order_by(RecoveryCode.created_at.desc())
+        )
+    ).scalars().all()
+    if not rows:
+        return RecoveryCodesStatus(has_codes=False, remaining=0)
+    remaining = sum(1 for r in rows if r.used_at is None)
+    return RecoveryCodesStatus(
+        has_codes=True,
+        remaining=remaining,
+        generated_at=rows[0].created_at,
+    )
+
+
+@router.post(
+    "/recovery-codes/regenerate",
+    response_model=RecoveryCodesResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def regenerate_recovery_codes(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RecoveryCodesResponse:
+    """Drop the user's existing codes and issue 8 new ones.
+
+    Returns the plaintext codes — this is the only time the server ever
+    sees them. We also email the codes; the user can save either copy.
+    """
+    # Wipe prior set (used + unused).
+    await session.execute(
+        sa_delete(RecoveryCode).where(RecoveryCode.user_id == user.id)
+    )
+
+    codes = [_generate_code() for _ in range(RECOVERY_CODE_COUNT)]
+    for code in codes:
+        session.add(
+            RecoveryCode(
+                user_id=user.id,
+                code_hash=_PASSWORD_HASHER.hash(_normalize_code(code)),
+            )
+        )
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="account.recovery_codes.regenerate",
+            details={"count": len(codes)},
+        )
+    )
+    await session.commit()
+
+    # Best-effort email — never fails the request.
+    try:
+        send_recovery_codes_email(user.email, codes)
+    except Exception:
+        logger.exception("recovery codes email failed for %s", user.id)
+
+    return RecoveryCodesResponse(codes=codes)
+
+
+class RecoveryLoginPayload(BaseModel):
+    email: EmailStr
+    code: str
+
+
+class RecoveryLoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+@router.post(
+    "/recovery-codes/login",
+    response_model=RecoveryLoginResponse,
+    # Public — no current-user dependency. Used precisely when the user
+    # cannot log in normally.
+)
+async def recovery_login(
+    payload: RecoveryLoginPayload,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> RecoveryLoginResponse:
+    """Trade a recovery code for a JWT.
+
+    On success: marks the code used (one-shot), audit-logs the action,
+    issues a session JWT for the user. On failure: 400 Bad Request with
+    a generic message — never enumerate which step failed (email vs.
+    code) so attackers can't probe for valid emails.
+    """
+    code = _normalize_code(payload.code)
+    if not code:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid recovery code")
+
+    user = (
+        await session.execute(
+            select(User).where(User.email == payload.email.lower())
+        )
+    ).scalar_one_or_none()
+    if user is None:
+        # Constant-time fail: still verify a dummy hash so timing doesn't
+        # leak whether the email exists.
+        try:
+            _PASSWORD_HASHER.verify(
+                "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$"
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "noop",
+            )
+        except Exception:
+            pass
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid recovery code")
+
+    candidates = (
+        await session.execute(
+            select(RecoveryCode)
+            .where(
+                RecoveryCode.user_id == user.id,
+                RecoveryCode.used_at.is_(None),
+            )
+        )
+    ).scalars().all()
+
+    matched: RecoveryCode | None = None
+    for rc in candidates:
+        try:
+            _PASSWORD_HASHER.verify(rc.code_hash, code)
+            matched = rc
+            break
+        except VerifyMismatchError:
+            continue
+
+    if matched is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid recovery code")
+
+    matched.used_at = datetime.now(timezone.utc)
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="account.recovery_codes.login",
+            details={"recovery_code_id": matched.id},
+        )
+    )
+    await session.commit()
+
+    # Issue a JWT via the same strategy /auth/jwt/login uses.
+    strategy = get_jwt_strategy()
+    token = await strategy.write_token(user)
+    return RecoveryLoginResponse(access_token=token)

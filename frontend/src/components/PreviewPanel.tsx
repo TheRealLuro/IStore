@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { X, Download, Share2, Trash2, ChevronUp, ChevronDown, ChevronRight } from "lucide-react";
 import type { FileItem } from "@/types/file";
 import { useUIStore } from "@/stores/uiStore";
@@ -7,8 +8,13 @@ import { useFilterStore } from "@/stores/filterStore";
 import { ThumbnailRenderer } from "./ThumbnailRenderer";
 import { TypeBadge } from "./TypeBadge";
 import { Highlight } from "./Highlight";
+import { PreviewPeopleStrip } from "./PreviewPeopleStrip";
+import { RatingModal, shouldOfferRating } from "./RatingModal";
+import { StatusPicker } from "./StatusPicker";
 import { formatBytes, relativeTime } from "@/utils/format";
-import { originalUrl, servedUrl, fetchAsBlobUrl } from "@/api/files";
+import { originalUrl, servedUrl, fetchAsBlobUrl, fetchMediaBlob } from "@/api/files";
+import { setImageStatus } from "@/api/folders";
+import { getConsentStatus } from "@/api/consent";
 import { parseExifRows, type ExifRow } from "@/utils/exif";
 import { tokens } from "@/api/client";
 import toast from "react-hot-toast";
@@ -49,8 +55,8 @@ export function PreviewPanel({ files, onRequestBulkDelete }: Props) {
   if (!open) return null;
 
   return (
-    <aside className="fixed top-0 right-0 h-full w-full max-w-md bg-card border-l border-border z-20 animate-slide-in flex flex-col shadow-float">
-      <header className="flex items-center justify-between px-5 h-14 border-b border-divider">
+    <aside className="fixed top-4 right-4 bottom-4 w-full max-w-md bg-card rounded-[28px] border border-divider/80 z-20 animate-slide-in flex flex-col shadow-float overflow-hidden">
+      <header className="flex items-center justify-between px-5 h-12 border-b border-divider/40">
         <div className="text-sm font-medium text-fg">
           {isBulk ? `${selectedFiles.length} selected` : "Preview"}
         </div>
@@ -72,9 +78,38 @@ export function PreviewPanel({ files, onRequestBulkDelete }: Props) {
   );
 }
 
-function SinglePanel({ file, query }: { file: FileItem; query: string }) {
+function SinglePanel({ file: baseFile, query }: { file: FileItem; query: string }) {
   const setPreview = useUIStore((s) => s.setPreview);
   const [downloading, setDownloading] = useState(false);
+  const [ratingFor, setRatingFor] = useState<FileItem | null>(null);
+
+  // Phase 4: surface detected people above the metadata box.
+  const { data: consent } = useQuery({
+    queryKey: ["consent", "face_recognition"],
+    queryFn: getConsentStatus,
+    staleTime: 60_000,
+    enabled: baseFile.category === "image",
+  });
+  const consentActive = consent?.state === "GRANTED";
+
+  // Phase 11: poll the single-image endpoint while the AI Vision summary is
+  // still being generated. Mirrors PreviewPeopleStrip's pattern for /people.
+  // Once `pending_summary` flips false the query disables itself.
+  const { data: pollFile } = useQuery<FileItem>({
+    queryKey: ["image", baseFile.id, "summary"],
+    queryFn: async () => {
+      const token = tokens.get();
+      const r = await fetch(`/api/images/${baseFile.id}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!r.ok) throw new Error(`fetch ${r.status}`);
+      return r.json();
+    },
+    enabled: baseFile.pending_summary,
+    refetchInterval: baseFile.pending_summary ? 4000 : false,
+  });
+  const file: FileItem = pollFile ?? baseFile;
+
   const onDownload = async () => {
     if (downloading) return;
     setDownloading(true);
@@ -86,6 +121,17 @@ function SinglePanel({ file, query }: { file: FileItem; query: string }) {
       a.click();
       URL.revokeObjectURL(url);
       toast.success("Downloaded original");
+      // Phase 6: prompt for a rating on bandit-encoded photos. Hard-rule
+      // images (screenshots forced lossless) have no arm to attribute reward
+      // to, so skip them. Per-session dismissal honored.
+      if (
+        file.category === "image" &&
+        file.bandit_arm_id !== null &&
+        file.bandit_arm_id !== undefined &&
+        shouldOfferRating()
+      ) {
+        setRatingFor(file);
+      }
     } catch (e) {
       toast.error("Download failed");
       console.error(e);
@@ -108,20 +154,15 @@ function SinglePanel({ file, query }: { file: FileItem; query: string }) {
     }
     setExif(null);
     let cancelled = false;
-    const token = tokens.get();
-    const headers: Record<string, string> = token
-      ? { Authorization: `Bearer ${token}` }
-      : {};
-
     // Always prefer the byte-perfect original (within the 30-day retention
     // window). Only fall back to the served variant if the original has
     // already been swept — WebP/AVIF re-encodes can drop EXIF on some inputs.
     const fetchExifSource = async (): Promise<Blob> => {
-      const orig = await fetch(originalUrl(file.id), { headers });
-      if (orig.ok) return await orig.blob();
-      const served = await fetch(servedUrl(file.id), { headers });
-      if (!served.ok) throw new Error(`No source: ${served.status}`);
-      return await served.blob();
+      try {
+        return await fetchMediaBlob(originalUrl(file.id));
+      } catch {
+        return await fetchMediaBlob(servedUrl(file.id));
+      }
     };
 
     fetchExifSource()
@@ -198,6 +239,18 @@ function SinglePanel({ file, query }: { file: FileItem; query: string }) {
           </div>
         </div>
 
+        {file.category === "image" && (
+          <PreviewPeopleStrip
+            imageId={file.id}
+            pendingScan={file.pending_face_scan}
+            consentActive={!!consentActive}
+          />
+        )}
+
+        <StatusRow file={file} />
+
+        <AIVisionSection file={file} query={query} />
+
         <Section title="Storage">
           <Row label="Original size" value={formatBytes(file.byte_size_original)} />
           <Row label="Served size" value={formatBytes(file.byte_size_served)} />
@@ -215,7 +268,7 @@ function SinglePanel({ file, query }: { file: FileItem; query: string }) {
         </Section>
 
         {(file.content_type || file.scene_label) && (
-          <Section title="AI Vision">
+          <Section title="Classification">
             {file.content_type && (
               <Row
                 label="Content type"
@@ -323,6 +376,8 @@ function SinglePanel({ file, query }: { file: FileItem; query: string }) {
           <Trash2 className="h-4 w-4" />
         </button>
       </footer>
+
+      <RatingModal file={ratingFor} onClose={() => setRatingFor(null)} />
     </>
   );
 }
@@ -468,5 +523,88 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
       <span className="text-fg-secondary">{label}</span>
       <span className="text-fg truncate">{value}</span>
     </div>
+  );
+}
+
+/** Inline status editor as a one-line section (no big "Status" header —
+ * absent status reads as "tap to add", present status reads as the chip). */
+function StatusRow({ file }: { file: FileItem }) {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (body: { status: string | null; color: string | null }) =>
+      setImageStatus(file.id, body.status, body.color),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["files"] });
+      qc.invalidateQueries({ queryKey: ["image", file.id] });
+      toast.success("Status updated");
+    },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : "Could not update status"),
+  });
+
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-[0.18em] text-fg-muted mb-2">
+        Status
+      </div>
+      <StatusPicker
+        value={file.status}
+        color={file.status_color}
+        onChange={(label, color) => m.mutate({ status: label, color })}
+        busy={m.isPending}
+      />
+    </div>
+  );
+}
+
+function AIVisionSection({ file, query }: { file: FileItem; query: string }) {
+  // Loading state mirrors PreviewPeopleStrip — show a skeleton while the
+  // BackgroundTask is still running so the section doesn't flicker in/out.
+  if (file.pending_summary) {
+    return (
+      <Section title="AI Vision">
+        <div className="flex items-center gap-2 text-sm text-fg-secondary py-1">
+          <span className="h-3.5 w-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" />
+          Generating summary…
+        </div>
+        <div className="text-xs text-fg-muted">
+          A short topic, summary, and key points appear here once the
+          model finishes. Searching matches against this text too.
+        </div>
+      </Section>
+    );
+  }
+
+  if (!file.summary && !file.summary_topic) {
+    return null;
+  }
+
+  return (
+    <Section title="AI Vision">
+      {file.summary_topic && (
+        <div className="text-sm font-semibold text-fg leading-snug">
+          <Highlight text={file.summary_topic} query={query} />
+        </div>
+      )}
+      {file.summary && (
+        <div className="text-sm text-fg-secondary leading-relaxed whitespace-pre-line">
+          <Highlight text={file.summary} query={query} />
+        </div>
+      )}
+      {file.summary_points && file.summary_points.length > 0 && (
+        <ul className="list-disc list-inside space-y-1 text-sm text-fg-secondary marker:text-fg-muted">
+          {file.summary_points.map((p, i) => (
+            <li key={i}>
+              <Highlight text={p} query={query} />
+            </li>
+          ))}
+        </ul>
+      )}
+      {file.summary_generated_at && (
+        <div className="text-[11px] text-fg-muted pt-1">
+          Generated {relativeTime(file.summary_generated_at)}
+        </div>
+      )}
+    </Section>
   );
 }

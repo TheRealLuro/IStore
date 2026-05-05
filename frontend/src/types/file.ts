@@ -22,7 +22,29 @@ export interface FileItem {
   pending_face_scan: boolean;
   indoor_outdoor: string | null;
   vision_processed_at: string | null;
+  bandit_arm_id: number | null;
+  summary: string | null;
+  summary_topic: string | null;
+  summary_points: string[] | null;
+  pending_summary: boolean;
+  summary_generated_at: string | null;
+  // Phase 12 — folders + project status.
+  folder_id: string | null;
+  status: string | null;
+  status_color: string | null;
   uploaded_at: string;
+}
+
+export interface Folder {
+  id: string;
+  parent_folder_id: string | null;
+  name: string;
+  status: string | null;
+  status_color: string | null;
+  item_count: number;
+  subfolder_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface StorageUsage {
@@ -39,4 +61,6 @@ export interface User {
   is_superuser: boolean;
   is_verified: boolean;
   display_name: string | null;
+  role: "user" | "admin" | "superuser";
+  age_confirmed: boolean;
 }

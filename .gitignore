@@ -29,6 +29,14 @@ htmlcov/
 .env
 .env.local
 .env.*.local
+!.env.example
+secrets/*
+!secrets/.gitkeep
+*.pem
+*.key
+*.crt
+*.p12
+*.agekey
 
 # IDE
 .vscode/
@@ -43,5 +51,16 @@ Thumbs.db
 # Project
 data/
 local_blobs/
+backups/
+exports/
+uploads/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.dump
+*.sql
+*.bak
+*.sqlite3
 *.sqlite
 *.db

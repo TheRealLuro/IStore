@@ -1,12 +1,15 @@
 import clsx from "clsx";
-import { Check } from "lucide-react";
+import { Check, Loader2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import type { FileItem } from "@/types/file";
 import { TypeBadge } from "./TypeBadge";
 import { ThumbnailRenderer } from "./ThumbnailRenderer";
 import { Highlight } from "./Highlight";
+import { StatusChip } from "./FolderCard";
 import { formatBytes, relativeTime } from "@/utils/format";
 import { useSelectionStore } from "@/stores/selectionStore";
 import { useUIStore } from "@/stores/uiStore";
+import { getConsentStatus } from "@/api/consent";
 
 interface Props {
   file: FileItem;
@@ -19,6 +22,20 @@ export function FileCard({ file, query }: Props) {
   const multiSelectMode = useSelectionStore((s) => s.multiSelectMode);
   const setMultiSelectMode = useSelectionStore((s) => s.setMultiSelectMode);
   const setPreview = useUIStore((s) => s.setPreview);
+
+  // Surface "Pass B running" only when consent is granted — otherwise the
+  // pending flag is meaningless to the user. React Query dedupes this; the
+  // network only sees it once per gallery render.
+  const { data: consent } = useQuery({
+    queryKey: ["consent", "face_recognition"],
+    queryFn: getConsentStatus,
+    staleTime: 60_000,
+    enabled: file.category === "image" && file.pending_face_scan,
+  });
+  const showScanning =
+    file.category === "image" &&
+    file.pending_face_scan &&
+    consent?.state === "GRANTED";
 
   const onClick = () => {
     if (multiSelectMode) toggle(file.id);
@@ -41,6 +58,13 @@ export function FileCard({ file, query }: Props) {
           e.preventDefault();
           onClick();
         }
+      }}
+      draggable
+      onDragStart={(e) => {
+        // Custom MIME type so only IStore folder cards accept the drop
+        // (other DnD targets in the page won't match the type).
+        e.dataTransfer.setData("application/x-istore-image", file.id);
+        e.dataTransfer.effectAllowed = "move";
       }}
       className={clsx(
         "group relative rounded-3xl bg-card overflow-hidden transition-all duration-300 cursor-pointer",
@@ -67,6 +91,19 @@ export function FileCard({ file, query }: Props) {
       <div className="absolute top-2.5 right-2.5">
         <TypeBadge file={file} query={query} />
       </div>
+
+      {showScanning && (
+        <div className="absolute bottom-2.5 left-2.5 flex items-center gap-1.5 rounded-full bg-black/55 backdrop-blur px-2.5 py-1 text-[10px] font-medium text-white">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Scanning
+        </div>
+      )}
+
+      {file.status && !showScanning && (
+        <div className="absolute bottom-2.5 left-2.5">
+          <StatusChip label={file.status} color={file.status_color} />
+        </div>
+      )}
 
       <div className="px-4 py-3">
         <div className="text-[14px] font-medium text-fg truncate">

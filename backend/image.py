@@ -31,9 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.codecs import compress
 from backend.config import settings
-from backend.models import Image, ImageTag, Tag, User
-from backend.policy import VisionContext, pick_plan
+from backend.consent import is_scope_active
+from backend.models import Image, ImageGeo, ImageTag, Tag, User
+from backend.policy import VisionContext, pick_plan_with_bandit
 from backend.storage import storage
+from backend.upload_validation import validate_upload
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,74 @@ async def _upsert_tags(
         session.add(ImageTag(image_id=image.id, tag_id=tag.id, confidence=score))
 
 
+def _exif_gps(raw_bytes: bytes) -> dict | None:
+    """Return `{lat, lng, taken_at, captured_with}` from a JPEG/HEIC/TIFF
+    EXIF block, or None if GPS isn't present / valid.
+
+    Pillow exposes EXIF via `Image.getexif()`; the GPS sub-IFD lives at
+    tag 34853. Coordinates are stored as three rationals (deg/min/sec)
+    plus a hemisphere reference char ('N'/'S'/'E'/'W'). Anything that
+    looks malformed → None so we never persist garbage.
+    """
+    try:
+        with PILImage.open(BytesIO(raw_bytes)) as pil:
+            exif = pil.getexif()
+            if not exif:
+                return None
+            gps = exif.get_ifd(0x8825)  # GPSInfo IFD
+            if not gps:
+                return None
+            lat_dms = gps.get(2)
+            lat_ref = gps.get(1)
+            lng_dms = gps.get(4)
+            lng_ref = gps.get(3)
+            if not (lat_dms and lng_dms and lat_ref and lng_ref):
+                return None
+
+            def _dms_to_decimal(dms) -> float:
+                d, m, s = (float(x) for x in dms)
+                return d + m / 60 + s / 3600
+
+            lat = _dms_to_decimal(lat_dms)
+            lng = _dms_to_decimal(lng_dms)
+            if lat_ref in ("S", "s"):
+                lat = -lat
+            if lng_ref in ("W", "w"):
+                lng = -lng
+            if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+                return None  # filed-but-bogus EXIF — ignore
+
+            # Capture timestamp (DateTimeOriginal lives in the EXIF IFD,
+            # not the GPS IFD). Optional; persist if parseable.
+            exif_ifd = exif.get_ifd(0x8769)
+            taken_raw = exif_ifd.get(0x9003) if exif_ifd else None
+            taken_at = None
+            if taken_raw:
+                try:
+                    taken_at = datetime.strptime(taken_raw, "%Y:%m:%d %H:%M:%S").replace(
+                        tzinfo=timezone.utc
+                    )
+                except (ValueError, TypeError):
+                    taken_at = None
+
+            captured_with = exif.get(272)  # Make+Model collapsed; Model is 272
+            if isinstance(captured_with, bytes):
+                captured_with = captured_with.decode("ascii", errors="replace")
+            if captured_with and len(captured_with) > 120:
+                captured_with = captured_with[:120]
+
+            return {
+                "lat": float(lat),
+                "lng": float(lng),
+                "taken_at": taken_at,
+                "captured_with": captured_with,
+            }
+    except Exception:
+        # Any decoder failure → no GPS. We never crash the upload over EXIF.
+        logger.debug("EXIF GPS parse failed", exc_info=True)
+        return None
+
+
 def _detect_category(content_type: str | None, filename: str | None) -> str:
     ct = (content_type or "").lower()
     name = (filename or "").lower()
@@ -113,8 +183,18 @@ async def store_upload(
     raw_bytes: bytes,
     content_type: str | None,
 ) -> Image:
+    validated = await validate_upload(
+        user_id=user.id,
+        filename=filename,
+        raw_bytes=raw_bytes,
+        client_mime=content_type,
+    )
+    raw_for_metadata = validated.original_raw_bytes
+    raw_bytes = validated.raw_bytes
+    content_type = validated.mime_type
+    filename = validated.filename
     sha = hashlib.sha256(raw_bytes).digest()
-    category = _detect_category(content_type, filename)
+    category = validated.category
 
     if category != "image":
         return await _store_non_image(session, user, filename, raw_bytes, content_type, sha, category)
@@ -134,7 +214,19 @@ async def store_upload(
         if vision
         else None
     )
-    plan = pick_plan(vctx, width, height, len(raw_bytes))
+    decision = await pick_plan_with_bandit(
+        session=session,
+        user_id=user.id,
+        vision=vctx,
+        scene_label=vision.scene_label if vision else None,
+        indoor_outdoor=vision.indoor_outdoor if vision else None,
+        clip_embedding=vision.clip_embedding if vision else None,
+        width=width,
+        height=height,
+        byte_size=len(raw_bytes),
+        mime_in=content_type,
+    )
+    plan = decision.plan
 
     served_bytes = compress(raw_bytes, plan)
 
@@ -147,8 +239,15 @@ async def store_upload(
         original_key,
         raw_bytes,
         content_type or "application/octet-stream",
+        sse_scope="content",
     )
-    storage.put(storage.bucket_served, served_key, served_bytes, plan.mime)
+    storage.put(
+        storage.bucket_served,
+        served_key,
+        served_bytes,
+        plan.mime,
+        sse_scope="content",
+    )
 
     image = Image(
         user_id=user.id,
@@ -167,6 +266,8 @@ async def store_upload(
         quality=plan.quality,
         max_dim=plan.max_dim,
         lossless=plan.lossless,
+        bandit_arm_id=decision.arm_id,
+        context_features=decision.context_features,
     )
 
     if vision is not None:
@@ -177,10 +278,12 @@ async def store_upload(
         image.scene_confidence = vision.scene_confidence
         image.face_likelihood = vision.face_likelihood
         image.indoor_outdoor = vision.indoor_outdoor
-        image.pending_face_scan = vision.face_likelihood > 0.5
         image.vision_processed_at = datetime.now(timezone.utc)
-    # else: pending_face_scan stays at its default (true) — safer to scan
-    # later when we have a vision result, than to assume no face.
+    # `pending_face_scan` is left at its default (true). RetinaFace is the
+    # authoritative face detector; CLIP zero-shot proved unreliable at the
+    # binary "are there people" question (e.g. 0.03 score on a clear portrait),
+    # so we no longer gate Pass B on it. Pass B itself flips this flag to
+    # false after running.
 
     session.add(image)
     await session.flush()  # need image.id before inserting image_tags
@@ -188,8 +291,33 @@ async def store_upload(
     if vision is not None:
         await _upsert_tags(session, image, vision.tags)
 
+    # C3 — persist EXIF GPS only when the user has granted gps_retention
+    # consent. Originals retain EXIF in MinIO so a later backfill can
+    # populate this table once consent is granted.
+    if await is_scope_active(session, user.id, "gps_retention"):
+        gps = _exif_gps(raw_for_metadata)
+        if gps is not None:
+            session.add(
+                ImageGeo(
+                    image_id=image.id,
+                    user_id=user.id,
+                    lat=gps["lat"],
+                    lng=gps["lng"],
+                    taken_at=gps["taken_at"],
+                    captured_with=gps["captured_with"],
+                )
+            )
+
     await session.commit()
     await session.refresh(image)
+
+    # Pass B (RetinaFace + ArcFace) is intentionally NOT run here. On CPU it
+    # adds 10-30 s per upload and would block the HTTP response. The route
+    # handler in api/images.py kicks it off as a BackgroundTask so the
+    # client gets its image row immediately and the People tray populates
+    # asynchronously. `pending_face_scan` is true so the next backfill
+    # (or rescan, or new face job) picks it up.
+
     return image
 
 
@@ -212,6 +340,7 @@ async def _store_non_image(
         original_key,
         raw_bytes,
         content_type or "application/octet-stream",
+        sse_scope="content",
     )
 
     image = Image(
@@ -243,5 +372,15 @@ async def fetch_original(image: Image) -> tuple[bytes, str]:
 
 
 async def fetch_served(image: Image) -> tuple[bytes, str]:
-    blob = storage.get(storage.bucket_served, image.served_blob_key)
+    # For non-image categories (documents, videos) we don't compress; the
+    # served variant *is* the original blob. `_store_non_image` writes only
+    # to the originals bucket and sets `served_blob_key = original_blob_key`.
+    # When that's the shape, read from the originals bucket — otherwise the
+    # served bucket is the right place (Phase 3 compressed images).
+    bucket = (
+        storage.bucket_originals
+        if image.served_blob_key == image.original_blob_key
+        else storage.bucket_served
+    )
+    blob = storage.get(bucket, image.served_blob_key)
     return blob, image.mime_type_served or "application/octet-stream"

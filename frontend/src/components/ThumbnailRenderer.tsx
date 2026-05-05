@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { FileText, FileSpreadsheet, FileType2, Image as ImageIcon, Loader2 } from "lucide-react";
-import { servedUrl, fetchAsBlobUrl } from "@/api/files";
+import { servedUrl, fetchAsBlobUrl, fetchMediaBlob } from "@/api/files";
 import {
   previewerFor,
   getCachedPreview,
@@ -23,6 +23,15 @@ export function ThumbnailRenderer({ file, className, large = false }: Props) {
     () => getCachedPreview(file.id) ?? null,
   );
   const [docLoading, setDocLoading] = useState(false);
+
+  // The lazy initializer above only fires on the very first render. When the
+  // PreviewPanel re-uses this component for a different file (clicking
+  // through documents), state would otherwise hang onto the previous
+  // document's bitmap — which is why the framework_showdown.pdf preview was
+  // showing LBLF.pdf content. Reset on every file.id change.
+  useEffect(() => {
+    setDocPreview(getCachedPreview(file.id) ?? null);
+  }, [file.id]);
 
   // Image / video: blob fetch
   useEffect(() => {
@@ -53,14 +62,7 @@ export function ThumbnailRenderer({ file, className, large = false }: Props) {
     if (!renderer) return;
     setDocLoading(true);
     let cancelled = false;
-    const token = localStorage.getItem("istore.jwt");
-    fetch(servedUrl(file.id), {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(`fetch ${r.status}`);
-        return r.blob();
-      })
+    fetchMediaBlob(servedUrl(file.id))
       .then((blob) => renderer(blob))
       .then((p) => {
         if (cancelled) return;
@@ -149,7 +151,6 @@ function DocumentTile({
   preview,
   loading,
   className,
-  large,
 }: {
   file: FileItem;
   preview: DocPreview | null;
@@ -164,19 +165,20 @@ function DocumentTile({
       : FileText;
 
   const wrapper =
-    `bg-card relative overflow-hidden ` +
-    `${className} ` +
-    (large ? "" : "border-b border-divider");
+    `bg-white relative overflow-hidden flex items-center justify-center ${className}`;
 
   if (loading) {
     return (
-      <div className={`flex items-center justify-center ${wrapper}`}>
+      <div className={wrapper}>
         <Loader2 className="h-6 w-6 animate-spin text-fg-muted" />
       </div>
     );
   }
 
-  if (!preview) {
+  // No bitmap available (unsupported format, render error, or stripped
+  // type that we can't preview cheaply): show the typed icon card. Drive
+  // does the same thing for media types it can't natively render.
+  if (!preview || preview.kind !== "image") {
     return (
       <div className={`flex flex-col items-center justify-center gap-2 ${wrapper}`}>
         <Icon className="h-12 w-12 text-fg-muted" strokeWidth={1.4} />
@@ -189,73 +191,19 @@ function DocumentTile({
     );
   }
 
-  if (preview.kind === "image") {
-    return (
-      <div className={wrapper}>
-        <img
-          src={preview.dataUrl}
-          alt=""
-          className="w-full h-full object-cover object-top"
-          loading="lazy"
-        />
-      </div>
-    );
-  }
-
-  if (preview.kind === "html") {
-    return (
-      <div className={`${wrapper} bg-card`}>
-        <div
-          className="absolute inset-0 p-4 text-[8px] leading-tight overflow-hidden text-fg pointer-events-none origin-top-left"
-          style={large ? { fontSize: "12px" } : { transform: "scale(1)" }}
-          dangerouslySetInnerHTML={{ __html: preview.html }}
-        />
-        <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-card to-transparent pointer-events-none" />
-      </div>
-    );
-  }
-
-  if (preview.kind === "table") {
-    const cols = Math.min(6, preview.rows[0]?.length ?? 0);
-    return (
-      <div className={`${wrapper} bg-card`}>
-        <div className="absolute inset-0 overflow-hidden">
-          <table className="w-full text-[8px] leading-tight border-collapse">
-            <tbody>
-              {preview.rows.map((row, i) => (
-                <tr key={i} className={i === 0 ? "font-semibold bg-elevated" : ""}>
-                  {row.slice(0, cols).map((cell, j) => (
-                    <td
-                      key={j}
-                      className="px-1 py-0.5 border border-divider truncate max-w-[60px]"
-                    >
-                      {cell}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="absolute inset-x-0 bottom-0 h-1/4 bg-gradient-to-t from-card to-transparent pointer-events-none" />
-      </div>
-    );
-  }
-
-  if (preview.kind === "text") {
-    return (
-      <div className={`${wrapper} bg-card p-3`}>
-        <pre className="text-[9px] leading-tight whitespace-pre-wrap break-words text-fg-secondary line-clamp-[16] overflow-hidden">
-          {preview.text}
-        </pre>
-        <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-card to-transparent pointer-events-none" />
-      </div>
-    );
-  }
-
+  // Drive-style paper-card: the entire tile IS the document. The card
+  // wrapper is now portrait (3:4) for documents (FileCard sets it), so the
+  // bitmap fills edge-to-edge with a top-aligned crop, letting the first
+  // lines drive recognition.
   return (
-    <div className={`flex items-center justify-center ${wrapper}`}>
-      <Icon className="h-12 w-12 text-fg-muted" strokeWidth={1.4} />
+    <div className={wrapper}>
+      <img
+        src={preview.dataUrl}
+        alt=""
+        className="absolute inset-0 w-full h-full object-cover object-top bg-white"
+        loading="lazy"
+        draggable={false}
+      />
     </div>
   );
 }

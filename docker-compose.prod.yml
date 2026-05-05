@@ -1,0 +1,150 @@
+services:
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ISTORE_DOMAIN: ${ISTORE_DOMAIN}
+      ISTORE_API_UPSTREAM: backend:8000
+      ISTORE_FRONTEND_UPSTREAM: frontend:80
+      ISTORE_MINIO_UPSTREAM: minio:9000
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+      - minio
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: prod
+      DATABASE_URL_FILE: /run/secrets/database_url
+      DATABASE_URL_SYNC_FILE: /run/secrets/database_url_sync
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
+      MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
+      MINIO_SECURE: "true"
+      MINIO_BUCKET_ORIGINALS: istore-originals
+      MINIO_BUCKET_SERVED: istore-served
+      MINIO_BUCKET_FACES: istore-faces
+      MINIO_BUCKET_QUARANTINE: istore-quarantine
+      MINIO_SSE_MODE: ${MINIO_SSE_MODE:-sse-s3}
+      MINIO_SSE_KMS_KEY_ID_CONTENT_FILE: /run/secrets/minio_kms_key_content
+      MINIO_SSE_KMS_KEY_ID_BIOMETRIC_FILE: /run/secrets/minio_kms_key_biometric
+      REDIS_URL: redis://redis:6379/0
+      FRONTEND_BASE_URL: https://${ISTORE_DOMAIN}
+      REQUIRE_SIGNED_DOWNLOADS: "true"
+      SECRET_MANAGER: docker_secrets
+      POSTGRES_AT_REST_ENCRYPTION: host_volume_confirmed
+      BACKUP_AGE_RECIPIENT_FILE: /run/secrets/backup_age_recipient
+      UPLOAD_MAX_BYTES: "209715200"
+      UPLOAD_MAX_COUNT_PER_HOUR: "300"
+      UPLOAD_MAX_BYTES_PER_DAY: "10737418240"
+      DOWNLOAD_URL_TTL_SECONDS: "300"
+    secrets:
+      - database_url
+      - database_url_sync
+      - jwt_secret
+      - minio_access_key
+      - minio_secret_key
+      - minio_kms_key_content
+      - minio_kms_key_biometric
+      - backup_age_recipient
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: https://${ISTORE_DOMAIN}
+        VITE_REQUIRE_SIGNED_DOWNLOADS: "true"
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: istore
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: istore
+    secrets:
+      - postgres_password
+    volumes:
+      - ${ISTORE_DATA_ROOT}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U istore -d istore"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ${ISTORE_DATA_ROOT}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret_key
+      MINIO_SERVER_URL: https://${ISTORE_DOMAIN}/minio
+      MINIO_BROWSER_REDIRECT_URL: https://${ISTORE_DOMAIN}/minio-console
+    command: server /data --console-address ":9001"
+    secrets:
+      - minio_access_key
+      - minio_secret_key
+    volumes:
+      - ${ISTORE_DATA_ROOT}/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+secrets:
+  database_url:
+    file: ./secrets/database_url.txt
+  database_url_sync:
+    file: ./secrets/database_url_sync.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+  minio_access_key:
+    file: ./secrets/minio_access_key.txt
+  minio_secret_key:
+    file: ./secrets/minio_secret_key.txt
+  minio_kms_key_content:
+    file: ./secrets/minio_kms_key_content.txt
+  minio_kms_key_biometric:
+    file: ./secrets/minio_kms_key_biometric.txt
+  backup_age_recipient:
+    file: ./secrets/backup_age_recipient.txt
+
+volumes:
+  caddy_data:
+  caddy_config:

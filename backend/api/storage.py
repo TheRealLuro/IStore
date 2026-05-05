@@ -39,7 +39,10 @@ async def storage_usage(
         total += int(bytes_)
     return StorageUsage(
         used_bytes=total,
-        quota_bytes=DEFAULT_QUOTA_BYTES,
+        # C8: per-user override on `User.quota_bytes` wins over the global
+        # default. The DB column is nullable so freshly migrated users
+        # keep the existing behavior.
+        quota_bytes=user.quota_bytes if user.quota_bytes is not None else DEFAULT_QUOTA_BYTES,
         by_category=by_category,
         by_count=by_count,
     )
