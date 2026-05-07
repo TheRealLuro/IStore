@@ -1,167 +1,90 @@
-# IStore Source-Available License + Commercial Protection Terms (Full Legal Pack)
+IStore Source-Available License
+Version 2.0, 2026
 
-# Version 2.0 – 2026
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
-This document governs use of IStore software and related materials. It is a source-available, non-commercial license with explicit restrictions on commercial use, SaaS deployment, and redistribution.
+1. Definitions
 
-This License is not open-source under OSI definitions.
+"Software" means IStore, including source code, object code, APIs, documentation, configurations, and related materials.
 
----
+"Licensor" means the copyright holder of the Software.
 
-# PART I — SOURCE-AVAILABLE LICENSE
+"You" (or "Your") means any individual or Legal Entity exercising permissions granted by this License.
 
-## 1. Definitions
+"Source Code" means the preferred form for making modifications.
 
-"Software" means IStore, including source code, object code, APIs, documentation, configurations, and any related materials.
+"Service" means any hosted, networked, API-based, or multi-user deployment of the Software.
 
-"Licensor" means the copyright holder(s) of the Software.
-
-"You" means any individual or Legal Entity accessing or using the Software.
-
-"Source Code" means the human-readable form of the Software.
-
-"Service" means any hosted, networked, API-based, or multi-user system that uses the Software.
-
-"Commercial Use" means any use intended to generate revenue, reduce business cost, support a business operation, or provide value to multiple users beyond the individual licensee.
+"Commercial Use" means any use intended to generate revenue, reduce business cost, or support a business, enterprise, or paid product or service.
 
 "Competing Service" means any product or service that replicates substantially similar functionality, workflows, or user-facing outcomes of the Software.
 
----
+2. Grant of License
+Subject to the terms of this License, the Licensor grants You a limited, non-exclusive, non-transferable, revocable license to:
 
-## 2. Limited License Grant
-
-Subject to strict compliance with this License, the Licensor grants You a:
-
-* Personal
-* Non-exclusive
-* Non-transferable
-* Revocable
-* Non-commercial license
-
-You may ONLY:
-
-* Use the Software for personal, non-commercial purposes
-* Modify the Software for personal use
-* Run a single-user instance for private use
+* Use the Software solely for personal, non-commercial purposes
+* Modify the Source Code for personal use only
+* Run a single-user instance for private use only
 
 No other rights are granted.
 
----
+3. Restrictions
+You shall not:
 
-## 3. Strict Prohibited Uses (Core Restrictions)
+(a) Use the Software for any Commercial Use
+(b) Sell, sublicense, or monetize the Software
+(c) Provide the Software as a Service (including SaaS, API, platform, or hosted system)
+(d) Allow access to the Software by any third party, user, customer, or organization
+(e) Use the Software as part of a business, enterprise system, or production service
+(f) Redistribute the Software in source or object form
+(g) Create or operate a Competing Service based on or derived from the Software
+(h) Circumvent or attempt to bypass these restrictions through wrappers, proxies, or similar mechanisms
 
-You are expressly prohibited from:
-
-### 3.1 Commercial Use
-
-* Using the Software for any Commercial Use
-* Selling, sublicensing, or monetizing the Software
-* Incorporating the Software into a commercial product or business system
-
-### 3.2 SaaS / Hosting / Service Restrictions
-
-* Offering the Software as a hosted service (SaaS, API, platform, or web app)
-* Allowing access to multiple users, customers, or third parties
-* Using the Software as a backend, dependency, or infrastructure layer for a Service
-
-### 3.3 Redistribution
-
-* Redistributing the Software in source or compiled form
-* Publishing forks intended for public or commercial use
-
-### 3.4 Circumvention / Clone Restrictions
-
-* Creating a Competing Service based on or derived from the Software
-* Using wrappers, proxies, APIs, or abstraction layers to bypass restrictions
-* Replicating substantially similar functionality through reimplementation for commercial purposes
-
----
-
-## 4. Source Availability
-
+4. Source Availability
 The Source Code is provided solely for transparency and personal use.
-
-Source availability does NOT grant any rights to:
+No rights are granted for:
 
 * Commercial use
-* SaaS or hosting rights
-* Redistribution rights
+* Hosting or SaaS deployment
+* Redistribution
 * Derivative commercial works
-* Competitive cloning or replication
+* Competitive replication
 
----
+5. Trademark
+All names, branding, and identifiers associated with IStore are the property of the Licensor.
+You may not:
+* Use the name "IStore" or confusingly similar branding
+* Imply endorsement or affiliation with the Licensor
 
-## 5. Trademark and Branding
-
-All names, branding, and identifiers associated with IStore are protected trademarks of the Licensor.
-
-You may NOT:
-
-* Use the name "IStore" or confusingly similar branding for any product or service
-* Represent any modified or forked version as affiliated with the Licensor
-
----
-
-## 6. Ownership
-
+6. Ownership
 The Software remains the exclusive property of the Licensor.
-
 No ownership rights are transferred under this License.
 
----
+7. Contributions
+Any contributions submitted may be used, modified, and distributed by the Licensor without restriction unless otherwise agreed in writing.
 
-## 7. Contributions
-
-Any contributions submitted may be used, modified, or incorporated by the Licensor without restriction unless otherwise agreed in writing.
-
----
-
-## 8. Termination
-
+8. Termination
 This License automatically terminates upon any violation.
-
 Upon termination, You must immediately:
-
 * Cease all use of the Software
 * Delete all copies in Your possession or control
-* Shut down any running instances
+* Terminate all running instances
 
----
+9. Enforcement
+The Licensor reserves the right to enforce this License through legal remedies, including injunctive relief and damages.
 
-## 9. Enforcement
+10. Governing Law
+This License shall be governed by the laws of the Licensor’s chosen jurisdiction.
 
-The Licensor reserves all rights to enforce this License.
-
-Violations may result in legal action, including injunctive relief and damages.
-
----
-
-## 10. Jurisdiction
-
-This License shall be governed by the laws of the Licensor’s chosen jurisdiction, without regard to conflict of law principles.
-
----
-
-## 11. Commercial Licensing Exception
-
-Any rights not explicitly granted under this License require a separate written commercial agreement signed by the Licensor.
-
+11. Commercial Licensing Exception
+Any rights not expressly granted require a separate written commercial agreement with the Licensor.
 No implied rights are granted.
 
----
-
-## 12. Disclaimer of Warranty
-
+12. Disclaimer of Warranty
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTIES OF ANY KIND.
 
----
+13. Limitation of Liability
+In no event shall the Licensor be liable for any damages arising from use or inability to use the Software.
 
-## 13. Limitation of Liability
-
-The Licensor shall not be liable for any damages arising from use or inability to use the Software.
-
----
-
-# END OF LICENSE
-
+END OF TERMS AND CONDITIONS
 Copyright (c) 2026 IStore contributors
