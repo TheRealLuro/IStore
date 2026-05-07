@@ -55,6 +55,8 @@ backups/
 exports/
 uploads/
 node_modules/
+.claude/
+claude/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
@@ -64,3 +66,5 @@ frontend/.vite/
 *.sqlite3
 *.sqlite
 *.db
+
+
