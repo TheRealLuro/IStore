@@ -372,7 +372,3 @@ Do not post real secrets, private images, EXIF data, embeddings, face data, or
 other sensitive user information in public issues or pull requests. If a
 security policy file is added later, use that process for private reporting.
 
-## License
-
-No license file is currently present in this repository. Until a `LICENSE` file
-is added, do not assume reuse, distribution, or contribution terms.
