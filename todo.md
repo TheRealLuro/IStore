@@ -8,6 +8,16 @@ This file tracks **what's still open** — broken, partial, or planned.
 Shipped work is intentionally not listed. Read commit history (or the
 detailed status fields per item below) for what's done.
 
+> **Sprint A landed 2026-05-13**: sidebar storage query gated (no more
+> auth-screen 401s), folder cards show subfolder counts, `is_starred`
+> backend + `POST /images/{id}/star` + optimistic FE toggle (replaces
+> the localStorage star), per-image rename via
+> `PATCH /images/{id}/name` with a centralized filename validator
+> (reserved Windows names, path separators, extension preservation,
+> 255-byte cap), aggressive dep cleanup (~230 npm packages removed +
+> orphan `src/utils/*` deleted), `.gitignore` hardened. Fixed a
+> latent asyncpg `%s` placeholder bug in `backend/db.py` along the way.
+
 ---
 
 ## 1. Currently broken / partial
@@ -35,45 +45,19 @@ backfill, fitBounds). Still TODO: reverse-geocode pass so popup shows
 Nominatim or a self-hosted geocoder and cache results in `image_geo.place`
 (column already exists, currently always null).
 
-### 1.4 No backend column for `is_starred`
-Preview Star button persists to `localStorage["neuthek.starred"]` —
-works across reloads on the same device, doesn't sync. Sprint 2:
-add `images.is_starred` (bool, indexed), expose
-`PATCH /images/{id}/star`, switch UI to optimistic React Query
-mutations. localStorage layer becomes a hydration source for optimistic
-updates and then dies.
+### 1.4 No backend for sharing / "Shared with"
+Real sharing needs: `share_grants` table (`image_id` → `user_id` or
+email + role + when), `POST /images/{id}/shares` to invite,
+`DELETE /images/{id}/shares/{id}` to revoke, `GET /images/{id}/shares`
+for the preview panel to populate `file.sharedWith`. Long pole —
+Sprint D.
 
-### 1.5 No backend for sharing / "Shared with"
-Fake "Shared with" rows removed in pass-5. Real sharing needs:
-`share_grants` table (`image_id` → `user_id` or email + role + when),
-`POST /images/{id}/shares` to invite, `DELETE /images/{id}/shares/{id}`
-to revoke, `GET /images/{id}/shares` for the preview panel to populate
-`file.sharedWith`. Long pole — likely Sprint 3+.
-
-### 1.6 Storage bar query fires unauthenticated
-Sidebar's `useQuery(["storage"])` fires even on the auth screen
-because the Sidebar isn't gated on `signedIn`. Silent 401 — quiet but
-wasteful. Gate the query on `enabled: !!user`.
-
-### 1.7 Folder counts: subfolder count missing
-FolderCard shows `item_count` but not `subfolder_count`. Backend
-already returns both — surface both in the FE.
-
-### 1.8 Per-image rename modal not wired
-`RenameModal.onSave` writes a local `nameOverrides` map; not persisted.
-Needs **C1.1** backend (`PATCH /images/{id}/name`) before the FE flip.
-
-### 1.9 Theme tokens leftover
+### 1.5 Theme tokens leftover
 neuthek uses `--ink-*` / `--surface-*` tokens. Some legacy
 `--bg-page` / `--bg-elevated` references and Tailwind class fragments
 still exist in `frontend/neuthek/styles/*.css`. Sweep and remove.
 
-### 1.10 Dead npm deps
-`mammoth`, `react-pdf`, `xlsx`, `html2canvas`, `@radix-ui/*`,
-`lucide-react`, `fuse.js`, `date-fns`, `maplibre-gl`, `supercluster`
-are leftovers from the pre-deletion frontend. Audit and remove.
-
-### 1.11 Settings: features hidden until backends ship
+### 1.6 Settings: features hidden until backends ship
 The Settings rail (Account / Privacy / Security / AI features / Your
 data) is now fully wired for everything that has a backend. The
 following sections are deliberately hidden in the UI today and need
@@ -93,7 +77,7 @@ backend work before they come back:
   Surface "Expires Apr 14, 2029" subtitle once retention preferences
   are user-controllable.
 
-### 1.12 Admin overlay: per-row actions not wired
+### 1.7 Admin overlay: per-row actions not wired
 Storage / Users / Audit tabs read live data, but per-user actions
 on the Users tab (edit quota → `updateUserQuota`, promote/demote
 role → `updateUserRole`) aren't wired. Endpoints exist; UI work only.
@@ -642,48 +626,46 @@ in its own commit so blame stays useful and reverts are cheap.
 
 > Picked 2026-05-09. Each item links back to its detail above.
 
-### Sprint 2 — visible polish + ship-blocking compliance (next up)
+### Sprint B — AI quality (next up)
 
-Frontend polish (1–2 days):
-1. Move /people lookups behind face-recognition consent (don't show
-   placeholder names on prod).
-2. Drop dead deps from `package.json` (1.10).
-3. Sidebar storage query gating (1.6).
-4. Folder counts: surface subfolder count (1.7).
-5. Per-image rename modal wiring (1.8 + **C1.1**).
+1. **D1** scene/object hint pass — pick a model stronger than RAM++
+   (richer vocab, captioning-grade recognition), feed labels into the
+   Qwen rewrite prompt. Re-summarize the library, hand-eval ~20 results,
+   tune prompts.
+2. **D2** OCR fallback for image-only PDFs — when pypdf + pdfminer both
+   return empty, rasterize page-by-page (PyMuPDF) and route each page
+   through Florence-2 `<OCR>`.
+3. **D8** person re-detect on user signal — UX cascade:
+   `RetinaFace 0.3 → RetinaFace lower → mediapipe → user draws box`.
+   Adds mediapipe dep.
 
-Compliance (parallel, ship-blocking):
-6. **A6** PRIVACY.md / SECURITY.md / DATA_PROCESSING.md.
-7. **A1** upload validation (MIME + magic bytes + rate limits).
-8. **A5** deletion integration test.
-9. **A2** SSE/TLS posture confirmation.
-10. **B2** consent collection BEFORE signup.
+### Sprint C — compliance (ship-blocking; parallel to B)
 
-### Sprint 3 — quality wins
+4. **A6** audit existing PRIVACY.md / SECURITY.md / DATA_PROCESSING.md
+   for completeness; fill the gaps.
+5. **A1** finishing — per-user rate limits + persistent quarantine
+   bucket (most of the validator is already in place).
+6. **A5** deletion integration test (uses existing fixtures in
+   `tests/conftest.py`).
+7. **A2** SSE/TLS posture confirmation.
 
-11. **D1** + **D2** finishing touches (scene-and-objects pass, RAM++
-    or Places365 hints; per-chunk embeddings; OCR fallback for image
-    PDFs). Hybrid search (D3) is already in.
-12. **D8** person re-detect on user signal.
-13. **C3** GPS map refinements (reverse-geocode + supercluster).
-14. **C4.2** "Me" → display-name binding.
-15. **1.4** `is_starred` backend column + endpoint.
+### Sprint D — sharing & onboarding
 
-### Sprint 4 — onboarding & B2B funnel
-
-16. **C5.1** setup script.
-17. **C5.2** B2B migration tooling.
-18. **C2** Drive cloud sync (after **A2**/**A3**).
-19. **1.5** sharing backend (`share_grants` table + endpoints +
-    preview wiring).
+8. **§1.4** sharing backend (`share_grants` table + endpoints +
+   preview wiring).
+9. **C5.1** setup script.
+10. **C5.2** B2B migration tooling.
+11. **C2** Drive cloud sync (after **A2**/**A3**).
 
 ### Long-term roadmap
 
-20. **Section E** — multi-data-type platform.
-21. **Section F** — hardware compatibility & quantization.
-22. **Section G** — collaboration / comments / real-time edit.
-23. **Section H** — repo & docs hygiene.
-24. **I.bis** project rename — admin work, parallelizable.
+12. **C3** GPS map refinements (reverse-geocode + supercluster).
+13. **C4.2** "Me" → display-name binding.
+14. **Section E** — multi-data-type platform.
+15. **Section F** — hardware compatibility & quantization.
+16. **Section G** — collaboration / comments / real-time edit.
+17. **Section H** — repo & docs hygiene.
+18. **I.bis** project rename — admin work, parallelizable.
 
 ### Things to NOT work on yet
 - Plan / Invoices / Stripe billing UI — there's no payment backend

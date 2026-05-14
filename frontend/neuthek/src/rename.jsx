@@ -114,11 +114,19 @@ export function RenameModal({ open, file, onClose, onSave }) {
     return null;
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const err = validate(name);
     if (err) { setError(err); return; }
-    onSave && onSave(name);
-    onClose && onClose();
+    try {
+      // saveRename in the parent is async and throws on backend rejection
+      // (reserved Windows names, control chars, extension mismatch, …).
+      // Surface the server's detail inline so the user sees exactly what
+      // failed instead of a generic toast.
+      if (onSave) await onSave(name);
+      onClose && onClose();
+    } catch (e) {
+      setError(e?.detail || "Could not rename. Try a different name.");
+    }
   };
 
   if (!file) return null;

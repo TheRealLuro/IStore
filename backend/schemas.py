@@ -70,6 +70,9 @@ class ImageRead(BaseModel):
     status: str | None = None
     status_color: str | None = None
 
+    is_starred: bool = False
+    starred_at: datetime | None = None
+
     uploaded_at: datetime
 
 
@@ -113,6 +116,14 @@ class ImageMove(BaseModel):
     image back to the root."""
 
     folder_id: uuid.UUID | None = None
+
+
+class ImageRename(BaseModel):
+    """Body for `PATCH /images/{id}/name`. Server-side validation enforces
+    the rules in `backend.upload_validation.validate_image_filename` —
+    this Pydantic schema only catches gross misuse (empty, > 255 chars)."""
+
+    name: str = Field(..., min_length=1, max_length=255)
 
 
 class StatusSet(BaseModel):

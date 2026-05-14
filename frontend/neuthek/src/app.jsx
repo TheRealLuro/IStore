@@ -39,7 +39,7 @@ const AdminOverlay = React.lazy(() =>
 );
 import { NewFolderModal } from "./folder-modals.jsx";
 import { useAuthStore } from "@/stores/authStore";
-import { listFiles, getImageGeo, servedUrl } from "@/api/files";
+import { listFiles, getImageGeo, servedUrl, renameImage } from "@/api/files";
 import { getConsentScopes, grantConsent } from "@/api/consent";
 import toast from "react-hot-toast";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -81,6 +81,8 @@ function fileItemToNeuthek(f) {
     height: f.height,
     scene_label: f.scene_label,
     indoor_outdoor: f.indoor_outdoor,
+    is_starred: !!f.is_starred,
+    starred_at: f.starred_at,
     _real: true,
   };
 }
@@ -250,9 +252,6 @@ export function App() {
   const [showAdmin, setShowAdmin] = useStateApp(false);
   const [showNewFolder, setShowNewFolder] = useStateApp(false);
 
-  // file rename overrides (so renamed files visibly update)
-  const [nameOverrides, setNameOverrides] = useStateApp({});
-
   // Real file list from /images/. Search-mode (non-empty query) bypasses
   // the folder scope by passing "ALL"; otherwise we fetch the current folder
   // (null = root). We only fetch when signed-in to avoid firing a 401 on
@@ -294,10 +293,9 @@ export function App() {
       const n = fileItemToNeuthek(f);
       const g = geoMap.get(f.id);
       if (g) n.gps = { lat: g.lat, lng: g.lng, place: null };
-      if (nameOverrides[n.id]) n.name = nameOverrides[n.id];
       return n;
     });
-  }, [rawFiles, geoResp, nameOverrides]);
+  }, [rawFiles, geoResp]);
 
   // Real consent state — drives the sidebar "needs your attention" pill.
   // We count scopes still in NONE state (user hasn't decided yet); GRANTED
@@ -364,8 +362,19 @@ export function App() {
   };
 
   const handleRename = (f) => { setRenameFile(f); setShowRename(true); };
-  const saveRename = (newName) => {
-    if (renameFile) setNameOverrides(o => ({ ...o, [renameFile.id]: newName }));
+  const saveRename = async (newName) => {
+    if (!renameFile) return;
+    try {
+      await renameImage(renameFile.id, newName);
+      qcApp.invalidateQueries({ queryKey: ["files"] });
+      toast.success("Renamed");
+    } catch (e) {
+      // Bubble the server's validator message ("CON is a reserved system
+      // name on Windows.", "Filename can't contain /.", etc.) so the user
+      // knows why the rename failed instead of a generic toast.
+      toast.error(e?.detail || "Could not rename");
+      throw e;
+    }
   };
 
   const submitSearch = (q) => {

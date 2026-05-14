@@ -129,6 +129,17 @@ class Image(Base):
     status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status_color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    # User-toggled "star" / favorite flag. `starred_at` only updates on the
+    # GRANTED transition; un-starring leaves it as the historical timestamp
+    # so a re-star preserves "starred X days ago" continuity. Backed by a
+    # partial index (see migration 0018) for fast "starred only" listings.
+    is_starred: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    starred_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
     uploaded_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=False,

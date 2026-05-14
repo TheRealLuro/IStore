@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -24,11 +25,11 @@ from backend.models import (
     Tag,
     User,
 )
-from backend.schemas import ImageMove, ImageRead, StatusSet
+from backend.schemas import ImageMove, ImageRead, ImageRename, StatusSet
 from backend.security import enforce_upload_limits
 from backend.signed_urls import make_signed_download, verify_download
 from backend.storage import storage
-from backend.upload_validation import UploadValidationError
+from backend.upload_validation import UploadValidationError, validate_image_filename
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/images", tags=["images"])
@@ -616,6 +617,59 @@ async def set_image_status(
     image = await _load_owned_image(image_id, user, session)
     image.status = body.status or None
     image.status_color = body.status_color or None
+    await session.commit()
+    await session.refresh(image)
+    return image
+
+
+@router.post("/{image_id}/star", response_model=ImageRead)
+async def toggle_image_starred(
+    image_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Image:
+    """Toggle the star/favorite flag on an image.
+
+    No request body — toggle is the only UX surface. `starred_at` is set
+    on the OFF→ON transition only; un-starring leaves the timestamp
+    intact so a re-star preserves "starred X days ago" history. Returns
+    the updated image so the FE can swap optimistic state for the
+    server's truth in one round trip.
+    """
+    image = await _load_owned_image(image_id, user, session)
+    image.is_starred = not image.is_starred
+    if image.is_starred:
+        image.starred_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(image)
+    return image
+
+
+@router.patch("/{image_id}/name", response_model=ImageRead)
+async def rename_image(
+    image_id: UUID,
+    body: ImageRename,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Image:
+    """Rename an image's display filename.
+
+    Storage key stays UUID; only `images.original_filename` mutates.
+    Validation is centralized in
+    `backend.upload_validation.validate_image_filename` so the same rules
+    apply to the upload path (when we eventually let users name uploads
+    in-flight) and the rename path here. The validator enforces:
+    no path separators, no Windows-reserved names, extension preserved,
+    ≤ 255 UTF-8 bytes, no control chars.
+
+    Returns the updated image so the FE can swap optimistic state.
+    """
+    image = await _load_owned_image(image_id, user, session)
+    try:
+        sanitized = validate_image_filename(body.name, image.original_filename)
+    except UploadValidationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    image.original_filename = sanitized
     await session.commit()
     await session.refresh(image)
     return image

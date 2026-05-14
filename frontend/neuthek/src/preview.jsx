@@ -5,26 +5,12 @@ import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
 import { AuthedThumb, AuthedImg } from "./auth-image.jsx";
 import { getImagePeople, faceCropUrl } from "@/api/people";
-import { deleteFile, originalUrl, fetchAsBlobUrl } from "@/api/files";
+import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
 
 const TAG_SUGGESTIONS = [
   "Favorite", "To review", "Shared", "Archived", "Private", "WIP",
   "Work", "Personal", "Travel", "Family", "Reference", "Receipt",
 ];
-
-// Star state lives in localStorage for now — backend hasn't shipped a real
-// `is_starred` column yet (see todo.md). Persisting per-image-id under a
-// single key is enough to make the toggle feel real across reloads.
-const STAR_KEY = "neuthek.starred";
-function readStars() {
-  try {
-    const raw = localStorage.getItem(STAR_KEY);
-    return raw ? new Set(JSON.parse(raw)) : new Set();
-  } catch { return new Set(); }
-}
-function writeStars(set) {
-  try { localStorage.setItem(STAR_KEY, JSON.stringify(Array.from(set))); } catch {}
-}
 
 export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   const qc = useQueryClient();
@@ -47,13 +33,14 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [file, lightbox, onClose]);
 
-  // Re-seed tags + star state when the file changes. We don't roll random
-  // starter tags anymore — only show what the backend actually has.
+  // Re-seed tags + star state when the file changes. Star state mirrors
+  // the backend column (`file.is_starred`) — the local `starred` is just
+  // an optimistic UI flag so the toggle feels instant.
   useEffectP2(() => {
     if (!file) return;
     setTags(Array.isArray(file.tags) ? file.tags : []);
-    setStarred(readStars().has(file.id));
-  }, [file?.id]);
+    setStarred(!!file.is_starred);
+  }, [file?.id, file?.is_starred]);
 
   // Real people for this image. Fires only when an image is selected and
   // is gated on the user's face_recognition consent server-side — when
@@ -66,13 +53,20 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     staleTime: 30_000,
   });
 
-  const toggleStar = () => {
+  const handleToggleStar = async () => {
     if (!file) return;
-    const set = readStars();
-    if (set.has(file.id)) set.delete(file.id);
-    else set.add(file.id);
-    writeStars(set);
-    setStarred(set.has(file.id));
+    // Optimistic: flip the local flag immediately, hit the backend, roll
+    // back on failure. Always invalidate the files cache on success so
+    // the sidebar / gallery pick up the new state.
+    const next = !starred;
+    setStarred(next);
+    try {
+      await toggleStar(file.id);
+      qc.invalidateQueries({ queryKey: ["files"] });
+    } catch (e) {
+      setStarred(!next);
+      toast.error(e?.detail || "Could not save star");
+    }
   };
 
   const handleDownload = async () => {
@@ -139,7 +133,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             className="btn-icon"
             aria-label={starred ? "Unstar" : "Star"}
             aria-pressed={starred}
-            onClick={toggleStar}
+            onClick={handleToggleStar}
             style={starred ? { color: "var(--accent, #f5a623)" } : undefined}
             title={starred ? "Starred" : "Star"}
           >

@@ -1,3 +1,15 @@
+# .gitignore — public ignore patterns for this repo.
+#
+# Sensitive paths that should never be in any clone (not even named in
+# this file) belong in `.git/info/exclude` — that file is local-only and
+# git never publishes it. Use this `.gitignore` for the obvious build /
+# editor / language-cache patterns that aren't secrets in themselves.
+
+# Self-ignore: this file is tracked, but local additions shouldn't be
+# auto-staged via `git add .` — review them first to make sure nothing
+# sensitive is leaking into the public ignore list.
+.gitignore
+
 # Python
 __pycache__/
 *.py[cod]
@@ -25,7 +37,7 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Environment
+# Environment / credentials
 .env
 .env.local
 .env.*.local
@@ -37,6 +49,8 @@ secrets/*
 *.crt
 *.p12
 *.agekey
+credentials*.json
+*.token
 
 # IDE
 .vscode/
@@ -48,7 +62,7 @@ secrets/*
 .DS_Store
 Thumbs.db
 
-# Project
+# Project — runtime data, never publish
 data/
 local_blobs/
 backups/
@@ -62,9 +76,13 @@ frontend/dist/
 frontend/.vite/
 *.dump
 *.sql
+*.sql.gz
 *.bak
 *.sqlite3
 *.sqlite
 *.db
 
-
+# tsc-generated outputs from .ts configs (we author the .ts; .js/.d.ts are derived)
+frontend/vite.config.js
+frontend/vite.config.d.ts
+*.tsbuildinfo

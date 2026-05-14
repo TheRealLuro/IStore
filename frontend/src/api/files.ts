@@ -77,6 +77,18 @@ export async function resummarize(id: string): Promise<{ image_id: string; pendi
   );
 }
 
+/** Toggle the star/favorite flag on an image. Backend flips current state
+ *  and stamps `starred_at` on the OFF→ON transition. Returns the updated row. */
+export async function toggleStar(id: string): Promise<FileItem> {
+  return api.post<FileItem>(`/images/${id}/star`);
+}
+
+/** Rename an image's display filename. Backend validates path separators,
+ *  Windows-reserved names, extension preservation, and 255-byte cap. */
+export async function renameImage(id: string, name: string): Promise<FileItem> {
+  return api.patch<FileItem>(`/images/${id}/name`, { name });
+}
+
 /** URL for image cards / preview (compressed served variant). Includes auth via fetch wrapper. */
 export function servedUrl(id: string): string {
   return `${API_BASE_URL}/images/${id}/served`;

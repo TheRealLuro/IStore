@@ -21,6 +21,121 @@ class UploadValidationError(ValueError):
         self.status_code = status_code
 
 
+# Reserved Windows device names — case-insensitive, applied to the basename
+# (the part before the final extension). Set as `name.upper()` so the lookup
+# is `base.upper() in _WINDOWS_RESERVED_NAMES`.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+# Characters that Windows forbids in filenames. `:` is also banned because of
+# its role in alternate-data-stream syntax (`name.jpg:hidden.exe`).
+_FORBIDDEN_FILENAME_CHARS = set('<>:"/\\|?*')
+
+# Control chars (0x00–0x1F) — always banned.
+_CONTROL_CHARS = set(chr(c) for c in range(0x20))
+
+
+def validate_image_filename(
+    new_name: str, original_filename: str | None
+) -> str:
+    """Sanitize a user-supplied filename for the rename endpoint.
+
+    Rules:
+    - Collapse whitespace; strip leading/trailing.
+    - Reject empty result, path separators, control chars, and any of
+      `<>:"/\\|?*`.
+    - Reject reserved Windows device names (CON, PRN, AUX, NUL, COM1–9,
+      LPT1–9) case-insensitive, checked against the basename.
+    - If the original filename had an extension, the new name MUST have
+      the same extension (case-insensitive). If the user dropped it, we
+      add it back; if they tried to change it, we reject.
+    - UTF-8 byte length ≤ 255 after sanitization. We trim from the
+      basename, never from the extension.
+
+    Returns the sanitized name. Raises `UploadValidationError(400)` on
+    invalid input.
+    """
+    if not new_name or not isinstance(new_name, str):
+        raise UploadValidationError("Filename is required.", status_code=400)
+
+    # Strip + collapse whitespace.
+    cleaned = re.sub(r"\s+", " ", new_name).strip()
+    if not cleaned:
+        raise UploadValidationError(
+            "Filename can't be empty after trimming.", status_code=400
+        )
+
+    # Control chars / forbidden punctuation.
+    if any(ch in _CONTROL_CHARS for ch in cleaned):
+        raise UploadValidationError(
+            "Filename contains control characters.", status_code=400
+        )
+    bad = [ch for ch in cleaned if ch in _FORBIDDEN_FILENAME_CHARS]
+    if bad:
+        raise UploadValidationError(
+            f"Filename can't contain {' '.join(sorted(set(bad)))}.",
+            status_code=400,
+        )
+
+    # Split base + ext on the LAST dot (so `archive.tar.gz` keeps `.gz`).
+    if "." in cleaned and not cleaned.endswith("."):
+        base, ext_new = cleaned.rsplit(".", 1)
+        ext_new = "." + ext_new
+    else:
+        base, ext_new = cleaned, ""
+
+    # Reserved Windows names — checked on the basename only.
+    if base.upper() in _WINDOWS_RESERVED_NAMES:
+        raise UploadValidationError(
+            f"'{base}' is a reserved system name on Windows.",
+            status_code=400,
+        )
+
+    # Preserve original extension. If the upload had `.jpg`, the rename
+    # must keep `.jpg` (case-insensitive). Missing extension → we
+    # re-append. Mismatched extension → reject (avoid silently breaking
+    # the served MIME / decoder).
+    orig_ext = _suffix(original_filename) or ""
+    if orig_ext:
+        if not ext_new:
+            ext_new = orig_ext
+        elif ext_new.lower() != orig_ext.lower():
+            raise UploadValidationError(
+                f"Extension must stay {orig_ext}; got {ext_new}.",
+                status_code=400,
+            )
+
+    if not base:
+        raise UploadValidationError(
+            "Filename can't be just an extension.", status_code=400
+        )
+
+    full = base + ext_new
+
+    # UTF-8 byte length cap. Trim from the basename so the extension survives.
+    if len(full.encode("utf-8")) > 255:
+        ext_bytes = len(ext_new.encode("utf-8"))
+        max_base_bytes = 255 - ext_bytes
+        if max_base_bytes <= 0:
+            raise UploadValidationError(
+                "Filename is too long.", status_code=400
+            )
+        # Truncate base char-by-char until it fits the byte budget.
+        truncated = base
+        while len(truncated.encode("utf-8")) > max_base_bytes:
+            truncated = truncated[:-1]
+        if not truncated:
+            raise UploadValidationError(
+                "Filename is too long.", status_code=400
+            )
+        full = truncated + ext_new
+
+    return full
+
+
 @dataclass(frozen=True)
 class ValidatedUpload:
     filename: str | None

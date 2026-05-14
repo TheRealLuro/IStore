@@ -32,6 +32,10 @@ export interface FileItem {
   folder_id: string | null;
   status: string | null;
   status_color: string | null;
+  // User-toggled star/favorite. `starred_at` is set on the OFF→ON
+  // transition only; un-starring leaves it intact for history.
+  is_starred: boolean;
+  starred_at: string | null;
   uploaded_at: string;
 }
 

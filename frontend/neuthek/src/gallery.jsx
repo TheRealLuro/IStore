@@ -43,11 +43,13 @@ export function Sidebar({ view, onView, onUpload, onAccount, attentionCount = 0,
     ]},
   ];
 
-  // Real storage usage from /storage/usage. Falls back to a rough render if
-  // the request fails (e.g. logged-out preview shouldn't crash the sidebar).
+  // Real storage usage from /storage/usage. Gated on the real `user` prop
+  // (not the mock fallback `u`) so the query doesn't fire when the parent
+  // renders Sidebar before auth is settled.
   const { data: usage } = useQuery({
     queryKey: ["storage"],
     queryFn: getStorageUsage,
+    enabled: !!user?.email,
     staleTime: 60_000,
   });
   const used = usage?.used_bytes ?? 0;
@@ -446,7 +448,12 @@ function FolderCard({ folder, onEnter, onRequestRename, onRequestDelete }) {
       <div className="fcard__icon"><Icon name="folder" size={18}/></div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="fcard__name">{folder.name}</div>
-        <div className="fcard__meta">{folder.count} items · {folder.when}</div>
+        <div className="fcard__meta">
+          {folder.item_count ?? 0} {((folder.item_count ?? 0) === 1) ? "item" : "items"}
+          {folder.subfolder_count > 0 && (
+            <> · {folder.subfolder_count} {folder.subfolder_count === 1 ? "folder" : "folders"}</>
+          )}
+        </div>
       </div>
       <button
         ref={btnRef}
@@ -529,6 +536,7 @@ export function GalleryView({
       name: fo.name,
       count: fo.item_count,
       item_count: fo.item_count,
+      subfolder_count: fo.subfolder_count ?? 0,
       when: "—",
       types: [],
     }));

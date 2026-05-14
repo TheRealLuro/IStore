@@ -1,4 +1,4 @@
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Session as SyncSession
@@ -36,15 +36,19 @@ SessionLocal = async_sessionmaker(
 
 @event.listens_for(SyncSession, "after_begin")
 def _set_rls_context(session, transaction, connection) -> None:  # noqa: ARG001
+    # `exec_driver_sql` with a `%s` placeholder doesn't work over the
+    # asyncpg dialect — asyncpg uses `$1`-style params, and SQLAlchemy
+    # won't auto-translate inside the raw-SQL fast path. Use a bound
+    # `text()` so the dialect formats the placeholder correctly.
     user_id = get_current_user_id()
     if user_id:
-        connection.exec_driver_sql(
-            "SELECT set_config('app.current_user_id', %s, true)",
-            (user_id,),
+        connection.execute(
+            text("SELECT set_config('app.current_user_id', :uid, true)"),
+            {"uid": user_id},
         )
         return
     if settings.app_env.lower() in {"dev", "test", "local"}:
-        connection.exec_driver_sql("SELECT set_config('app.rls_bypass', 'on', true)")
+        connection.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
 
 
 async def get_session() -> AsyncSession:
