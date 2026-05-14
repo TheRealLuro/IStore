@@ -348,3 +348,39 @@ html[data-theme="dark"] .pdf-page__skeleton {
   background: transparent !important;
   color: inherit !important;
 }
+
+/* ---------- Skeleton placeholders ---------- *
+ * Single shared `skel` primitive used by the preview panel + gallery
+ * card to show "AI is still working on this row" instead of an empty
+ * slot. Animated horizontal sheen reads as "loading" without needing
+ * a spinner; muted neutral colors blend with both themes. */
+.skel {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--surface-3) 0%,
+    var(--surface-4) 50%,
+    var(--surface-3) 100%
+  );
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: skel-shimmer 1.4s ease-in-out infinite;
+  vertical-align: middle;
+}
+.skel--text {
+  height: 0.85em;
+  border-radius: 3px;
+}
+@keyframes skel-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+html[data-theme="dark"] .skel {
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.05) 0%,
+    rgba(255,255,255,0.10) 50%,
+    rgba(255,255,255,0.05) 100%
+  );
+  background-size: 200% 100%;
+}

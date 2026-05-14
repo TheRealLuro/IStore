@@ -97,12 +97,22 @@ def _build_haystack():
 # bit related to your query" floor is around 0.20-0.22 for unrelated
 # images on the same domain. We require either a text/keyword match OR
 # a CLIP cosine above this threshold; weak CLIP-only matches don't
-# pollute the result list.
-_CLIP_MIN_SIM_KEEP = 0.24
+# pollute the result list. Raised from 0.24 → 0.26 because at 0.24
+# small libraries returned every image (CLIP's "loosely related"
+# floor often sits in [0.22, 0.27] for unrelated content on the
+# same domain).
+_CLIP_MIN_SIM_KEEP = 0.26
 # Strong-match floor — CLIP hits at or above this are kept even when
 # the user's query also has text matches. Below this and above the
 # keep threshold, they only show up if no keyword match was found.
 _CLIP_STRONG_SIM = 0.30
+# After scoring + filtering, drop results whose score is below
+# `top_score * _RELATIVE_FLOOR`. This is the gate that fixes the
+# "type anything and everything pulls up" symptom on small libraries:
+# if the best match is a 0.50 hit, we only keep things scoring ≥ 0.30.
+# Tuned at 0.60 so a tightly-relevant top hit narrows the result
+# list but multiple strong matches still co-exist.
+_RELATIVE_FLOOR = 0.60
 
 
 def _tokenize_query(q: str) -> list[str]:
@@ -232,6 +242,17 @@ async def semantic_search(
         # else: drop the row — weak CLIP-only match with no keyword hit.
 
     ranked = sorted(final, key=lambda r: r[1], reverse=True)[:limit]
+
+    # Relative-margin filter — on small libraries, multiple files all
+    # pick up weak common-vocabulary keyword hits ("me", "photo",
+    # "image") and the result list looked like "all files, ranked by
+    # noise." Drop anything more than `_RELATIVE_FLOOR` below the top
+    # score so a clearly-best match narrows the list instead of
+    # dragging every other row along with it.
+    if ranked:
+        top_score = ranked[0][1]
+        cutoff = top_score * _RELATIVE_FLOOR
+        ranked = [(img, sc) for (img, sc) in ranked if sc >= cutoff]
 
     return [
         ImageSearchHit(

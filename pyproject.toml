@@ -51,12 +51,19 @@ ml = [
     # Captioning: Florence-2-large (~3.4 GB) for detailed captions + OCR.
     #   Bundled `configuration_florence2.py` (trust_remote_code=True)
     #   accesses `forced_bos_token_id` directly on its language config —
-    #   that field moved in transformers 5.x. Pin <5.0 until Microsoft
-    #   ships a 5.x-compatible config.
+    #   that field moved in transformers 5.x. AND its bundled
+    #   `modeling_florence2.py` uses the pre-Cache `past_key_values`
+    #   shape (tuple of tuples) that the transformers 4.50 generation
+    #   refactor removed; every Florence task (caption / OCR / dense
+    #   regions / OD) raises `KeyError: Cache only has 0 layers` once
+    #   beam search starts. Pin <4.50 until Microsoft updates the
+    #   bundled code — without this, Florence-2 silently disables
+    #   itself after the first image and the whole library falls back
+    #   to BLIP one-clause captions.
     # Rewriter: Qwen2.5-1.5B-Instruct (~3 GB) — Qwen2 arch is in 4.45+.
     # einops/timm are required by Florence-2's custom modeling code.
     # Doc extraction libs are pure Python — no native build deps.
-    "transformers>=4.45,<5.0",
+    "transformers>=4.45,<4.50",
     "tokenizers>=0.20,<0.22",
     "einops>=0.8.0",
     "timm>=1.0.11",

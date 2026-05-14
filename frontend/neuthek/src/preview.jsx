@@ -309,10 +309,17 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
 
       <div className="preview__body">
         <div className="preview__title">{file.name}</div>
-        {file.topic && <div className="preview__topic">
-          <span className="kicker" style={{ marginRight: 8 }}><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px" }}/> AI</span>
-          {file.topic}
-        </div>}
+        {file.topic ? (
+          <div className="preview__topic">
+            <span className="kicker" style={{ marginRight: 8 }}><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px" }}/> AI</span>
+            {file.topic}
+          </div>
+        ) : file.pendingSummary ? (
+          <div className="preview__topic">
+            <span className="kicker" style={{ marginRight: 8 }}><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px" }}/> AI</span>
+            <span className="skel skel--text" style={{ width: "60%", display: "inline-block" }} aria-label="Generating summary"/>
+          </div>
+        ) : null}
         <div className="preview__meta">
           <span>{file.when}</span>
           <span style={{ color: "var(--ink-4)" }}>·</span>
@@ -324,8 +331,12 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         {/* Rich AI description block — the long-form `summary` text the
             C2 multi-model pipeline produces. This is what makes the
             file searchable, so we surface it prominently. Concept-tag
-            chips below give the user immediate scannable keywords. */}
-        {file.aiContent && (
+            chips below give the user immediate scannable keywords.
+            When the backend is still summarizing (fresh upload, force
+            backfill in flight), render a shimmer placeholder instead
+            of an empty slot — the user can see the pipeline is still
+            working rather than wondering why nothing's there. */}
+        {file.aiContent ? (
           <div className="preview__section">
             <div className="preview__section-label">Description</div>
             <div style={{
@@ -342,7 +353,19 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
               </div>
             )}
           </div>
-        )}
+        ) : file.pendingSummary ? (
+          <div className="preview__section">
+            <div className="preview__section-label">
+              Description
+              <span className="kicker" style={{ marginLeft: 8, color: "var(--ink-3)" }}>generating…</span>
+            </div>
+            <div style={{ padding: "0 12px" }}>
+              <div className="skel skel--text" style={{ width: "92%" }}/>
+              <div className="skel skel--text" style={{ width: "84%", marginTop: 6 }}/>
+              <div className="skel skel--text" style={{ width: "67%", marginTop: 6 }}/>
+            </div>
+          </div>
+        ) : null}
 
         {isImage && imagePeople.length > 0 && (
           <div className="preview__section">

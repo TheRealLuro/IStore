@@ -487,3 +487,136 @@ async def _run_backfill(user_id, image_ids: list) -> None:
                 continue
             # Yield to the event loop so we don't block.
             await asyncio.sleep(0)
+
+
+class RegenerateCropsResponse(BaseModel):
+    queued: int
+
+
+@router.post("/regenerate-crops", response_model=RegenerateCropsResponse)
+async def regenerate_crops(
+    background: BackgroundTasks,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = 1000,
+) -> RegenerateCropsResponse:
+    """Re-crop every existing face detection with landmark-aligned framing.
+
+    The previous `_crop_jpeg` produced rectangular 15%-padded crops
+    that left foreheads cut off on selfies. The new alignment
+    centers the crop between the eyes and frames head-and-shoulders
+    in a 256×256 square. This route walks the user's existing
+    detections, re-renders each crop in place via PyMuPDF, and
+    overwrites the existing MinIO key so `GET /faces/{id}/crop`
+    serves the upgraded JPEG without any DB row changes.
+
+    Cropping is bounded by `limit` so a 50k-face library doesn't
+    lock a single request — repeat the call until queued=0.
+    """
+    rows = (
+        await session.execute(
+            select(
+                FaceDetection.id,
+                FaceDetection.image_id,
+                FaceDetection.bbox_x,
+                FaceDetection.bbox_y,
+                FaceDetection.bbox_w,
+                FaceDetection.bbox_h,
+                FaceDetection.crop_blob_key,
+                FaceDetection.landmarks_json,
+            )
+            .where(
+                FaceDetection.user_id == user.id,
+                FaceDetection.crop_blob_key.is_not(None),
+            )
+            .order_by(FaceDetection.id.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    if rows:
+        jobs = [
+            (
+                int(r[0]),
+                r[1],
+                int(r[2]),
+                int(r[3]),
+                int(r[4]),
+                int(r[5]),
+                r[6],
+                list(r[7]) if r[7] else None,
+            )
+            for r in rows
+        ]
+        background.add_task(_run_regenerate_crops, user.id, jobs)
+    return RegenerateCropsResponse(queued=len(rows))
+
+
+async def _run_regenerate_crops(user_id, jobs: list) -> None:
+    """Background worker: re-crop each detection in place.
+
+    `jobs` is a list of tuples
+    `(det_id, image_id, bbox_x, bbox_y, bbox_w, bbox_h, crop_key, landmarks)`.
+    We fetch the original image, re-render with the new alignment,
+    and overwrite the existing crop blob. The bytes flowing into
+    MinIO replace what `GET /faces/{id}/crop` serves — no DB churn.
+    """
+    from backend.image import storage as _storage
+    from backend.models import Image as ImageModel
+    from backend.vision.faces import render_avatar_from_image
+
+    image_cache: dict = {}
+
+    async with SessionLocal() as session:
+        for det_id, image_id, bx, by, bw, bh, crop_key, landmarks in jobs:
+            raw = image_cache.get(image_id)
+            if raw is None:
+                img = (
+                    await session.execute(
+                        select(ImageModel).where(ImageModel.id == image_id)
+                    )
+                ).scalar_one_or_none()
+                if img is None:
+                    continue
+                try:
+                    raw = (
+                        _storage.get(_storage.bucket_originals, img.original_blob_key)
+                        if img.original_blob_key
+                        else _storage.get(_storage.bucket_served, img.served_blob_key)
+                    )
+                except Exception:
+                    logger.exception(
+                        "regenerate-crops: could not fetch image %s", image_id
+                    )
+                    continue
+                # Keep only the latest image in memory — multi-face
+                # photos benefit, but caching every fetch would balloon
+                # RAM on a long worker run.
+                image_cache.clear()
+                image_cache[image_id] = raw
+
+            try:
+                new_crop = await asyncio.to_thread(
+                    render_avatar_from_image, raw, bx, by, bw, bh, landmarks
+                )
+            except Exception:
+                logger.exception(
+                    "regenerate-crops: render failed for detection %s", det_id
+                )
+                continue
+
+            try:
+                storage.put(
+                    storage.bucket_faces,
+                    crop_key,
+                    new_crop,
+                    "image/jpeg",
+                    sse_scope="biometric",
+                )
+            except Exception:
+                logger.exception(
+                    "regenerate-crops: upload failed for detection %s", det_id
+                )
+                continue
+
+            await asyncio.sleep(0)

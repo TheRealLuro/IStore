@@ -160,6 +160,11 @@ function fileItemToNeuthek(f) {
     topic: f.summary_topic,
     aiContent: f.summary,
     signals: f.summary_signals || null,
+    // Surfaced to the preview panel + gallery card so they can render a
+    // shimmer placeholder in the topic/description slot while the
+    // background summarizer is still working. Without this, fresh
+    // uploads sit with empty AI fields and look like they failed.
+    pendingSummary: !!f.pending_summary,
     gps: null, // wired separately from /images/geo
     tags: f.status ? [f.status] : [],
     folder: f.folder_id,
@@ -734,7 +739,7 @@ export function App() {
 
   if (authLoading) {
     return (
-      <div style={{ display: "grid", placeItems: "center", minHeight: "100vh",
+      <div style={{ display: "grid", placeItems: "center", minHeight: "100dvh",
                     color: "var(--ink-3)", fontFamily: "Geist, system-ui" }}>
         Loading…
       </div>

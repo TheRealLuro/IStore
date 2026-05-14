@@ -356,6 +356,16 @@ function FileCard({ f, selected, onClick, query, onRename, onShare }) {
             {highlight(f.topic)}
           </div>
         )}
+        {/* When summarization is still queued/running for a file, show a
+            shimmer placeholder in the same slot the AI topic occupies so
+            the gallery clearly signals "this card is waiting on AI" —
+            instead of looking like a card whose summary silently failed. */}
+        {f.pendingSummary && !f.topic && (
+          <div className="card__summary" aria-label="Generating summary">
+            <span className="kicker" style={{ marginRight: 6, fontSize: 9 }}>AI</span>
+            <span className="skel skel--text" style={{ width: "70%", display: "inline-block", verticalAlign: "middle" }}/>
+          </div>
+        )}
       </div>
     </div>
   );

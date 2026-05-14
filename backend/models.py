@@ -361,6 +361,12 @@ class FaceDetection(Base):
         nullable=True,
     )
     crop_blob_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 5-point RetinaFace landmarks in source-image pixel coordinates:
+    # [[lx_eye, ly_eye], [rx_eye, ry_eye], [nose_x, nose_y],
+    #  [ml_x, ml_y], [mr_x, mr_y]]. Lets the avatar regenerator re-crop
+    # with eye-line framing without re-running detection. See migration
+    # 0021.
+    landmarks_json: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

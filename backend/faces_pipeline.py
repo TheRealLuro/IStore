@@ -224,6 +224,7 @@ async def process_image_for_faces(
                     bbox_h=det.bbox_h,
                     detection_confidence=det.detection_confidence,
                     crop_blob_key=crop_key,
+                    landmarks_json=(det.landmarks or None),
                 )
             )
             persisted += 1
@@ -307,6 +308,7 @@ async def process_image_for_faces(
                 detection_confidence=det.detection_confidence,
                 face_id=face_row.id,
                 crop_blob_key=crop_key_to_save,
+                landmarks_json=(det.landmarks or None),
             )
         )
         persisted += 1

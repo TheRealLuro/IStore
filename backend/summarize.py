@@ -539,6 +539,52 @@ def _splice_names(caption: str, names: list[str]) -> str:
     return _polish_after_splice(spliced, names)
 
 
+def _splice_names_all(caption: str, names: list[str]) -> str:
+    """Replace every generic person reference in a (possibly multi-sentence)
+    caption with the named people. Sister to `_splice_names` for the
+    Qwen rewriter output path.
+
+    The single-replacement `_splice_names` works for BLIP's one-clause
+    captions ("a man taking a selfie" → "Me taking a selfie"). The C2
+    Qwen rewriter emits 1–3 sentence descriptions that mention the
+    subject multiple times ("A young man stands… The man wears… He
+    holds…"). Replacing only the first reference left every later
+    "the man" / "he" / "his" pointing at an unnamed entity, which is
+    exactly the "summaries don't replace pronouns with detected
+    people" complaint.
+
+    Strategy:
+      1. Replace each generic-noun pattern (a/the man, young man,
+         person, etc.) with the name — but only the *first*
+         occurrence per pattern, so we don't double-replace already-
+         normalized references in the same sentence.
+      2. Run the existing first-person pronoun polish so "his/her/him"
+         flip to "my/me" when the subject is "Me" / "I".
+
+    Returns the caption unchanged when `names` is empty.
+    """
+    if not caption or not names:
+        return caption
+    if len(names) == 1:
+        replacement = names[0]
+    elif len(names) == 2:
+        replacement = f"{names[0]} and {names[1]}"
+    else:
+        replacement = ", ".join(names[:-1]) + f", and {names[-1]}"
+
+    spliced = caption
+    # First substitution per pattern, scanning each pattern in turn —
+    # avoids cascading replacements like "a young man" → "Me" then
+    # "a man" matching part of the new text. Patterns are ordered
+    # specific-to-general in `_PERSON_PATTERNS` already.
+    for pattern in _PERSON_PATTERNS:
+        spliced, _ = re.subn(
+            pattern, replacement, spliced, count=0, flags=re.IGNORECASE
+        )
+
+    return _polish_after_splice(spliced, names)
+
+
 # Pronoun / grammar cleanup that only makes sense once names are inserted.
 # BLIP says "a man that is taking a picture of himself with his phone";
 # splicing yields "Me that is taking a picture of himself with his phone";
@@ -1160,6 +1206,17 @@ def _llm_rewrite_summary(
             reply = reply.rstrip(",;:") + "."
         # Capitalize.
         reply = reply[0].upper() + reply[1:]
+        # Post-process: substitute every generic person reference
+        # ("a man", "the man", "a young man", "he", etc.) with the
+        # detected named people. Qwen2.5-1.5B follows the "Use named
+        # people" instruction only sometimes — its multi-sentence
+        # descriptions often re-introduce "the man" / "he" mid-paragraph
+        # because each sentence is generated against the prior caption,
+        # not the people-list metadata. Running the regex splice on the
+        # final output makes the substitution deterministic so summaries
+        # are always indexed under the user's actual search terms.
+        if names:
+            reply = _splice_names_all(reply, names)
         return reply
     except Exception:
         logger.exception("rewriter: failed")
