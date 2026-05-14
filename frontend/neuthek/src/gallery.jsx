@@ -226,7 +226,55 @@ const TYPE_ICON = {
   contact: "users", password: "shield", gamesave: "game", iot: "wifi",
 };
 
-function FileCard({ f, selected, onClick, query, onRename, onShare }) {
+// Compact list-view row used by the bar layout. Shows just the bits a
+// user actually scans for in dense lists: type icon, name, AI topic
+// (when present), modified date, size. Same multi-select check as the
+// card so toggling between layouts doesn't lose the user's selection.
+function FileRow({ f, selected, multiSelected, onClick, onMultiSelectToggle, onRename }) {
+  return (
+    <div
+      className="filerow"
+      data-selected={selected}
+      data-multi={multiSelected}
+      onClick={onClick}
+      onDoubleClick={(e) => { e.stopPropagation(); onRename && onRename(f); }}
+      title="Click to preview · double-click to rename"
+    >
+      <button
+        type="button"
+        className="filerow__check"
+        aria-label={multiSelected ? "Deselect" : "Select"}
+        aria-pressed={!!multiSelected}
+        data-on={!!multiSelected}
+        onClick={(e) => {
+          e.stopPropagation();
+          onMultiSelectToggle && onMultiSelectToggle(f.id);
+        }}
+      >
+        <Icon name="check" size={11} strokeWidth={2.6}/>
+      </button>
+      <div className="filerow__icon" data-type={f.type}>
+        <Icon name={TYPE_ICON[f.type] || "document"} size={14} strokeWidth={1.6}/>
+      </div>
+      <div className="filerow__name">{f.name}</div>
+      <div className="filerow__topic">
+        {f.topic ? (
+          <>
+            <span className="kicker" style={{ marginRight: 6, fontSize: 9 }}>AI</span>
+            {f.topic}
+          </>
+        ) : f.pendingSummary ? (
+          <span className="skel skel--text" style={{ width: 140, display: "inline-block" }}/>
+        ) : null}
+      </div>
+      <div className="filerow__when">{f.when}</div>
+      <div className="filerow__size mono">{f.size}</div>
+      <div className="filerow__type mono">{f.ext}</div>
+    </div>
+  );
+}
+
+function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelected, onMultiSelectToggle }) {
   const qc = useQueryClient();
   const [menuOpen, setMenuOpen] = useStateG(false);
   const cardRef = React.useRef(null);
@@ -265,7 +313,13 @@ function FileCard({ f, selected, onClick, query, onRename, onShare }) {
     { name: "Léa Bonneau" }, { name: "Marcus Reid" }
   ] : []));
   return (
-    <div ref={cardRef} className="card" data-selected={selected} onClick={onClick}
+    <div ref={cardRef} className="card" data-selected={selected} data-multi={multiSelected}
+         onClick={(e) => {
+           // The check circle at the top-left of the thumb owns its own
+           // click handler; if it stopPropagation's, we never get here.
+           // Plain card body click → open the preview, same as before.
+           onClick && onClick(e);
+         }}
          draggable
          onDragStart={(e) => {
            e.dataTransfer.effectAllowed = "move";
@@ -284,9 +338,24 @@ function FileCard({ f, selected, onClick, query, onRename, onShare }) {
             <span className="mono" style={{ fontSize: 11 }}>{f.ext}</span>
           </div>
         )}
-        <div className="card__check">
+        {/* Real multi-select toggle. Sits inside the thumb so it floats
+            over the image; the button stops propagation so clicking it
+            doesn't also fire the card's preview-open handler. The
+            outer card carries `data-multi="true"` while selected so
+            the CSS can paint the persistent check + outline. */}
+        <button
+          type="button"
+          className="card__check"
+          aria-label={multiSelected ? "Deselect" : "Select"}
+          aria-pressed={!!multiSelected}
+          data-on={!!multiSelected}
+          onClick={(e) => {
+            e.stopPropagation();
+            onMultiSelectToggle && onMultiSelectToggle(f.id);
+          }}
+        >
           <Icon name="check" size={12} strokeWidth={2.6}/>
-        </div>
+        </button>
         <div className="card__type">{f.ext}</div>
         <button className="card__menu-btn"
                 data-open={menuOpen}
@@ -535,12 +604,20 @@ function FolderCard({ folder, onEnter, onRequestRename, onRequestDelete }) {
 }
 
 export function GalleryView({
-  files, query, sort, onSelect, selected,
+  files, query, sort, sortDir = "desc", onSelect, selected,
   showPeopleStrip = true, showFolders = true,
   typeFilter = "all", onTypeFilter, onRename,
   folderId = null, onEnterFolder,
   view = "gallery",
   peopleFilter = null, onClearPeopleFilter,
+  // Multi-select. `multiSelected` is a Set<string> of file ids; the
+  // card check button toggles entries via `onMultiSelectToggle`.
+  // Passing both as nullable means screens that don't want multi-
+  // select (people picker, etc.) just don't pass them.
+  multiSelected = null, onMultiSelectToggle,
+  // "grid" (default tile cards) | "list" (compact bar rows). Driven
+  // by the topbar view toggle.
+  layoutMode = "grid",
 }) {
   // Folders are an organizational container — they only make sense in
   // the all-files view with the "All" type pill. Specific-type pills
@@ -561,9 +638,30 @@ export function GalleryView({
     // matches like "classroom" → a whiteboard photo whose summary
     // mentions "lecture room", which the server's CLIP pass surfaces
     // correctly.
-    if (sort === "name" && !query) list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    // Search-result ordering (when `query` is set) is server-ranked by
+    // CLIP cosine + FTS — preserve it. Otherwise apply the topbar
+    // sort key + direction.
+    if (!query) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      const cmp = (() => {
+        if (sort === "name") {
+          return (a, b) => a.name.localeCompare(b.name) * dir;
+        }
+        if (sort === "size") {
+          return (a, b) => ((a.byte_size_served ?? 0) - (b.byte_size_served ?? 0)) * dir;
+        }
+        // Default "recent" — server sends newest-first; multiply by
+        // dir so the "asc" toggle reverses it without re-fetching.
+        return (a, b) => {
+          const at = a.uploaded_at ? Date.parse(a.uploaded_at) : 0;
+          const bt = b.uploaded_at ? Date.parse(b.uploaded_at) : 0;
+          return (at - bt) * dir;
+        };
+      })();
+      list = [...list].sort(cmp);
+    }
     return list;
-  }, [files, query, sort, typeFilter]);
+  }, [files, query, sort, sortDir, typeFilter]);
 
   // Real folders for the current scope (root or inside a folder).
   // Type-pill cross-filter (C1.3) is backend-side work — for now we just
@@ -687,14 +785,26 @@ export function GalleryView({
           <div className="empty__body">Try a broader term, or search by topic — "sunset", "portrait", "lake".</div>
         </div>
       ) : (
-        <div className="gallery__grid">
-          {filtered.map(f => (
+        <div className={layoutMode === "list" ? "gallery__list" : "gallery__grid"}>
+          {layoutMode === "list" ? filtered.map(f => (
+            <FileRow
+              key={f.id}
+              f={f}
+              selected={selected === f.id}
+              multiSelected={!!multiSelected?.has?.(f.id)}
+              onClick={() => onSelect(f)}
+              onMultiSelectToggle={onMultiSelectToggle}
+              onRename={onRename}
+            />
+          )) : filtered.map(f => (
             <FileCard
               key={f.id}
               f={f}
               query={query}
               selected={selected === f.id}
+              multiSelected={!!multiSelected?.has?.(f.id)}
               onClick={() => onSelect(f)}
+              onMultiSelectToggle={onMultiSelectToggle}
               onRename={onRename}
             />
           ))}

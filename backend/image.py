@@ -50,8 +50,12 @@ def _run_vision_sync(raw_bytes: bytes):
 async def _maybe_run_vision(raw_bytes: bytes):
     if not settings.vision_enabled:
         return None
+    # CLIP + scene/content classification go through the shared ML
+    # executor too — keeps upload-time vision from blocking the API
+    # event loop while a backfill is running.
+    from backend.vision.inference_pool import run_in_inference_pool
     try:
-        return await asyncio.to_thread(_run_vision_sync, raw_bytes)
+        return await run_in_inference_pool(_run_vision_sync, raw_bytes)
     except ImportError as exc:
         logger.warning("Vision pipeline unavailable (install [ml] extras): %s", exc)
         return None

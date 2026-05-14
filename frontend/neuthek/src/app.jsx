@@ -165,6 +165,9 @@ function fileItemToNeuthek(f) {
     // background summarizer is still working. Without this, fresh
     // uploads sit with empty AI fields and look like they failed.
     pendingSummary: !!f.pending_summary,
+    // Raw timestamp + bytes used by the gallery sort. `when` (above) is
+    // a humanized "12 days ago" string for display only.
+    uploaded_at: f.uploaded_at,
     gps: null, // wired separately from /images/geo
     tags: f.status ? [f.status] : [],
     folder: f.folder_id,
@@ -390,6 +393,25 @@ export function App() {
   const [empty, setEmpty] = useStateApp(false);
   const [query, setQuery] = useStateApp("");
   const [sort, setSort] = useStateApp("recent");
+  // Toggleable per-tab sort direction. Recent defaults to desc (newest
+  // first), Name and Size to asc — matches what users expect from
+  // every other file browser. Stored as a single value for the
+  // currently-active sort key.
+  const [sortDir, setSortDir] = useStateApp("desc");
+  // "grid" = thumbnail tiles; "list" = compact bar rows.
+  const [layoutMode, setLayoutMode] = useStateApp("grid");
+  // Multi-select: a Set of file ids the user has checked. Cleared when
+  // the active view or folder changes so a stale selection doesn't
+  // bleed into a different scope.
+  const [multiSelected, setMultiSelected] = useStateApp(() => new Set());
+  const toggleMultiSelected = (id) => {
+    setMultiSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const clearMultiSelected = () => setMultiSelected(new Set());
   const [typeFilter, setTypeFilter] = useStateApp("all");
   const [selectedFile, setSelectedFile] = useStateApp(null);
   // Folder navigation. `null` = root, otherwise the folder UUID.
@@ -871,19 +893,70 @@ export function App() {
         {!isMap && (
           <div className="subbar">
             <div className="tabs" role="tablist">
-              <button className="tab" data-active={sort === "recent"} onClick={() => setSort("recent")}>Recent</button>
-              <button className="tab" data-active={sort === "name"} onClick={() => setSort("name")}>Name</button>
-              <button className="tab" data-active={sort === "size"} onClick={() => setSort("size")}>Size</button>
+              {[
+                { id: "recent", label: "Recent" },
+                { id: "name",   label: "Name" },
+                { id: "size",   label: "Size" },
+              ].map(t => (
+                <button
+                  key={t.id}
+                  className="tab"
+                  data-active={sort === t.id}
+                  onClick={() => {
+                    if (sort === t.id) {
+                      // Re-clicking the active tab flips direction.
+                      setSortDir(d => d === "asc" ? "desc" : "asc");
+                    } else {
+                      setSort(t.id);
+                      // Recent defaults to newest-first; alphabetical /
+                      // numerical sorts default to A→Z / smallest-first.
+                      setSortDir(t.id === "recent" ? "desc" : "asc");
+                    }
+                  }}
+                  title={sort === t.id
+                    ? `Currently ${sortDir === "asc" ? "ascending" : "descending"} — click to flip`
+                    : `Sort by ${t.label}`}
+                >
+                  {t.label}
+                  {sort === t.id && (
+                    <Icon
+                      name={sortDir === "asc" ? "chevronUp" : "chevronDown"}
+                      size={11}
+                      style={{ marginLeft: 4, verticalAlign: "-1px" }}
+                    />
+                  )}
+                </button>
+              ))}
             </div>
             <div className="topbar__spacer"/>
+            {multiSelected.size > 0 && (
+              <span style={{ fontSize: 12, color: "var(--ink-2)", marginRight: 8 }}>
+                {multiSelected.size} selected
+                <button
+                  className="btn btn--ghost btn--sm"
+                  style={{ marginLeft: 8 }}
+                  onClick={clearMultiSelected}
+                  title="Clear selection"
+                >
+                  Clear
+                </button>
+              </span>
+            )}
             <button className="btn btn--ghost btn--sm" onClick={() => setShowNewFolder(true)}>
               <Icon name="folderPlus" size={12}/> New folder
             </button>
             <button className="btn btn--ghost btn--sm" onClick={() => setShowBestOf(true)}>
               <Icon name="wand" size={12}/> Pick best of burst
             </button>
-            <button className="btn-icon" aria-label="Sort"><Icon name="sort" size={15}/></button>
-            <button className="btn-icon" aria-label="View"><Icon name="grid" size={15}/></button>
+            <button
+              className="btn-icon"
+              aria-label={layoutMode === "grid" ? "Switch to list view" : "Switch to grid view"}
+              aria-pressed={layoutMode === "list"}
+              onClick={() => setLayoutMode(m => m === "grid" ? "list" : "grid")}
+              title={layoutMode === "grid" ? "Switch to list view" : "Switch to grid view"}
+            >
+              <Icon name={layoutMode === "grid" ? "list" : "grid"} size={15}/>
+            </button>
           </div>
         )}
 
@@ -940,8 +1013,12 @@ export function App() {
                   files={files}
                   query={query}
                   sort={sort}
+                  sortDir={sortDir}
                   view={view}
+                  layoutMode={layoutMode}
                   selected={selectedFile?.id}
+                  multiSelected={multiSelected}
+                  onMultiSelectToggle={toggleMultiSelected}
                   // People drill-in already filters server-side; don't
                   // render the redundant strip below the topbar.
                   showPeopleStrip={t.showPeopleStrip && view !== "people"}

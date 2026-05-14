@@ -176,9 +176,14 @@ async def semantic_search(
     text_hits = await _text_search(session, user.id, q, limit=limit)
 
     # --- CLIP pass (gracefully degrades when [ml] extras aren't installed)
+    # CLIP text encoding goes through the shared ML executor so a
+    # search query during a running backfill queues briefly behind
+    # any in-flight Florence call instead of fanning into another
+    # thread that races for the GIL.
+    from backend.vision.inference_pool import run_in_inference_pool
     clip_hits: dict = {}
     try:
-        query_vec = await asyncio.to_thread(_encode_text_sync, q)
+        query_vec = await run_in_inference_pool(_encode_text_sync, q)
         clip_hits = await _clip_search(
             session, user.id, query_vec, limit=limit
         )

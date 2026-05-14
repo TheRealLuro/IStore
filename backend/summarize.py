@@ -98,8 +98,14 @@ async def summarize_image_id(session: AsyncSession, image_id: UUID) -> None:
     # Materializing the labels upfront keeps the sync path read-only.
     pre_tag_labels = await _load_image_tag_labels(session, image.id)
 
+    # Route through the dedicated single-thread ML executor so two
+    # concurrent summarize calls serialize instead of fighting for the
+    # GIL with the asyncio event loop. With the default thread pool
+    # the user couldn't log in while a backfill was running because
+    # every request handler queued behind the model threads.
+    from backend.vision.inference_pool import run_in_inference_pool
     try:
-        result = await asyncio.to_thread(
+        result = await run_in_inference_pool(
             _dispatch, image, raw_bytes, named_people, pre_tag_labels
         )
     except Exception:
@@ -1504,6 +1510,18 @@ def _summarize_document(
     if not summary:
         summary = _extractive_summary(truncated)
 
+    # Reject body-text leaks. Both the small LLM and the sumy
+    # extractive fallback occasionally produce output that's a verbatim
+    # chunk of the input ("Part 1 — Inventory Think about or list…"
+    # was the first paragraph of LBLF.pdf, not a description of it).
+    # A search-friendly summary never has 60 consecutive characters
+    # identical to the source. When it does, prefer the filename-stub
+    # fallback so the preview panel doesn't quote the doc back to the
+    # user as its own description.
+    if summary and _looks_like_body_excerpt(summary, truncated):
+        logger.info("doc-summary: body-text leak detected for %s, falling back", fname)
+        summary = None
+
     # Don't ever emit raw body content as the description. If both the
     # LLM and the extractive paths failed, hand back a stub the user can
     # at least recognize. A wall of `truncated[:400]` is what made
@@ -1568,6 +1586,20 @@ def _clamp_doc_summary(summary: Optional[str]) -> Optional[str]:
     s = re.sub(r"\s+", " ", summary).strip()
     if not s:
         return None
+    # Strip markdown / label prefixes Qwen sometimes prepends despite
+    # the prompt asking for plain text:
+    #   "Document Description:**"  /  "**Description:**"  /  "## Summary"
+    # All of those leak the LLM's internal scaffolding into the
+    # preview panel — strip leading labels and any orphan stars/hashes.
+    s = re.sub(
+        r"^(?:#+\s*|\*+\s*)?(?:document\s+)?(?:summary|description|overview|tl;dr)\s*[:\-—]\s*\*+\s*",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = s.lstrip("*# \t-—:").strip()
+    if not s:
+        return None
     if len(s) <= 280:
         return s
     head = s[:280]
@@ -1575,6 +1607,34 @@ def _clamp_doc_summary(summary: Optional[str]) -> Optional[str]:
     if cut > 120:
         return head[: cut + 1].strip()
     return head.rstrip(",;: ") + "…"
+
+
+def _looks_like_body_excerpt(summary: str, body: str) -> bool:
+    """True when the LLM regurgitated a chunk of the input verbatim.
+
+    Qwen2.5-1.5B sometimes copies the opening lines of a document instead
+    of paraphrasing them ("Part 1 — Inventory Think about or list…"
+    instead of "Class assignment about an inventory of skills."). The
+    extractive sumy fallback path also produces these. Detect by
+    sliding-window: if any 60-char run from the summary appears
+    verbatim in the body, treat it as a leak and reject.
+
+    60 chars is wide enough to skip incidental phrase overlap ("the
+    document", "first page") but narrow enough to catch any real
+    body quote — a search-friendly description never has 60
+    consecutive characters identical to the source.
+    """
+    if not summary or not body:
+        return False
+    s = re.sub(r"\s+", " ", summary).lower()
+    b = re.sub(r"\s+", " ", body).lower()
+    if len(s) < 60:
+        return False
+    window = 60
+    for i in range(0, len(s) - window + 1, 20):
+        if s[i : i + window] in b:
+            return True
+    return False
 
 
 def _extract_doc_text(
@@ -1888,8 +1948,24 @@ def _llm_summarize_chunk(
                 "Pack in the most distinctive concrete nouns — project "
                 "names, parties, topics, dates — but DO NOT quote or "
                 "list the document's questions, prompts, or paragraphs "
-                "verbatim. Do NOT begin with 'This document', 'The "
-                "document', or 'In summary'. Output only the description."
+                "verbatim. NEVER copy a sentence from the input — "
+                "always paraphrase. Do NOT begin with 'This document', "
+                "'The document', or 'In summary'. Output only the "
+                "description.\n\n"
+                "Examples of GOOD descriptions:\n"
+                "- 'Class assignment asking students to inventory what "
+                "they built or trained during the course.'\n"
+                "- 'Group exercise comparing four AI agent frameworks "
+                "(LangChain, AutoGen, CrewAI, Semantic Kernel) for a "
+                "research write-up.'\n"
+                "- 'Q4 2025 financial report covering revenue growth, "
+                "operating margin, and Phase 11 product release plans.'\n"
+                "Examples of BAD descriptions (verbatim body, do NOT "
+                "produce these):\n"
+                "- 'Part 1 — Inventory Think about or list everything "
+                "you can remember…'\n"
+                "- 'Phase 1: Framework Research (10 minutes) Your "
+                "group has been assigned…'"
             )
         else:
             instructions = (

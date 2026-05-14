@@ -93,15 +93,12 @@ input, textarea { font-family: inherit; }
 .app {
   display: grid;
   grid-template-columns: 252px 1fr;
-  /* `100dvh` tracks the *visible* viewport across browser zoom and
-   * mobile URL-bar collapse, where `100vh` reports the physical
-   * viewport and leaves padding/scroll-anchored content offscreen at
-   * sub-100% zoom. Also explicitly clamp the box so any inner overflow
-   * is handled by the gallery's own scroll container, not by the body. */
+  /* Pin the shell to the visible viewport so the sidebar + main column
+   * fill the screen exactly. `100dvh` tracks the visible area across
+   * browser zoom (where `100vh` would lock to the physical viewport
+   * and overshoot at sub-100% zoom). One viewport-tall, no body
+   * overflow — the gallery does its own scroll inside its track. */
   height: 100dvh;
-  min-height: 100dvh;
-  max-height: 100dvh;
-  overflow: hidden;
   background: var(--surface-2);
 }
 
@@ -420,18 +417,106 @@ input, textarea { font-family: inherit; }
 .gallery {
   flex: 1;
   overflow-y: auto;
-  /* Bottom reserve trimmed — the FAB is `position: fixed` and doesn't
-   * need a hardcoded 64px gutter. The old 64px got pushed offscreen
-   * at sub-100% browser zoom and made it look like the layout was
-   * cut off. min-height: 0 lets this fill the remaining flex track
-   * properly even when the page is inside a fixed-height grid cell. */
-  padding: 4px 28px 24px;
+  /* No bottom reserve — the FAB is `position: fixed`, so it floats
+   * over content and doesn't need a hardcoded gutter. With the
+   * earlier 64px reserve, a sparsely-populated library (one folder
+   * row + one file row) showed an enormous empty band beneath the
+   * cards that read as broken padding. Letting the cards run to the
+   * scroll edge keeps the layout taut at any zoom level. */
+  padding: 4px 28px 0;
   min-height: 0;
 }
 .gallery__grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 16px;
+}
+
+/* ---- list (bar) view — compact rows ---- *
+ * Activated via the topbar grid/list toggle. Strips everything except
+ * what the user actually scans for in dense lists: type icon, name,
+ * AI topic, modified date, size, extension. Multi-select check is
+ * inline at the leading edge so it's reachable without hover. */
+.gallery__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+.filerow {
+  display: grid;
+  grid-template-columns: 28px 28px minmax(120px, 1fr) minmax(0, 2fr) 110px 70px 50px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+.filerow:hover {
+  background: var(--surface);
+}
+.filerow[data-selected="true"] {
+  background: var(--surface);
+}
+.filerow[data-multi="true"] {
+  background: color-mix(in oklab, var(--ink) 6%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--ink);
+}
+.filerow__check {
+  width: 20px; height: 20px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  display: grid; place-items: center;
+  color: transparent;
+  cursor: pointer;
+  padding: 0;
+  transition: background 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.filerow:hover .filerow__check,
+.filerow[data-multi="true"] .filerow__check {
+  border-color: var(--ink-3);
+}
+.filerow__check[data-on="true"] {
+  background: var(--ink); color: var(--surface); border-color: var(--ink);
+}
+.filerow__icon {
+  width: 28px; height: 28px;
+  border-radius: 7px;
+  display: grid; place-items: center;
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+.filerow__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.filerow__topic {
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.filerow__when {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.filerow__size {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.filerow__type {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  text-align: right;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .card {
@@ -474,12 +559,22 @@ input, textarea { font-family: inherit; }
   display: grid; place-items: center;
   color: transparent;
   opacity: 0;
+  cursor: pointer;
+  padding: 0;
   transition: opacity 160ms var(--ease), background 160ms var(--ease), color 160ms var(--ease);
   backdrop-filter: blur(8px);
+  z-index: 2;
 }
-.card:hover .card__check, .card[data-selected="true"] .card__check { opacity: 1; }
-.card[data-selected="true"] .card__check {
+.card:hover .card__check,
+.card[data-selected="true"] .card__check,
+.card[data-multi="true"] .card__check { opacity: 1; }
+.card[data-selected="true"] .card__check,
+.card[data-multi="true"] .card__check {
   background: var(--ink); color: var(--surface); border-color: var(--ink);
+}
+.card[data-multi="true"] {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 2px var(--ink);
 }
 
 .card__type {

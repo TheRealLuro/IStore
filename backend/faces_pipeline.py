@@ -52,7 +52,11 @@ def _detect_sync(raw_bytes: bytes):
 
 
 async def _detect_async(raw_bytes: bytes):
-    return await asyncio.to_thread(_detect_sync, raw_bytes)
+    # Single-thread ML executor so face detection serializes with
+    # in-flight Florence/Qwen inferences instead of racing for the
+    # GIL — keeps the API event loop responsive during backfill.
+    from backend.vision.inference_pool import run_in_inference_pool
+    return await run_in_inference_pool(_detect_sync, raw_bytes)
 
 
 async def _match_named_person(
@@ -175,6 +179,26 @@ async def process_image_for_faces(
     if detections is None:
         try:
             detections = await _detect_async(raw_bytes)
+            # Auto-cascade trigger: when the default detector finds
+            # nothing on a frame CLIP scored as likely-containing-a-
+            # person, fall through to RetinaFace 0.15 → mediapipe.
+            # This catches the "B&W eye-only close-up" miss case
+            # without forcing the user to manually click "this has a
+            # person in it" first. We relax `min_confidence` for the
+            # cascade results since the cascade already pre-filtered.
+            if not detections and getattr(image, "face_likelihood", 0) and image.face_likelihood >= 0.5:
+                from backend.vision.faces import detect_with_cascade
+                from backend.vision.inference_pool import run_in_inference_pool
+                cascaded, stage = await run_in_inference_pool(
+                    detect_with_cascade, raw_bytes
+                )
+                if cascaded:
+                    logger.info(
+                        "auto-cascade rescued image %s via %s (%d faces)",
+                        image.id, stage, len(cascaded),
+                    )
+                    detections = cascaded
+                    threshold = min(threshold, 0.10)
         except ImportError as exc:
             logger.warning(
                 "Face pipeline unavailable (install [ml] extras + insightface): %s", exc,
@@ -343,9 +367,10 @@ async def redetect_image_with_cascade(
     user what worked (and surface the manual-draw flow when "empty").
     """
     from backend.vision.faces import detect_with_cascade
+    from backend.vision.inference_pool import run_in_inference_pool
 
     try:
-        cascaded, stage = await asyncio.to_thread(detect_with_cascade, raw_bytes)
+        cascaded, stage = await run_in_inference_pool(detect_with_cascade, raw_bytes)
     except ImportError as exc:
         logger.warning("Cascade unavailable: %s", exc)
         return {"stage": "empty", "persisted": 0, "detected": 0}
