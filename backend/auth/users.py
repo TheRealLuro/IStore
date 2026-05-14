@@ -105,8 +105,8 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
 
             send_email(
                 user.email,
-                "Your IStore password was changed",
-                "We're letting you know your IStore password was just "
+                "Your neuthek password was changed",
+                "We're letting you know your neuthek password was just "
                 "reset. If this wasn't you, please reply immediately.",
             )
         except Exception:

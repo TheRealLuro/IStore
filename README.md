@@ -1,6 +1,6 @@
-# IStore
+# neuthek
 
-IStore is a FastAPI-based image storage service that combines authenticated uploads,
+neuthek is a FastAPI-based image storage service that combines authenticated uploads,
 object storage, content-aware compression, and optional CLIP-powered image metadata
 and semantic search.
 
@@ -36,7 +36,7 @@ and semantic search.
 
 ## Contents
 
-- [What IStore Does Today](#what-istore-does-today)
+- [What neuthek Does Today](#what-istore-does-today)
 - [Technology Stack](#technology-stack)
 - [Architecture](#architecture)
 - [Data And Storage Model](#data-and-storage-model)
@@ -49,7 +49,7 @@ and semantic search.
 - [Security Disclosure](#security-disclosure)
 - [License](#license)
 
-## What IStore Does Today
+## What neuthek Does Today
 
 | Feature | Current behavior |
 | --- | --- |
@@ -78,7 +78,7 @@ and semantic search.
 
 ## Technology Stack
 
-| Technology | Role in IStore |
+| Technology | Role in neuthek |
 | --- | --- |
 | FastAPI | ASGI API framework for health checks, auth routes, image routes, and search routes. |
 | FastAPI Users | User registration, JWT login/logout, and user management route generation. |
@@ -204,7 +204,7 @@ List filters supported by `GET /images/`:
 
 ## Privacy And Security
 
-IStore handles images and derived ML metadata. Treat both as sensitive user data.
+neuthek handles images and derived ML metadata. Treat both as sensitive user data.
 
 | Concern | Current behavior | Guidance |
 | --- | --- | --- |

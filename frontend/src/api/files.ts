@@ -7,8 +7,13 @@ const REQUIRE_SIGNED_DOWNLOADS =
 export interface ListFilters {
   category?: FileCategory | "all";
   person?: string | null;
+  personId?: number | null;
   /** null = root view, uuid = inside that folder, "ALL" sentinel = ignore filter (search). */
   folderId?: string | null | "ALL";
+  /** Cross-folder "starred only" view (overrides folderId server-side). */
+  starred?: boolean;
+  /** Cross-folder soft-deleted view (overrides folderId server-side). */
+  trashed?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -21,14 +26,21 @@ export async function listFiles(filters: ListFilters = {}): Promise<FileItem[]> 
   if (filters.person) {
     params.set("person", filters.person);
   }
-  if (filters.folderId === "ALL") {
+  if (filters.personId != null) {
+    params.set("person_id", String(filters.personId));
+  }
+  if (filters.trashed) {
+    params.set("trashed", "true");
+  } else if (filters.starred) {
+    params.set("starred", "true");
+  } else if (filters.folderId === "ALL") {
     // Bypass the folder scope — used by global search and the people tray.
     params.set("all", "true");
   } else if (filters.folderId) {
     params.set("folder_id", filters.folderId);
   }
-  // Default behavior (no folderId set) returns root images only — same as
-  // passing folder_id=null on the backend.
+  // Default behavior (no folderId / no starred) returns root images only —
+  // same as passing folder_id=null on the backend.
   if (filters.limit) params.set("limit", String(filters.limit));
   if (filters.offset) params.set("offset", String(filters.offset));
   const qs = params.toString();
@@ -71,6 +83,16 @@ export async function backfillSummaries(
   );
 }
 
+export interface SummarizeProgress {
+  total: number;
+  pending: number;
+  completed: number;
+  has_any_summary: boolean;
+}
+
+export const getSummarizeProgress = () =>
+  api.get<SummarizeProgress>("/images/summarize-progress");
+
 export async function resummarize(id: string): Promise<{ image_id: string; pending_summary: boolean }> {
   return api.post<{ image_id: string; pending_summary: boolean }>(
     `/images/${id}/resummarize`,
@@ -97,6 +119,23 @@ export function servedUrl(id: string): string {
 export function originalUrl(id: string): string {
   return `${API_BASE_URL}/images/${id}/original`;
 }
+
+export interface PdfMeta {
+  page_count: number;
+  pages: { w: number; h: number }[];
+}
+
+/** Read PDF page count + per-page dimensions (in PDF points). Used by the
+ *  preview modal page stack to reserve scroll height before rasters land. */
+export const getPdfMeta = (id: string): Promise<PdfMeta> =>
+  api.get<PdfMeta>(`/images/${id}/pdf-meta`);
+
+/** URL for a single rasterized PDF page. Hit via `useAuthedBlobUrl` so the
+ *  JWT travels in the Authorization header (same as `originalUrl`).
+ *  `width` is the desired bitmap width in physical pixels — call sites
+ *  multiply CSS width × devicePixelRatio for crisp rendering. */
+export const pdfPageUrl = (id: string, page: number, width: number): string =>
+  `${API_BASE_URL}/images/${id}/pdf-page/${page}?width=${Math.round(width)}`;
 
 export async function getDownloadUrl(
   id: string,
@@ -166,3 +205,16 @@ export const getImageGeo = () => api.get<ImageGeoResponse>("/images/geo");
  *  brings them onto the map. Requires the consent scope to be active. */
 export const backfillImageGeo = () =>
   api.post<{ examined: number; inserted: number }>("/images/geo/backfill");
+
+/** Reverse-geocode every `image_geo` row that has lat/lng but no
+ *  human-readable place. Rate-limited per Nominatim ToS (1 rps); a
+ *  large backfill can take minutes. Returns counts so the UI can toast
+ *  progress; safe to call repeatedly. */
+export const backfillImagePlaces = () =>
+  api.post<{ examined: number; filled: number }>("/images/geo/backfill-places");
+
+/** Generate page-1 thumbnail rasters for existing PDFs that don't have
+ *  one (uploaded before the at-upload rasterizer was wired). Returns
+ *  `{examined, generated}`; safe to call repeatedly. */
+export const backfillDocThumbs = () =>
+  api.post<{ examined: number; generated: number }>("/images/backfill-doc-thumbs");

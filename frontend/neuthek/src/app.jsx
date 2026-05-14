@@ -39,11 +39,90 @@ const AdminOverlay = React.lazy(() =>
 );
 import { NewFolderModal } from "./folder-modals.jsx";
 import { useAuthStore } from "@/stores/authStore";
-import { listFiles, getImageGeo, servedUrl, renameImage } from "@/api/files";
+import { listFiles, getImageGeo, servedUrl, renameImage, getSummarizeProgress, searchSemantic } from "@/api/files";
+import { listPeople, faceCropUrl } from "@/api/people";
+import { AuthedThumb } from "./auth-image.jsx";
+import { EditableName } from "./nameable-chip.jsx";
 import { getConsentScopes, grantConsent } from "@/api/consent";
+import { getAccountTrash } from "@/api/auth";
 import toast from "react-hot-toast";
 import { formatDistanceToNowStrict } from "date-fns";
-import { RECENT_SEARCHES } from "./data.jsx";
+// Recent searches are persisted per-browser to localStorage. The mock
+// `RECENT_SEARCHES` seed list is intentionally NOT imported — a fresh
+// account should start empty and grow as the user actually searches.
+const SEARCH_HISTORY_KEY = "neuthek.recentSearches";
+function loadRecentSearches() {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string") : [];
+  } catch { return []; }
+}
+function saveRecentSearches(list) {
+  try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list.slice(0, 8))); } catch {}
+}
+
+// Top-of-app sticky banner that shows summary-regen progress while the
+// worker is draining the queue. Reuses the `["summarize-progress"]` cache
+// key so it deduplicates against the Account modal's poll. `onDismiss`
+// flips a session flag in the parent so the banner stays hidden for the
+// rest of this tab session even while pending > 0.
+function SummarizingBanner({ signedIn, dismissed, onDismiss }) {
+  const { data: progress } = useQuery({
+    queryKey: ["summarize-progress"],
+    queryFn: getSummarizeProgress,
+    enabled: signedIn && !dismissed,
+    refetchInterval: (q) =>
+      q.state.data && q.state.data.pending > 0 ? 2000 : false,
+    staleTime: 1000,
+  });
+  if (!progress || dismissed) return null;
+  if (progress.pending <= 0) return null;
+  if (!progress.has_any_summary) return null; // brand-new account, skip
+  const pct = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        position: "relative",
+        height: 32,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "0 16px",
+        background: "var(--surface)",
+        borderBottom: "1px solid var(--line)",
+        fontSize: 12.5,
+        color: "var(--ink-2)",
+        overflow: "hidden",
+      }}
+    >
+      <div style={{
+        position: "absolute",
+        left: 0, top: 0, bottom: 0,
+        width: `${pct}%`,
+        background: "var(--surface-2)",
+        transition: "width 250ms ease-out",
+        zIndex: 0,
+      }}/>
+      <span style={{ position: "relative", zIndex: 1, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <Icon name="sparkles" size={12}/>
+        Summarizing {progress.completed} of {progress.total} · {pct}%
+      </span>
+      <span style={{ flex: 1 }}/>
+      <button
+        onClick={onDismiss}
+        title="Dismiss for this session"
+        aria-label="Dismiss"
+        style={{ position: "relative", zIndex: 1, background: "none", border: 0, padding: 4, color: "var(--ink-3)", cursor: "pointer" }}
+      >
+        <Icon name="x" size={12}/>
+      </button>
+    </div>
+  );
+}
 
 // Map a real FileItem (backend shape) to neuthek's mock-shape so the existing
 // gallery / preview / cards keep working without rewrites. Anything we can't
@@ -63,6 +142,12 @@ function fileItemToNeuthek(f) {
   try {
     when = formatDistanceToNowStrict(new Date(f.uploaded_at), { addSuffix: true });
   } catch { /* keep default */ }
+  // Docs (PDF page-1 rasters land in the same served bucket as image
+  // thumbs once the backend rasterize-at-upload path is wired). Until
+  // then, FE only emits a thumb for images; the preview hero falls
+  // back to the icon otherwise.
+  const hasServedThumb = type === "image" || (cat === "document" && f.mime_type_served && f.mime_type_served.startsWith("image/"));
+
   return {
     id: f.id,
     type,
@@ -70,15 +155,23 @@ function fileItemToNeuthek(f) {
     name: f.original_filename || `untitled.${ext.toLowerCase()}`,
     size,
     when,
-    thumb: type === "image" ? servedUrl(f.id) : null,
+    thumb: hasServedThumb ? servedUrl(f.id) : null,
     ext,
     topic: f.summary_topic,
     aiContent: f.summary,
+    signals: f.summary_signals || null,
     gps: null, // wired separately from /images/geo
     tags: f.status ? [f.status] : [],
     folder: f.folder_id,
     width: f.width,
     height: f.height,
+    byte_size_original: f.byte_size_original,
+    byte_size_served: f.byte_size_served,
+    codec: f.codec,
+    quality: f.quality,
+    mime_type_original: f.mime_type_original,
+    mime_type_served: f.mime_type_served,
+    original_expires_at: f.original_expires_at,
     scene_label: f.scene_label,
     indoor_outdoor: f.indoor_outdoor,
     is_starred: !!f.is_starred,
@@ -92,6 +185,7 @@ const VIEW_LABELS = {
   photos: "Photos",
   videos: "Videos",
   docs: "Documents",
+  starred: "Starred",
   people: "People",
   places: "Map",
   shared: "Shared",
@@ -114,6 +208,123 @@ const t = {
   showLogout: true,
   showFab: true,
 };
+
+// People view picker — grid of every person + unlabeled cluster, sized
+// for the page (not a strip). Clicking a card drills into that person's
+// photos via the parent's `peopleFilter` state. Unlabeled clusters get
+// an inline rename affordance so the user can name people without
+// having to open an image first.
+function PeoplePicker({ people, onPick }) {
+  const named = (people?.persons || []).map((p) => ({
+    id: "p" + p.id,
+    personId: p.id,
+    clusterId: null,
+    name: p.display_name,
+    img: p.sample_face_id ? faceCropUrl(p.sample_face_id) : null,
+    count: p.face_count,
+  }));
+  const unnamed = (people?.unlabeled_clusters || []).map((c) => ({
+    id: "c" + c.cluster_id,
+    personId: null,
+    clusterId: c.cluster_id,
+    name: null,
+    img: faceCropUrl(c.sample_face_id),
+    count: c.face_count,
+  }));
+  const everyone = [...named, ...unnamed];
+
+  if (everyone.length === 0) {
+    return (
+      <div className="empty">
+        <div className="empty__icon"><Icon name="users" size={26} strokeWidth={1.4}/></div>
+        <div className="empty__title">No people yet</div>
+        <div className="empty__body">Upload photos with faces (and grant face-recognition consent in Settings → Privacy). Detected faces will be grouped here.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "0 28px 28px" }}>
+      <div className="kicker" style={{ marginBottom: 14 }}>
+        {named.length} named · {unnamed.length} unnamed
+      </div>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+        gap: 18,
+      }}>
+        {everyone.map((p) => (
+          <div
+            key={p.id}
+            style={{
+              display: "flex", flexDirection: "column",
+              borderRadius: 14,
+              background: "var(--surface)",
+              border: "1px solid var(--line)",
+              overflow: "hidden",
+              cursor: p.personId ? "pointer" : "default",
+              transition: "border-color 120ms ease, transform 120ms ease",
+            }}
+            onMouseEnter={(e) => { if (p.personId) e.currentTarget.style.borderColor = "var(--ink-3)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--line)"; }}
+            onClick={() => {
+              if (!p.personId) return; // unnamed clusters need a name first
+              onPick?.({ personId: p.personId, name: p.name });
+            }}
+            title={p.personId ? `Show photos of ${p.name}` : "Name this person to filter their photos"}
+          >
+            {/* Square face tile — same approach as the gallery's
+                small `.person__avatar` (cover + center), just sized
+                up. Backend now picks the highest-confidence detection
+                per person (people.py), which means the source crop is
+                already tight on the face; with `cover + center` it
+                fills the box and the eyes land near the middle. */}
+            <div style={{
+              width: "100%",
+              aspectRatio: "1 / 1",
+              background: "var(--surface-3)",
+              position: "relative",
+              borderBottom: "1px solid var(--line)",
+              overflow: "hidden",
+            }}>
+              {p.img ? (
+                <AuthedThumb
+                  url={p.img}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center",
+                  }}
+                  placeholder={{ background: "var(--surface-3)" }}
+                />
+              ) : null}
+            </div>
+            <div style={{
+              padding: "12px 14px",
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              gap: 8,
+            }}>
+              <EditableName
+                name={p.name}
+                personId={p.personId}
+                clusterId={p.clusterId}
+                className={"person__name" + (p.name ? "" : " person__name--unnamed")}
+                unnamedPlaceholder="Name this person"
+                invalidate={[["people"]]}
+              />
+              <span style={{ fontSize: 11.5, color: "var(--ink-3)", flexShrink: 0 }}>
+                {p.count} {p.count === 1 ? "photo" : "photos"}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   // theme
@@ -180,6 +391,10 @@ export function App() {
   // `folderPath` is the breadcrumb stack ([{id,name}, ...]).
   const [folderId, setFolderId] = useStateApp(null);
   const [folderPath, setFolderPath] = useStateApp([]);
+  // People view drill-in: when a user clicks a person chip on the People
+  // view, we filter the gallery to that person's photos. `null` = show
+  // the person picker (no filter applied); set = show photos of person.
+  const [peopleFilter, setPeopleFilter] = useStateApp(null);
   const enterFolder = (folder) => {
     setFolderId(folder.id);
     setFolderPath((p) => [...p, { id: folder.id, name: folder.name }]);
@@ -197,8 +412,16 @@ export function App() {
     setSelectedFile(null);
   };
 
-  // search history (clearable)
-  const [history, setHistory] = useStateApp(RECENT_SEARCHES);
+  // search history (clearable) — sourced from localStorage so the list
+  // survives reloads and starts empty for new accounts.
+  const [history, setHistoryState] = useStateApp(() => loadRecentSearches());
+  const setHistory = (updater) => {
+    setHistoryState((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      saveRecentSearches(next);
+      return next;
+    });
+  };
   const [showHistory, setShowHistory] = useStateApp(false);
 
   // FAB scroll-to-top — the actual scroll container is .gallery, not .main
@@ -239,6 +462,11 @@ export function App() {
   // they made one (essential vs all); the actual scope decisions live in
   // the per-scope consent toggles. localStorage is fine for this since
   // it's a UX gate, not a legal record.
+  // Session flag — the top summary-progress banner stays hidden for the
+  // rest of this tab session once the user clicks dismiss. Resets on tab
+  // reload (intentional — banner re-appears so a long backfill stays
+  // visible after a refresh).
+  const [summaryBannerDismissed, setSummaryBannerDismissed] = useStateApp(false);
   const [showCookie, setShowCookie] = useStateApp(() => {
     try { return localStorage.getItem("neuthek.cookie") == null; } catch { return true; }
   });
@@ -266,6 +494,20 @@ export function App() {
     staleTime: 10_000,
   });
 
+  // Semantic search via /search?q=... — CLIP cosine + FTS hybrid scored
+  // server-side. We only fire when the user actually types something so
+  // an empty query doesn't waste a round-trip. The order from the
+  // backend is the ranked order (highest score first); we keep it for
+  // display so the most relevant hits stay on top. Local refinement
+  // (sort / type-filter) still applies on top of these results.
+  const { data: searchHits } = useQuery({
+    queryKey: ["search", trimmedQuery],
+    queryFn: () => searchSemantic(trimmedQuery, 60),
+    enabled: signedIn && trimmedQuery.length > 0,
+    staleTime: 30_000,
+    keepPreviousData: true,
+  });
+
   // Real GPS points for the Map view, keyed by image id so we can splice
   // them onto each neuthek-shaped row.
   const { data: geoResp } = useQuery({
@@ -287,15 +529,56 @@ export function App() {
     staleTime: 30_000,
   });
 
+  // Starred view — cross-folder list of `is_starred` rows. Backend orders
+  // by `starred_at DESC NULLS LAST` so newest stars come first.
+  const isStarredView = view === "starred";
+  const { data: starredRaw = [] } = useQuery({
+    queryKey: ["files", "STARRED"],
+    queryFn: () => listFiles({ starred: true }),
+    enabled: signedIn && isStarredView,
+    staleTime: 30_000,
+  });
+
+  // Trash view — cross-folder list of soft-deleted rows. The backend
+  // sorts by deleted_at desc so the most recently trashed entry comes
+  // first. Shares no cache key with the live file list, so a delete
+  // from the gallery and a restore from the trash view each invalidate
+  // their own slice.
+  const isTrashView = view === "trash";
+  const { data: trashedRaw = [] } = useQuery({
+    queryKey: ["files", "TRASHED"],
+    queryFn: () => listFiles({ trashed: true }),
+    enabled: signedIn && isTrashView,
+    staleTime: 30_000,
+  });
+
+  // People drill-in: when peopleFilter is set, fetch only that
+  // person's photos via the backend's `?person_id=` param. Backend
+  // joins images -> face_detections -> faces -> persons so this is
+  // a single query, not a client-side filter over `baseFiles`.
+  const isPeopleView = view === "people";
+  const { data: personFilesRaw = [] } = useQuery({
+    queryKey: ["files", "PERSON", peopleFilter?.personId ?? null],
+    queryFn: () => listFiles({ personId: peopleFilter.personId, folderId: "ALL" }),
+    enabled: signedIn && isPeopleView && !!peopleFilter?.personId,
+    staleTime: 30_000,
+  });
+
+  // When a search is active, the ranked /search hits become the source
+  // of truth for the gallery. The score ordering is preserved here —
+  // the gallery's local sort runs only when no query is present (handled
+  // inside GalleryView). Local fallback filtering still narrows further
+  // by type pill etc.
+  const sourceFiles = trimmedQuery.length > 0 && searchHits ? searchHits : rawFiles;
   const baseFiles = useMemoApp(() => {
     const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
-    return rawFiles.map((f) => {
+    return sourceFiles.map((f) => {
       const n = fileItemToNeuthek(f);
       const g = geoMap.get(f.id);
-      if (g) n.gps = { lat: g.lat, lng: g.lng, place: null };
+      if (g) n.gps = { lat: g.lat, lng: g.lng, place: g.place || null };
       return n;
     });
-  }, [rawFiles, geoResp]);
+  }, [sourceFiles, geoResp]);
 
   // Real consent state — drives the sidebar "needs your attention" pill.
   // We count scopes still in NONE state (user hasn't decided yet); GRANTED
@@ -321,35 +604,100 @@ export function App() {
     return allFilesForMap.map((f) => {
       const n = fileItemToNeuthek(f);
       const g = geoMap.get(f.id);
-      if (g) n.gps = { lat: g.lat, lng: g.lng, place: null };
+      if (g) n.gps = { lat: g.lat, lng: g.lng, place: g.place || null };
       return n;
     });
   }, [allFilesForMap, geoResp, isMapView]);
 
+  // Starred files mapped to neuthek shape (cross-folder).
+  const starredFiles = useMemoApp(() => {
+    if (!isStarredView) return [];
+    const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
+    return starredRaw.map((f) => {
+      const n = fileItemToNeuthek(f);
+      const g = geoMap.get(f.id);
+      if (g) n.gps = { lat: g.lat, lng: g.lng, place: g.place || null };
+      return n;
+    });
+  }, [starredRaw, geoResp, isStarredView]);
+
+  // Trashed files (cross-folder) mapped to neuthek shape.
+  const trashedFiles = useMemoApp(() => {
+    if (!isTrashView) return [];
+    return trashedRaw.map((f) => fileItemToNeuthek(f));
+  }, [trashedRaw, isTrashView]);
+
+  // Person-filtered files mapped to neuthek shape (cross-folder).
+  const personFiles = useMemoApp(() => {
+    if (!isPeopleView || !peopleFilter?.personId) return [];
+    const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
+    return personFilesRaw.map((f) => {
+      const n = fileItemToNeuthek(f);
+      const g = geoMap.get(f.id);
+      if (g) n.gps = { lat: g.lat, lng: g.lng, place: g.place || null };
+      return n;
+    });
+  }, [personFilesRaw, geoResp, isPeopleView, peopleFilter]);
+
+  // Real people total for the sidebar — named persons + unlabeled
+  // clusters. The same query already drives the People strip on the
+  // gallery, so React Query dedupes it.
+  const { data: peopleResp } = useQuery({
+    queryKey: ["people"],
+    queryFn: listPeople,
+    enabled: signedIn,
+    staleTime: 60_000,
+  });
+  // Trash count for the sidebar — populated from the same endpoint the
+  // Account → Trash page uses. We share the cache key with that page so
+  // emptying the trash there immediately updates the badge here.
+  const { data: trashSummary } = useQuery({
+    queryKey: ["account-trash"],
+    queryFn: getAccountTrash,
+    enabled: signedIn,
+    staleTime: 60_000,
+  });
+
   // Sidebar counts — derived from the real file list. The "geo" count is
   // sourced from the global geo response (not the current folder scope) so
   // the Map count in the sidebar matches what the map will actually show.
+  // `starred` is library-wide once we've fetched the starred view; before
+  // that we fall back to baseFiles for an approximation. Shared has no
+  // backend yet (todo.md G1) so it stays at 0 instead of a mock value.
+  // Trash is similarly 0 until the trash-view endpoint surfaces a count.
   const sideCounts = useMemoApp(() => {
-    const c = { all: baseFiles.length, image: 0, video: 0, document: 0, geo: 0 };
+    const c = { all: baseFiles.length, image: 0, video: 0, document: 0, geo: 0, starred: 0, people: 0, shared: 0, trash: 0 };
     for (const f of baseFiles) {
       if (f.category === "image") c.image += 1;
       else if (f.category === "video") c.video += 1;
       else if (f.category === "document") c.document += 1;
     }
     c.geo = (geoResp?.points || []).length;
+    c.starred = isStarredView
+      ? starredRaw.length
+      : baseFiles.filter((f) => f.is_starred).length;
+    c.people =
+      (peopleResp?.persons || []).length
+      + (peopleResp?.unlabeled_clusters || []).length;
+    c.trash = trashSummary?.count ?? 0;
     return c;
-  }, [baseFiles, geoResp]);
+  }, [baseFiles, geoResp, isStarredView, starredRaw, peopleResp, trashSummary]);
 
   const filesByView = useMemoApp(() => ({
     gallery: baseFiles,
     photos: baseFiles.filter(f => f.type === "image"),
     videos: baseFiles.filter(f => f.type === "video"),
     docs: baseFiles.filter(f => f.type === "doc"),
-    people: baseFiles.filter(f => f.type === "image"),
+    starred: starredFiles,
+    // People view: when no person is selected, the "files" array is
+    // empty (we render the person picker instead). When a person is
+    // selected we render the cross-folder photos returned by the
+    // person-filtered fetch.
+    people: peopleFilter?.personId ? personFiles : [],
     places: baseFiles.filter(f => f.gps),
     shared: [],
-    trash: [],
-  }), [baseFiles]);
+    trash: trashedFiles,
+  }), [baseFiles, starredFiles, trashedFiles, personFiles, peopleFilter]);
 
   const files = filesByView[view] || [];
 
@@ -403,7 +751,15 @@ export function App() {
     );
   }
 
-  const showEmpty = empty || (view === "trash") || (files.length === 0 && !query);
+  // People-picker mode: when the user is on the People view and hasn't
+  // drilled into a specific person yet, we render the full-page picker
+  // instead of the gallery (so the EmptyGallery hint doesn't appear).
+  const isPeoplePicker = view === "people" && !peopleFilter?.personId;
+  // Trash view should render the gallery whenever there ARE trashed
+  // files; only fall through to the "trash is empty" message when the
+  // list is genuinely empty.
+  const trashIsEmpty = view === "trash" && trashedFiles.length === 0;
+  const showEmpty = empty || trashIsEmpty || (files.length === 0 && !query && view !== "people");
   const densityGap = t.density === "compact" ? 10 : t.density === "comfy" ? 22 : 16;
   const isMap = view === "places";
 
@@ -413,7 +769,7 @@ export function App() {
       <style>{`.gallery__grid { gap: ${densityGap}px; }`}</style>
       <Sidebar
         view={view}
-        onView={(v) => { setView(v); setQuery(""); setSelectedFile(null); }}
+        onView={(v) => { setView(v); setQuery(""); setSelectedFile(null); setPeopleFilter(null); }}
         onUpload={() => setShowUpload(true)}
         onAccount={() => openAccount("profile")}
         // Pill is shown only when there are undecided consent scopes.
@@ -425,12 +781,17 @@ export function App() {
       />
 
       <main className="main" ref={mainRef}>
+        <SummarizingBanner
+          signedIn={signedIn}
+          dismissed={summaryBannerDismissed}
+          onDismiss={() => setSummaryBannerDismissed(true)}
+        />
         <div className="topbar">
           <div className="topbar__title">
             <h1>{VIEW_LABELS[view]}</h1>
             <span className="topbar__title-meta">
               {query
-                ? `${files.filter(f => f.name.toLowerCase().includes(query.toLowerCase()) || (f.topic || "").toLowerCase().includes(query.toLowerCase()) || (f.aiContent || "").toLowerCase().includes(query.toLowerCase())).length} results`
+                ? `${files.length} results`
                 : `${files.length} items`}
             </span>
           </div>
@@ -529,6 +890,14 @@ export function App() {
             display: "flex", alignItems: "center", gap: 6,
             fontSize: 12.5, color: "var(--ink-3)",
           }}>
+            <button onClick={() => navigateToCrumb(folderPath.length - 2)}
+                    title="Back one level"
+                    aria-label="Back one level"
+                    style={{ background: "none", border: 0, padding: "2px 4px",
+                             color: "var(--ink-2)", cursor: "pointer",
+                             display: "inline-flex", alignItems: "center" }}>
+              <Icon name="chevronLeft" size={14}/>
+            </button>
             <button onClick={() => navigateToCrumb(-1)}
                     style={{ background: "none", border: 0, padding: 0, color: "var(--ink-2)", cursor: "pointer" }}>
               <Icon name="home" size={12}/> Home
@@ -549,28 +918,38 @@ export function App() {
           ? <React.Suspense fallback={<div style={{ padding: 40, color: "var(--ink-3)" }}>Loading map…</div>}>
               <MapView items={allFilesMapped} onPick={(f) => setSelectedFile(f)}/>
             </React.Suspense>
-          : showEmpty
-            ? (view === "trash"
-                ? <div className="empty">
-                    <div className="empty__icon"><Icon name="trash" size={28} strokeWidth={1.4}/></div>
-                    <div className="empty__title">Your trash is empty</div>
-                    <div className="empty__body">Files you delete appear here for 30 days before they're removed for good. Nothing to clean up right now.</div>
-                  </div>
-                : <EmptyGallery onUpload={() => setShowUpload(true)}/>)
-            : <GalleryView
-                files={files}
-                query={query}
-                sort={sort}
-                selected={selectedFile?.id}
-                showPeopleStrip={t.showPeopleStrip}
-                showFolders={t.showFolders}
-                typeFilter={typeFilter}
-                onTypeFilter={setTypeFilter}
-                onSelect={(f) => setSelectedFile(prev => prev?.id === f.id ? null : f)}
-                onRename={handleRename}
-                folderId={folderId}
-                onEnterFolder={enterFolder}
-              />}
+          : isPeoplePicker
+            ? <PeoplePicker
+                people={peopleResp}
+                onPick={(p) => setPeopleFilter(p)}
+              />
+            : showEmpty
+              ? (view === "trash"
+                  ? <div className="empty">
+                      <div className="empty__icon"><Icon name="trash" size={28} strokeWidth={1.4}/></div>
+                      <div className="empty__title">Your trash is empty</div>
+                      <div className="empty__body">Files you delete appear here for 30 days before they're removed for good. Nothing to clean up right now.</div>
+                    </div>
+                  : <EmptyGallery onUpload={() => setShowUpload(true)}/>)
+              : <GalleryView
+                  files={files}
+                  query={query}
+                  sort={sort}
+                  view={view}
+                  selected={selectedFile?.id}
+                  // People drill-in already filters server-side; don't
+                  // render the redundant strip below the topbar.
+                  showPeopleStrip={t.showPeopleStrip && view !== "people"}
+                  showFolders={t.showFolders}
+                  typeFilter={typeFilter}
+                  onTypeFilter={setTypeFilter}
+                  onSelect={(f) => setSelectedFile(prev => prev?.id === f.id ? null : f)}
+                  onRename={handleRename}
+                  folderId={folderId}
+                  onEnterFolder={enterFolder}
+                  peopleFilter={peopleFilter}
+                  onClearPeopleFilter={() => setPeopleFilter(null)}
+                />}
       </main>
 
       <PreviewPanel file={selectedFile} onClose={() => setSelectedFile(null)} onRename={handleRename} user={user}/>

@@ -71,12 +71,38 @@ async def list_people(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> PeopleResponse:
-    # Named persons with sample face id (the most recent).
+    # Sample face per person: pick by HIGHEST detection confidence
+    # first, then by bbox area, then by face id.
+    #
+    # The earlier "largest bbox area first" heuristic backfired on
+    # people whose biggest detection was a wide loose box that
+    # captured shoulders + hair + a lot of background — `cover` on
+    # the tile then framed empty space because the actual face was
+    # tiny relative to the crop. Confidence correlates with TIGHT,
+    # well-framed face detections (high-confidence = the detector
+    # was sure it saw a face filling the box). Bbox area only kicks
+    # in as a tiebreaker so a clearly-visible mid-size face still
+    # beats a low-resolution one when confidence ties.
+    best_face_sq = (
+        select(Face.id)
+        .join(FaceDetection, FaceDetection.face_id == Face.id)
+        .where(
+            Face.user_id == user.id,
+            Face.person_id == Person.id,
+            FaceDetection.user_id == user.id,
+        )
+        .order_by(
+            FaceDetection.detection_confidence.desc().nullslast(),
+            (FaceDetection.bbox_w * FaceDetection.bbox_h).desc(),
+            Face.id.desc(),
+        )
+        .limit(1)
+        .correlate(Person)
+        .scalar_subquery()
+    )
     p_stmt = (
-        select(Person, func.max(Face.id))
-        .outerjoin(Face, (Face.person_id == Person.id) & (Face.user_id == user.id))
+        select(Person, best_face_sq.label("sample_face_id"))
         .where(Person.user_id == user.id)
-        .group_by(Person.id)
         .order_by(Person.face_count.desc())
     )
     p_rows = (await session.execute(p_stmt)).all()
@@ -90,25 +116,47 @@ async def list_people(
         for (p, face_id) in p_rows
     ]
 
-    # Unlabeled clusters: face rows with cluster_id but no person_id.
-    c_stmt = (
-        select(
-            Face.cluster_id,
-            func.count(Face.id).label("count"),
-            func.max(Face.id).label("sample"),
+    # Unlabeled clusters — same logic: highest confidence first,
+    # then bbox area, then most recent. (Confidence > area for the
+    # same reason as named persons above: tight, well-framed faces.)
+    all_unlabeled = (
+        await session.execute(
+            select(Face.cluster_id, Face.id, FaceDetection.bbox_w, FaceDetection.bbox_h, FaceDetection.detection_confidence)
+            .join(FaceDetection, FaceDetection.face_id == Face.id)
+            .where(
+                Face.user_id == user.id,
+                Face.person_id.is_(None),
+                Face.cluster_id.is_not(None),
+                FaceDetection.user_id == user.id,
+            )
+            .order_by(
+                Face.cluster_id,
+                FaceDetection.detection_confidence.desc().nullslast(),
+                (FaceDetection.bbox_w * FaceDetection.bbox_h).desc(),
+                Face.id.desc(),
+            )
         )
-        .where(
-            Face.user_id == user.id,
-            Face.person_id.is_(None),
-            Face.cluster_id.is_not(None),
-        )
-        .group_by(Face.cluster_id)
-        .order_by(func.count(Face.id).desc())
-    )
-    c_rows = (await session.execute(c_stmt)).all()
+    ).all()
+    best_per_cluster: dict[int, int] = {}
+    counts_per_cluster: dict[int, int] = {}
+    for cid, fid, _w, _h, _conf in all_unlabeled:
+        if cid is None:
+            continue
+        if cid not in best_per_cluster:
+            best_per_cluster[cid] = fid
+        counts_per_cluster[cid] = counts_per_cluster.get(cid, 0) + 1
+
     clusters = [
-        ClusterRead(cluster_id=int(cid), face_count=int(cnt), sample_face_id=int(sample))
-        for (cid, cnt, sample) in c_rows
+        ClusterRead(
+            cluster_id=int(cid),
+            face_count=int(counts_per_cluster[cid]),
+            sample_face_id=int(fid),
+        )
+        for cid, fid in sorted(
+            best_per_cluster.items(),
+            key=lambda kv: counts_per_cluster.get(kv[0], 0),
+            reverse=True,
+        )
     ]
 
     total = (

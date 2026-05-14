@@ -1,4 +1,4 @@
-# IStore -- full server setup (Windows / PowerShell).
+# neuthek -- full server setup (Windows / PowerShell).
 #
 # Idempotent. Re-running is safe.
 #

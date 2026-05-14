@@ -81,6 +81,7 @@ frontend/.vite/
 *.sqlite3
 *.sqlite
 *.db
+*.log
 
 # tsc-generated outputs from .ts configs (we author the .ts; .js/.d.ts are derived)
 frontend/vite.config.js

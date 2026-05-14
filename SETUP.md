@@ -1,4 +1,4 @@
-# IStore — Operator Setup
+# neuthek — Operator Setup
 
 This file walks through everything you need to configure beyond `python
 scripts/setup.py`. Each section is self-contained — skip the ones that
@@ -14,7 +14,7 @@ don't apply to you.
 
 ## 1. SMTP — verification + password-reset email
 
-Without SMTP, IStore falls back to **dev mode**: the email body is
+Without SMTP, neuthek falls back to **dev mode**: the email body is
 printed to the uvicorn terminal. Verification + reset still *work*; you
 just have to copy the link out of the terminal yourself. That's fine
 for local development. **Production must configure real SMTP.**
@@ -39,7 +39,7 @@ production, use a transactional provider with DKIM + SPF.
 1. Visit <https://myaccount.google.com/security> and enable
    **2-Step Verification** if you haven't.
 2. Go to <https://myaccount.google.com/apppasswords>.
-3. Create a new app password (name: "IStore"). Copy the 16-char string
+3. Create a new app password (name: "neuthek"). Copy the 16-char string
    Google gives you.
 4. Add to `.env`:
 
@@ -48,7 +48,7 @@ production, use a transactional provider with DKIM + SPF.
    SMTP_PORT=587
    SMTP_USER=your-address@gmail.com
    SMTP_PASS=the-16-char-app-password
-   SMTP_FROM=IStore <your-address@gmail.com>
+   SMTP_FROM=neuthek <your-address@gmail.com>
    FRONTEND_BASE_URL=http://localhost:5173
    ```
 
@@ -78,7 +78,7 @@ Two ways to confirm:
 .venv/Scripts/python.exe -c "
 import logging; logging.basicConfig(level=logging.INFO)
 from backend.email_send import send_email
-print(send_email('you@your-domain.com', 'IStore SMTP test', 'It works.'))
+print(send_email('you@your-domain.com', 'neuthek SMTP test', 'It works.'))
 "
 ```
 
@@ -107,7 +107,7 @@ curl -X POST http://127.0.0.1:8000/auth/forgot-password \
 
 ## 2. Google Drive sync (C2)
 
-Read-only sync of your Drive images into IStore. Two prerequisites:
+Read-only sync of your Drive images into neuthek. Two prerequisites:
 
 1. **Encryption key.** Refresh tokens are encrypted at rest with a
    symmetric Fernet key. Generate one:
@@ -136,7 +136,7 @@ Read-only sync of your Drive images into IStore. Two prerequisites:
    4. **APIs & Services → OAuth consent screen** →
       - User type: **External** (unless you're on a Workspace tenant —
         then **Internal** is fine and skips the verification dance).
-      - App name: IStore, your email, developer email — fill the
+      - App name: neuthek, your email, developer email — fill the
         required fields, leave the optional ones blank.
       - Scopes: add `.../auth/drive.readonly`.
       - Test users: add your own Google account (and any others who

@@ -60,19 +60,70 @@
   transform: none;
 }
 
-/* ---------- PREVIEW PANEL — working close, image lightbox, backdrop ---------- */
+/* ---------- MODAL z-index over Leaflet ---------- *
+ * Leaflet's default pane stacking goes up to 700 (popups + tooltips),
+ * which sits ABOVE the settings modal's z-index of 51 — opening
+ * Account from the Map view used to put the map on top of the modal.
+ * Bump everything that draws on top of the page (scrim, modal,
+ * preview-backdrop, preview, lightbox) past Leaflet's max. */
+.scrim   { z-index: 9000 !important; }
+.modal   { z-index: 9001 !important; }
+.preview-backdrop { z-index: 9010 !important; }
+.preview { z-index: 9011 !important; }
+.lightbox { z-index: 9020 !important; }
+
+/* Leaflet's own DOM doesn't paint above z-index 800 by default, but
+   on Windows + Docker we've seen the tile pane mysteriously layer
+   itself above modals (likely a stacking-context regression in a
+   transformed ancestor). Force every Leaflet element inside the map
+   host below the modal layer so no map element can ever cover the
+   settings/preview overlays. */
+.leaflet-container,
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom,
+.leaflet-control { z-index: 50 !important; }
+.leaflet-popup-pane,
+.leaflet-tooltip-pane { z-index: 60 !important; }
+
+/* ---------- PREVIEW PANEL — working close, image lightbox, backdrop ---------- *
+ *
+ * Backdrop is a plain dim layer (no backdrop-filter). The previous
+ * `blur(10px) saturate(1.1)` filter triggered a stacking-context bug
+ * on some browser builds where the preview pane itself appeared
+ * blurred even though its z-index sat above the backdrop. Plain
+ * dimming reads as "modal background", avoids the GPU cost, and the
+ * preview panel stays crisp at every z-index.
+ */
 .preview-backdrop {
   position: fixed; inset: 0;
-  background: color-mix(in oklab, var(--ink) 40%, transparent);
-  backdrop-filter: blur(10px) saturate(1.1);
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  z-index: 90;
-  animation: bd-fade 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  /* Soft frosted-glass dim. The previous `blur(10px) saturate(1.1)` was
+     too heavy — choppy on slower GPUs and visually distracting. A
+     moderate 5px blur keeps the gallery legible enough to see what
+     you came from while still anchoring focus on the preview panel.
+     `saturate` is intentionally omitted; the slight saturation lift
+     read as a tint shift on photos. */
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  /* z-index is set by the consolidated block above (9010 !important).
+     Don't restate it here — a non-!important value at this position
+     would re-introduce the confusion the comment above is warning
+     against. */
+  animation: bd-fade 220ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+html[data-theme="light"] .preview-backdrop {
+  background: rgba(20, 20, 22, 0.35);
 }
 @keyframes bd-fade { from { opacity: 0; } to { opacity: 1; } }
 
 .preview {
-  z-index: 100 !important;
+  /* MUST stay >= 9011 (above .preview-backdrop at 9010, above Leaflet's
+     internal max of 700). An earlier copy of this rule set 100 — same
+     file, same specificity, later wins — and the backdrop ended up
+     painting ON TOP of the panel. Don't downgrade.
+  */
+  z-index: 9011 !important;
   pointer-events: auto;
 }
 .preview .btn-icon { pointer-events: auto; }
@@ -117,6 +168,148 @@
   transition: background 160ms;
 }
 .lightbox__close:hover { background: rgba(255,255,255,0.22); }
+
+/* ---------- PDF preview modal ---------- *
+ * Sits on top of the .lightbox dark backdrop. Pages are rasterized
+ * server-side via PyMuPDF (`GET /images/{id}/pdf-page/{n}`) and
+ * stacked vertically inside the body's own themed scroll container —
+ * see `frontend/neuthek/src/pdf-stack.jsx`. The iframe + PDFium
+ * approach this replaces leaked a foreign scrollbar into the modal
+ * and paginated the document under `view=Fit` mode; now the user
+ * sees the full doc height in one continuous, themed scroll. */
+.pdf-modal {
+  width: min(1100px, 94vw);
+  height: min(92vh, 1280px);
+  background: var(--surface-2);
+  border-radius: 18px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px var(--line-2);
+  cursor: default;
+  animation: lb-pop 280ms cubic-bezier(0.32, 0.72, 0, 1.05);
+}
+.pdf-modal__head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-2);
+  height: 52px;
+  flex-shrink: 0;
+}
+.pdf-modal__icon {
+  display: inline-grid; place-items: center;
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  flex-shrink: 0;
+}
+.pdf-modal__name {
+  flex: 1; min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-modal__size {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+/* The body is a flex container that hands its full height to the
+ * scroll viewport inside. No padding here — the inner stack adds its
+ * own breathing room around each page. */
+.pdf-modal__body {
+  flex: 1; min-height: 0;
+  background: var(--surface-2);
+  display: flex;
+  overflow: hidden;
+}
+
+/* ---------- PDF page-stack viewer ---------- *
+ * The scroll lives on `.pdf-stack`; `.pdf-stack__inner` centers the
+ * column of pages. Scrollbar is themed via both the standard
+ * `scrollbar-*` properties (Firefox + Chromium 121+) and the webkit
+ * pseudo-elements (older Chromium, Safari, Edge) so there's never a
+ * platform-default widget poking through. */
+.pdf-stack {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-4) transparent;
+  scroll-behavior: smooth;
+}
+.pdf-stack::-webkit-scrollbar { width: 10px; }
+.pdf-stack::-webkit-scrollbar-track { background: transparent; }
+.pdf-stack::-webkit-scrollbar-thumb {
+  background: var(--ink-4);
+  border-radius: 6px;
+  border: 2px solid var(--surface-2);
+  background-clip: padding-box;
+}
+.pdf-stack::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+.pdf-stack__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 14px 22px;
+}
+.pdf-stack__state {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 24px;
+}
+.pdf-stack__state-sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-4);
+  font-family: "Geist Mono", ui-monospace, monospace;
+}
+
+/* One rendered (or pending) PDF page. The wrapper is sized by JS to
+ * match the page's aspect ratio before the raster lands, so the
+ * scroll viewport's total height is correct from the start and the
+ * scrollbar doesn't jump as pages stream in. */
+.pdf-page {
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  overflow: hidden;
+  position: relative;
+}
+html[data-theme="dark"] .pdf-page {
+  background: #fafafa;
+  box-shadow: 0 2px 14px rgba(0,0,0,0.45);
+}
+.pdf-page__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.pdf-page__skeleton {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  color: var(--ink-4);
+  font-size: 14px;
+  background: linear-gradient(180deg, var(--surface-3) 0%, var(--surface-2) 100%);
+}
+html[data-theme="dark"] .pdf-page__skeleton {
+  background: linear-gradient(180deg, #eaeaea 0%, #f5f5f5 100%);
+  color: rgba(0,0,0,0.35);
+}
 
 /* ---------- SETTINGS — cleaner scrollbar, contained sign-out hover ---------- */
 .appset__main {

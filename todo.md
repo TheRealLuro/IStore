@@ -5,85 +5,42 @@
 > incrementally (folder, repo URL, package name, README, CI, infra).
 
 This file tracks **what's still open** — broken, partial, or planned.
-Shipped work is intentionally not listed. Read commit history (or the
-detailed status fields per item below) for what's done.
+Shipped work isn't listed here; read `git log` for that.
 
-> **Sprint A landed 2026-05-13**: sidebar storage query gated (no more
-> auth-screen 401s), folder cards show subfolder counts, `is_starred`
-> backend + `POST /images/{id}/star` + optimistic FE toggle (replaces
-> the localStorage star), per-image rename via
-> `PATCH /images/{id}/name` with a centralized filename validator
-> (reserved Windows names, path separators, extension preservation,
-> 255-byte cap), aggressive dep cleanup (~230 npm packages removed +
-> orphan `src/utils/*` deleted), `.gitignore` hardened. Fixed a
-> latent asyncpg `%s` placeholder bug in `backend/db.py` along the way.
+> **Last shipped**: Sprint B + Sprint B+ (2026-05-14) — summary progress UI,
+> multi-model image+doc pipeline (Florence-2 regions/OD + OpenCLIP concept
+> vocab + gated InternVL2-4B), PDF OCR fallback, `summary_signals` JSONB,
+> Starred view, folder back button, admin per-row actions, face re-detect
+> cascade (D8) + mediapipe, reverse-geocode worker (Nominatim), Activity
+> log + Trash endpoints + un-hide panels.
+> **Next up**: Sprint C (compliance + ship-blocking work). See §11.
 
 ---
 
 ## 1. Currently broken / partial
 
-### 1.1 PreviewPanel doc-bitmap cache collision
-"framework showdown.pdf" preview tab renders "LBLF.pdf" content. Cache
-key collision in [frontend/src/utils/docRender.ts](frontend/src/utils/docRender.ts)
-(`getCachedPreview` / `setCachedPreview`) — cache keys on `file.id` but
-the bitmap is reused across cards. Verify the cancellation flag in
-[ThumbnailRenderer.tsx](frontend/src/components/ThumbnailRenderer.tsx)
-discards the wrong bitmap when files swap quickly.
+### 1.1 No backend for sharing
+Preview panel's "Shared with" row stays hidden until **G1** ships the
+`share_grants` table + `POST/DELETE/GET /images/{id}/shares`. Long
+pole — Sprint D.
 
-### 1.2 Face recognition misses extreme close-ups
-`buffalo_l` RetinaFace requires landmarks (eyes + nose + mouth + jaw).
-Eye-only B&W crops are structurally below the model's capability;
-`det_thresh=0.3` helped marginal cases but not extreme ones. Fix in
-**D7**: when a user manually labels a photo as containing a person,
-retry detection at a much lower threshold before falling back to
-manual-attach UI.
-
-### 1.3 Map: pins still bare lat/lng
-Pass-5 wired the map (canvas always renders, cross-folder query, EXIF
-backfill, fitBounds). Still TODO: reverse-geocode pass so popup shows
-"Big Sur, CA" instead of `36.27, -121.81`. Backend would call out to
-Nominatim or a self-hosted geocoder and cache results in `image_geo.place`
-(column already exists, currently always null).
-
-### 1.4 No backend for sharing / "Shared with"
-Real sharing needs: `share_grants` table (`image_id` → `user_id` or
-email + role + when), `POST /images/{id}/shares` to invite,
-`DELETE /images/{id}/shares/{id}` to revoke, `GET /images/{id}/shares`
-for the preview panel to populate `file.sharedWith`. Long pole —
-Sprint D.
-
-### 1.5 Theme tokens leftover
-neuthek uses `--ink-*` / `--surface-*` tokens. Some legacy
-`--bg-page` / `--bg-elevated` references and Tailwind class fragments
-still exist in `frontend/neuthek/styles/*.css`. Sweep and remove.
-
-### 1.6 Settings: features hidden until backends ship
+### 1.2 Settings: features still hidden until their backends ship
 The Settings rail (Account / Privacy / Security / AI features / Your
-data) is now fully wired for everything that has a backend. The
-following sections are deliberately hidden in the UI today and need
-backend work before they come back:
-- **Plan / Invoices** (in Account tab) — needs Stripe / billing
-  backend.
+data) is wired for everything that has a backend. The following
+sections remain hidden because they each need a new backend surface:
+- **Plan / Invoices** (Account tab) — needs Stripe / billing.
 - **Notifications tab** (entire tab gone) — needs email + push
   notification backends + `notification_prefs` table.
-- **Activity log** (in Your data) — needs a per-user
-  `/account/activity` export endpoint (audit log already exists for
-  superuser; this is the user-facing slice).
-- **Trash** (in Your data) — needs `/account/trash` listing +
-  `/account/trash/empty` endpoint.
-- **2FA TOTP** beyond recovery codes — pyotp + QR endpoint.
-- **Per-scope `expires_at`** on Privacy rows — backend now returns it
-  via `/consent/scopes`, but the UI just shows `granted_at` for now.
-  Surface "Expires Apr 14, 2029" subtitle once retention preferences
-  are user-controllable.
+- **2FA TOTP** beyond recovery codes — needs pyotp + QR endpoint.
+- **Per-scope `expires_at`** on Privacy rows — backend already
+  returns it via `/consent/scopes`; UI shows only `granted_at` for now.
+  Surface "Expires …" once retention preferences are user-controllable.
 
-### 1.7 Admin overlay: per-row actions not wired
-Storage / Users / Audit tabs read live data, but per-user actions
-on the Users tab (edit quota → `updateUserQuota`, promote/demote
-role → `updateUserRole`) aren't wired. Endpoints exist; UI work only.
-Models / Tasks / Logs / System / Processes / Hardware tabs are still
-prototype mock — keep behind the `MOCK` pill until **C8.2** / **F1**
-backend surfaces land.
+### 1.3 Admin overlay non-Users tabs still mock
+Storage / Users / Audit tabs read live data. Users tab now has
+inline per-row quota + role editors. Models / Tasks / Logs / System
+/ Processes / Hardware tabs are still prototype mock — keep behind
+the `MOCK` pill until **C8.2** / **F1** backend surfaces land.
 
 ---
 
@@ -212,11 +169,10 @@ post-consent (wiring is half-there in
 ## 4. Product features
 
 ### C1. Folders, files, naming, organization
-- ⏳ **C1.1 Rename files**: `PATCH /images/{id}/name` validating
-  type-correct conventions (no path separators; preserves extension;
-  rejects reserved Windows names like `CON`, `PRN`; trims to 255 bytes;
-  collapses whitespace). Updates `images.original_name` only; storage
-  key stays UUID. Re-runs search index update.
+- ✅ **C1.1 Rename files** — shipped Sprint A. `PATCH /images/{id}/name`
+  with centralized `validate_image_filename` validator (path separators,
+  reserved Windows names, extension preservation, 255-byte cap, control
+  chars).
 - ⏳ **C1.2 AI-suggested smart names**: "Suggest a name" affordance on
   rename that asks the existing summarizer for 3 short, filename-safe
   proposals from content (e.g. "Whiteboard sketch — auth flow"). Reuses
@@ -361,48 +317,75 @@ Tokens close to Apple HIG, shadows strictly small
   re-summarize, re-embed, or re-detect-faces for a user / folder /
   date range without leaving the UI.
 
+### C9. Multi-axis image filtering ⏳
+Today's gallery has one filter axis (type pill: All / Photos / Videos /
+Documents). Users can't pin down "all indoor photos from Vancouver
+containing Sasha." Every signal needed is already in the DB —
+`images.content_type`, `scene_label`, `indoor_outdoor`,
+`image_geo.{lat,lng,place}`, `face_detections.person_id`, `image_tags`,
+`summary_topic`, dates. The UX gap is composable filters in the FE
+plus a query API that accepts them.
+
+- **Backend** ([backend/api/images.py](backend/api/images.py)
+  `list_images`): extend `GET /images/` to accept query params for
+  `scene_label`, `indoor_outdoor`, `content_type`,
+  `near=lat,lng,radius_km`, `person_id`, `tag`,
+  `taken_between=ISO,ISO`, `is_starred`. AND-combine. Each gates on
+  the relevant consent scope (location filter requires
+  `gps_retention`, person filter requires `face_recognition`).
+- **Frontend** ([frontend/neuthek/src/gallery.jsx](frontend/neuthek/src/gallery.jsx)
+  `TypeChips` + new `FilterStrip`,
+  [frontend/src/api/files.ts](frontend/src/api/files.ts) `ListFilters`):
+  a filter strip below the type pills with chips per axis ("Indoor" /
+  "Vancouver" / "Sasha" / "Starred"), each removable; clicking opens a
+  small picker (scene list / map radius / people grid / tag list).
+  Persist the filter in the URL so it survives reloads. Multi-axis
+  composes the React-Query key (`["files", scope, filters]`) — no
+  other plumbing change.
+- **Out of scope here**: the auto-generated facets ("show 12 most
+  common scenes from your library") — defer until D1 is tuned so the
+  labels are trustworthy.
+
 ---
 
 ## 5. Search & AI quality
 
-### D1. Better image summaries 🟡
-- ✅ OCR cap raised 400→1500 chars in the Qwen rewriter prompt
-  (whiteboards stop being truncated mid-equation).
-- ✅ Florence-2 detailed caption + scene-gated OCR + Qwen rewrite live.
-- ⏳ Add a scene-and-objects pass (RAM++ tags or Places365) and feed
-  those into Qwen's prompt as structured hints for better content
-  understanding ("auth-flow review on a whiteboard" instead of
-  "person standing near a whiteboard").
-- ⏳ Person-aware splice using display-name binding (**C4.2**) instead
+### D1. Better image summaries ⏳
+Florence-2 detailed caption + scene-gated OCR + Qwen rewrite are wired.
+What's still open:
+- **Scene/object hint pass**: pick a model "like RAM++ but better"
+  (richer open vocab, captioning-grade recognition). Feed labels into
+  Qwen's rewrite prompt as structured hints so the summary reads
+  "auth-flow review on a whiteboard" instead of "person standing near
+  a whiteboard". Candidates to evaluate: RAM++, Places365 (365-label
+  scene classifier), CogVLM2 tagger, OpenCLIP zero-shot against a
+  curated 4k-vocab list.
+- **Person-aware splice** using display-name binding (**C4.2**) instead
   of "Me" / generic third-person.
-- ⏳ Held-out eval set: "user search queries that should match this
+- **Held-out eval set**: "user search queries that should match this
   image" — measure recall@5 to drive prompt tuning.
 
-### D2. Better document summaries 🟡
-- ✅ Replaced DistilBART with Qwen2.5-Instruct as primary summarizer.
-  Long docs are chunked → per-chunk summaries → merged in a second
-  pass (map-reduce). DistilBART stays as fallback. LLM also fills in
-  topic + keypoints when extraction returned nothing usable.
-- ✅ pdfminer.six fallback for layout-heavy / two-column PDFs that
-  pypdf can't parse.
-- ⏳ Per-chunk embeddings indexed alongside the doc so we can answer
+### D2. Better document summaries ⏳
+Qwen2.5-Instruct is the primary doc summarizer (map-reduce over chunks);
+pypdf + pdfminer.six fallback are wired. What's still open:
+- **Per-chunk embeddings** indexed alongside the doc so we can answer
   "where in this doc is X" — enables jump-to-section hits in semantic
   search.
-- ⏳ OCR fallback for image-only PDFs (scanned docs return 0 text from
-  both pypdf and pdfminer; route through Florence-2 OCR per page).
+- **OCR fallback for image-only PDFs** (scanned docs return 0 text
+  from both pypdf and pdfminer; rasterize via PyMuPDF then route each
+  page through Florence-2 `<OCR>`).
 
-### D3. Hybrid search (CLIP + FTS) 🟡
-- ✅ `GET /search` now blends CLIP cosine similarity (visual) with
-  Postgres FTS over `summary` + `summary_topic` + `summary_points` +
-  `original_filename` (textual). Weighted 0.45 CLIP / 0.55 text.
-  Migration `0017_summary_fts` adds a generated tsvector column with
-  a GIN index for query-time speed.
-- ⏳ **Re-summarize backfill**: run `POST /images/backfill-summaries`
-  on existing rows to populate the new doc summary fields. Existing
-  DistilBART output is fine but lower quality than the new Qwen path.
-- ⏳ **Score telemetry**: log (query, top-10 ids, blend weights) per
-  search so we can tune the blend without guessing. Anonymized,
-  consent-gated under `bandit_compression_telemetry`.
+### D3. Hybrid search (CLIP + FTS) ⏳
+`GET /search` blends CLIP cosine similarity with Postgres FTS over
+`summary` + `summary_topic` + `summary_points` + `original_filename`
+(0.45/0.55 weight; tsvector GIN index via migration `0017_summary_fts`).
+What's still open:
+- **Re-summarize backfill** — run `POST /images/backfill-summaries`
+  on existing rows so old DistilBART output is replaced by the new
+  Qwen path. Trigger via Account → AI features → Library maintenance.
+- **Score telemetry** — log (query, top-10 ids, blend weights) per
+  search so we can tune the blend empirically. Anonymized, consent-
+  gated under `bandit_compression_telemetry`.
 
 ### D4. Semantic search through folders ⏳
 Blocked on **D1**+**D2** stabilizing. Once content summaries are
@@ -624,69 +607,77 @@ in its own commit so blame stays useful and reverts are cheap.
 
 ## 11. Recommended priority order
 
-> Picked 2026-05-09. Each item links back to its detail above.
+> Each item links back to its detail above. Sprint A + B + B+ landed
+> (2026-05-13/14). Start at C.
 
-### Sprint B — AI quality (next up)
+### Sprint B — AI quality ✅ LANDED 2026-05-14
 
-1. **D1** scene/object hint pass — pick a model stronger than RAM++
-   (richer vocab, captioning-grade recognition), feed labels into the
-   Qwen rewrite prompt. Re-summarize the library, hand-eval ~20 results,
-   tune prompts.
-2. **D2** OCR fallback for image-only PDFs — when pypdf + pdfminer both
-   return empty, rasterize page-by-page (PyMuPDF) and route each page
-   through Florence-2 `<OCR>`.
-3. **D8** person re-detect on user signal — UX cascade:
-   `RetinaFace 0.3 → RetinaFace lower → mediapipe → user draws box`.
-   Adds mediapipe dep.
+D1 multi-model pipeline (Florence-2 regions + OD + OpenCLIP concept
+vocab + gated InternVL2-4B + Qwen synthesis), D2 PDF OCR fallback via
+PyMuPDF, D8 face re-detect cascade with mediapipe — all shipped. Doc
+preview rasterize + summary `topic`/prompt sharpening landed in the
+B+ patch.
 
-### Sprint C — compliance (ship-blocking; parallel to B)
+### Sprint C — compliance (next, ship-blocking; ~1 week)
 
-4. **A6** audit existing PRIVACY.md / SECURITY.md / DATA_PROCESSING.md
-   for completeness; fill the gaps.
+4. **A6** audit existing PRIVACY.md / SECURITY.md /
+   DATA_PROCESSING.md; fill gaps; wire consent log row per grant.
 5. **A1** finishing — per-user rate limits + persistent quarantine
-   bucket (most of the validator is already in place).
-6. **A5** deletion integration test (uses existing fixtures in
+   bucket (most of the validator already shipped).
+6. **A5** deletion integration test (uses fixtures in
    `tests/conftest.py`).
-7. **A2** SSE/TLS posture confirmation.
+7. **A2** SSE/TLS posture confirmation in prod compose.
 
-### Sprint D — sharing & onboarding
+### Sprint D — sharing + onboarding (~2 weeks)
 
-8. **§1.4** sharing backend (`share_grants` table + endpoints +
-   preview wiring).
-9. **C5.1** setup script.
-10. **C5.2** B2B migration tooling.
-11. **C2** Drive cloud sync (after **A2**/**A3**).
+8. **§1.1 + G1** sharing primitive — `share_grants` table,
+   `POST/DELETE/GET /images/{id}/shares`, preview-panel wiring.
+9. **G2** comments — `comments` table + pin overlay + thread panel.
+10. **C5.1** setup script — platform detect, GPU probe, `.env`
+    generation, `docker compose` or native install.
+11. **C5.2** B2B migration — bulk import + per-source scopes +
+    dry-run + provider plugins.
+12. **C2** Drive cloud sync — pull-only, AI-off by default per
+    Limited Use.
 
-### Long-term roadmap
+### Sprint E — multi-axis filters + UX polish (~1 week)
 
-12. **C3** GPS map refinements (reverse-geocode + supercluster).
-13. **C4.2** "Me" → display-name binding.
-14. **Section E** — multi-data-type platform.
-15. **Section F** — hardware compatibility & quantization.
-16. **Section G** — collaboration / comments / real-time edit.
-17. **Section H** — repo & docs hygiene.
-18. **I.bis** project rename — admin work, parallelizable.
+13. **C9** multi-axis image filtering — backend params + chip UI +
+    URL persistence.
+14. **C3** map refinements — supercluster migration once > 2 000 pins
+    (reverse-geocode fill already shipped).
+15. **C4.2** "Me" → display-name binding.
+16. **§1.2** surface or hide remaining backend-gated Settings rows
+    (Plan/Invoices/Notifications/2FA TOTP/per-scope `expires_at`).
+17. **§1.3** unmock the remaining Admin overlay tabs (Models / Tasks /
+    Logs / System / Processes / Hardware) once **C8.2** / **F1** land.
+
+### Sprint F — multi-data-type platform (months)
+
+20. **E1** promote `images` → `assets(data_kind)`.
+21. **E2** Contacts (vCard/CSV).
+22. **E3** Passwords vault (E2E encryption, Argon2id).
+23. **E4** Game saves (versioned blobs).
+24. **E5** IoT data (time-series, partitioned).
+25. **E6** cross-type search + tagging + retention.
+
+### Sprint G — hardware + collab + hygiene (longest tail)
+
+26. **F1** hardware dispatch (CUDA / ROCm / MPS / OpenVINO / CPU).
+27. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
+    CLIP / RetinaFace INT8).
+28. **F3** Lite profile.
+29. **G3** real-time team editing (y.js + WebSocket).
+30. **D6** fine-tune from search (once **C8.2** ships).
+31. **D7** best-of-set picker.
+32. **H1–H4** repo hygiene + CI tightening.
+33. **I.bis** project rename — admin churn, parallelizable.
 
 ### Things to NOT work on yet
-- Plan / Invoices / Stripe billing UI — there's no payment backend
-  and won't be until commercial launch.
-- TOTP 2FA — recovery codes cover the lockout case adequately for
-  now; lower priority than C6.
-- Activity log panel UI — needs a per-user audit-export endpoint
-  that doesn't exist yet.
-- Plan card pricing copy — premature; pricing shouldn't be hard-coded.
-
-### Phase 9 backend hardening (carried over)
-- arq + Redis worker for the vision pipeline (refactor; pipeline
-  function unchanged, only call site moves).
-- GPU inference subprocess with batching (50 ms fill window) +
-  Unix-socket IPC.
-- Places365 for finer scene categorization (365 labels). Powers **D1**.
-- RAM++ for richer tag generation (~4 k vocab). Powers **D1**.
-- structlog + OpenTelemetry traces.
-- GPU OOM back-pressure to arq (block when queue depth > N).
-- Locust load test at 100 concurrent uploads.
-- Nightly DB + MinIO backups.
+- Plan / Invoices / Stripe billing UI — no payment backend.
+- TOTP 2FA — recovery codes adequate; lower priority than **C6**.
+- Activity log panel UI — needs a per-user audit-export endpoint.
+- Plan-card pricing copy — premature.
 
 ---
 

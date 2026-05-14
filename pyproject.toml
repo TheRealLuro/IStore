@@ -1,7 +1,7 @@
 [project]
-name = "istore"
+name = "neuthek"
 version = "0.1.0"
-description = "AI-driven image storage with privacy-compliant face recognition and RL compression"
+description = "AI-driven personal storage with privacy-compliant face recognition and RL compression"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi==0.115.5",
@@ -22,6 +22,10 @@ dependencies = [
     "numpy==2.1.3",
     "pgvector==0.3.6",
     "redis>=5.2.0",
+    # PyMuPDF — rasterizes PDF page 1 for the gallery card thumb and the
+    # in-app preview hero. Without it, PDFs fall back to a generic icon
+    # and the "Generate PDF thumbnails" admin action becomes a no-op.
+    "PyMuPDF>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +67,17 @@ ml = [
     # fallback in `backend.summarize._extract_pdf` when pypdf returns
     # almost nothing.
     "pdfminer.six>=20240706",
+    # Image-only PDFs (scanned docs, contracts photographed page-by-
+    # page) defeat both text extractors above. PyMuPDF rasterizes each
+    # page, then `_pdf_ocr_fallback` runs Florence-2 `<OCR>` over the
+    # raster.
+    "pymupdf>=1.24",
+    # D8 — last-resort face detector for the user-signal cascade
+    # (RetinaFace 0.3 → 0.15 → mediapipe). Mediapipe finds faces in
+    # tight crops / extreme angles where RetinaFace's landmark
+    # requirement fails. Optional dep; the cascade gracefully skips
+    # the mediapipe stage if it's not installed.
+    "mediapipe>=0.10",
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "sumy>=0.11.0",

@@ -20,11 +20,13 @@ the right answer.
 
 import asyncio
 import logging
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import sqlalchemy as sa
 from sqlalchemy import cast, func, literal, or_, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.users import current_active_user
@@ -50,21 +52,27 @@ def _encode_text_sync(query: str):
 
 
 def _build_haystack():
-    """SQL expression: summary + topic + points + filename concatenated.
+    """SQL expression: summary + topic + points + filename + signals.
 
     Used for both `to_tsvector(...)` (FTS) and `ILIKE` (substring fallback
     for queries Postgres FTS won't tokenize well — e.g. partial filenames
     like "IMG_11"). Cast NULLs to empty strings so concatenation doesn't
     short-circuit.
 
-    `summary_points` is `jsonb`, not `text[]` — `array_to_string()` would
-    raise UndefinedFunction. Casting jsonb to text yields `["a","b"]`
-    literal text; the FTS tokenizer strips the brackets/quotes/commas so
-    each element still indexes as a separate lexeme. Must match
-    migration 0017's `_HAYSTACK_EXPR` exactly so the planner uses the
-    generated GIN index.
+    `summary_points` and `summary_signals` are `jsonb`. Casting jsonb to
+    text yields `["a","b"]` / `{"concepts":["..."]}` literal text; the
+    FTS tokenizer strips brackets/quotes/commas/colons so each element
+    still indexes as a separate lexeme. That gets us concepts, objects,
+    regions, and the VLM description into the search surface without a
+    new generated column. The stored `summary_tsv` index from migration
+    0017 doesn't include `summary_signals` yet, so queries that ONLY
+    match signal text fall back to the inline tsvector compute (slower
+    but correct). Scene/setting/content_type are added as cheap discrete
+    keywords so type-of-place queries ("indoor classroom") match even
+    when the summary text didn't.
     """
     points_as_text = cast(Image.summary_points, sa.Text)
+    signals_as_text = cast(Image.summary_signals, sa.Text)
     return (
         func.coalesce(Image.summary, literal(""))
         + literal(" ")
@@ -73,7 +81,78 @@ def _build_haystack():
         + func.coalesce(points_as_text, literal(""))
         + literal(" ")
         + func.coalesce(Image.original_filename, literal(""))
+        + literal(" ")
+        + func.coalesce(signals_as_text, literal(""))
+        + literal(" ")
+        + func.coalesce(Image.scene_label, literal(""))
+        + literal(" ")
+        + func.coalesce(Image.indoor_outdoor, literal(""))
+        + literal(" ")
+        + func.coalesce(Image.content_type, literal(""))
     )
+
+
+# Minimum CLIP cosine for a hit to count on its own. Below this, the
+# embedding match is basically noise — CLIP's "this image is a little
+# bit related to your query" floor is around 0.20-0.22 for unrelated
+# images on the same domain. We require either a text/keyword match OR
+# a CLIP cosine above this threshold; weak CLIP-only matches don't
+# pollute the result list.
+_CLIP_MIN_SIM_KEEP = 0.24
+# Strong-match floor — CLIP hits at or above this are kept even when
+# the user's query also has text matches. Below this and above the
+# keep threshold, they only show up if no keyword match was found.
+_CLIP_STRONG_SIM = 0.30
+
+
+def _tokenize_query(q: str) -> list[str]:
+    """Lowercase word tokens from the user's query, stopwords dropped.
+
+    Used by the keyword-overlap pass so a query of "me in the mirror"
+    becomes ["me", "mirror"] and we can require at least one keyword to
+    appear in the file's searchable surface before we surface it.
+    """
+    stop = {
+        "the", "a", "an", "of", "to", "and", "or", "but", "for", "in",
+        "on", "at", "by", "from", "with", "is", "are", "be", "was",
+        "were", "this", "that", "these", "those", "it", "its",
+    }
+    tokens: list[str] = []
+    for raw in re.findall(r"[A-Za-z0-9]+", q.lower()):
+        if len(raw) <= 1:
+            continue
+        if raw in stop:
+            continue
+        tokens.append(raw)
+    return tokens
+
+
+def _file_haystack_text(image) -> str:
+    """Concatenated lowercased text of a single Image — for client-side
+    keyword overlap so we can require a query token to appear somewhere
+    before we surface a row. Mirrors `_build_haystack` but materialized
+    in Python (only called on the small candidate set after the SQL
+    passes ran)."""
+    parts: list[str] = []
+    for attr in (
+        "summary", "summary_topic", "original_filename",
+        "scene_label", "indoor_outdoor", "content_type",
+    ):
+        v = getattr(image, attr, None)
+        if v:
+            parts.append(str(v))
+    points = getattr(image, "summary_points", None) or []
+    if isinstance(points, list):
+        parts.extend(str(p) for p in points if p)
+    signals = getattr(image, "summary_signals", None) or {}
+    if isinstance(signals, dict):
+        for key in ("regions", "objects", "concepts"):
+            val = signals.get(key) or []
+            if isinstance(val, list):
+                parts.extend(str(x) for x in val if x)
+        if signals.get("vlm"):
+            parts.append(str(signals["vlm"]))
+    return " ".join(parts).lower()
 
 
 @router.get("/", response_model=list[ImageSearchHit])
@@ -101,18 +180,58 @@ async def semantic_search(
                 "Semantic search requires the [ml] extras to be installed.",
             )
 
+    tokens = _tokenize_query(q)
+
     # --- merge ----------------------------------------------------------
-    merged: dict = {}  # image_id → (image, blended_score)
+    #
+    # Filtering policy (tightened from the old "any positive cosine
+    # counts"): a row is kept if
+    #   1. it has a keyword hit on its searchable text, OR
+    #   2. its CLIP cosine is at least `_CLIP_MIN_SIM_KEEP` (i.e. CLIP
+    #      thinks it's plausibly related, not just "marginally not
+    #      orthogonal"), OR
+    #   3. its CLIP cosine is at least `_CLIP_STRONG_SIM` even when the
+    #      query has keyword hits elsewhere — strong visual matches
+    #      should always surface.
+    #
+    # The old behavior returned every image with a positive cosine,
+    # which on a small library meant the result list was just "all
+    # files, ordered by random CLIP noise."
+    merged: dict = {}
     for image_id, (image, clip_score) in clip_hits.items():
-        merged[image_id] = (image, _W_CLIP * clip_score)
+        if clip_score < _CLIP_MIN_SIM_KEEP:
+            continue
+        merged[image_id] = (image, _W_CLIP * clip_score, False)  # False = no text match yet
     for image_id, (image, text_score) in text_hits.items():
         if image_id in merged:
-            img, prev = merged[image_id]
-            merged[image_id] = (img, prev + _W_TEXT * text_score)
+            img, prev, _ = merged[image_id]
+            merged[image_id] = (img, prev + _W_TEXT * text_score, True)
         else:
-            merged[image_id] = (image, _W_TEXT * text_score)
+            merged[image_id] = (image, _W_TEXT * text_score, True)
 
-    ranked = sorted(merged.values(), key=lambda r: r[1], reverse=True)[:limit]
+    # Apply the keyword-overlap gate. If the user typed concrete words,
+    # we require at least one to match the row's text OR the CLIP hit
+    # to be strong on its own — otherwise the row gets dropped.
+    have_any_text_match = any(has_text for (_, _, has_text) in merged.values())
+    final: list[tuple] = []
+    for image_id, (image, score, has_text) in merged.items():
+        if tokens:
+            haystack = _file_haystack_text(image)
+            keyword_hit = any(tok in haystack for tok in tokens)
+        else:
+            keyword_hit = False
+        clip_score = clip_hits.get(image_id, (None, 0.0))[1] if image_id in clip_hits else 0.0
+        if has_text or keyword_hit:
+            final.append((image, score))
+        elif clip_score >= _CLIP_STRONG_SIM:
+            final.append((image, score))
+        elif not have_any_text_match and not tokens:
+            # Query had no usable tokens (all stopwords); fall back to
+            # the looser CLIP-only ranking.
+            final.append((image, score))
+        # else: drop the row — weak CLIP-only match with no keyword hit.
+
+    ranked = sorted(final, key=lambda r: r[1], reverse=True)[:limit]
 
     return [
         ImageSearchHit(
@@ -164,8 +283,14 @@ async def _text_search(
     result set so the blend with CLIP cosine is fair.
     """
     haystack = _build_haystack()
-    tsvec = func.to_tsvector(literal("english"), haystack)
-    tsquery = func.plainto_tsquery(literal("english"), q)
+    # Cast the language literal to `regconfig` so Postgres binds to the
+    # `to_tsvector(regconfig, text)` overload. Without the cast we get a
+    # varchar bind param which doesn't match any `to_tsvector` signature
+    # and the planner raises `function to_tsvector(varchar, text) does
+    # not exist`. Same for plainto_tsquery.
+    english = cast(literal("english"), postgresql.REGCONFIG)
+    tsvec = func.to_tsvector(english, haystack)
+    tsquery = func.plainto_tsquery(english, q)
     rank = func.ts_rank_cd(tsvec, tsquery).label("rank")
 
     fts_stmt = (
@@ -181,10 +306,14 @@ async def _text_search(
     rows = (await session.execute(fts_stmt)).all()
 
     if not rows:
-        # FTS gave nothing — try a substring scan. Doesn't rank, just
-        # buckets each match at score 0.6 so they're below strong CLIP
-        # hits but above weak ones.
+        # FTS gave nothing — try a substring scan over the same surfaces
+        # the FTS pass uses, plus `summary_signals` cast to text so a
+        # query of "whiteboard" matches an image whose only signal is a
+        # Florence-2 region or OpenCLIP concept tag of that word. Score
+        # 0.6 so substring hits sit below strong CLIP visual matches
+        # but above weak ones.
         like = f"%{q}%"
+        signals_as_text = cast(Image.summary_signals, sa.Text)
         like_stmt = (
             select(Image)
             .where(
@@ -194,6 +323,10 @@ async def _text_search(
                     Image.summary.ilike(like),
                     Image.summary_topic.ilike(like),
                     Image.original_filename.ilike(like),
+                    Image.scene_label.ilike(like),
+                    Image.indoor_outdoor.ilike(like),
+                    Image.content_type.ilike(like),
+                    signals_as_text.ilike(like),
                 ),
             )
             .limit(limit)

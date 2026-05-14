@@ -128,6 +128,18 @@ class Settings(BaseSettings):
     # the sumy fallback path.
     summarize_doc_sentence_count: int = Field(default=3)
 
+    # ---- Phase 14 C2 multi-model image pipeline ----
+    # Top-K CLIP concept-vocab matches surfaced to the rewriter prompt.
+    concept_vocab_top_k: int = Field(default=15)
+    # Cosine similarity floor below which a concept is dropped.
+    concept_vocab_threshold: float = Field(default=0.22)
+    # Heavy vision-language model is OFF by default — gating because it
+    # adds ~10 GB VRAM (InternVL2-4B fp16) on top of Florence-2 + CLIP +
+    # Qwen2.5. Enable in `.env` (HEAVY_VLM_ENABLED=true) when running on
+    # ≥ 12 GB GPU; CPU users should leave it off.
+    heavy_vlm_enabled: bool = Field(default=False)
+    heavy_vlm_model: str = Field(default="OpenGVLab/InternVL2-4B")
+
     # ---- Phase 13 (C6) account recovery + email infra ----
     # Empty smtp_host disables real SMTP delivery — backend.email_send falls
     # back to logging the email body so dev users can copy verification /
@@ -137,7 +149,7 @@ class Settings(BaseSettings):
     smtp_port: int = Field(default=587)
     smtp_user: str = Field(default="")
     smtp_pass: str = Field(default="")
-    smtp_from: str = Field(default="IStore <noreply@istore.local>")
+    smtp_from: str = Field(default="neuthek <noreply@neuthek.local>")
     # Used to build verification + password-reset links in transactional
     # emails. The trailing slash is intentionally absent — email_send
     # appends `/verify?token=...` directly.

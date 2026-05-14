@@ -21,7 +21,7 @@ import toast from "react-hot-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
 import { AuthedThumb } from "./auth-image.jsx";
-import { backfillImageGeo, fetchAsBlobUrl } from "@/api/files";
+import { backfillImageGeo, backfillImagePlaces, fetchAsBlobUrl } from "@/api/files";
 
 // World bounds. Leaflet's default lets you pan into the void above /
 // below the map and reveal the body background — feels broken. Lock
@@ -290,6 +290,7 @@ export function MapView({ items, onPick }) {
   // originals once they've granted gps_retention consent.
   const qc = useQueryClient();
   const [busy, setBusy] = useStateMap(false);
+  const [busyPlaces, setBusyPlaces] = useStateMap(false);
   const runBackfill = async () => {
     if (busy) return;
     setBusy(true);
@@ -308,6 +309,25 @@ export function MapView({ items, onPick }) {
       toast.error(detail);
     } finally {
       setBusy(false);
+    }
+  };
+  const runPlaces = async () => {
+    if (busyPlaces) return;
+    setBusyPlaces(true);
+    try {
+      const r = await backfillImagePlaces();
+      if (r.filled > 0) {
+        toast.success(`Filled location names on ${r.filled} of ${r.examined} pin(s).`);
+        qc.invalidateQueries({ queryKey: ["geo"] });
+      } else if (r.examined > 0) {
+        toast(`Scanned ${r.examined} pin(s); none could be geocoded.`);
+      } else {
+        toast("No pins need location names yet.");
+      }
+    } catch (e) {
+      toast.error(e?.detail || "Could not fill location names.");
+    } finally {
+      setBusyPlaces(false);
     }
   };
 
@@ -340,6 +360,19 @@ export function MapView({ items, onPick }) {
     <div className="map4-shell">
       <div className="map4-toolbar">
         <div className="map4-toolbar__title">{itemsWithLoc.length} files mapped</div>
+        <div style={{ flex: 1 }}/>
+        {itemsWithLoc.length > 0 && (
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={runPlaces}
+            disabled={busyPlaces}
+            title="Reverse-geocode pins so popups show city names instead of coordinates"
+            style={{ marginRight: 8 }}
+          >
+            <Icon name="map_pin" size={12}/>
+            {busyPlaces ? "Filling…" : "Fill location names"}
+          </button>
+        )}
         <div className="map4-toolbar__zoom">
           <button className="btn-icon" onClick={() => zoomBy(-1)} aria-label="Zoom out"><Icon name="minus" size={14}/></button>
           <div className="map4-zoom-label" title={`Zoom level ${zoom}`}>{zoomLabel(zoom)}</div>

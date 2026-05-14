@@ -1,6 +1,6 @@
-# IStore Terms of Use
+# neuthek Terms of Use
 
-IStore is provided as **source-available software** for **personal and non-commercial use only**.
+neuthek is provided as **source-available software** for **personal and non-commercial use only**.
 
 ---
 
@@ -8,7 +8,7 @@ IStore is provided as **source-available software** for **personal and non-comme
 
 You are allowed to:
 
-* Use IStore for personal, private, non-commercial purposes
+* Use neuthek for personal, private, non-commercial purposes
 * Modify the source code for your own personal use
 * Self-host the software strictly for your own individual use
 
@@ -42,7 +42,7 @@ Access to the source code does not grant:
 
 ## 4. Ownership & Intellectual Property
 
-All rights, title, and ownership of IStore remain with the original author unless explicitly transferred in writing.
+All rights, title, and ownership of neuthek remain with the original author unless explicitly transferred in writing.
 
 No rights are granted except those explicitly stated in this agreement.
 

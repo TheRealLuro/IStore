@@ -45,3 +45,11 @@ export interface ImagePerson {
 
 export const getImagePeople = (imageId: string) =>
   api.get<ImagePerson[]>(`/images/${imageId}/people`);
+
+/** D8 — user-signal cascade. Returns the stage that fired
+ *  ("retina-0.3" | "retina-0.15" | "mediapipe" | "empty") plus how
+ *  many faces ended up persisted. */
+export const redetectFaces = (imageId: string) =>
+  api.post<{ stage: string; detected: number; persisted: number }>(
+    `/images/${imageId}/redetect-faces`,
+  );

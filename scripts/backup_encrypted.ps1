@@ -8,8 +8,8 @@ if (-not $AgeRecipient) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$work = Join-Path $OutputDir "istore-$timestamp"
-$archive = Join-Path $OutputDir "istore-$timestamp.zip"
+$work = Join-Path $OutputDir "neuthek-$timestamp"
+$archive = Join-Path $OutputDir "neuthek-$timestamp.zip"
 $encrypted = "$archive.age"
 
 New-Item -ItemType Directory -Force -Path $work, $OutputDir | Out-Null

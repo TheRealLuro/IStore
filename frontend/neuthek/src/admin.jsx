@@ -9,7 +9,8 @@ import React, {
   useEffect as useEffectAd,
   useMemo as useMemoAd,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
 import {
   Modal as ModalAd,
@@ -18,6 +19,8 @@ import {
 import {
   getAdminStorage,
   listAdminUsers,
+  updateUserQuota,
+  updateUserRole,
   listAdminAudit,
 } from "@/api/admin";
 
@@ -428,6 +431,104 @@ function RealStorageTab({ open }) {
   );
 }
 
+function RoleCell({ user }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useStateAd(false);
+  const change = async (e) => {
+    const next = e.target.value;
+    if (next === user.role) return;
+    setBusy(true);
+    try {
+      await updateUserRole(user.id, next);
+      toast.success(`${user.email} → ${next}`);
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+    } catch (err) {
+      toast.error(err?.detail || "Could not update role");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <select
+      value={user.role}
+      disabled={busy}
+      onChange={change}
+      className="input"
+      style={{ padding: "2px 6px", fontSize: 12, width: 110 }}
+      aria-label="Role"
+    >
+      <option value="user">user</option>
+      <option value="admin">admin</option>
+      <option value="superuser">superuser</option>
+    </select>
+  );
+}
+
+function QuotaCell({ user }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useStateAd(false);
+  const [val, setVal] = useStateAd("");
+  const [busy, setBusy] = useStateAd(false);
+  const begin = () => {
+    setVal(String(Math.round((user.quota_bytes || 0) / (1024 ** 3) * 10) / 10));
+    setEditing(true);
+  };
+  const commit = async () => {
+    const gb = parseFloat(val);
+    if (isNaN(gb) || gb < 0) {
+      setEditing(false);
+      return;
+    }
+    const bytes = Math.round(gb * 1024 ** 3);
+    if (bytes === user.quota_bytes) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await updateUserQuota(user.id, bytes);
+      toast.success(`${user.email} quota → ${gb} GB`);
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+    } catch (err) {
+      toast.error(err?.detail || "Could not update quota");
+    } finally {
+      setBusy(false);
+      setEditing(false);
+    }
+  };
+  if (!editing) {
+    return (
+      <span
+        className="mono"
+        onClick={begin}
+        title="Click to edit"
+        style={{ cursor: "pointer", textDecoration: "underline dotted", textDecorationColor: "var(--ink-4)" }}
+      >
+        {admBytes(user.quota_bytes)}
+      </span>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      type="number"
+      step="0.1"
+      min="0"
+      disabled={busy}
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        else if (e.key === "Escape") setEditing(false);
+      }}
+      className="input"
+      style={{ padding: "2px 6px", fontSize: 12, width: 90, textAlign: "right" }}
+      aria-label="Quota in GB"
+    />
+  );
+}
+
 function RealUsersTab({ open }) {
   const [q, setQ] = useStateAd("");
   const { data, isLoading } = useQuery({
@@ -460,7 +561,7 @@ function RealUsersTab({ open }) {
               <th>Role</th>
               <th>Verified</th>
               <th style={{ textAlign: "right" }}>Used</th>
-              <th style={{ textAlign: "right" }}>Quota</th>
+              <th style={{ textAlign: "right" }}>Quota (click to edit)</th>
               <th style={{ textAlign: "right" }}>Images</th>
             </tr>
           </thead>
@@ -468,10 +569,10 @@ function RealUsersTab({ open }) {
             {(data || []).map((u) => (
               <tr key={u.id}>
                 <td className="mono">{u.email}</td>
-                <td><span className="admin-kind">{u.role}</span></td>
+                <td><RoleCell user={u}/></td>
                 <td>{u.is_verified ? <Icon name="check" size={12}/> : <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
                 <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.used_bytes)}</td>
-                <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.quota_bytes)}</td>
+                <td style={{ textAlign: "right" }}><QuotaCell user={u}/></td>
                 <td className="mono" style={{ textAlign: "right" }}>{u.image_count.toLocaleString()}</td>
               </tr>
             ))}

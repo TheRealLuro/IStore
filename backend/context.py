@@ -5,7 +5,7 @@ from uuid import UUID
 
 
 _current_user_id: ContextVar[str | None] = ContextVar(
-    "istore_current_user_id", default=None
+    "neuthek_current_user_id", default=None
 )
 
 

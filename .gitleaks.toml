@@ -1,4 +1,4 @@
-title = "IStore gitleaks config"
+title = "neuthek gitleaks config"
 
 [allowlist]
 description = "Synthetic fixtures and placeholders"

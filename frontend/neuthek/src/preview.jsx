@@ -3,9 +3,19 @@ import React, { useState as useStateP2, useEffect as useEffectP2 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
-import { AuthedThumb, AuthedImg } from "./auth-image.jsx";
-import { getImagePeople, faceCropUrl } from "@/api/people";
+import { AuthedThumb, AuthedImg, useAuthedBlobUrl } from "./auth-image.jsx";
+import { getImagePeople, faceCropUrl, redetectFaces } from "@/api/people";
+import { EditableName } from "./nameable-chip.jsx";
 import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
+import { PdfPageStack } from "./pdf-stack.jsx";
+
+function fmtBytes(n) {
+  if (n == null) return "—";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
 
 const TAG_SUGGESTIONS = [
   "Favorite", "To review", "Shared", "Archived", "Private", "WIP",
@@ -53,6 +63,29 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     staleTime: 30_000,
   });
 
+  // D8 — user-signal re-detect cascade. Tracks busy/result so the UI
+  // can swap between "Mark as containing a person" → "Looking…" →
+  // "Found N" → "Couldn't find anyone, add manually?" copy.
+  const [redetectState, setRedetectState] = useStateP2("idle"); // idle | running | empty
+  const handleRedetect = async () => {
+    if (!file || redetectState === "running") return;
+    setRedetectState("running");
+    try {
+      const r = await redetectFaces(file.id);
+      if (r.persisted > 0) {
+        toast.success(`Found ${r.persisted} face${r.persisted === 1 ? "" : "s"} (${r.stage}).`);
+        qc.invalidateQueries({ queryKey: ["image-people", file.id] });
+        qc.invalidateQueries({ queryKey: ["people"] });
+        setRedetectState("idle");
+      } else {
+        setRedetectState("empty");
+      }
+    } catch (e) {
+      toast.error(e?.detail || "Could not run re-detect.");
+      setRedetectState("idle");
+    }
+  };
+
   const handleToggleStar = async () => {
     if (!file) return;
     // Optimistic: flip the local flag immediately, hit the backend, roll
@@ -95,16 +128,42 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       qc.invalidateQueries({ queryKey: ["files"] });
       qc.invalidateQueries({ queryKey: ["storage"] });
       qc.invalidateQueries({ queryKey: ["geo"] });
+      qc.invalidateQueries({ queryKey: ["account-trash"] });
       onClose && onClose();
     } catch (e) {
       toast.error(e?.detail || "Could not delete file");
     }
   };
 
+  const isImage = file?.type === "image";
+  const isVideo = file?.type === "video";
+  const isDoc = file?.type === "doc";
+  // Hook call must stay unconditional — pass null when the file isn't
+  // a PDF so the underlying fetch is skipped. PDF preview UX:
+  //   - hero pane shows a non-scrolling page-1 render (the raster
+  //     stored as `file.thumb` when our PyMuPDF rasterizer ran);
+  //   - clicking the hero opens a full-page modal with the real PDF
+  //     in an iframe, where the browser handles scroll/zoom/text-select.
+  // The blob URL is only needed once the modal opens, so we gate the
+  // fetch behind `pdfModal`.
+  const isPdf = !!(file && isDoc && (
+    (file.mime_type_original || "").toLowerCase() === "application/pdf"
+    || (file.ext || "").toLowerCase() === "pdf"
+  ));
+  const [pdfModal, setPdfModal] = useStateP2(false);
+  // Close the PDF modal when the panel is closed externally or the
+  // user navigates to a different file.
+  useEffectP2(() => { setPdfModal(false); }, [file?.id]);
+  // Esc closes the PDF modal before falling through to the panel-close
+  // handler. We already have an Esc listener for lightbox + preview;
+  // it doesn't know about pdfModal, so add a guard here.
+  useEffectP2(() => {
+    if (!pdfModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setPdfModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [pdfModal]);
   if (!file) return null;
-  const isImage = file.type === "image";
-  const isVideo = file.type === "video";
-  const isDoc = file.type === "doc";
 
   const addTag = (t) => {
     const v = t.trim();
@@ -123,6 +182,45 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
           <Icon name="x" size={18}/>
         </button>
         <AuthedImg url={file.thumb} className="lightbox__img" alt={file.name} onClick={(e) => e.stopPropagation()}/>
+      </div>
+    )}
+    {pdfModal && isPdf && (
+      <div className="lightbox" onClick={() => setPdfModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon">
+              <Icon name="document" size={14}/>
+            </span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={handleDownload}
+              aria-label="Download"
+              title="Download"
+            >
+              <Icon name="download" size={14}/>
+            </button>
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={() => setPdfModal(false)}
+              aria-label="Close document"
+              title="Close"
+            >
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body">
+            {/* Server-rasterized page stack (PyMuPDF → JPEG per page,
+                lazy-loaded into a themed scroll container). Replaces the
+                old iframe-into-PDFium approach so the scrollbar belongs
+                to us and every page is visible in one continuous scroll
+                instead of paginated under PDFium's `view=Fit` mode. */}
+            <PdfPageStack fileId={file.id}/>
+          </div>
+        </div>
       </div>
     )}
     <aside className="preview" aria-label="File details" onClick={(e) => e.stopPropagation()}>
@@ -146,9 +244,60 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         </div>
       </div>
 
-      {isImage && file.thumb ? (
-        <AuthedThumb url={file.thumb} className="preview__hero"
-             onClick={() => setLightbox(true)} role="button" aria-label="View full size"/>
+      {isPdf ? (
+        // Hero shows the non-scrolling first-page raster (the same
+        // image used on the gallery card thumb). Clicking opens a full
+        // scrollable browser-native PDF modal. When the raster isn't
+        // available (PyMuPDF wasn't installed when the file uploaded —
+        // run /admin → Generate PDF thumbnails to backfill), we fall
+        // back to the icon and still let the click open the modal.
+        file.thumb ? (
+          // Fill the hero area with the page-1 raster (cover, anchored
+          // to the top so the page header is what the user sees). The
+          // previous `contain` left grey letterbox bars that made the
+          // page look like a small floating PDF in the corner of the
+          // pane. Cover with top alignment matches Drive's doc preview
+          // style and reads as "page". The pdf-page modifier swaps in
+          // a white background so the bottom edge of a short page
+          // doesn't show the app's surface color underneath.
+          <AuthedThumb
+            url={file.thumb}
+            className="preview__hero preview__hero--pdf-page"
+            onClick={() => setPdfModal(true)}
+            role="button"
+            aria-label="Open document"
+            title="Click to open document"
+            style={{
+              cursor: "pointer",
+              backgroundSize: "cover",
+              backgroundRepeat: "no-repeat",
+              backgroundPosition: "center top",
+              backgroundColor: "#fff",
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setPdfModal(true)}
+            className="preview__hero"
+            aria-label="Open document"
+            title="Click to open document"
+            style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+          >
+            <div className="thumb-icon">
+              <Icon name="document" size={42} strokeWidth={1.3}/>
+              <span className="mono">PDF</span>
+            </div>
+          </button>
+        )
+      ) : file.thumb ? (
+        <AuthedThumb
+          url={file.thumb}
+          className="preview__hero"
+          onClick={isImage ? () => setLightbox(true) : undefined}
+          role={isImage ? "button" : undefined}
+          aria-label={isImage ? "View full size" : undefined}
+        />
       ) : (
         <div className="preview__hero" style={{ display: "grid", placeItems: "center", color: "var(--ink-3)" }}>
           <div className="thumb-icon">
@@ -172,6 +321,29 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
           <span className="mono">{file.ext}</span>
         </div>
 
+        {/* Rich AI description block — the long-form `summary` text the
+            C2 multi-model pipeline produces. This is what makes the
+            file searchable, so we surface it prominently. Concept-tag
+            chips below give the user immediate scannable keywords. */}
+        {file.aiContent && (
+          <div className="preview__section">
+            <div className="preview__section-label">Description</div>
+            <div style={{
+              fontSize: 13, lineHeight: 1.55, color: "var(--ink-2)",
+              padding: "0 12px",
+            }}>
+              {file.aiContent}
+            </div>
+            {Array.isArray(file.signals?.concepts) && file.signals.concepts.length > 0 && (
+              <div className="ptags" style={{ marginTop: 10, padding: "0 12px" }}>
+                {file.signals.concepts.slice(0, 8).map((c) => (
+                  <span key={c} className="ptag" data-tone="muted">{c}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {isImage && imagePeople.length > 0 && (
           <div className="preview__section">
             <div className="preview__section-label">People in this photo</div>
@@ -185,13 +357,52 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
                       className="face-chip__avatar"
                       placeholder={{ background: "var(--surface-2)" }}
                     />
-                    <span className={"face-chip__name" + (labelled ? "" : " face-chip__name--unnamed")}>
-                      {p.person_display_name || "Tap to name"}
-                    </span>
+                    <EditableName
+                      name={p.person_display_name}
+                      personId={p.person_id}
+                      clusterId={p.cluster_id}
+                      className={"face-chip__name" + (labelled ? "" : " face-chip__name--unnamed")}
+                      invalidate={[["image-people", file.id], ["people"]]}
+                    />
                   </div>
                 );
               })}
             </div>
+          </div>
+        )}
+
+        {/* D8 — when the default pipeline found no faces, let the user
+            insist there's a person here. Click runs the cascade
+            (RetinaFace 0.3 → 0.15 → mediapipe). On the still-empty
+            terminal state, surface a "manual add" hint — the actual
+            user-drawn-box flow is a follow-up. */}
+        {isImage && imagePeople.length === 0 && (
+          <div className="preview__section">
+            <div className="preview__section-label">People in this photo</div>
+            {redetectState === "empty" ? (
+              <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
+                No faces found, even after re-running detection at a lower
+                threshold and the mediapipe fallback.{" "}
+                <button
+                  type="button"
+                  onClick={() => toast("Manual face-add is coming soon — draw a box around the face you want to label.")}
+                  style={{ background: "none", border: 0, padding: 0, color: "var(--ink)", textDecoration: "underline", cursor: "pointer", font: "inherit" }}
+                >
+                  Need to add manually?
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleRedetect}
+                disabled={redetectState === "running"}
+                className="btn btn--ghost btn--sm"
+                style={{ alignSelf: "flex-start" }}
+              >
+                <Icon name={redetectState === "running" ? "refresh" : "users"} size={12}/>
+                {redetectState === "running" ? "Looking…" : "Mark as containing a person"}
+              </button>
+            )}
           </div>
         )}
 
@@ -269,10 +480,18 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             {isImage && file.width && file.height && (
               <div className="kv__row"><span className="kv__k">Dimensions</span><span className="kv__v mono">{file.width} × {file.height}</span></div>
             )}
-            {file.gps && (
+            {file.gps && (file.gps.place || file.gps.lat != null) && (
               <div className="kv__row">
                 <span className="kv__k">Location</span>
-                <span className="kv__v mono">{file.gps.lat.toFixed(4)}, {file.gps.lng.toFixed(4)}</span>
+                {/* User-facing location: show the reverse-geocoded
+                    place name (e.g. "Salt Lake City, Utah") so the
+                    preview reads like a human description. Coords are
+                    kept on the data (file.gps.lat/lng) for map pin
+                    rendering but deliberately not surfaced here —
+                    nobody recognizes a file by its decimal degrees. */}
+                <span className="kv__v" style={{ textAlign: "right" }}>
+                  {file.gps.place || "Looking up location…"}
+                </span>
               </div>
             )}
             {file.scene_label && (
@@ -287,9 +506,49 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         <div className="preview__section">
           <div className="preview__section-label">Storage</div>
           <div className="kv">
-            <div className="kv__row"><span className="kv__k">Encrypted at rest</span><span className="kv__v"><Icon name="check" size={13} strokeWidth={2.4}/></span></div>
-            <div className="kv__row"><span className="kv__k">Region</span><span className="kv__v">US-West-2</span></div>
-            <div className="kv__row"><span className="kv__k">Backups</span><span className="kv__v">90 days</span></div>
+            {file.byte_size_original != null && (
+              <div className="kv__row">
+                <span className="kv__k">Original size</span>
+                <span className="kv__v mono">{fmtBytes(file.byte_size_original)}</span>
+              </div>
+            )}
+            {file.byte_size_served != null && (
+              <div className="kv__row">
+                <span className="kv__k">Served size</span>
+                <span className="kv__v mono">
+                  {fmtBytes(file.byte_size_served)}
+                  {file.byte_size_original ? (
+                    <span style={{ color: "var(--ink-3)" }}>
+                      {" "}
+                      ({Math.round((1 - file.byte_size_served / file.byte_size_original) * 100)}% smaller)
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+            )}
+            {file.codec && (
+              <div className="kv__row">
+                <span className="kv__k">Encoding</span>
+                <span className="kv__v mono">
+                  {file.codec.toUpperCase()}{file.quality ? ` · q ${file.quality}` : ""}
+                </span>
+              </div>
+            )}
+            {file.original_expires_at && (
+              <div className="kv__row">
+                <span className="kv__k">Original retained until</span>
+                <span className="kv__v">
+                  {(() => {
+                    try {
+                      const d = new Date(file.original_expires_at);
+                      const dateStr = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+                      const daysLeft = Math.max(0, Math.round((d.getTime() - Date.now()) / 86_400_000));
+                      return `${dateStr} · ${daysLeft} ${daysLeft === 1 ? "day" : "days"} left`;
+                    } catch { return file.original_expires_at; }
+                  })()}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>

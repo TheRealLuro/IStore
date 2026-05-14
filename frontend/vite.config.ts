@@ -12,6 +12,19 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Bind-mounting source from a Windows / WSL2 host into the Linux
+    // container drops inotify events, so Vite never sees file edits
+    // unless we tell chokidar to poll. The polling interval is small
+    // enough to feel like HMR; the CPU cost is negligible for a tree
+    // of this size.
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
+    // Vite's host-check rejects hostnames it doesn't recognize when
+    // accessed through the published port; allow anything since we're
+    // a dev-only inner network.
+    host: true,
   },
   build: {
     outDir: "dist",

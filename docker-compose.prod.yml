@@ -6,7 +6,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      ISTORE_DOMAIN: ${ISTORE_DOMAIN}
+      ISTORE_DOMAIN: ${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}
       ISTORE_API_UPSTREAM: backend:8000
       ISTORE_FRONTEND_UPSTREAM: frontend:80
       ISTORE_MINIO_UPSTREAM: minio:9000
@@ -41,7 +41,7 @@ services:
       MINIO_SSE_KMS_KEY_ID_CONTENT_FILE: /run/secrets/minio_kms_key_content
       MINIO_SSE_KMS_KEY_ID_BIOMETRIC_FILE: /run/secrets/minio_kms_key_biometric
       REDIS_URL: redis://redis:6379/0
-      FRONTEND_BASE_URL: https://${ISTORE_DOMAIN}
+      FRONTEND_BASE_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}
       REQUIRE_SIGNED_DOWNLOADS: "true"
       SECRET_MANAGER: docker_secrets
       POSTGRES_AT_REST_ENCRYPTION: host_volume_confirmed
@@ -72,7 +72,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: https://${ISTORE_DOMAIN}
+        VITE_API_BASE_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}
         VITE_REQUIRE_SIGNED_DOWNLOADS: "true"
     restart: unless-stopped
 
@@ -86,7 +86,7 @@ services:
     secrets:
       - postgres_password
     volumes:
-      - ${ISTORE_DATA_ROOT}/postgres:/var/lib/postgresql/data
+      - ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT}}/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U istore -d istore"]
       interval: 10s
@@ -98,7 +98,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ${ISTORE_DATA_ROOT}/redis:/data
+      - ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT}}/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -111,14 +111,14 @@ services:
     environment:
       MINIO_ROOT_USER_FILE: /run/secrets/minio_access_key
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret_key
-      MINIO_SERVER_URL: https://${ISTORE_DOMAIN}/minio
-      MINIO_BROWSER_REDIRECT_URL: https://${ISTORE_DOMAIN}/minio-console
+      MINIO_SERVER_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}/minio
+      MINIO_BROWSER_REDIRECT_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}/minio-console
     command: server /data --console-address ":9001"
     secrets:
       - minio_access_key
       - minio_secret_key
     volumes:
-      - ${ISTORE_DATA_ROOT}/minio:/data
+      - ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT}}/minio:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s

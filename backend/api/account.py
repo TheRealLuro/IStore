@@ -34,7 +34,7 @@ from argon2.exceptions import VerifyMismatchError
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import delete as sa_delete, select, text
+from sqlalchemy import delete as sa_delete, func as sa_func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.audit import add_audit
@@ -450,13 +450,98 @@ async def _build_export_zip(
     return buffer.getvalue()
 
 
+@router.get("/activity")
+async def get_account_activity(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = 50,
+) -> list[dict]:
+    """User-visible activity log. Returns the caller's most recent audit
+    events — `auth.login`, `consent.*.grant`, `images.rename`,
+    `images.bulk-delete`, etc. Already-existing `AuditLog` row is the
+    source of truth; this endpoint is just the user-scoped slice.
+    """
+    rows = (
+        await session.execute(
+            select(AuditLog)
+            .where(AuditLog.user_id == user.id)
+            .order_by(AuditLog.created_at.desc())
+            .limit(min(limit, 200))
+        )
+    ).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "action": r.action,
+            "details": r.details or {},
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/trash")
+async def get_account_trash(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Soft-deleted images for the caller. Returns counts so the FE can
+    show "42 items in trash · 1.2 GB" without paginating individual
+    rows; the actual list view comes later if needed.
+    """
+    row = (
+        await session.execute(
+            select(
+                sa_func.count().label("count"),
+                sa_func.coalesce(sa_func.sum(Image.byte_size_original), 0).label("bytes"),
+            ).where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_not(None),
+            )
+        )
+    ).one()
+    return {
+        "count": int(row.count or 0),
+        "total_bytes": int(row.bytes or 0),
+    }
+
+
+@router.post("/trash/empty")
+async def empty_account_trash(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Permanently delete every soft-deleted image owned by the caller.
+    Uses the existing `hard_delete_images` helper so blobs / face data /
+    summaries cascade like a normal account-delete; just scoped to the
+    trashed subset.
+    """
+    rows = (
+        await session.execute(
+            select(Image.id).where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_not(None),
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return {"deleted": 0}
+    result = await hard_delete_images(session, user.id, list(rows))
+    await add_audit(
+        session, user.id, "account.trash.empty",
+        details={"count": result.get("image_delete", len(rows))},
+    )
+    await session.commit()
+    return {"deleted": len(rows)}
+
+
 @router.get("/export")
 async def export_account(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Response:
     """Returns a ZIP of every byte the system holds about the caller."""
-    fname = f"istore-export-{user.id}.zip"
+    fname = f"neuthek-export-{user.id}.zip"
     blob = await _build_export_zip(session, user)
     return Response(
         content=blob,

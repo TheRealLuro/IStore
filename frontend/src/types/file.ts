@@ -28,6 +28,14 @@ export interface FileItem {
   summary_points: string[] | null;
   pending_summary: boolean;
   summary_generated_at: string | null;
+  // C2 multi-model signals — see backend.schemas.ImageRead.summary_signals.
+  summary_signals: {
+    regions?: string[];
+    objects?: string[];
+    concepts?: string[];
+    vlm?: string;
+  } | null;
+  original_expires_at: string | null;
   // Phase 12 — folders + project status.
   folder_id: string | null;
   status: string | null;

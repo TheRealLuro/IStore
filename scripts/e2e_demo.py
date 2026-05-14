@@ -195,7 +195,7 @@ def fmt_bytes(n: int) -> str:
 
 def main() -> None:
     print("=" * 100)
-    print("ISTORE  --  PHASE 1 + PHASE 2 END-TO-END DEMO")
+    print("NEUTHEK  --  PHASE 1 + PHASE 2 END-TO-END DEMO")
     print("=" * 100)
     print(f"AVIF available: {AVIF_AVAILABLE}    JXL available: {JXL_AVAILABLE}")
     print("Vision: hardcoded labels per fixture (CLIP would produce these signals "

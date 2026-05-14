@@ -116,6 +116,14 @@ class Image(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # Phase 14 — multi-model signal capture. Populated by the C2 image
+    # pipeline so re-summarization is idempotent without re-running every
+    # stage from scratch. Shape:
+    #   {"regions": [...phrases...], "objects": [...labels...],
+    #    "concepts": [...clip tags...], "vlm": "rich VLM paragraph"}
+    # Any subset may be missing — each stage is best-effort.
+    summary_signals: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     # Phase 12 — folders + project status.
     folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PgUUID(as_uuid=True),
@@ -550,6 +558,10 @@ class ImageGeo(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
     captured_with: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    # Human-readable location (e.g. "Big Sur, California"). Filled lazily
+    # by `POST /images/geo/backfill-places`, which calls Nominatim with
+    # a polite 1-rps rate limit and caches by rounded coords.
+    place: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

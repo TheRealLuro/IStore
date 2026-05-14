@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""IStore one-shot setup.
+"""neuthek one-shot setup.
 
 A single cross-platform Python script that takes a fresh checkout to a
 running stack: detect storage + GPU, generate strong secrets, write
@@ -244,20 +244,20 @@ def docker_up(repo_root: Path) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="IStore one-shot setup")
+    parser = argparse.ArgumentParser(description="neuthek one-shot setup")
     parser.add_argument("--yes", action="store_true",
                         help="non-interactive; accept all defaults")
     parser.add_argument("--reset", action="store_true",
                         help="overwrite existing .env (WARNING: regenerates secrets)")
     parser.add_argument("--data-dir", default=None,
-                        help="path for IStore data (overrides interactive prompt)")
+                        help="path for neuthek data (overrides interactive prompt)")
     parser.add_argument("--no-docker", action="store_true",
                         help="skip the docker compose up step")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
 
-    header("IStore setup")
+    header("neuthek setup")
     info(f"repo: {repo_root}")
     info(f"platform: {platform.platform()}")
     info(f"python: {sys.version.split()[0]}")
@@ -277,7 +277,7 @@ def main() -> int:
         data_dir = str(repo_root / "data")
     else:
         suggested = str(repo_root / "data")
-        data_dir = ask("Where should IStore store its data?", default=suggested)
+        data_dir = ask("Where should neuthek store its data?", default=suggested)
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     ok(f"data directory: {data_dir}")
 
@@ -289,7 +289,7 @@ def main() -> int:
         info("install GPU torch wheels with `pip install -e \".[ml]\"` "
              "and pick the right --index-url for your CUDA version.")
     else:
-        warn("no GPU detected — IStore runs CPU-only but inference is slow")
+        warn("no GPU detected — neuthek runs CPU-only but inference is slow")
         info("for NVIDIA: install drivers, then `pip install torch --index-url https://download.pytorch.org/whl/cu121`")
 
     # ----- write .env -----

@@ -1,17 +1,17 @@
 # Data Processing Addendum Template
 
-This template is for operators offering IStore to organizations. Adapt it with
+This template is for operators offering neuthek to organizations. Adapt it with
 legal counsel before use.
 
 ## Roles
 
 The customer is the controller for uploaded files and derived metadata. The
-operator is the processor. IStore contributors are not processors unless they
+operator is the processor. neuthek contributors are not processors unless they
 operate the hosted service.
 
 ## Processed Data
 
-IStore may process account identifiers, uploaded files, served variants,
+neuthek may process account identifiers, uploaded files, served variants,
 thumbnails, optional EXIF/GPS metadata, optional AI summaries, optional semantic
 embeddings, optional face crops, optional face embeddings, consent records,
 cloud-file mappings, and audit records.

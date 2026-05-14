@@ -153,28 +153,80 @@ async def process_image_for_faces(
     user: User,
     image: Image,
     raw_bytes: bytes,
+    *,
+    detections: list | None = None,
+    min_confidence: float | None = None,
 ) -> int:
     """Run Pass B for one image. Returns number of faces persisted.
 
     Caller is responsible for verifying consent before invoking this.
     The image row's `pending_face_scan` flag is cleared on completion.
+
+    `detections` (optional) lets a caller pre-supply detection results —
+    used by the D8 re-detect cascade where we run RetinaFace at a lower
+    threshold (or mediapipe as a third-stage fallback) and then plug
+    those results into the same persistence loop. When None, the
+    default detector runs.
+
+    `min_confidence` (optional) overrides `MIN_DET_CONFIDENCE` for this
+    call. D8 lowers it to ~0.1 because the cascade already pre-filtered.
     """
-    try:
-        detections = await _detect_async(raw_bytes)
-    except ImportError as exc:
-        logger.warning(
-            "Face pipeline unavailable (install [ml] extras + insightface): %s", exc,
-        )
-        return 0
-    except Exception:
-        logger.exception("Face detection crashed for image %s", image.id)
-        return 0
+    threshold = MIN_DET_CONFIDENCE if min_confidence is None else min_confidence
+    if detections is None:
+        try:
+            detections = await _detect_async(raw_bytes)
+        except ImportError as exc:
+            logger.warning(
+                "Face pipeline unavailable (install [ml] extras + insightface): %s", exc,
+            )
+            return 0
+        except Exception:
+            logger.exception("Face detection crashed for image %s", image.id)
+            return 0
 
     persisted = 0
     persons_to_recentroid: set[int] = set()
 
     for det in detections:
-        if det.detection_confidence < MIN_DET_CONFIDENCE:
+        if det.detection_confidence < threshold:
+            continue
+        if not det.embedding:
+            # Mediapipe-cascade detections carry no ArcFace embedding —
+            # we still want a Face row so the user can label it, but
+            # skip the centroid / cluster matching and don't try to
+            # average a null vector into a person centroid.
+            crop_key = f"users/{user.id}/faces/{uuid4().hex}.jpg"
+            try:
+                storage.put(
+                    storage.bucket_faces, crop_key,
+                    det.crop_jpeg, "image/jpeg", sse_scope="biometric",
+                )
+            except Exception:
+                logger.exception("Could not write fallback face crop %s", crop_key)
+                continue
+            face_row = Face(
+                user_id=user.id,
+                embedding=[0.0] * 512,  # placeholder; user can re-label manually
+                person_id=None,
+                cluster_id=None,
+                quality_score=det.detection_confidence,
+            )
+            session.add(face_row)
+            await session.flush()
+            session.add(
+                FaceDetection(
+                    image_id=image.id,
+                    face_id=face_row.id,
+                    user_id=user.id,
+                    bbox_x=det.bbox_x,
+                    bbox_y=det.bbox_y,
+                    bbox_w=det.bbox_w,
+                    bbox_h=det.bbox_h,
+                    detection_confidence=det.detection_confidence,
+                    crop_blob_key=crop_key,
+                )
+            )
+            persisted += 1
             continue
 
         crop_key = f"users/{user.id}/faces/{uuid4().hex}.jpg"
@@ -269,3 +321,45 @@ async def process_image_for_faces(
 
     await session.commit()
     return persisted
+
+
+async def redetect_image_with_cascade(
+    session: AsyncSession,
+    user: User,
+    image: Image,
+    raw_bytes: bytes,
+) -> dict:
+    """D8 user-signal cascade entry point.
+
+    User clicked "Mark as containing a person" on a photo that the
+    default pipeline found nothing in. We run
+    `detect_with_cascade` (RetinaFace 0.3 → 0.15 → mediapipe) and feed
+    the result into the existing persistence loop with a relaxed
+    confidence floor so the borderline detections actually make it.
+
+    Returns `{stage, persisted, detected}` so the FE can show the
+    user what worked (and surface the manual-draw flow when "empty").
+    """
+    from backend.vision.faces import detect_with_cascade
+
+    try:
+        cascaded, stage = await asyncio.to_thread(detect_with_cascade, raw_bytes)
+    except ImportError as exc:
+        logger.warning("Cascade unavailable: %s", exc)
+        return {"stage": "empty", "persisted": 0, "detected": 0}
+    except Exception:
+        logger.exception("Cascade crashed for image %s", image.id)
+        return {"stage": "empty", "persisted": 0, "detected": 0}
+
+    if not cascaded:
+        return {"stage": stage, "persisted": 0, "detected": 0}
+
+    persisted = await process_image_for_faces(
+        session,
+        user,
+        image,
+        raw_bytes,
+        detections=cascaded,
+        min_confidence=0.1,  # cascade already pre-filtered; trust it
+    )
+    return {"stage": stage, "persisted": persisted, "detected": len(cascaded)}

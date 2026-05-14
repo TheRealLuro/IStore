@@ -18,7 +18,7 @@ def test_extractive_summary_picks_sentences():
     from backend.summarize import _extractive_summary
 
     text = (
-        "The IStore project lets users upload images, videos, and documents. "
+        "The neuthek project lets users upload images, videos, and documents. "
         "It compresses images using a learned bandit policy. "
         "Face recognition is opt-in and BIPA-compliant. "
         "Phase 11 adds AI Vision summaries to power content search. "

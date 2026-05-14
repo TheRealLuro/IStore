@@ -33,9 +33,9 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="IStore",
+        title="neuthek",
         version="0.1.0",
-        description="AI-driven image storage with privacy-compliant face recognition.",
+        description="AI-driven personal storage with privacy-compliant face recognition.",
         lifespan=lifespan,
     )
 

@@ -18,7 +18,7 @@ class UserCreate(schemas.BaseUserCreate):
     @model_validator(mode="after")
     def _require_age_gate(self) -> "UserCreate":
         if self.age_confirmed is not True:
-            raise ValueError("You must confirm you are old enough to use IStore.")
+            raise ValueError("You must confirm you are old enough to use neuthek.")
         return self
 
 
@@ -65,6 +65,12 @@ class ImageRead(BaseModel):
     summary_points: list[str] | None = None
     pending_summary: bool = True
     summary_generated_at: datetime | None = None
+    # Multi-model image pipeline output (Phase 14 C2): per-image dict
+    # with keys `regions` (Florence-2 DENSE_REGION_CAPTION phrases),
+    # `objects` (Florence-2 OD labels), `concepts` (OpenCLIP top-K
+    # against the curated vocab), `vlm` (InternVL2 description when
+    # heavy_vlm_enabled). Any subset may be null.
+    summary_signals: dict | None = None
 
     folder_id: uuid.UUID | None = None
     status: str | None = None
@@ -74,6 +80,10 @@ class ImageRead(BaseModel):
     starred_at: datetime | None = None
 
     uploaded_at: datetime
+    # Hybrid-retention countdown: when the user's untouched original is
+    # eligible for archival/deletion. Surfaced in the preview panel so
+    # users see the policy applied to this specific file.
+    original_expires_at: datetime | None = None
 
 
 class FolderRead(BaseModel):

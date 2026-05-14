@@ -1,15 +1,15 @@
-# IStore — Face Recognition Disclosure (v1)
+# neuthek — Face Recognition Disclosure (v1)
 
 **Effective date:** 2026-04-30
 **Policy version:** v1
 
-This document is shown to every IStore user before face recognition is enabled
+This document is shown to every neuthek user before face recognition is enabled
 on their account. By granting consent, the user agrees to the terms below.
 
 ## What we collect
 
-When face recognition is enabled, IStore processes images you have uploaded
-to detect human faces in them. For each detected face, IStore stores:
+When face recognition is enabled, neuthek processes images you have uploaded
+to detect human faces in them. For each detected face, neuthek stores:
 
 - The location of the face within the image (a bounding box).
 - A 512-dimensional numerical representation of the face (a "face embedding"
@@ -29,7 +29,7 @@ Face data is used **only** to let you sort and search your own photo library
 
 - Shared with any third party.
 - Used to train any shared machine-learning model.
-- Compared against another IStore user's data.
+- Compared against another neuthek user's data.
 - Sold, rented, leased, or otherwise transferred to anyone.
 
 Each user's face data is isolated to that user's account.
@@ -43,7 +43,7 @@ Each user's face data is isolated to that user's account.
   cropped face images, and named-person records for your account are
   permanently deleted within twenty-four (24) hours. Your underlying photos
   are retained.
-- If you delete your IStore account, all face data is permanently deleted
+- If you delete your neuthek account, all face data is permanently deleted
   along with your other account data within thirty (30) days (GDPR Art. 17
   deletion-on-request requirement).
 

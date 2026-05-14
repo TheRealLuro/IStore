@@ -1,11 +1,11 @@
-IStore Source-Available License
+neuthek Source-Available License
 Version 2.0, 2026
 
 TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 
 1. Definitions
 
-"Software" means IStore, including source code, object code, APIs, documentation, configurations, and related materials.
+"Software" means neuthek, including source code, object code, APIs, documentation, configurations, and related materials.
 
 "Licensor" means the copyright holder of the Software.
 
@@ -51,9 +51,9 @@ No rights are granted for:
 * Competitive replication
 
 5. Trademark
-All names, branding, and identifiers associated with IStore are the property of the Licensor.
+All names, branding, and identifiers associated with neuthek are the property of the Licensor.
 You may not:
-* Use the name "IStore" or confusingly similar branding
+* Use the name "neuthek" or confusingly similar branding
 * Imply endorsement or affiliation with the Licensor
 
 6. Ownership
@@ -87,4 +87,4 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTIES OF ANY KIND.
 In no event shall the Licensor be liable for any damages arising from use or inability to use the Software.
 
 END OF TERMS AND CONDITIONS
-Copyright (c) 2026 IStore contributors
+Copyright (c) 2026 neuthek contributors

@@ -1,7 +1,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: istore-postgres
+    container_name: neuthek-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-istore}
@@ -19,7 +19,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: istore-redis
+    container_name: neuthek-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -33,7 +33,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2024-10-29T16-01-48Z
-    container_name: istore-minio
+    container_name: neuthek-minio
     restart: unless-stopped
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-istore}
@@ -50,28 +50,133 @@ services:
       timeout: 5s
       retries: 10
 
+  # Backend API — FastAPI + uvicorn with [ml] extras pre-installed so
+  # the vision pipeline (Florence-2, CLIP, RetinaFace, Qwen) works in
+  # the container. Source code is bind-mounted so edits hot-reload via
+  # `uvicorn --reload`. Model weights cache to a named volume so a
+  # rebuild doesn't re-download the ~4 GB Florence-2 archive.
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_ML: "1"
+    container_name: neuthek-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-istore}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-istorepass}
+      MINIO_SECURE: "false"
+      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-istore-originals}
+      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-istore-served}
+      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-istore-faces}
+      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-istore-quarantine}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
+      JWT_LIFETIME_SECONDS: "86400"
+      FRONTEND_BASE_URL: http://localhost:5173
+      REQUIRE_SIGNED_DOWNLOADS: "false"
+      # HF cache lives on the model_cache volume so a rebuild doesn't
+      # re-pull multi-GB weights. `transformers` reads both HF_HOME and
+      # TRANSFORMERS_CACHE; setting both keeps every loader on the same
+      # path.
+      HF_HOME: /models
+      TRANSFORMERS_CACHE: /models
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mount source for hot-reload. `uvicorn --reload` picks up
+      # edits the same way the host venv does.
+      - ./backend:/app/backend
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini:ro
+      # Reuse the host's HuggingFace cache when it exists — avoids the
+      # ~25-minute first-run download of Florence-2 (2.9 GB) + Qwen
+      # 2.5 (2.9 GB) + OpenCLIP. Falls back to the `model_cache` named
+      # volume on hosts that don't have ~/.cache/huggingface. On a
+      # Linux/macOS host the override is automatic via the variable;
+      # on Windows, Docker Desktop maps the path through WSL2 share.
+      - ${HF_CACHE_DIR:-${USERPROFILE:-${HOME}}/.cache/huggingface}:/models
+    # Run migrations then start uvicorn with reload enabled so live
+    # edits to backend/ pick up without a container restart.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn backend.app:app --host 0.0.0.0 --port 8000 --reload --log-level info"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/openapi.json"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # Frontend dev server — Vite with HMR, source bind-mounted so file
+  # saves on the host trigger a browser reload. node_modules lives in
+  # an anonymous volume so the container's installed deps don't get
+  # clobbered by the host bind mount.
+  frontend:
+    image: node:22-alpine
+    container_name: neuthek-frontend
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      # Browser-facing URL — must be reachable from the user's machine,
+      # not from inside the Docker network. The backend is published on
+      # localhost:8000 above.
+      VITE_API_BASE_URL: http://localhost:8000
+      VITE_REQUIRE_SIGNED_DOWNLOADS: "false"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    # `npm ci` runs only if node_modules is empty (first launch). After
+    # that we go straight to the dev server; mounting the volume keeps
+    # installed deps across container restarts.
+    command: >
+      sh -c "if [ ! -d node_modules ] || [ -z \"$$(ls -A node_modules 2>/dev/null)\" ]; then
+               echo 'Installing frontend dependencies (first run)…' && npm ci;
+             fi &&
+             npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on:
+      - backend
+
 volumes:
   pg_data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${ISTORE_DATA_ROOT:-./data}/postgres
+      device: ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT:-./data}}/postgres
   redis_data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${ISTORE_DATA_ROOT:-./data}/redis
+      device: ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT:-./data}}/redis
   minio_data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${ISTORE_DATA_ROOT:-./data}/minio
+      device: ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT:-./data}}/minio
   model_cache:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${ISTORE_DATA_ROOT:-./data}/models
+      device: ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT:-./data}}/models
+  # node_modules survives across container restarts but isn't bind-
+  # mounted (the host's potentially-different platform install — e.g.
+  # Windows binaries — would conflict with Alpine's musl-linked ones).
+  frontend_node_modules:

@@ -25,6 +25,46 @@ def get_device() -> str:
     return _device()
 
 
+def _materialize_to(model, device):
+    """Move a transformers/torch model onto `device` safely.
+
+    Modern transformers releases load weights via ``init_empty_weights``
+    on the *meta* device when ``low_cpu_mem_usage`` is auto-enabled (it
+    is, for several CausalLM and BLIP code paths). Calling ``.to(device)``
+    on a still-meta tensor raises:
+
+        NotImplementedError: Cannot copy out of meta tensor; no data!
+        Please use torch.nn.Module.to_empty()…
+
+    The fix is a two-step move: ``to_empty`` allocates real storage on
+    the target device first, then ``load_state_dict`` (which transformers
+    already did internally) repopulates it. In practice, by the time we
+    get the model object back from ``from_pretrained`` it has already
+    been materialized for us *if* we never touched ``device_map`` or
+    ``low_cpu_mem_usage``. Our defense in depth: try the normal ``.to``
+    first; on the meta-tensor error, fall back to ``.to_empty`` + a
+    fresh state-dict copy from the model itself.
+    """
+    import torch  # type: ignore
+    try:
+        return model.to(device)
+    except NotImplementedError as e:
+        if "meta tensor" not in str(e).lower():
+            raise
+        # Re-fetch the state dict (these are real tensors because
+        # transformers stores them off-meta after load) and re-attach
+        # via to_empty + load.
+        try:
+            sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            model = model.to_empty(device=device)
+            model.load_state_dict(sd, strict=False, assign=True)
+            return model
+        except Exception:
+            # Last-resort: re-load with low_cpu_mem_usage=False so the
+            # whole model materializes in CPU RAM, then move it.
+            raise
+
+
 @lru_cache(maxsize=1)
 def get_clip():
     """Load OpenCLIP image+text model and tokenizer once.
@@ -42,7 +82,7 @@ def get_clip():
         settings.clip_model_name,
         pretrained=settings.clip_pretrained,
     )
-    model = model.to(device).eval()
+    model = _materialize_to(model, device).eval()
     if device == "cuda":
         model = model.half()
     tokenizer = open_clip.get_tokenizer(settings.clip_model_name)
@@ -97,9 +137,15 @@ def get_doc_summarizer():
     )
 
     dtype = torch.float16 if device == "cuda" else torch.float32
+    # `low_cpu_mem_usage=False` forces transformers to materialize the
+    # whole model in real (non-meta) tensors at load time. Otherwise
+    # recent transformers builds enable the meta-tensor fast-load by
+    # default for some models, and the subsequent `.to(device)` blows
+    # up with NotImplementedError("Cannot copy out of meta tensor").
     model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_name, torch_dtype=dtype
-    ).to(device).eval()
+        model_name, torch_dtype=dtype, low_cpu_mem_usage=False
+    )
+    model = _materialize_to(model, device).eval()
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     for p in model.parameters():
@@ -137,17 +183,51 @@ def get_florence2():
     model_name = settings.caption_model_name
 
     dtype = torch.float16 if device == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype, trust_remote_code=True
-    ).to(device).eval()
+    # Florence-2's bundled modeling code predates the `_supports_sdpa`
+    # / `_supports_flash_attn_2` flags that transformers 4.50+ checks
+    # when resolving `attn_implementation`. We force `attn_implementation
+    # ="eager"` at load to bypass the resolver entirely; older trust-
+    # remote-code paths still accept it.
+    #
+    # `low_cpu_mem_usage=False` is critical — without it transformers
+    # uses the meta-tensor fast-load on Florence-2 and `.to(device)`
+    # raises NotImplementedError on every later call. Forcing full
+    # materialization at load time avoids the entire class of bug.
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            attn_implementation="eager",
+            low_cpu_mem_usage=False,
+        )
+    except TypeError:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            low_cpu_mem_usage=False,
+        )
+    model = _materialize_to(model, device).eval()
 
-    # Florence-2 modeling file predates the `_supports_sdpa` flag the
-    # `attn_implementation` resolver checks; missing flag → AttributeError
-    # the first time generate() runs. Set it on the class so the resolver
-    # picks the eager path without complaint.
-    model_cls = type(model)
-    if not hasattr(model_cls, "_supports_sdpa"):
-        model_cls._supports_sdpa = False
+    # Defensive belt-and-braces patch: set the flags on every level the
+    # resolver might check (class + instance + every submodule that
+    # inherits PreTrainedModel). A missing attribute on any of those
+    # blows up generate() the first time.
+    for attr in ("_supports_sdpa", "_supports_flash_attn_2", "_supports_flash_attn"):
+        try:
+            setattr(type(model), attr, False)
+        except Exception:
+            pass
+        try:
+            setattr(model, attr, False)
+        except Exception:
+            pass
+        for module in model.modules():
+            try:
+                setattr(module, attr, False)
+            except Exception:
+                pass
 
     processor = AutoProcessor.from_pretrained(
         model_name, trust_remote_code=True
@@ -182,8 +262,9 @@ def get_caption_model():
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     model = BlipForConditionalGeneration.from_pretrained(
-        model_name, torch_dtype=dtype
-    ).to(device).eval()
+        model_name, torch_dtype=dtype, low_cpu_mem_usage=False
+    )
+    model = _materialize_to(model, device).eval()
     processor = BlipProcessor.from_pretrained(model_name)
 
     for p in model.parameters():
@@ -216,9 +297,56 @@ def get_summary_rewriter():
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype
-    ).to(device).eval()
+        model_name, torch_dtype=dtype, low_cpu_mem_usage=False
+    )
+    model = _materialize_to(model, device).eval()
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    return model, tokenizer, device
+
+
+@lru_cache(maxsize=1)
+def get_internvl2():
+    """Heavy vision-language model for the C2e rich-description pass.
+
+    Gated behind `settings.heavy_vlm_enabled` so the lighter pipeline
+    (Florence-2 + CLIP + Qwen) stays the default. InternVL2-4B fits a
+    12 GB consumer GPU in fp16; the 19B variant needs A5000-class.
+
+    Returns (model, tokenizer, device). Raises ImportError if the user
+    hasn't enabled the heavy VLM path — callers should catch and skip
+    so a missing model gracefully degrades the summary instead of
+    breaking it.
+    """
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
+    from backend.config import settings
+
+    if not settings.heavy_vlm_enabled:
+        raise ImportError("heavy_vlm_enabled is False")
+
+    device = get_device()
+    model_name = settings.heavy_vlm_model
+
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    # `trust_remote_code` because InternVL2 ships its own modeling file
+    # (similar pattern to Florence-2). `low_cpu_mem_usage=False` for the
+    # same reason: avoid the meta-tensor fast-load that would break
+    # `.to(device)`.
+    model = AutoModel.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        trust_remote_code=True,
+        low_cpu_mem_usage=False,
+    )
+    model = _materialize_to(model, device).eval()
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=True
+    )
 
     for p in model.parameters():
         p.requires_grad_(False)

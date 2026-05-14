@@ -27,7 +27,110 @@ import {
   withdrawConsent,
   rescanAllFaces,
 } from "@/api/consent";
-import { backfillSummaries } from "@/api/files";
+import { backfillSummaries, getSummarizeProgress, backfillDocThumbs } from "@/api/files";
+import {
+  getAccountActivity,
+  getAccountTrash,
+  emptyAccountTrash,
+} from "@/api/auth";
+import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";
+
+// Live activity-log panel — reads the user's audit-log slice and
+// renders friendly English labels via the shared activity-labels
+// helper. Raw action codes (`consent.bandit_compression_telemetry.grant`,
+// `auth.login.succeeded`) get mapped to natural sentences ("Enabled
+// compression telemetry", "Signed in") so the panel is readable.
+function RealActivityLogPanel() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["account-activity"],
+    queryFn: () => getAccountActivity(50),
+    staleTime: 30_000,
+  });
+  if (isLoading) {
+    return <div style={{ padding: 18, color: "var(--ink-3)", fontSize: 12.5 }}>Loading…</div>;
+  }
+  if (!data || data.length === 0) {
+    return <div style={{ padding: 18, color: "var(--ink-3)", fontSize: 12.5 }}>No activity yet.</div>;
+  }
+  return (
+    <div style={{ padding: "8px 18px 14px", fontSize: 12.5 }}>
+      {data.map((e) => (
+        <div
+          key={e.id}
+          style={{
+            display: "flex", gap: 12, padding: "8px 0",
+            borderBottom: "1px solid var(--line-soft, var(--line))",
+            alignItems: "baseline",
+          }}
+        >
+          <span
+            style={{
+              minWidth: 8, alignSelf: "stretch",
+              borderLeft: "2px solid",
+              borderColor: activityTone(e.action) === "green" ? "#34c759"
+                          : activityTone(e.action) === "orange" ? "#ff9500"
+                          : "var(--ink-3)",
+              marginRight: 4,
+            }}
+          />
+          <span style={{ flex: 1, color: "var(--ink)" }}>
+            {activityLabel(e.action, e.details)}
+          </span>
+          <span className="mono" style={{ color: "var(--ink-3)", minWidth: 90, textAlign: "right" }}>
+            {activityWhen(e.created_at)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Live trash panel — count + Empty button calling the real endpoint.
+function RealTrashPanel({ onEmptied }) {
+  const qc = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["account-trash"],
+    queryFn: getAccountTrash,
+    staleTime: 10_000,
+  });
+  const [busy, setBusy] = useStateAcc(false);
+  const fmtBytes = (n) => {
+    if (!n) return "0 B";
+    if (n < 1024 ** 2) return (n / 1024).toFixed(1) + " KB";
+    if (n < 1024 ** 3) return (n / 1024 ** 2).toFixed(1) + " MB";
+    return (n / 1024 ** 3).toFixed(2) + " GB";
+  };
+  const onEmpty = async () => {
+    if (busy) return;
+    if (!data || data.count === 0) return;
+    if (!window.confirm(`Permanently delete ${data.count} item(s) (${fmtBytes(data.total_bytes)})? This can't be undone.`)) return;
+    setBusy(true);
+    try {
+      const r = await emptyAccountTrash();
+      toast.success(`Permanently deleted ${r.deleted} item(s).`);
+      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      onEmptied?.();
+    } catch (e) {
+      toast.error(e?.detail || "Could not empty trash.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const count = data?.count ?? 0;
+  return (
+    <div style={{ padding: "10px 18px 14px", fontSize: 13 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+        <span><strong>{count}</strong> {count === 1 ? "item" : "items"}</span>
+        <span className="mono" style={{ color: "var(--ink-3)" }}>{fmtBytes(data?.total_bytes ?? 0)}</span>
+      </div>
+      <button className="btn btn--secondary btn--sm" disabled={busy || count === 0} onClick={onEmpty}>
+        {busy ? "Emptying…" : "Empty trash"}
+      </button>
+    </div>
+  );
+}
 
 function initialsAcc(name) {
   return (name || "?")
@@ -133,6 +236,40 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   // re-fetch as the worker completes rows.
   const [busyResummarize, setBusyResummarize] = useStateAcc(false);
   const [busyRescan, setBusyRescan] = useStateAcc(false);
+  const [busyDocThumbs, setBusyDocThumbs] = useStateAcc(false);
+
+  const generateDocThumbs = async () => {
+    if (busyDocThumbs) return;
+    setBusyDocThumbs(true);
+    try {
+      const r = await backfillDocThumbs();
+      if (r.generated > 0) {
+        toast.success(`Generated ${r.generated} of ${r.examined} PDF thumbnail(s).`);
+        qc.invalidateQueries({ queryKey: ["files"] });
+      } else if (r.examined > 0) {
+        toast(`Scanned ${r.examined} document(s); nothing to rasterize.`);
+      } else {
+        toast("No documents need thumbnails yet.");
+      }
+    } catch (e) {
+      toast.error(e?.detail || "Could not generate PDF thumbnails.");
+    } finally {
+      setBusyDocThumbs(false);
+    }
+  };
+
+  // Summary regen progress poll. Refetches every 2 s while pending > 0;
+  // stops polling when zero so we don't spam the backend forever after
+  // the queue drains. Shared cache key — the top SummarizingBanner in
+  // app.jsx reuses the same data via React Query's dedupe.
+  const { data: summaryProgress } = useQuery({
+    queryKey: ["summarize-progress"],
+    queryFn: getSummarizeProgress,
+    enabled: open,
+    refetchInterval: (q) =>
+      q.state.data && q.state.data.pending > 0 ? 2000 : false,
+    staleTime: 1000,
+  });
   const reprocessSummaries = async () => {
     if (busyResummarize) return;
     if (!window.confirm("Re-run summarization on every image in your library? Uses your local Florence-2 + Qwen2.5 models and can take several minutes.")) return;
@@ -448,12 +585,33 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                 <div className="applist__label">Library maintenance</div>
                 <div className="applist">
                   <Row icon="refresh" tone="purple" title="Re-summarize entire library"
-                       desc={busyResummarize
-                         ? "Queueing… your library will rebuild summaries in the background."
-                         : "Re-run Florence-2 + Qwen2.5 over every image. Useful after upgrading models."}
-                       tail={<button className="btn btn--secondary btn--sm" onClick={reprocessSummaries} disabled={busyResummarize}>
-                         {busyResummarize ? "Working…" : "Run"}
+                       desc={(() => {
+                         if (busyResummarize) return "Queueing… your library will rebuild summaries in the background.";
+                         const p = summaryProgress;
+                         if (p && p.pending > 0) {
+                           const pct = p.total ? Math.round((p.completed / p.total) * 100) : 0;
+                           return `Summarizing ${p.completed} of ${p.total} · ${pct}%`;
+                         }
+                         return "Re-run Florence-2 + Qwen2.5 over every image. Useful after upgrading models.";
+                       })()}
+                       tail={<button className="btn btn--secondary btn--sm" onClick={reprocessSummaries} disabled={busyResummarize || (summaryProgress?.pending ?? 0) > 0}>
+                         {busyResummarize ? "Working…" : ((summaryProgress?.pending ?? 0) > 0 ? "Running…" : "Run")}
                        </button>}/>
+                  {summaryProgress && summaryProgress.pending > 0 && (
+                    <div style={{ padding: "0 18px 14px" }}>
+                      <div style={{
+                        height: 4, borderRadius: 2,
+                        background: "var(--surface-2)", overflow: "hidden",
+                      }}>
+                        <div style={{
+                          height: "100%",
+                          width: `${summaryProgress.total ? (summaryProgress.completed / summaryProgress.total) * 100 : 0}%`,
+                          background: "var(--ink)",
+                          transition: "width 250ms ease-out",
+                        }}/>
+                      </div>
+                    </div>
+                  )}
                   <Row icon="users" tone="orange" title="Re-scan all faces"
                        desc={faceRecog
                          ? (busyRescan
@@ -463,6 +621,14 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                        tail={<button className="btn btn--secondary btn--sm" onClick={rescanFaces}
                                      disabled={busyRescan || !faceRecog}>
                          {busyRescan ? "Working…" : "Run"}
+                       </button>}/>
+                  <Row icon="document" tone="indigo" title="Generate PDF thumbnails"
+                       desc={busyDocThumbs
+                         ? "Rasterizing page 1 of each PDF…"
+                         : "Render page 1 of every PDF so the gallery shows a thumbnail instead of an icon. Safe to re-run."}
+                       tail={<button className="btn btn--secondary btn--sm" onClick={generateDocThumbs}
+                                     disabled={busyDocThumbs}>
+                         {busyDocThumbs ? "Working…" : "Run"}
                        </button>}/>
                 </div>
               </>
@@ -485,11 +651,19 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   <Row icon="download" tone="blue" title="Export everything"
                        desc="ZIP of all files plus a JSON metadata sidecar"
                        tail={<Chev/>} onClick={() => onOpenSubmodal?.("export")}/>
+                  <Expandable id="activity" icon="document" tone="teal"
+                              title="Activity log"
+                              desc="Your sign-ins, consents, renames, deletes"
+                              panel={<RealActivityLogPanel/>}/>
                 </div>
 
-                {/* Trash & Activity log are not yet wired to real
-                    backends — todo.md 1.11. Hidden until those land so
-                    users don't toggle / click into mock data. */}
+                <div className="applist__label">Trash</div>
+                <div className="applist">
+                  <Expandable id="trash" icon="trash" tone="orange"
+                              title="Empty trash"
+                              desc="Permanently delete soft-deleted items"
+                              panel={<RealTrashPanel onEmptied={() => tog("trash")}/>}/>
+                </div>
 
                 <div className="applist__label" style={{ color: "#ff3b30" }}>Danger zone</div>
                 <div className="applist">

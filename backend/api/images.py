@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
-from sqlalchemy import nulls_last, select
+from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.users import current_active_user
@@ -114,12 +114,20 @@ async def _load_owned_image(
     image_id: UUID,
     user: User,
     session: AsyncSession,
+    include_deleted: bool = False,
 ) -> Image:
+    """Owner-scoped image lookup.
+
+    Live views filter out soft-deleted rows by default; the trash-side
+    delete path passes `include_deleted=True` so an already-trashed row
+    can still be hard-purged without 404'ing.
+    """
     stmt = select(Image).where(
         Image.id == image_id,
         Image.user_id == user.id,
-        Image.deleted_at.is_(None),
     )
+    if not include_deleted:
+        stmt = stmt.where(Image.deleted_at.is_(None))
     result = await session.execute(stmt)
     img = result.scalar_one_or_none()
     if img is None:
@@ -246,12 +254,23 @@ async def list_images(
     # search and the bulk people-tray view).
     folder_id: Annotated[UUID | None, Query()] = None,
     all: Annotated[bool, Query()] = False,
+    # Starred view: when true, returns is_starred rows cross-folder,
+    # sorted by starred_at desc. Ignores folder_id / all.
+    starred: Annotated[bool, Query()] = False,
+    # Trash view: when true, returns soft-deleted rows (deleted_at is
+    # not null) cross-folder, sorted by deleted_at desc. Used by the
+    # Trash page in the gallery so the user can see what's actually in
+    # the bin instead of an opaque "X items in trash" counter.
+    trashed: Annotated[bool, Query()] = False,
 ) -> list[Image]:
-    stmt = select(Image).where(
-        Image.user_id == user.id,
-        Image.deleted_at.is_(None),
-    )
-    if not all:
+    stmt = select(Image).where(Image.user_id == user.id)
+    if trashed:
+        stmt = stmt.where(Image.deleted_at.is_not(None))
+    else:
+        stmt = stmt.where(Image.deleted_at.is_(None))
+    if starred:
+        stmt = stmt.where(Image.is_starred.is_(True))
+    elif not trashed and not all:
         if folder_id is None:
             stmt = stmt.where(Image.folder_id.is_(None))
         else:
@@ -282,7 +301,16 @@ async def list_images(
                 Person.user_id == user.id, Person.display_name == person
             )
         stmt = stmt.distinct()
-    stmt = stmt.order_by(Image.uploaded_at.desc()).limit(limit).offset(offset)
+    # Starred view sorts by when the user starred each row (newest stars
+    # first); trashed view by when the file hit the bin (newest first);
+    # everything else sorts by upload recency.
+    if starred:
+        stmt = stmt.order_by(nulls_last(Image.starred_at.desc()))
+    elif trashed:
+        stmt = stmt.order_by(Image.deleted_at.desc())
+    else:
+        stmt = stmt.order_by(Image.uploaded_at.desc())
+    stmt = stmt.limit(limit).offset(offset)
 
     result = await session.execute(stmt)
     return list(result.scalars().all())
@@ -318,6 +346,7 @@ async def list_image_geo(
                 ImageGeo.lat,
                 ImageGeo.lng,
                 ImageGeo.taken_at,
+                ImageGeo.place,
                 Image.original_filename,
             )
             .join(Image, Image.id == ImageGeo.image_id)
@@ -338,10 +367,110 @@ async def list_image_geo(
                 "lat": float(lat),
                 "lng": float(lng),
                 "taken_at": taken_at.isoformat() if taken_at else None,
+                "place": place,
                 "original_filename": fname,
             }
-            for image_id, lat, lng, taken_at, fname in rows
+            for image_id, lat, lng, taken_at, place, fname in rows
         ],
+    }
+
+
+# In-process set of image ids currently being summarized. Lets the
+# progress-poll endpoint auto-drain stuck pending rows without queueing
+# the same image twice. Drained by `_run_summarize_one` (added in
+# `_detach_summarize_tracked` below) when each task completes.
+_SUMMARIZE_IN_FLIGHT: set[UUID] = set()
+
+
+async def _run_summarize_tracked(image_id: UUID) -> None:
+    """Wrap `_run_summarize_one` so the in-flight set unsets on exit.
+    Used by the progress endpoint's auto-drain so the same image can't
+    queue twice in a row."""
+    try:
+        await _run_summarize_one(image_id)
+    finally:
+        _SUMMARIZE_IN_FLIGHT.discard(image_id)
+
+
+@router.get("/summarize-progress")
+async def summarize_progress(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Tier-2 progress poll for the Library Maintenance UI and the top
+    sticky banner.
+
+    Returns `{total, pending, completed, has_any_summary}` for the
+    user's own, non-deleted images. Two aggregate counts, no joins —
+    cheap enough to poll every 2 s while a backfill is running.
+
+    Also acts as a low-effort drainer: any pending row that isn't
+    already being worked on (tracked in `_SUMMARIZE_IN_FLIGHT`) gets a
+    fresh task scheduled. This unblocks the "stuck at 7/9" failure
+    mode where an upload's one-shot task crashed and left the row
+    pending forever. The cap of 4 fresh tasks per poll keeps a runaway
+    library from spawning hundreds of concurrent vision jobs.
+
+    `has_any_summary` lets the FE distinguish a brand-new account
+    (everything pending for normal-upload reasons; no banner) from an
+    account that's actively re-summarizing (banner shown).
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count().label("total"),
+                # "Pending" used to mean only `pending_summary=true`, but
+                # the worker also marks rows complete-without-a-summary
+                # when the LLM dispatch returns None (model crashed, ran
+                # out of memory, etc.). Those rows have
+                # `pending_summary=false` AND `summary IS NULL` — they
+                # need another backfill pass to populate. Counting them
+                # as pending here means the top progress banner reflects
+                # real coverage (matches what the user sees in the
+                # gallery), and the regular non-force backfill (which
+                # already targets `summary IS NULL`) picks them up.
+                func.count()
+                .filter((Image.pending_summary.is_(True)) | (Image.summary.is_(None)))
+                .label("pending"),
+                func.count().filter(Image.summary.is_not(None)).label("with_summary"),
+            ).where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+            )
+        )
+    ).one()
+    total = int(row.total or 0)
+    pending = int(row.pending or 0)
+    with_summary = int(row.with_summary or 0)
+
+    # Auto-drain: schedule a fresh summarize task IF nothing is already
+    # in flight. Cap is 1 (not 4) because the vision pipeline downloads
+    # multi-GB Florence-2 / Qwen / CLIP weights on first run; running
+    # the loader in parallel just spawns redundant downloads of the
+    # same files and starves all of them. Sequential drain is faster
+    # end-to-end and survives a CPU-only deployment.
+    if pending > 0 and not _SUMMARIZE_IN_FLIGHT:
+        img_id = (
+            await session.execute(
+                select(Image.id)
+                .where(
+                    Image.user_id == user.id,
+                    Image.deleted_at.is_(None),
+                    (Image.pending_summary.is_(True)) | (Image.summary.is_(None)),
+                )
+                .order_by(Image.uploaded_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if img_id is not None:
+            _SUMMARIZE_IN_FLIGHT.add(img_id)
+            _detach(_run_summarize_tracked(img_id))
+
+    return {
+        "total": total,
+        "pending": pending,
+        "completed": max(0, total - pending),
+        "has_any_summary": with_summary > 0,
     }
 
 
@@ -413,6 +542,142 @@ async def backfill_image_geo(
         await session.commit()
 
     return {"examined": examined, "inserted": inserted}
+
+
+# In-process Nominatim cache. Keys are `(round(lat, 3), round(lng, 3))`
+# which gives ~110 m precision and dramatically cuts duplicate requests
+# (a burst of photos from the same trip all hash to the same cell).
+# Bounded by `_NOMINATIM_CACHE_CAP` so a runaway library can't OOM the
+# process; oldest entries are evicted FIFO once the cap is hit.
+_NOMINATIM_CACHE: dict[tuple[float, float], str | None] = {}
+_NOMINATIM_CACHE_CAP = 50_000
+_NOMINATIM_RATE_LIMIT_S = 1.1  # Nominatim ToS: 1 rps. Pad for jitter.
+
+
+async def _reverse_geocode(lat: float, lng: float) -> str | None:
+    """Call Nominatim. Returns a short display string ("Big Sur, California")
+    or None on any failure. Honors the 1-rps rate limit and caches by
+    rounded coords.
+
+    Best-effort throughout — Nominatim is a free public service, no SLA;
+    a failure returns None and the caller leaves `place` null so the
+    next backfill run tries again.
+    """
+    key = (round(lat, 3), round(lng, 3))
+    if key in _NOMINATIM_CACHE:
+        return _NOMINATIM_CACHE[key]
+    try:
+        import httpx  # type: ignore
+    except ImportError:
+        return None
+    try:
+        async with httpx.AsyncClient(
+            timeout=8.0,
+            headers={
+                # Nominatim ToS requires a unique UA that lets them
+                # contact us if we abuse the service.
+                "User-Agent": "neuthek/0.1 (self-hosted; privacy@neuthek.app)",
+                "Accept-Language": "en",
+            },
+        ) as client:
+            resp = await client.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={
+                    "lat": lat,
+                    "lon": lng,
+                    "format": "jsonv2",
+                    "zoom": 10,  # city-ish granularity
+                    "addressdetails": 1,
+                },
+            )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        # Prefer a compact "City, Region" form over the full display_name.
+        addr = data.get("address") or {}
+        city = (
+            addr.get("city") or addr.get("town") or addr.get("village")
+            or addr.get("suburb") or addr.get("county")
+            or addr.get("state_district")
+        )
+        region = addr.get("state") or addr.get("country")
+        if city and region:
+            short = f"{city}, {region}"
+        elif data.get("display_name"):
+            # Trim "Suburb, City, County, State, Country" → first two parts.
+            parts = [p.strip() for p in data["display_name"].split(",")]
+            short = ", ".join(parts[:2]) if len(parts) >= 2 else parts[0]
+        else:
+            short = None
+    except Exception:
+        logger.exception("reverse-geocode failed for (%s, %s)", lat, lng)
+        short = None
+
+    # FIFO eviction once cap is hit; dict insertion order is the eviction order.
+    if len(_NOMINATIM_CACHE) >= _NOMINATIM_CACHE_CAP:
+        oldest = next(iter(_NOMINATIM_CACHE))
+        _NOMINATIM_CACHE.pop(oldest, None)
+    _NOMINATIM_CACHE[key] = short
+    return short
+
+
+@router.post("/geo/backfill-places")
+async def backfill_image_places(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Reverse-geocode every `image_geo` row that has lat/lng but no
+    `place` yet. Politely rate-limited (1 rps) per Nominatim's ToS.
+
+    Idempotent: subsequent runs only touch rows still missing a name,
+    so calling this repeatedly is safe (and useful as the cache fills).
+    Cached aggressively by rounded coords — clusters of photos from the
+    same trip share one call.
+    """
+    if not await is_scope_active(session, user.id, "gps_retention"):
+        raise HTTPException(
+            status_code=403,
+            detail="GPS retention consent is not active.",
+        )
+
+    rows = (
+        await session.execute(
+            select(ImageGeo)
+            .where(
+                ImageGeo.user_id == user.id,
+                ImageGeo.place.is_(None),
+            )
+            .limit(500)
+        )
+    ).scalars().all()
+
+    examined = 0
+    filled = 0
+    # Cache-only fast path: drain anything we already know without
+    # waiting on Nominatim's rate limit.
+    pending: list[ImageGeo] = []
+    for row in rows:
+        examined += 1
+        key = (round(row.lat, 3), round(row.lng, 3))
+        if key in _NOMINATIM_CACHE:
+            cached = _NOMINATIM_CACHE[key]
+            if cached:
+                row.place = cached
+                filled += 1
+        else:
+            pending.append(row)
+
+    # Slow path: rate-limited Nominatim calls for cache misses.
+    for row in pending:
+        place = await _reverse_geocode(row.lat, row.lng)
+        if place:
+            row.place = place
+            filled += 1
+        await asyncio.sleep(_NOMINATIM_RATE_LIMIT_S)
+
+    if filled:
+        await session.commit()
+    return {"examined": examined, "filled": filled}
 
 
 @router.get("/{image_id}", response_model=ImageRead)
@@ -500,6 +765,197 @@ async def download_served(
     return Response(content=blob, media_type=mime)
 
 
+def _pdf_meta_sync(raw: bytes) -> dict:
+    """Read page count + per-page dimensions from a PDF without rendering.
+
+    Dimensions are reported in PDF user-space points (1/72 inch). The
+    frontend uses the per-page aspect ratio to reserve scroll height
+    before the corresponding raster JPEG lazy-loads, so the scrollbar
+    never jumps as pages stream in.
+    """
+    import fitz  # type: ignore
+
+    with fitz.open(stream=raw, filetype="pdf") as doc:
+        pages = [
+            {"w": float(p.rect.width), "h": float(p.rect.height)}
+            for p in doc
+        ]
+    return {"page_count": len(pages), "pages": pages}
+
+
+def _pdf_page_jpeg_sync(raw: bytes, page: int, target_width: int) -> bytes:
+    """Rasterize page N to a JPEG at the requested CSS-pixel width.
+
+    The matrix zoom is chosen so the output bitmap is exactly
+    `target_width` pixels wide (snapped against the page's native
+    user-space width). Quality 85 keeps a 2000-px wide page around
+    150-300 KB — small enough that streaming a 30-page PDF over a
+    LAN connection completes in under two seconds.
+    """
+    import fitz  # type: ignore
+
+    target_width = max(64, min(target_width, 4096))
+    with fitz.open(stream=raw, filetype="pdf") as doc:
+        if page < 0 or page >= len(doc):
+            raise ValueError("page out of range")
+        pg = doc[page]
+        zoom = target_width / max(1.0, pg.rect.width)
+        pix = pg.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("jpeg", jpg_quality=85)
+
+
+def _is_pdf(image: Image) -> bool:
+    mime = (image.mime_type_original or "").lower()
+    if mime == "application/pdf":
+        return True
+    name = (image.original_filename or "").lower()
+    return name.endswith(".pdf")
+
+
+@router.get("/{image_id}/pdf-meta")
+async def pdf_meta(
+    image_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Return `{page_count, pages: [{w, h}, ...]}` for a PDF document.
+
+    Used by the preview-modal page stack so the scroll height is correct
+    before any page raster arrives. Non-PDF rows 415 because the rest of
+    the modal would never call this for them.
+    """
+    image = await _load_owned_image(image_id, user, session)
+    if not _is_pdf(image):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Not a PDF"
+        )
+    raw, _mime = await fetch_original(image)
+    try:
+        return await asyncio.to_thread(_pdf_meta_sync, raw)
+    except Exception as exc:
+        logger.exception("pdf-meta: parse failed for %s", image_id)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Could not read PDF: {type(exc).__name__}",
+        )
+
+
+@router.get("/{image_id}/pdf-page/{page}")
+async def pdf_page(
+    image_id: UUID,
+    page: int,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    width: int = Query(default=1400, ge=64, le=4096),
+) -> Response:
+    """Rasterize one PDF page to JPEG at the requested width.
+
+    Cached aggressively (`Cache-Control: private, max-age=86400`) keyed
+    on (image_id, page, width). The blob URL the frontend wraps this
+    in is per-page-per-tab, so even at the modal's max DPI request
+    each page is fetched at most once per session.
+    """
+    image = await _load_owned_image(image_id, user, session)
+    if not _is_pdf(image):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Not a PDF"
+        )
+    raw, _mime = await fetch_original(image)
+    try:
+        jpeg = await asyncio.to_thread(
+            _pdf_page_jpeg_sync, raw, page, width
+        )
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Page not found")
+    except Exception as exc:
+        logger.exception("pdf-page: render failed for %s p%s", image_id, page)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Render failed: {type(exc).__name__}",
+        )
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.post("/backfill-doc-thumbs")
+async def backfill_doc_thumbs(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Generate first-page thumbnails for the caller's existing PDFs
+    that don't have one yet. Walks `images.category == 'document'`
+    rows whose `mime_type_served` is not an image (i.e. the served blob
+    is still the raw PDF, so the gallery shows a generic icon).
+    Rasterizes page 1 via PyMuPDF, uploads to the `served` bucket,
+    updates the row. Returns `{examined, generated}`.
+    """
+    from uuid import uuid4
+
+    from backend.storage import storage
+    from backend.image import _pdf_page_one_thumb, fetch_original
+
+    candidates = (
+        await session.execute(
+            select(Image).where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+                Image.category == "document",
+                # Either no served mime, or it's not an image yet.
+                (
+                    Image.mime_type_served.is_(None)
+                    | (~Image.mime_type_served.like("image/%"))
+                ),
+            ).limit(500)
+        )
+    ).scalars().all()
+
+    examined = 0
+    generated = 0
+    for image in candidates:
+        examined += 1
+        # Only attempt PDFs.
+        is_pdf = (
+            (image.mime_type_original == "application/pdf")
+            or (
+                image.original_filename
+                and image.original_filename.lower().endswith(".pdf")
+            )
+        )
+        if not is_pdf:
+            continue
+        try:
+            raw, _mime = await fetch_original(image)
+        except Exception:
+            continue
+        if not raw:
+            continue
+        thumb = _pdf_page_one_thumb(raw)
+        if not thumb:
+            continue
+        served_key = f"users/{user.id}/served/{uuid4().hex}.png"
+        try:
+            storage.put(
+                storage.bucket_served,
+                served_key,
+                thumb,
+                "image/png",
+                sse_scope="content",
+            )
+        except Exception:
+            continue
+        image.served_blob_key = served_key
+        image.mime_type_served = "image/png"
+        image.byte_size_served = len(thumb)
+        generated += 1
+
+    if generated:
+        await session.commit()
+    return {"examined": examined, "generated": generated}
+
+
 @router.post("/backfill-summaries", status_code=status.HTTP_202_ACCEPTED)
 async def backfill_summaries(
     user: Annotated[User, Depends(current_active_user)],
@@ -571,6 +1027,48 @@ async def resummarize_image(
 
     _detach(_run_summarize_one(image.id))
     return {"image_id": str(image.id), "pending_summary": True}
+
+
+@router.post("/{image_id}/redetect-faces")
+async def redetect_faces(
+    image_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """D8 — user-signal face re-detect cascade.
+
+    When the default pipeline found no faces but the user knows there's
+    a person in the photo, this endpoint runs:
+        RetinaFace 0.3 → RetinaFace 0.15 → mediapipe face_detection
+    Each later stage costs ~1-2 s more on GPU; we stop at the first
+    that returns boxes. Mediapipe-detected faces are persisted without
+    an ArcFace embedding — the user will need to label them manually
+    (a Face row with placeholder embedding is created so the UI sees
+    something to attach a name to).
+
+    Requires `face_recognition` consent — same gate as the bulk scan.
+    Returns `{stage, detected, persisted}` so the FE can tell which
+    detector worked and offer the user-drawn-box fallback when stage
+    == "empty".
+    """
+    if not await is_consent_active(session, user.id):
+        raise HTTPException(
+            status_code=403,
+            detail="Face recognition consent is not active. Enable it in Settings → Privacy first.",
+        )
+
+    image = await _load_owned_image(image_id, user, session)
+    try:
+        raw_bytes, _mime = await fetch_original(image)
+    except Exception:
+        raise HTTPException(status_code=410, detail="Original is no longer available.")
+    if not raw_bytes:
+        raise HTTPException(status_code=410, detail="Original is no longer available.")
+
+    from backend.faces_pipeline import redetect_image_with_cascade
+
+    result = await redetect_image_with_cascade(session, user, image, raw_bytes)
+    return result
 
 
 @router.patch("/{image_id}/move", response_model=ImageRead)
@@ -681,7 +1179,10 @@ async def delete_image(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
-    image = await _load_owned_image(image_id, user, session)
+    # Allow hard-purging rows that are already soft-deleted (the user
+    # may be cleaning up the Trash view manually). Default lookup would
+    # 404 on those because of the deleted_at filter.
+    image = await _load_owned_image(image_id, user, session, include_deleted=True)
     await hard_delete_images(
         session,
         user_id=user.id,

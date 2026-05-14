@@ -87,6 +87,35 @@ export async function regenerateRecoveryCodes(): Promise<{ codes: string[] }> {
   );
 }
 
+export interface AccountActivityEntry {
+  id: number;
+  action: string;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+/** User-visible activity log. Returns the caller's most recent audit
+ *  events — sign-ins, consent changes, renames, deletes, etc. */
+export async function getAccountActivity(limit = 50): Promise<AccountActivityEntry[]> {
+  return api.get<AccountActivityEntry[]>(`/account/activity?limit=${limit}`);
+}
+
+export interface TrashSummary {
+  count: number;
+  total_bytes: number;
+}
+
+/** Soft-deleted images for the caller. Just the count + total bytes —
+ *  per-row listing comes later if we add a recoverable-items grid. */
+export async function getAccountTrash(): Promise<TrashSummary> {
+  return api.get<TrashSummary>("/account/trash");
+}
+
+/** Permanently delete every soft-deleted image. Cannot be undone. */
+export async function emptyAccountTrash(): Promise<{ deleted: number }> {
+  return api.post<{ deleted: number }>("/account/trash/empty");
+}
+
 /** Trade a recovery code for a JWT. Drops the JWT into local storage
  * directly so the existing me() bootstrap picks the user up. */
 export async function recoveryLogin(

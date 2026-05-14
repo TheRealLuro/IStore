@@ -17,9 +17,14 @@ import { AuthedThumb } from "./auth-image.jsx";
 import { useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { RenameFolderModal, DeleteFolderModal } from "./folder-modals.jsx";
+import { EditableName } from "./nameable-chip.jsx";
 
 // Custom MIME used for HTML5 drag-and-drop of files. The legacy frontend
 // used the same key so we keep it for parity with anything else listening.
+// Custom MIME used for HTML5 drag-and-drop of files. The literal value
+// stays as `x-istore-image` for cross-tab compatibility with any open
+// sessions still running the previous build; the brand renamed but the
+// wire string is internal-only.
 const DND_MIME = "application/x-istore-image";
 
 export function Sidebar({ view, onView, onUpload, onAccount, attentionCount = 0, onAttention, user, counts }) {
@@ -36,10 +41,14 @@ export function Sidebar({ view, onView, onUpload, onAccount, attentionCount = 0,
       { id: "docs",    label: "Documents",   icon: "document",count: c.document ?? 0 },
     ]},
     { group: "VIEWS", items: [
-      { id: "people",  label: "People",      icon: "users",   count: 7 },
+      { id: "starred", label: "Starred",     icon: "star",    count: c.starred ?? 0 },
+      { id: "people",  label: "People",      icon: "users",   count: c.people ?? 0 },
       { id: "places",  label: "Map",         icon: "map",     count: c.geo ?? 0 },
-      { id: "shared",  label: "Shared",      icon: "share",   count: 3 },
-      { id: "trash",   label: "Trash",       icon: "trash",   count: 0 },
+      // Shared has no backend yet (todo.md G1) — keep the row visible
+      // so the navigation shape doesn't shift when sharing ships, but
+      // never show a fake count.
+      { id: "shared",  label: "Shared",      icon: "share",   count: c.shared ?? 0 },
+      { id: "trash",   label: "Trash",       icon: "trash",   count: c.trash ?? 0 },
     ]},
   ];
 
@@ -161,12 +170,16 @@ function PeopleStrip({ onPerson }) {
   });
   const named = (data?.persons || []).map(p => ({
     id: "p" + p.id,
+    personId: p.id,
+    clusterId: null,
     name: p.display_name,
     img: p.sample_face_id ? faceCropUrl(p.sample_face_id) : null,
     count: p.face_count,
   }));
   const unnamed = (data?.unlabeled_clusters || []).map(c => ({
     id: "c" + c.cluster_id,
+    personId: null,
+    clusterId: c.cluster_id,
     name: null,
     img: faceCropUrl(c.sample_face_id),
     count: c.face_count,
@@ -176,20 +189,32 @@ function PeopleStrip({ onPerson }) {
   return (
     <div className="people">
       {faces.map(f => (
-        <button className="person" key={f.id} onClick={() => onPerson && onPerson(f)}>
-          {!f.img ? (
-            <div className="person__avatar" style={{ background: "var(--surface-2)" }}/>
-          ) : (
-            <AuthedThumb
-              url={f.img}
-              className="person__avatar"
-              placeholder={{ background: "var(--surface-2)" }}
-            />
-          )}
-          <div className={"person__name" + (f.name ? "" : " person__name--unnamed")}>
-            {f.name || "Unnamed"}
-          </div>
-        </button>
+        <div className="person" key={f.id}>
+          <button
+            type="button"
+            onClick={() => onPerson && onPerson(f)}
+            style={{ background: "none", border: 0, padding: 0, cursor: "pointer" }}
+            aria-label={f.name ? `View ${f.name}` : "View this cluster"}
+          >
+            {!f.img ? (
+              <div className="person__avatar" style={{ background: "var(--surface-2)" }}/>
+            ) : (
+              <AuthedThumb
+                url={f.img}
+                className="person__avatar"
+                placeholder={{ background: "var(--surface-2)" }}
+              />
+            )}
+          </button>
+          <EditableName
+            name={f.name}
+            personId={f.personId}
+            clusterId={f.clusterId}
+            className={"person__name" + (f.name ? "" : " person__name--unnamed")}
+            unnamedPlaceholder="Unnamed"
+            invalidate={[["people"]]}
+          />
+        </div>
       ))}
     </div>
   );
@@ -213,6 +238,7 @@ function FileCard({ f, selected, onClick, query, onRename, onShare }) {
       qc.invalidateQueries({ queryKey: ["files"] });
       qc.invalidateQueries({ queryKey: ["storage"] });
       qc.invalidateQueries({ queryKey: ["geo"] });
+      qc.invalidateQueries({ queryKey: ["account-trash"] });
     } catch (e) {
       toast.error(e?.detail || "Could not delete file");
     }
@@ -248,11 +274,11 @@ function FileCard({ f, selected, onClick, query, onRename, onShare }) {
          onDoubleClick={(e) => { e.stopPropagation(); onRename && onRename(f); }}
          title="Double-click to rename · drag onto a folder to move">
       <AuthedThumb
-        url={isImage ? f.thumb : null}
-        className={"card__thumb" + (isImage ? "" : " card__thumb--doc")}
+        url={f.thumb || null}
+        className={"card__thumb" + (isImage || f.thumb ? "" : " card__thumb--doc")}
         placeholder={{ background: "var(--surface-2)" }}
       >
-        {!isImage && (
+        {!f.thumb && (
           <div className="thumb-icon">
             <Icon name={TYPE_ICON[f.type] || "document"} size={32} strokeWidth={1.3}/>
             <span className="mono" style={{ fontSize: 11 }}>{f.ext}</span>
@@ -503,22 +529,29 @@ export function GalleryView({
   showPeopleStrip = true, showFolders = true,
   typeFilter = "all", onTypeFilter, onRename,
   folderId = null, onEnterFolder,
+  view = "gallery",
+  peopleFilter = null, onClearPeopleFilter,
 }) {
+  // Folders are an organizational container — they only make sense in
+  // the all-files view with the "All" type pill. Specific-type pills
+  // (Photos / Videos / Documents) and dedicated views (Starred / People
+  // / Map / Shared / Trash) hide them so the gallery stops mixing
+  // unrelated content.
+  const foldersAllowed = view === "gallery" && typeFilter === "all";
   const [renameTarget, setRenameTarget] = useStateG(null);
   const [deleteTarget, setDeleteTarget] = useStateG(null);
   const filtered = useMemoG(() => {
     let list = files;
     if (typeFilter !== "all") list = list.filter(f => f.type === typeFilter);
-    if (query) {
-      const q = query.toLowerCase();
-      // Semantic search: name + AI topic + AI content body
-      list = list.filter(f =>
-        f.name.toLowerCase().includes(q) ||
-        (f.topic || "").toLowerCase().includes(q) ||
-        (f.aiContent || "").toLowerCase().includes(q)
-      );
-    }
-    if (sort === "name") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    // When a search query is active the upstream already supplied
+    // server-ranked semantic hits (CLIP cosine + FTS over summary,
+    // topic, points, filename) — we preserve that order and only
+    // re-apply the type-pill filter on top. The previous client-side
+    // substring filter has been retired: it dropped legitimate semantic
+    // matches like "classroom" → a whiteboard photo whose summary
+    // mentions "lecture room", which the server's CLIP pass surfaces
+    // correctly.
+    if (sort === "name" && !query) list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [files, query, sort, typeFilter]);
 
@@ -550,6 +583,28 @@ export function GalleryView({
 
   return (
     <div className="gallery">
+      {peopleFilter?.personId && (
+        <div style={{
+          margin: "0 0 14px",
+          padding: "8px 12px",
+          display: "flex", alignItems: "center", gap: 10,
+          background: "var(--surface)",
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+          fontSize: 13,
+        }}>
+          <Icon name="users" size={13}/>
+          <span>Photos of <strong>{peopleFilter.name || "this person"}</strong></span>
+          <span style={{ flex: 1 }}/>
+          <button
+            type="button"
+            onClick={() => onClearPeopleFilter && onClearPeopleFilter()}
+            className="btn btn--ghost btn--sm"
+          >
+            <Icon name="x" size={11}/> Back to People
+          </button>
+        </div>
+      )}
       <TypeChips active={typeFilter} onChange={onTypeFilter || (()=>{})} files={files}/>
 
       {isMockType && (
@@ -582,7 +637,7 @@ export function GalleryView({
 
       {!query && showPeopleStrip && typeFilter === "all" && <PeopleStrip/>}
 
-      {!query && showFolders && visibleFolders.length > 0 && (
+      {!query && showFolders && foldersAllowed && visibleFolders.length > 0 && (
         <div style={{ marginBottom: 18 }}>
           <div className="kicker" style={{ marginBottom: 10 }}>Folders</div>
           <div style={{

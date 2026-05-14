@@ -1,6 +1,6 @@
 # Privacy Notice
 
-IStore stores user-uploaded files, generated previews, optional AI summaries,
+neuthek stores user-uploaded files, generated previews, optional AI summaries,
 optional tags, and optional biometric face embeddings when the user grants the
 matching consent scope. Raw uploads are validated in a quarantine bucket before
 promotion to permanent storage.

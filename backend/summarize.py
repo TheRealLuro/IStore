@@ -77,7 +77,7 @@ async def summarize_image_id(session: AsyncSession, image_id: UUID) -> None:
         logger.exception(
             "summarize: failed to fetch original for %s", image_id
         )
-        await _mark_done(session, image, None)
+        await _mark_done(image_id, None)
         return
 
     # Look up named people while we're still in the async event loop —
@@ -90,15 +90,60 @@ async def summarize_image_id(session: AsyncSession, image_id: UUID) -> None:
             session, image.id, image.user_id
         )
 
+    # Pre-load the existing tag labels in async land for the same
+    # reason. The previous code accessed `image.tags` inside the sync
+    # `_dispatch` thread; lazy-loading a relationship there blows up
+    # with "greenlet_spawn has not been called" and leaves the session
+    # in a PendingRollback state that makes `_mark_done` fail too.
+    # Materializing the labels upfront keeps the sync path read-only.
+    pre_tag_labels = await _load_image_tag_labels(session, image.id)
+
     try:
         result = await asyncio.to_thread(
-            _dispatch, image, raw_bytes, named_people
+            _dispatch, image, raw_bytes, named_people, pre_tag_labels
         )
     except Exception:
         logger.exception("summarize: dispatch failed for %s", image_id)
         result = None
 
-    await _mark_done(session, image, result)
+    # Capture summary_signals BEFORE awaiting anything else — the
+    # `image` object's session may be poisoned by a greenlet-less
+    # lazy load that happened inside _dispatch; reading attributes
+    # later goes through state-load paths that re-raise. We grab the
+    # in-memory dict (set by `_summarize_image`) now, while we're
+    # still in the same thread context, and pass it positionally
+    # to `_mark_done` which uses a fresh session for the UPDATE.
+    signals = None
+    try:
+        signals = image.__dict__.get("summary_signals")
+    except Exception:
+        pass
+
+    try:
+        await _mark_done(image_id, result, signals)
+    except Exception:
+        logger.exception("summarize: _mark_done failed for %s", image_id)
+
+
+async def _load_image_tag_labels(
+    session: AsyncSession, image_id
+) -> list[str]:
+    """Return the labels on this image's existing tags.
+
+    Run from the async side so the sync `_dispatch` thread doesn't have
+    to lazy-load `image.tags` itself (which fails with a greenlet
+    error). Caller passes the resulting list to `_summarize_image` as
+    `pre_tag_labels`.
+    """
+    from backend.models import ImageTag, Tag
+    rows = (
+        await session.execute(
+            select(Tag.label)
+            .join(ImageTag, ImageTag.tag_id == Tag.id)
+            .where(ImageTag.image_id == image_id)
+        )
+    ).scalars().all()
+    return [r for r in rows if r]
 
 
 async def _load_named_people(
@@ -132,27 +177,87 @@ async def _load_named_people(
 
 
 async def _mark_done(
-    session: AsyncSession, image: Image, result: Optional[SummaryResult]
+    image_id,
+    result: Optional[SummaryResult],
+    signals: Optional[dict] = None,
 ) -> None:
+    """Persist the summary row after a worker run.
+
+    Takes only the id + flat data (no ORM-tracked Image instance).
+    Accessing attributes on an Image object that's bound to a
+    poisoned session re-triggers the same PendingRollbackError on a
+    fresh session, because the attribute access goes through the
+    InstanceState's load_expired/refresh path. Writing via a plain
+    `UPDATE ... WHERE id = :id` on a fresh session sidesteps that
+    entirely.
+
+    When `result is None` the dispatch produced nothing usable — the LLM
+    crashed, the model wasn't loadable, the file was corrupt, etc. In
+    that case we deliberately keep `pending_summary=True` so the row
+    stays visible to the regular backfill pass (which targets
+    `pending_summary=true OR summary IS NULL`). Marking it complete
+    would silently drop the row from the queue and leave the user with
+    no summary forever.
+    """
+    from sqlalchemy import update as sa_update
+
+    from backend.db import SessionLocal
+
+    values: dict = {}
     if result is not None:
-        image.summary = result.summary
-        image.summary_topic = result.topic
-        image.summary_points = result.points
-    image.pending_summary = False
-    image.summary_generated_at = datetime.now(timezone.utc)
-    await session.commit()
+        values["summary"] = result.summary
+        values["summary_topic"] = result.topic
+        values["summary_points"] = result.points
+        values["pending_summary"] = False
+        values["summary_generated_at"] = datetime.now(timezone.utc)
+        if signals:
+            values["summary_signals"] = signals
+    else:
+        values["summary_generated_at"] = datetime.now(timezone.utc)
+        # Keep pending_summary alone so the row gets retried.
+
+    async with SessionLocal() as fresh:
+        await fresh.execute(
+            sa_update(Image).where(Image.id == image_id).values(**values)
+        )
+        await fresh.commit()
 
 
 def _dispatch(
-    image: Image, raw_bytes: bytes, named_people: list[str]
+    image: Image,
+    raw_bytes: bytes,
+    named_people: list[str],
+    pre_tag_labels: list[str] | None = None,
 ) -> Optional[SummaryResult]:
     if image.category == "image":
-        return _summarize_image(image, raw_bytes, named_people)
+        return _summarize_image(image, raw_bytes, named_people, pre_tag_labels or [])
     if image.category == "video":
         return _summarize_video(image, raw_bytes)
     if image.category == "document":
         return _summarize_document(image, raw_bytes)
-    return None
+    # Catch-all for "other" — archives (.zip, .tar.gz, etc.) and any
+    # mime type we don't have a dedicated summarizer for. Without this,
+    # the row's `summary` stays NULL forever and the progress banner
+    # is stuck at N-1 of N. We emit a minimal description derived from
+    # the filename + ext so the row counts as summarized and the FE
+    # can search by the filename.
+    return _summarize_other(image)
+
+
+def _summarize_other(image: Image) -> SummaryResult:
+    fname = image.original_filename or "file"
+    stem = fname.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
+    ext = (fname.rsplit(".", 1)[-1].lower() if "." in fname else "") or ""
+    ext_label = {
+        "zip": "Archive (.zip)",
+        "tar": "Archive (.tar)",
+        "gz":  "Archive (.gz)",
+        "rar": "Archive (.rar)",
+        "7z":  "Archive (.7z)",
+    }.get(ext, ext.upper() if ext else "File")
+    topic = stem[:80] if stem else ext_label
+    summary = f"{ext_label} — {stem}." if stem else f"{ext_label}."
+    return SummaryResult(topic=topic or "File", summary=summary, points=[])
 
 
 # --- image -----------------------------------------------------------------
@@ -170,7 +275,10 @@ _OCR_CONTENT_TYPES = frozenset({"screenshot", "document"})
 
 
 def _summarize_image(
-    image: Image, raw_bytes: bytes, named_people: list[str]
+    image: Image,
+    raw_bytes: bytes,
+    named_people: list[str],
+    pre_tag_labels: list[str] | None = None,
 ) -> SummaryResult:
     """Florence-2 detailed caption + scene-gated OCR + LLM rewrite.
 
@@ -194,6 +302,31 @@ def _summarize_image(
     )
     ocr_text = _ocr_image(raw_bytes) if needs_ocr else None
 
+    # C2a — multi-model image pipeline. Each stage is best-effort and
+    # returns None on failure so a missing model degrades the summary
+    # instead of breaking it.
+    regions = _florence_regions(raw_bytes)
+    objects = _florence_objects(raw_bytes)
+    # CLIP concept tags + heavy VLM are wired in C2b / C2e.
+    concepts: Optional[list[str]] = None
+    vlm_description: Optional[str] = None
+    try:
+        from backend.vision.concepts import top_concepts
+        concepts = top_concepts(raw_bytes)
+    except Exception:
+        concepts = None
+    try:
+        if getattr(settings, "heavy_vlm_enabled", False):
+            from backend.vision.runtime import get_internvl2  # noqa: F401
+            vlm_description = _vlm_describe(raw_bytes)
+    except Exception:
+        vlm_description = None
+
+    # Existing image_tags labels — pre-loaded in async land by
+    # `summarize_image_id` so the sync thread doesn't trip on lazy
+    # relationship loading.
+    pre_tags: list[str] = list(pre_tag_labels or [])
+
     summary = _llm_rewrite_summary(
         caption=raw_caption,
         names=named_people,
@@ -201,19 +334,54 @@ def _summarize_image(
         scene=image.scene_label,
         setting=image.indoor_outdoor,
         content_type=image.content_type,
+        tags=pre_tags or None,
+        regions=regions,
+        objects=objects,
+        concepts=concepts,
+        vlm_description=vlm_description,
     )
+
+    # Persist the structured signals so re-summarization is idempotent
+    # without re-running every stage from scratch and so C9 multi-axis
+    # filtering can query them later. Empty / None inputs are dropped.
+    #
+    # Stash on `image.__dict__` directly (NOT `image.summary_signals = ...`)
+    # to avoid going through SQLAlchemy's InstanceState. A setattr on the
+    # session-tracked ORM attribute can trigger a state-load if the
+    # column's expired in this thread, which calls await_only() without
+    # a greenlet and poisons the session for `_mark_done`. Reading from
+    # `image.__dict__` in the async wrapper is symmetric and equally safe.
+    signals: dict = {}
+    if regions: signals["regions"] = regions
+    if objects: signals["objects"] = objects
+    if concepts: signals["concepts"] = concepts
+    if vlm_description: signals["vlm"] = vlm_description
+    if signals:
+        image.__dict__["summary_signals"] = signals
 
     if not summary:
         # Deterministic fallback — same path as v1.
         cleaned = _clean_caption(raw_caption)
         spliced = _splice_names(cleaned, named_people)
-        summary = spliced or _fallback_image_summary(image)
+        summary = spliced or _fallback_image_summary(image, named_people)
         if ocr_text and "text" not in summary.lower():
             excerpt = ocr_text[:120].replace("\n", " ").strip()
             if excerpt:
                 summary = f"{summary.rstrip('.')}. Visible text: {excerpt}."
 
-    topic = _compose_topic(image, summary, named_people)
+    # Prefer the LLM topic when available — much richer than the heuristic
+    # "Photo of Me" fallback. Pass the same signals the rewriter saw so
+    # the topic stays consistent with the description.
+    topic = _llm_compose_topic(
+        caption=raw_caption,
+        names=named_people,
+        regions=regions,
+        objects=objects,
+        concepts=concepts,
+        scene=image.scene_label,
+        setting=image.indoor_outdoor,
+        content_type=image.content_type,
+    ) or _compose_topic(image, summary, named_people)
 
     points: list[str] = []
     if named_people:
@@ -447,12 +615,37 @@ def _compose_topic(
     return "Photo"
 
 
-def _fallback_image_summary(image: Image) -> str:
+def _fallback_image_summary(image: Image, named_people: list[str] | None = None) -> str:
+    """Last-resort summary built from classifier columns + identified people.
+
+    The earlier version produced "A classroom indoor image." with no
+    reference to the named subjects — defeating the point of running the
+    face pipeline in the first place. When we do have names, lead with
+    them so the description reads "Photo of Mr Koler in a classroom
+    (indoor)." which is both more useful and matches what a user would
+    actually search by.
+    """
+    scene = (image.scene_label or "").replace("_", " ").strip()
+    indoor = image.indoor_outdoor if image.indoor_outdoor and image.indoor_outdoor != "unknown" else None
+    names = [n for n in (named_people or []) if n]
+    if names:
+        if len(names) == 1:
+            who = names[0]
+        elif len(names) == 2:
+            who = f"{names[0]} and {names[1]}"
+        else:
+            who = ", ".join(names[:-1]) + f", and {names[-1]}"
+        tail = []
+        if scene:
+            tail.append(f"in a {scene}" if scene[0].lower() not in "aeiou" else f"in an {scene}")
+        if indoor:
+            tail.append(f"({indoor})")
+        return f"Photo of {who} " + " ".join(tail) + "." if tail else f"Photo of {who}."
     bits = []
-    if image.scene_label:
-        bits.append(image.scene_label.replace("_", " "))
-    if image.indoor_outdoor and image.indoor_outdoor != "unknown":
-        bits.append(image.indoor_outdoor)
+    if scene:
+        bits.append(scene)
+    if indoor:
+        bits.append(indoor)
     if not bits:
         return "Image."
     return "A " + " ".join(bits) + " image."
@@ -479,6 +672,9 @@ def _florence_caption(raw_bytes: bytes) -> Optional[str]:
     one-clause captions. Filler ("The image shows...") is stripped by the
     LLM rewriter or by `_clean_caption` in the regex fallback path.
     """
+    global _FLORENCE_BROKEN
+    if _FLORENCE_BROKEN:
+        return None
     try:
         from PIL import Image as PILImage
         import torch
@@ -508,6 +704,13 @@ def _florence_caption(raw_bytes: bytes) -> Optional[str]:
         )
         out = (parsed.get(prompt) or "").strip()
         return out or None
+    except KeyError as e:
+        # transformers >=4.50 Cache-shape mismatch — Florence-2's
+        # bundled modeling code is incompatible. Disable globally so
+        # BLIP fallback runs instantly on every later image.
+        logger.warning("florence2: caption disabled (KeyError: %s)", e)
+        _FLORENCE_BROKEN = True
+        return None
     except Exception:
         logger.exception("florence2: caption failed")
         return None
@@ -520,6 +723,9 @@ def _ocr_image(raw_bytes: bytes) -> Optional[str]:
     screenshots. Empty/whitespace-only output → None so callers don't
     propagate a useless empty string.
     """
+    global _FLORENCE_BROKEN
+    if _FLORENCE_BROKEN:
+        return None
     try:
         from PIL import Image as PILImage
         import torch
@@ -549,8 +755,225 @@ def _ocr_image(raw_bytes: bytes) -> Optional[str]:
         )
         ocr = (parsed.get(prompt) or "").strip()
         return ocr or None
+    except KeyError as e:
+        logger.warning("florence2: ocr disabled (KeyError: %s)", e)
+        _FLORENCE_BROKEN = True
+        return None
     except Exception:
         logger.exception("florence2: ocr failed")
+        return None
+
+
+# Florence-2's bundled `prepare_inputs_for_generation` expects the
+# pre-Cache-object past_key_values shape (tuple of tuples). With
+# transformers >= 4.50 that shape is gone and EVERY Florence-2 task
+# (caption, OCR, dense regions, OD) raises
+# `KeyError: Cache only has 0 layers` the moment beam search starts.
+# The bundled code doesn't get upgraded in lock-step, so once we see
+# the failure we mark Florence-2 entirely disabled — every later
+# image falls straight through to BLIP for captioning + Qwen for
+# rewriting, instead of wasting ~30 s per task reloading the model
+# and re-crashing in the same spot.
+_FLORENCE_BROKEN: bool = False
+
+
+def _florence_regions(raw_bytes: bytes) -> Optional[list[str]]:
+    """Florence-2 `<DENSE_REGION_CAPTION>` — per-region descriptive
+    phrases like "a kettle on the floor" or "a row of mathematical
+    equations in blue marker."
+
+    Returns a deduped list of phrases (typically 5–25 per image) or
+    None on failure. Feeds the Qwen synthesis prompt as
+    "Objects and regions:" context so the final summary mentions
+    grounded specifics instead of generic captions.
+    """
+    global _FLORENCE_BROKEN
+    if _FLORENCE_BROKEN:
+        return None
+    try:
+        from PIL import Image as PILImage
+        import torch
+
+        from backend.vision.runtime import get_florence2
+
+        model, processor, device = get_florence2()
+        image = PILImage.open(BytesIO(raw_bytes)).convert("RGB")
+
+        prompt = "<DENSE_REGION_CAPTION>"
+        inputs = processor(text=prompt, images=image, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        if device == "cuda" and "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].half()
+
+        with torch.no_grad():
+            ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                num_beams=3,
+                do_sample=False,
+            )
+        text = processor.batch_decode(ids, skip_special_tokens=False)[0]
+        parsed = processor.post_process_generation(
+            text, task=prompt, image_size=(image.width, image.height)
+        )
+        # Florence-2 DENSE_REGION_CAPTION returns either
+        # {"labels": [...], "bboxes": [...]} or a similar shape — the exact
+        # keys vary across transformers versions. Handle both.
+        result = parsed.get(prompt) or {}
+        labels = result.get("labels") or result.get("captions") or []
+        # Dedup while preserving order, strip whitespace, drop empties.
+        seen = set()
+        out: list[str] = []
+        for label in labels:
+            s = (label or "").strip()
+            if not s or s.lower() in seen:
+                continue
+            seen.add(s.lower())
+            out.append(s)
+        return out or None
+    except KeyError as e:
+        # Cache shape mismatch from transformers >= 4.50 — flip the
+        # permanent disable flag so we stop re-trying every image.
+        logger.warning("florence2: dense region caption disabled (KeyError: %s)", e)
+        _FLORENCE_BROKEN = True
+        return None
+    except Exception:
+        logger.exception("florence2: dense region caption failed")
+        return None
+
+
+def _florence_objects(raw_bytes: bytes) -> Optional[list[str]]:
+    """Florence-2 `<OD>` (object detection with labels). Returns a
+    deduped list of detected object labels (e.g. "person", "laptop",
+    "coffee mug"). Independent from `_florence_regions`: this gives
+    canonical category names useful for filtering / search, while
+    regions give descriptive phrases for the LLM prompt.
+    """
+    global _FLORENCE_BROKEN
+    if _FLORENCE_BROKEN:
+        return None
+    try:
+        from PIL import Image as PILImage
+        import torch
+
+        from backend.vision.runtime import get_florence2
+
+        model, processor, device = get_florence2()
+        image = PILImage.open(BytesIO(raw_bytes)).convert("RGB")
+
+        prompt = "<OD>"
+        inputs = processor(text=prompt, images=image, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        if device == "cuda" and "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].half()
+
+        with torch.no_grad():
+            ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024,
+                num_beams=3,
+                do_sample=False,
+            )
+        text = processor.batch_decode(ids, skip_special_tokens=False)[0]
+        parsed = processor.post_process_generation(
+            text, task=prompt, image_size=(image.width, image.height)
+        )
+        result = parsed.get(prompt) or {}
+        labels = result.get("labels") or []
+        seen = set()
+        out: list[str] = []
+        for label in labels:
+            s = (label or "").strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out or None
+    except KeyError as e:
+        logger.warning("florence2: OD disabled (KeyError: %s)", e)
+        _FLORENCE_BROKEN = True
+        return None
+    except Exception:
+        logger.exception("florence2: OD failed")
+        return None
+
+
+def _vlm_describe(raw_bytes: bytes) -> Optional[str]:
+    """C2e — heavy vision-language description via InternVL2-4B.
+
+    Returns a 1-paragraph natural-language description of the image
+    that captures nuance Florence-2 misses (mood, action, fine-grained
+    object relationships). Gated behind `settings.heavy_vlm_enabled`;
+    returns None whenever the model can't load — the rest of the
+    summary pipeline degrades cleanly.
+
+    InternVL2's chat API expects a `<image>` token in the prompt that
+    the model's `chat()` method swaps for image embeddings. Exact
+    invocation varies between versions; we use the canonical pattern
+    from the InternVL2 model card and catch any incompatibility.
+    """
+    try:
+        import torch  # type: ignore
+        from PIL import Image as PILImage  # type: ignore
+
+        from backend.vision.runtime import get_internvl2
+
+        model, tokenizer, device = get_internvl2()
+        image = PILImage.open(BytesIO(raw_bytes)).convert("RGB")
+
+        # InternVL2 exposes a `chat()` helper on the model that handles
+        # image preprocessing internally given a PIL image. The exact
+        # signature is `model.chat(tokenizer, pixel_values, question,
+        # generation_config, history=None)` where pixel_values comes
+        # from the model's `_preprocess_image` (also exposed as a class
+        # method on the modeling file). We use the simpler `chat` path
+        # that accepts a PIL image directly — newer revisions support it.
+        question = (
+            "Describe this image in 2-3 specific sentences. Cover every "
+            "visible person, object, action, environment cue, and any "
+            "readable text. Use concrete nouns; avoid filler like 'The "
+            "image shows'. Output only the description."
+        )
+        generation_config = dict(
+            max_new_tokens=256,
+            do_sample=False,
+        )
+
+        # Run inference. Wrap broadly — different InternVL2 builds expose
+        # slightly different surfaces.
+        with torch.no_grad():
+            if hasattr(model, "chat"):
+                # Newer builds: model.chat(tokenizer, image, question, ...)
+                try:
+                    out = model.chat(
+                        tokenizer,
+                        image,
+                        question,
+                        generation_config=generation_config,
+                    )
+                except TypeError:
+                    out = None
+                if isinstance(out, str):
+                    text = out.strip()
+                elif isinstance(out, tuple) and out and isinstance(out[0], str):
+                    text = out[0].strip()
+                else:
+                    text = None
+            else:
+                text = None
+
+        if not text:
+            return None
+        # Collapse whitespace; cap at 1000 chars so a runaway model
+        # doesn't dump a wall of text into the Qwen prompt budget.
+        text = re.sub(r"\s+", " ", text).strip().strip('"').strip("'").strip()
+        if len(text) > 1000:
+            text = text[:1000].rsplit(".", 1)[0] + "."
+        return text or None
+    except Exception:
+        logger.exception("vlm: heavy VLM description failed")
         return None
 
 
@@ -602,25 +1025,34 @@ def _llm_rewrite_summary(
     scene: Optional[str],
     setting: Optional[str],
     content_type: Optional[str],
+    tags: Optional[list[str]] = None,
+    regions: Optional[list[str]] = None,
+    objects: Optional[list[str]] = None,
+    concepts: Optional[list[str]] = None,
+    vlm_description: Optional[str] = None,
 ) -> Optional[str]:
-    """Qwen2.5-Instruct rewrites raw signals into one natural sentence.
+    """Qwen2.5-Instruct synthesizes raw multi-model signals into one
+    grounded description.
 
-    Replaces regex-based pronoun/grammar fixes with proper coreference:
-    given ("a man taking a picture of himself", names=["Me"]) the LLM
-    produces "Me taking a selfie with my phone" instead of mechanical
-    substitution. When OCR text is provided, the LLM is instructed to
-    DESCRIBE what the text is about ("matrix algebra equations") rather
-    than copy it verbatim — keeps the summary short and search-friendly.
+    Accepts everything the C2 pipeline produces:
+      - `caption`: Florence-2 <MORE_DETAILED_CAPTION>.
+      - `ocr_text`: Florence-2 <OCR> (scene-gated).
+      - `regions`: Florence-2 <DENSE_REGION_CAPTION> phrases.
+      - `objects`: Florence-2 <OD> label list.
+      - `concepts`: OpenCLIP top-K against the curated concept vocab.
+      - `vlm_description`: optional InternVL2-4B paragraph (heavy, gated).
+      - `tags`: any existing Image.tags labels for the row.
+      - plus `scene`, `setting`, `content_type` from the existing
+        classifier pass.
 
-    Returns None when:
-      - rewriter is disabled in settings
-      - the model can't load (no weights, no torch, OOM)
-      - the model emits an empty / pathological output
-    Caller falls back to the deterministic regex pipeline in those cases.
+    Each signal is optional — missing inputs just drop the corresponding
+    context line, so a stage that errors out degrades the summary
+    instead of breaking it. Returns None on rewriter failure; caller
+    falls back to the regex pipeline.
     """
     if not settings.rewriter_enabled:
         return None
-    if not caption and not ocr_text:
+    if not caption and not ocr_text and not vlm_description and not regions:
         return None
 
     try:
@@ -633,13 +1065,24 @@ def _llm_rewrite_summary(
         ctx_lines: list[str] = []
         if caption:
             ctx_lines.append(f"Caption: {caption}")
+        if vlm_description:
+            ctx_lines.append(f"Rich description: {vlm_description}")
         if names:
             ctx_lines.append(f"People in image: {', '.join(names)}")
+        if regions:
+            ctx_lines.append(
+                "Objects and regions:\n- " + "\n- ".join(regions[:30])
+            )
+        if objects:
+            ctx_lines.append(f"Detected objects: {', '.join(objects[:30])}")
+        if concepts:
+            ctx_lines.append(f"Concept tags: {', '.join(concepts[:20])}")
+        if tags:
+            ctx_lines.append(f"Existing tags: {', '.join(tags[:20])}")
         if ocr_text:
-            # 400 chars used to truncate classroom whiteboards mid-equation
-            # and cut off long screenshots before the meaningful content.
-            # 1500 still fits the prompt budget (Qwen2.5 ~3500 token cap)
-            # alongside caption/scene/setting context.
+            # 1500 chars fits the prompt budget alongside the multi-signal
+            # context above; whiteboards and screenshots stop truncating
+            # mid-equation. Qwen2.5 has ~3500-token effective input.
             ctx_lines.append(f"Visible text in image: {ocr_text[:1500]}")
         if scene:
             ctx_lines.append(f"Scene: {scene.replace('_', ' ')}")
@@ -653,15 +1096,19 @@ def _llm_rewrite_summary(
         )
 
         instructions = (
-            "Rewrite the image description as ONE natural, concise English "
-            "sentence (under 30 words) that a user would actually write "
-            "when searching for this photo. "
-            "Use the named people instead of generic terms like 'a man'. "
-            "If visible text is provided, describe WHAT the text is about "
-            "(e.g. 'matrix algebra equations', 'a chat conversation', "
-            "'a recipe') rather than quoting it. "
-            "Do NOT start with 'The image shows', 'This is a', or 'There is'. "
-            "Output only the rewritten sentence — no preamble, no quotes."
+            "Write a dense, keyword-rich description (1-3 sentences, up "
+            "to ~70 words) of what's in this image. Pack in EVERY "
+            "distinct concrete noun, named person, scene cue, lighting "
+            "detail, action, and object from the inputs above — these "
+            "are the search keywords users will type later, so "
+            "redundancy with the inputs is good, not bad. "
+            "Use named people instead of phrases like 'a man'. "
+            "If visible text is provided, describe what the text is "
+            "ABOUT (e.g. 'matrix algebra equations', 'a chat "
+            "conversation', 'a recipe') rather than quoting it verbatim. "
+            "Do NOT begin with 'The image shows', 'This is a', or "
+            "'There is'. Output only the description — no preamble, no "
+            "quotes, no bullet lists."
         )
         if first_person:
             instructions += (
@@ -673,9 +1120,10 @@ def _llm_rewrite_summary(
             {
                 "role": "system",
                 "content": (
-                    "You rewrite raw image-analysis output into natural, "
-                    "search-friendly captions. You are concise, factual, "
-                    "and never invent details that aren't in the input."
+                    "You write natural, search-friendly descriptions from "
+                    "structured image-analysis signals. You are concrete, "
+                    "factual, and never invent details that aren't in the "
+                    "input."
                 ),
             },
             {
@@ -692,7 +1140,7 @@ def _llm_rewrite_summary(
         with torch.no_grad():
             out_ids = model.generate(
                 **inputs,
-                max_new_tokens=80,
+                max_new_tokens=140,
                 do_sample=False,
                 num_beams=1,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
@@ -701,10 +1149,11 @@ def _llm_rewrite_summary(
         new_ids = out_ids[0][prompt_len:]
         reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
-        # Guard against the LLM going off — multi-line, JSON, etc.
-        # Take the first line, strip surrounding quotes.
-        reply = reply.split("\n")[0].strip().strip('"').strip("'").strip()
-        if not reply or len(reply) > 400:
+        # Guard against the LLM going off — JSON dumps, multi-paragraph
+        # ramble, etc. Collapse internal whitespace; keep up to ~700
+        # chars (was 400 — allowing 1-2 sentence descriptions).
+        reply = re.sub(r"\s+", " ", reply).strip().strip('"').strip("'").strip()
+        if not reply or len(reply) > 700:
             return None
         # Ensure terminal punctuation.
         if reply[-1] not in ".!?":
@@ -714,6 +1163,195 @@ def _llm_rewrite_summary(
         return reply
     except Exception:
         logger.exception("rewriter: failed")
+        return None
+
+
+def _llm_compose_topic(
+    caption: Optional[str],
+    names: list[str],
+    regions: Optional[list[str]] = None,
+    objects: Optional[list[str]] = None,
+    concepts: Optional[list[str]] = None,
+    scene: Optional[str] = None,
+    setting: Optional[str] = None,
+    content_type: Optional[str] = None,
+) -> Optional[str]:
+    """Ask Qwen for a short search-friendly topic line (6-12 words).
+
+    Replaces the v1 heuristic that produced "Photo of Me" / "Selfie" /
+    "Photo of Mr Koler" — too generic for search. The topic should
+    surface 1-2 specific nouns plus the named person when applicable
+    ("Selfie at home in a desert-themed room", "Mr Koler at a
+    whiteboard with linear algebra equations").
+
+    Same context signals as the rewriter so topic + summary stay
+    consistent. Returns None on failure; caller falls back to the
+    heuristic `_compose_topic`.
+    """
+    if not settings.rewriter_enabled:
+        return None
+    if not caption and not regions and not objects:
+        return None
+
+    try:
+        import torch  # type: ignore
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        ctx_lines: list[str] = []
+        if caption:
+            ctx_lines.append(f"Caption: {caption}")
+        if names:
+            ctx_lines.append(f"People: {', '.join(names)}")
+        if regions:
+            ctx_lines.append(f"Regions: {'; '.join(regions[:10])}")
+        if objects:
+            ctx_lines.append(f"Objects: {', '.join(objects[:15])}")
+        if concepts:
+            ctx_lines.append(f"Concepts: {', '.join(concepts[:10])}")
+        if scene:
+            ctx_lines.append(f"Scene: {scene.replace('_', ' ')}")
+        if setting and setting != "unknown":
+            ctx_lines.append(f"Setting: {setting}")
+        if content_type:
+            ctx_lines.append(f"Content type: {content_type}")
+
+        instructions = (
+            "Write a 6-12 word topic line for this image that a user "
+            "could type into a search bar to find it again. Include "
+            "the most distinctive 1-3 specific nouns or names from "
+            "the inputs (a person's name, the place, an activity, a "
+            "specific object). No filler words. Title-case is fine but "
+            "not required. No trailing punctuation. Output only the "
+            "topic line — no quotes, no preamble."
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write short search-friendly topic lines from "
+                    "structured image-analysis signals. Concrete, "
+                    "specific, never inventive."
+                ),
+            },
+            {
+                "role": "user",
+                "content": instructions + "\n\n" + "\n".join(ctx_lines),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        prompt_len = inputs.input_ids.shape[1]
+
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=40,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        reply = re.sub(r"\s+", " ", reply).strip()
+        # Strip surrounding quotes, leading/trailing punctuation,
+        # 'Topic:' / 'Title:' prefixes the LLM occasionally adds.
+        reply = reply.strip('"').strip("'").strip()
+        reply = re.sub(r"^(topic|title)\s*:\s*", "", reply, flags=re.IGNORECASE)
+        # Drop the trailing period some models add.
+        reply = reply.rstrip(".,;:!? ")
+        if not reply or len(reply) > 100:
+            return None
+        # Take only the first line if the model returned multiple.
+        reply = reply.split("\n")[0].strip()
+        if not reply:
+            return None
+        return reply
+    except Exception:
+        logger.exception("topic rewriter: failed")
+        return None
+
+
+def _llm_compose_doc_topic(text: str, filename: str) -> Optional[str]:
+    """Same as `_llm_compose_topic` but for documents. Caller passes the
+    extracted text and original filename; we produce a 6-12 word topic
+    line that surfaces the most distinctive nouns / sections / numbers.
+    Returns None on failure; caller falls back to the heuristic
+    (filename stem)."""
+    if not settings.rewriter_enabled:
+        return None
+    if not text:
+        return None
+
+    try:
+        import torch  # type: ignore
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        # Keep the doc head short — topic lines don't need the whole
+        # body and a smaller context speeds up the call.
+        head = text[:2000]
+        instructions = (
+            "Write a 6-12 word topic line for this document that a "
+            "user could type into a search bar to find it again. "
+            "Use the most distinctive concrete nouns from the content "
+            "— project names, sections, numbers, dates, parties. "
+            "No filler words. No trailing punctuation. Output only "
+            "the topic — no quotes, no preamble, no 'Title:' prefix."
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write short search-friendly topic lines for "
+                    "documents. Concrete, specific, never inventive."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    instructions
+                    + f"\n\nFilename: {filename}\n\nContent:\n{head}"
+                ),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=3500
+        ).to(device)
+        prompt_len = inputs.input_ids.shape[1]
+
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=40,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        reply = re.sub(r"\s+", " ", reply).strip().strip('"').strip("'").strip()
+        reply = re.sub(r"^(topic|title)\s*:\s*", "", reply, flags=re.IGNORECASE)
+        reply = reply.rstrip(".,;:!? ")
+        if not reply or len(reply) > 100:
+            return None
+        reply = reply.split("\n")[0].strip()
+        return reply or None
+    except Exception:
+        logger.exception("doc topic rewriter: failed")
         return None
 
 
@@ -787,10 +1425,11 @@ def _summarize_document(
     image: Image, raw_bytes: bytes
 ) -> Optional[SummaryResult]:
     text, topic = _extract_doc_text(image.original_filename or "", raw_bytes)
+    fname = image.original_filename or ""
     if not text.strip():
         return SummaryResult(
-            topic=topic or "Document",
-            summary="Document content could not be extracted.",
+            topic=topic or _filename_stem(fname) or "Document",
+            summary=_doc_summary_fallback(fname, topic),
             points=[],
         )
 
@@ -801,30 +1440,84 @@ def _summarize_document(
     truncated = text[: settings.summarize_doc_max_chars]
 
     # Try the instruction-LLM first. Qwen2.5-Instruct (already in memory
-    # for image rewriting) follows summarization prompts much better than
-    # DistilBART on non-news content. BART stays as a fallback so cold
-    # installs that haven't pulled the LLM weights still produce something.
-    summary = _llm_doc_summary(truncated, image.original_filename or "", topic)
+    # for image rewriting) produces a short "what is this doc ABOUT"
+    # blurb the user can search by from memory, instead of dumping the
+    # first 400 chars of body text (the old fallback's failure mode).
+    summary = _llm_doc_summary(truncated, fname, topic)
     if not summary:
         summary = _extractive_summary(truncated)
+
+    # Don't ever emit raw body content as the description. If both the
+    # LLM and the extractive paths failed, hand back a stub the user can
+    # at least recognize. A wall of `truncated[:400]` is what made
+    # LBLF.pdf's description quote the first questionnaire prompt in
+    # full instead of summarizing the doc.
+    summary = _clamp_doc_summary(summary) or _doc_summary_fallback(fname, topic)
 
     # Auto-derive points when the LLM ran (it produces a single paragraph,
     # not a bulleted list). Heuristic keypoints still work for docs that
     # already use markdown list syntax.
     points = _extract_keypoints(truncated)
     if not points and summary:
-        points = _llm_keypoints(truncated, image.original_filename or "")
+        points = _llm_keypoints(truncated, fname)
 
-    # Topic upgrade: if extraction couldn't find a usable title (e.g.
-    # untitled PDF + first line was a page number), ask the LLM for one.
-    if not topic or len(topic) < 4 or topic.isdigit():
-        topic = _llm_doc_topic(truncated, image.original_filename or "") or topic
+    # Always prefer the LLM-generated topic for documents — the
+    # extraction heuristic (first 4-120-char line) produces things
+    # like "LBLF" or page numbers. Falls back to extracted topic,
+    # then filename stem.
+    llm_topic = _llm_compose_doc_topic(truncated, fname)
+    if llm_topic:
+        topic = llm_topic
+    elif not topic or len(topic) < 4 or topic.isdigit():
+        topic = _llm_doc_topic(truncated, fname) or topic
 
     return SummaryResult(
-        topic=topic or "Document",
-        summary=summary or truncated[:400].strip(),
+        topic=topic or _filename_stem(fname) or "Document",
+        summary=summary,
         points=points[:5],
     )
+
+
+def _filename_stem(filename: str) -> str:
+    if not filename:
+        return ""
+    stem = filename.rsplit(".", 1)[0]
+    return stem.replace("_", " ").replace("-", " ").strip()
+
+
+def _doc_summary_fallback(filename: str, topic: Optional[str]) -> str:
+    """When we have no usable LLM output, write a recognizable stub from
+    the filename + topic instead of quoting body text verbatim. Keeps
+    the description short and searchable."""
+    stem = _filename_stem(filename)
+    if topic and 3 <= len(topic) <= 80:
+        return f"Document about {topic}."
+    if stem:
+        return f"Document: {stem}."
+    return "Document content could not be summarized."
+
+
+def _clamp_doc_summary(summary: Optional[str]) -> Optional[str]:
+    """Cap description length and strip leading body-text fingerprints.
+
+    The doc preview panel only has room for ~3 lines. Long extractive
+    output (sumy LSA pulling 4 sentences out of a 200-page contract)
+    overflows the panel and is the opposite of "searchable by memory."
+    Trim to ~280 chars at a sentence boundary so the description stays
+    glanceable.
+    """
+    if not summary:
+        return summary
+    s = re.sub(r"\s+", " ", summary).strip()
+    if not s:
+        return None
+    if len(s) <= 280:
+        return s
+    head = s[:280]
+    cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if cut > 120:
+        return head[: cut + 1].strip()
+    return head.rstrip(",;: ") + "…"
 
 
 def _extract_doc_text(
@@ -872,6 +1565,16 @@ def _extract_pdf(raw: bytes) -> tuple[str, Optional[str]]:
         if miner_text and len(miner_text) > len(text):
             text = miner_text.strip()
 
+    # If BOTH pypdf and pdfminer returned almost nothing, the PDF is
+    # likely image-only (scanned docs, contracts photographed page-by-
+    # page). Rasterize each page with PyMuPDF and run Florence-2 <OCR>
+    # over the rasters. Slow (~3-5 s/page on GPU) but unlocks summaries
+    # for previously-opaque PDFs.
+    if len(text) < 80 and len(reader.pages) > 0:
+        ocr_text = _pdf_ocr_fallback(raw)
+        if ocr_text and len(ocr_text) > len(text):
+            text = ocr_text.strip()
+
     topic: Optional[str] = None
     md = reader.metadata or {}
     if md and md.title:
@@ -895,6 +1598,52 @@ def _pdfminer_extract(raw: bytes) -> str:
         return extract_text(BytesIO(raw)) or ""
     except Exception:
         return ""
+
+
+def _pdf_pages_to_images(raw: bytes, max_pages: int = 10) -> list[bytes]:
+    """Rasterize the first N pages of a PDF to PNG bytes via PyMuPDF.
+
+    Returns a list of PNG bytes (empty list on failure). Cap of 10 pages
+    is a cost guard — for the summary use case we don't need the whole
+    doc, just enough text to produce a meaningful description. The
+    summary path already truncates to `summarize_doc_max_chars` anyway.
+    """
+    try:
+        import fitz  # type: ignore  # PyMuPDF
+
+        out: list[bytes] = []
+        with fitz.open(stream=raw, filetype="pdf") as doc:
+            for page_idx in range(min(len(doc), max_pages)):
+                page = doc[page_idx]
+                # 2x zoom for OCR readability without ballooning memory.
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                out.append(pix.tobytes("png"))
+        return out
+    except Exception:
+        logger.exception("pymupdf: PDF rasterize failed")
+        return []
+
+
+def _pdf_ocr_fallback(raw: bytes) -> str:
+    """Last-resort PDF text extraction for image-only PDFs.
+
+    Walks the first 10 pages, rasterizes each via PyMuPDF, runs
+    `_ocr_image` (Florence-2 <OCR>) on the raster, concatenates the
+    page-level OCR output with double newlines between pages.
+    Returns "" if PyMuPDF or Florence-2 are unavailable.
+    """
+    pages = _pdf_pages_to_images(raw, max_pages=10)
+    if not pages:
+        return ""
+    chunks: list[str] = []
+    for png_bytes in pages:
+        try:
+            page_text = _ocr_image(png_bytes)
+        except Exception:
+            page_text = None
+        if page_text:
+            chunks.append(page_text.strip())
+    return "\n\n".join(chunks)
 
 
 def _extract_docx(raw: bytes) -> tuple[str, Optional[str]]:
@@ -1073,18 +1822,24 @@ def _llm_summarize_chunk(
 
         if is_full:
             instructions = (
-                "Summarize the following document in 2–3 natural English "
-                "sentences (under 60 words total). Capture WHAT the "
-                "document is about and the most important specific points. "
-                "Use concrete nouns from the text — names, numbers, dates, "
-                "section titles. Do NOT begin with 'This document', 'The "
-                "document', or 'In summary'. Output only the summary."
+                "Write a SHORT, search-friendly description of what this "
+                "document IS — the kind of thing someone would type into "
+                "a search bar months later to find it by memory. "
+                "1-2 natural English sentences, under 35 words total. "
+                "Describe the document's PURPOSE and SUBJECT (what it's "
+                "about, what kind of doc it is), NOT its body content. "
+                "Pack in the most distinctive concrete nouns — project "
+                "names, parties, topics, dates — but DO NOT quote or "
+                "list the document's questions, prompts, or paragraphs "
+                "verbatim. Do NOT begin with 'This document', 'The "
+                "document', or 'In summary'. Output only the description."
             )
         else:
             instructions = (
-                "Summarize this section of a document in ONE concise "
-                "English sentence (under 25 words). Use specific nouns "
-                "from the text. Output only the sentence."
+                "Briefly state what this section of a document is ABOUT "
+                "in ONE specific English sentence (under 25 words). "
+                "Describe its subject/purpose, do NOT quote body text "
+                "verbatim. Output only the sentence."
             )
 
         ctx_lines = []
@@ -1118,7 +1873,7 @@ def _llm_summarize_chunk(
         with torch.no_grad():
             out_ids = model.generate(
                 **inputs,
-                max_new_tokens=180 if is_full else 80,
+                max_new_tokens=240 if is_full else 120,
                 do_sample=False,
                 num_beams=1,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
@@ -1161,12 +1916,15 @@ def _llm_merge_summaries(
         ctx_lines.append(partials_block)
 
         instructions = (
-            "Combine the partial summaries below into ONE coherent "
-            "summary of the whole document, 2–3 natural English "
-            "sentences, under 60 words total. Drop redundancy across "
-            "sections. Use specific nouns from the partials — names, "
-            "numbers, dates. Do NOT begin with 'This document', 'The "
-            "document', or 'In summary'. Output only the combined summary."
+            "Combine the partial summaries below into ONE SHORT "
+            "search-friendly description of what the document IS — "
+            "the kind of thing someone would type into a search bar "
+            "months later to find it. 1-2 natural English sentences, "
+            "under 35 words total. Describe purpose and subject, drop "
+            "redundancy and any verbatim body content. Keep the most "
+            "distinctive specific nouns (names, parties, topics, dates). "
+            "Do NOT begin with 'This document', 'The document', or 'In "
+            "summary'. Output only the combined description."
         )
 
         messages = [
@@ -1193,7 +1951,7 @@ def _llm_merge_summaries(
         with torch.no_grad():
             out_ids = model.generate(
                 **inputs,
-                max_new_tokens=180,
+                max_new_tokens=240,
                 do_sample=False,
                 num_beams=1,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,

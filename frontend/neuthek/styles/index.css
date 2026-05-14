@@ -21,3 +21,19 @@
 :root, body {
   font-family: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+/* Native 80% UI scale.
+ *
+ * The components were authored at the size that read well on a 4K
+ * monitor at 100% browser zoom; on 1080p / 1440p displays the UI
+ * runs hot (large cards, generous spacing). `zoom: 0.8` shrinks
+ * everything — px, rem, layout — uniformly without forcing a
+ * per-component relayout pass. Non-standard property, but
+ * supported in Chrome, Edge, Safari, and Firefox 126+.
+ *
+ * Applied to <body> rather than <html> so the `html[data-theme=...]`
+ * selectors still match at the un-zoomed root and we don't compound
+ * scale with the user's own Ctrl/Cmd+= override (which still works
+ * on top of this baseline for accessibility).
+ */
+body { zoom: 0.8; }

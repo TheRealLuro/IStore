@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# IStore — full server setup.
+# neuthek — full server setup.
 #
 # Idempotent. Re-running is safe.
 #

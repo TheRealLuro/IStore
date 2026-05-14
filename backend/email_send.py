@@ -70,24 +70,24 @@ def send_email(to: str, subject: str, body: str) -> bool:
 def send_verify_email(to: str, token: str) -> bool:
     link = f"{settings.frontend_base_url}/verify?token={token}"
     body = (
-        "Welcome to IStore!\n\n"
+        "Welcome to neuthek!\n\n"
         "Please confirm your email address by clicking the link below "
         "(valid for 1 hour):\n\n"
         f"{link}\n\n"
         "If you didn't create an account, you can ignore this message."
     )
-    return send_email(to, "Confirm your IStore email", body)
+    return send_email(to, "Confirm your neuthek email", body)
 
 
 def send_reset_email(to: str, token: str) -> bool:
     link = f"{settings.frontend_base_url}/reset?token={token}"
     body = (
-        "We received a request to reset your IStore password.\n\n"
+        "We received a request to reset your neuthek password.\n\n"
         f"Use this link within 15 minutes:\n\n{link}\n\n"
         "If you didn't ask to reset your password, you can safely "
         "ignore this email — your password is unchanged."
     )
-    return send_email(to, "Reset your IStore password", body)
+    return send_email(to, "Reset your neuthek password", body)
 
 
 def send_recovery_codes_email(to: str, codes: list[str]) -> bool:
@@ -95,10 +95,10 @@ def send_recovery_codes_email(to: str, codes: list[str]) -> bool:
     only ever shown once; we don't keep plaintext in the DB."""
     formatted = "\n".join(f"  {c}" for c in codes)
     body = (
-        "Your new IStore recovery codes are:\n\n"
+        "Your new neuthek recovery codes are:\n\n"
         f"{formatted}\n\n"
         "Each code can be used once to sign in if you lose access to "
         "your password. Save them somewhere safe — you won't be able "
         "to see them again."
     )
-    return send_email(to, "Your IStore recovery codes", body)
+    return send_email(to, "Your neuthek recovery codes", body)

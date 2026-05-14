@@ -5,8 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
 import { Switch as SwitchSP } from "./primitives.jsx";
 import { getStorageUsage } from "@/api/storage";
-import { getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login } from "@/api/auth";
+import { getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login, getAccountActivity, getAccountTrash, emptyAccountTrash } from "@/api/auth";
 import { backfillSummaries } from "@/api/files";
+import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";
 import { useAuthStore } from "@/stores/authStore";
 import { useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
@@ -232,44 +233,56 @@ function TwoFactorPage() {
 }
 
 // ---------- Trusted devices / sessions ----------
+//
+// Per-session tracking on the backend hasn't shipped yet — JWTs are
+// stateless and we don't persist refresh-token rows per device. The
+// only session we can honestly surface is *this* one, derived from
+// `navigator.userAgent` on the client. Everything else (other devices,
+// "Sign out everywhere", revoke per-session) needs the backend session
+// table the auth roadmap covers (see todo.md A4 + C6.4) so we keep
+// the section visible but clearly marked rather than showing mock
+// "MacBook Pro · Chrome 124" rows.
+function describeThisDevice() {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  let device = "This device";
+  let browser = "Web";
+  if (/iPhone/.test(ua))      device = "iPhone";
+  else if (/iPad/.test(ua))   device = "iPad";
+  else if (/Android/.test(ua)) device = "Android";
+  else if (/Macintosh/.test(ua)) device = "Mac";
+  else if (/Windows/.test(ua))  device = "Windows PC";
+  else if (/Linux/.test(ua))    device = "Linux";
+  if (/Edg\//.test(ua))      browser = "Edge";
+  else if (/Chrome\//.test(ua)) browser = "Chrome";
+  else if (/Firefox\//.test(ua)) browser = "Firefox";
+  else if (/Safari\//.test(ua)) browser = "Safari";
+  return { device, browser };
+}
+
 function DevicesPage() {
-  const [revoked, setRevoked] = useStateSP({});
-  const sessions = [
-    { id: "this", device: "MacBook Pro", browser: "Chrome 124", where: "Brooklyn, NY", ip: "73.42.18.•", when: "Active now",       current: true,  icon: "device" },
-    { id: "ios",  device: "iPhone 15",   browser: "Safari",    where: "Brooklyn, NY", ip: "73.42.18.•", when: "12 minutes ago",  icon: "phone"  },
-    { id: "ipad", device: "iPad Air",    browser: "Safari",    where: "Boston, MA",   ip: "98.12.4.•",  when: "3 days ago",      icon: "phone"  },
-  ];
+  const { device, browser } = describeThisDevice();
   return (
     <>
       <DetSection title="Active sessions" desc="Sign-ins that are currently allowed access to your library.">
         <div className="det-card" style={{ padding: 0 }}>
-          {sessions.map(s => (
-            <div key={s.id} className="sess-card" data-revoked={!!revoked[s.id]}>
-              <div className="sess-card__icon" data-current={!!s.current}>
-                <Icon name={s.icon} size={16}/>
-              </div>
-              <div className="sess-card__body">
-                <div className="sess-card__name">
-                  {s.device} · {s.browser}
-                  {s.current && <StatusPill tone="green">This device</StatusPill>}
-                  {revoked[s.id] && <StatusPill tone="ink">Revoked</StatusPill>}
-                </div>
-                <div className="sess-card__meta">{s.where} · {s.ip} · {s.when}</div>
-              </div>
-              {!s.current && !revoked[s.id] && (
-                <button className="btn btn--ghost btn--sm" style={{ color: "#cc2f26" }}
-                        onClick={() => setRevoked(r => ({ ...r, [s.id]: true }))}>Revoke</button>
-              )}
+          <div className="sess-card">
+            <div className="sess-card__icon" data-current="true">
+              <Icon name="device" size={16}/>
             </div>
-          ))}
+            <div className="sess-card__body">
+              <div className="sess-card__name">
+                {device} · {browser}
+                <StatusPill tone="green">This device</StatusPill>
+              </div>
+              <div className="sess-card__meta">Active now</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 8 }}>
+          Other devices will appear here once per-device session tracking
+          ships. For now, signing out from this device ends only this session.
         </div>
       </DetSection>
-
-      <div className="det-danger">
-        <div className="det-danger__title">Sign out everywhere else</div>
-        <div className="det-danger__desc">Ends every session except this one. You'll need to re-sign-in on those devices.</div>
-        <button className="btn btn--secondary" style={{ color: "#cc2f26" }}>Sign out of {sessions.length - 1} other sessions</button>
-      </div>
     </>
   );
 }
@@ -602,28 +615,33 @@ function StoragePage() {
 }
 
 // ---------- Activity log ----------
+//
+// All labeling/tone/relative-time formatting lives in `activity-labels.js`
+// so this expanded panel and the in-modal mini-list (account.jsx) render
+// the same strings. No local declarations here.
 function ActivityLogPage() {
-  const events = [
-    { when: "12 min ago",  what: "Signed in from MacBook Pro · Chrome",      tone: "green"  },
-    { when: "2 hours ago", what: "Uploaded 14 photos to Recents",            tone: "blue"   },
-    { when: "Yesterday",   what: "Exported albums backup (2.1 GB)",          tone: "blue"   },
-    { when: "May 4",       what: "Deleted 6 items (now in Trash)",           tone: "orange" },
-    { when: "May 1",       what: "Signed in from iPhone 15 · Safari",        tone: "green"  },
-    { when: "Apr 28",      what: "Renamed album 'Iceland' → 'Iceland '24'",  tone: "blue"   },
-    { when: "Apr 25",      what: "Shared 'Family reunion' with mom@…",       tone: "blue"   },
-    { when: "Apr 14",      what: "Viewed backup codes",                       tone: "orange" },
-  ];
+  const { data: events, isLoading } = useQuery({
+    queryKey: ["account-activity"],
+    queryFn: () => getAccountActivity(50),
+    staleTime: 30_000,
+  });
   return (
-    <DetSection title="Recent activity" desc="Sign-ins, uploads, exports, and deletions across all devices.">
+    <DetSection title="Recent activity" desc="Sign-ins, uploads, consent changes, and deletes on your account.">
       <div className="det-card" style={{ padding: "10px 20px 16px" }}>
-        <div className="activity-timeline">
-          {events.map((e, i) => (
-            <div key={i} className="activity-item" data-tone={e.tone}>
-              <div className="activity-item__what">{e.what}</div>
-              <div className="activity-item__when">{e.when}</div>
-            </div>
-          ))}
-        </div>
+        {isLoading ? (
+          <div style={{ color: "var(--ink-3)", fontSize: 13 }}>Loading…</div>
+        ) : (events && events.length > 0) ? (
+          <div className="activity-timeline">
+            {events.map((e) => (
+              <div key={e.id} className="activity-item" data-tone={activityTone(e.action)}>
+                <div className="activity-item__what">{activityLabel(e.action, e.details)}</div>
+                <div className="activity-item__when">{activityWhen(e.created_at)}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: "var(--ink-3)", fontSize: 13 }}>No recent activity yet.</div>
+        )}
       </div>
     </DetSection>
   );
@@ -632,12 +650,37 @@ function ActivityLogPage() {
 // ---------- Trash ----------
 function TrashPage({ onBack }) {
   const [confirm, setConfirm] = useStateSP(false);
+  const [busy, setBusy] = useStateSP(false);
+  const qc = useQueryClient();
+  const { data: trash } = useQuery({
+    queryKey: ["account-trash"],
+    queryFn: getAccountTrash,
+    staleTime: 30_000,
+  });
+  const count = trash?.count ?? 0;
+  const bytes = trash?.total_bytes ?? 0;
+  const handleEmpty = async () => {
+    setBusy(true);
+    try {
+      const r = await emptyAccountTrash();
+      toast.success(`Permanently deleted ${r.deleted} item${r.deleted === 1 ? "" : "s"}.`);
+      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      onBack?.();
+    } catch (e) {
+      toast.error(e?.detail || "Could not empty trash");
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  };
   return (
     <>
       <DetSection title="Trash">
         <div className="stat-grid">
-          <StatTile label="Items in trash" value="42"     sub="auto-deleted in 30 days"/>
-          <StatTile label="Total size"     value="1.2 GB" sub="will free on empty"/>
+          <StatTile label="Items in trash" value={String(count)} sub={count > 0 ? "auto-deleted in 30 days" : "nothing here right now"}/>
+          <StatTile label="Total size"     value={fmtBytes(bytes)} sub={count > 0 ? "will free on empty" : "—"}/>
         </div>
       </DetSection>
 
@@ -649,18 +692,23 @@ function TrashPage({ onBack }) {
 
       <div className="det-danger">
         <div className="det-danger__title">Empty trash now</div>
-        <div className="det-danger__desc">Permanently removes 42 items totalling 1.2 GB. This can't be undone.</div>
+        <div className="det-danger__desc">
+          {count > 0
+            ? `Permanently removes ${count} item${count === 1 ? "" : "s"} totalling ${fmtBytes(bytes)}. This can't be undone.`
+            : "Trash is already empty."}
+        </div>
         {confirm ? (
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn btn--primary" style={{ background: "#cc2f26" }}
-                    onClick={() => { onBack?.(); setConfirm(false); }}>
-              Yes, permanently delete
+                    disabled={busy}
+                    onClick={handleEmpty}>
+              {busy ? "Deleting…" : "Yes, permanently delete"}
             </button>
-            <button className="btn btn--ghost" onClick={() => setConfirm(false)}>Cancel</button>
+            <button className="btn btn--ghost" onClick={() => setConfirm(false)} disabled={busy}>Cancel</button>
           </div>
         ) : (
           <button className="btn btn--secondary" style={{ color: "#cc2f26" }}
-                  onClick={() => setConfirm(true)}>Empty trash…</button>
+                  onClick={() => setConfirm(true)} disabled={count === 0}>Empty trash…</button>
         )}
       </div>
     </>

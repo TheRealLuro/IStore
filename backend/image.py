@@ -294,6 +294,7 @@ async def store_upload(
     # C3 — persist EXIF GPS only when the user has granted gps_retention
     # consent. Originals retain EXIF in MinIO so a later backfill can
     # populate this table once consent is granted.
+    geo_for_geocode: dict | None = None
     if await is_scope_active(session, user.id, "gps_retention"):
         gps = _exif_gps(raw_for_metadata)
         if gps is not None:
@@ -307,9 +308,26 @@ async def store_upload(
                     captured_with=gps["captured_with"],
                 )
             )
+            # Stash for the post-commit reverse-geocode task. We don't
+            # call Nominatim inline because the upload response should
+            # return immediately; rate-limited HTTP would add up to a
+            # second.
+            geo_for_geocode = {
+                "image_id": image.id,
+                "user_id": user.id,
+                "lat": gps["lat"],
+                "lng": gps["lng"],
+            }
 
     await session.commit()
     await session.refresh(image)
+
+    # Fire-and-forget reverse-geocode for this upload's GPS row so the
+    # preview Location field reads "Salt Lake City, Utah" instead of
+    # decimal degrees. Rate-limited by Nominatim's ToS, runs against
+    # its own session so it doesn't block the upload response.
+    if geo_for_geocode is not None:
+        asyncio.create_task(_reverse_geocode_one(**geo_for_geocode))
 
     # Pass B (RetinaFace + ArcFace) is intentionally NOT run here. On CPU it
     # adds 10-30 s per upload and would block the HTTP response. The route
@@ -330,10 +348,16 @@ async def _store_non_image(
     sha: bytes,
     category: str,
 ) -> Image:
-    """Documents / videos / other: stored as-is, no compression, no vision."""
+    """Documents / videos / other: stored as-is, no compression, no vision.
+
+    PDFs get a page-1 raster stored under the `served` bucket so the
+    gallery + preview can render a thumbnail instead of a generic icon.
+    Reuses the C2c PyMuPDF helper. Best-effort: if PyMuPDF isn't
+    available or rasterization fails, `served` falls back to the
+    original blob like the other non-image categories.
+    """
     safe_name = filename or "upload"
     original_key = f"users/{user.id}/originals/{uuid4().hex}/{safe_name}"
-    served_key = original_key  # served == original for non-image categories
 
     storage.put(
         storage.bucket_originals,
@@ -343,6 +367,30 @@ async def _store_non_image(
         sse_scope="content",
     )
 
+    served_key = original_key
+    served_bytes_len = len(raw_bytes)
+    served_mime = content_type
+    is_pdf = (content_type == "application/pdf") or (
+        filename and filename.lower().endswith(".pdf")
+    )
+    if is_pdf:
+        thumb_png = _pdf_page_one_thumb(raw_bytes)
+        if thumb_png:
+            served_key = f"users/{user.id}/served/{uuid4().hex}.png"
+            try:
+                storage.put(
+                    storage.bucket_served,
+                    served_key,
+                    thumb_png,
+                    "image/png",
+                    sse_scope="content",
+                )
+                served_bytes_len = len(thumb_png)
+                served_mime = "image/png"
+            except Exception:
+                logger.exception("Could not write PDF thumb %s", served_key)
+                served_key = original_key  # fall back to original
+
     image = Image(
         user_id=user.id,
         category=category,
@@ -350,9 +398,9 @@ async def _store_non_image(
         served_blob_key=served_key,
         original_filename=filename,
         byte_size_original=len(raw_bytes),
-        byte_size_served=len(raw_bytes),
+        byte_size_served=served_bytes_len,
         mime_type_original=content_type,
-        mime_type_served=content_type,
+        mime_type_served=served_mime,
         sha256=sha,
         codec=None,
         quality=None,
@@ -364,6 +412,20 @@ async def _store_non_image(
     await session.commit()
     await session.refresh(image)
     return image
+
+
+def _pdf_page_one_thumb(raw_bytes: bytes) -> bytes | None:
+    """Reuse `summarize._pdf_pages_to_images` for the upload-time PDF
+    thumbnail. Imported lazily so the basic upload path doesn't pull in
+    the [ml] extras when only docs are uploaded but PyMuPDF isn't
+    installed. Returns None on any failure."""
+    try:
+        from backend.summarize import _pdf_pages_to_images
+        pages = _pdf_pages_to_images(raw_bytes, max_pages=1)
+        return pages[0] if pages else None
+    except Exception:
+        logger.exception("PDF thumb rasterize failed")
+        return None
 
 
 async def fetch_original(image: Image) -> tuple[bytes, str]:
@@ -384,3 +446,36 @@ async def fetch_served(image: Image) -> tuple[bytes, str]:
     )
     blob = storage.get(bucket, image.served_blob_key)
     return blob, image.mime_type_served or "application/octet-stream"
+
+
+async def _reverse_geocode_one(image_id, user_id, lat: float, lng: float) -> None:
+    """Best-effort reverse-geocode for a single just-uploaded image.
+
+    Runs as a fire-and-forget task post-commit so the upload response
+    flushes immediately. Uses its own session because the request's
+    session is closed by the time we get here. Failures are silent —
+    the next call to `/images/geo/backfill-places` will retry.
+    """
+    from backend.api.images import _reverse_geocode  # local — avoids cycle
+
+    try:
+        place = await _reverse_geocode(lat, lng)
+    except Exception:
+        logger.exception("upload reverse-geocode failed for %s", image_id)
+        return
+    if not place:
+        return
+    from sqlalchemy import update as sa_update
+
+    from backend.db import SessionLocal
+
+    try:
+        async with SessionLocal() as session:
+            await session.execute(
+                sa_update(ImageGeo)
+                .where(ImageGeo.image_id == image_id, ImageGeo.user_id == user_id)
+                .values(place=place)
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("upload reverse-geocode commit failed for %s", image_id)

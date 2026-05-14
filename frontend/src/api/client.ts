@@ -1,11 +1,28 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
-const TOKEN_KEY = "istore.jwt";
+const TOKEN_KEY = "neuthek.jwt";
+const LEGACY_TOKEN_KEY = "istore.jwt";
 
 export const tokens = {
-  get: () => localStorage.getItem(TOKEN_KEY),
+  // Read the new key first, fall back to the legacy one so users who
+  // signed in before the IStore → neuthek rename don't get bounced to
+  // the auth screen on the next deploy. Any read that finds the legacy
+  // token migrates it forward and removes the old entry.
+  get: () => {
+    const v = localStorage.getItem(TOKEN_KEY);
+    if (v) return v;
+    const legacy = localStorage.getItem(LEGACY_TOKEN_KEY);
+    if (legacy) {
+      try { localStorage.setItem(TOKEN_KEY, legacy); localStorage.removeItem(LEGACY_TOKEN_KEY); } catch {}
+      return legacy;
+    }
+    return null;
+  },
   set: (t: string) => localStorage.setItem(TOKEN_KEY, t),
-  clear: () => localStorage.removeItem(TOKEN_KEY),
+  clear: () => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+  },
 };
 
 export class ApiError extends Error {
