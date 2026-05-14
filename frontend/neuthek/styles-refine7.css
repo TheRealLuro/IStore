@@ -1,0 +1,39 @@
+/* ============================================================
+   Password meter polish — bars 4px, clearer label, breathing room
+   ============================================================ */
+.auth__pwd-meter {
+  margin-top: 14px !important;
+  gap: 12px !important;
+  align-items: center !important;
+}
+.auth__pwd-meter .password-bars { gap: 5px !important; }
+.password-bars__bar {
+  height: 4px !important;
+  border-radius: 999px !important;
+  transition: background 220ms cubic-bezier(0.32,0.72,0,1);
+}
+.auth__pwd-meter-label {
+  font-size: 12px !important;
+  min-width: 48px !important;
+  letter-spacing: 0.01em !important;
+  font-variant-numeric: tabular-nums;
+}
+
+/* In dark mode the bars need a slightly brighter empty state */
+html[data-theme="dark"] .password-bars__bar { background: rgba(255,255,255,0.10) !important; }
+html[data-theme="dark"] .password-bars__bar[data-on="true"] { background: var(--ink) !important; }
+
+/* Requirements card: a touch more separation from meter */
+.password-reqs--inline { padding-top: 14px !important; }
+
+/* Password field is a long stack (label + input + meter + reqs); the floating
+   label was top:50% of the WHOLE field, drifting down as content grew. Pin it
+   to the input's vertical center instead (input is 56px tall). */
+.field--pwd .field__label-floating {
+  top: 28px !important;
+  transform: translateY(-50%) !important;
+}
+.field--pwd .field__label-floating--up {
+  top: 11px !important;
+  transform: translateY(0) !important;
+}

@@ -1,0 +1,284 @@
+/* ============================================================
+   Refinements pass v4
+   - Brand text: always white on the auth dark side
+   - Floating label: clean lift + readable Password placeholder
+   - Map: surface fixes (no black-out) + restraint
+   - Settings: refined, more original Apple-INSPIRED (not copy)
+   ============================================================ */
+
+/* ---------- BRAND ON AUTH (left dark panel) — always white ---------- */
+/* The .auth__brand-mark sits over a permanently-dark hero panel regardless
+   of theme. It must always be white, never dark. */
+.auth__brand-mark { color: #ffffff !important; }
+.auth__brand-mark .auth__brand-mark-mark {
+  background: #ffffff !important;
+  color: #0a0a0a !important;
+}
+
+/* ---------- FLOATING LABEL — proper resting "Password" placeholder ----------
+   Problem: previous v2 override removed the styles.css definitions and broke
+   the resting label position. Reset to a sensible baseline.                  */
+.field { position: relative; }
+.input--floating {
+  height: auto !important;
+  padding: 22px 14px 10px !important;
+  font-size: 15px;
+}
+.input--floating::placeholder { color: transparent; }
+
+.field__label-floating {
+  position: absolute;
+  top: 50%; left: 16px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 14.5px;
+  color: var(--ink-3);
+  background: transparent;
+  padding: 0;
+  transition:
+    top 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    font-size 200ms cubic-bezier(0.32, 0.72, 0, 1),
+    color 200ms var(--ease);
+  letter-spacing: 0;
+  z-index: 2;
+}
+.field__label-floating--up,
+.input--floating:focus + .field__label-floating {
+  top: 10px;
+  transform: translateY(0);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+.input--floating:focus + .field__label-floating {
+  color: var(--ink-2);
+}
+/* Make sure no border-cut shows on the lifted label — keep transparent */
+.field__label-floating--up { background: transparent !important; }
+
+/* ---------- MAP — kill the black-out issue ----------
+   Two problems: (1) SVG <stop> can't reliably resolve var(--surface-3)
+   inside a gradient on all browsers; we use solid fills instead, and
+   (2) the stage's transform with no width/height can cause it to vanish.
+   Force explicit dimensions and surface-aware fills. */
+.map3-canvas { background: var(--surface-2); }
+.map3-stage {
+  width: 100% !important;
+  height: 100% !important;
+  position: absolute; inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.map3-svg {
+  width: 100%; height: 100%;
+  display: block;
+  background: var(--surface-2);
+}
+/* Use simple ocean tone via CSS, lands by class */
+.map3-svg .map3-ocean { fill: var(--surface-2); }
+.map3-svg .map3-grat  { stroke: var(--line-2); stroke-width: 0.6; fill: none; opacity: 0.45; }
+.map3-svg .map3-land  { fill: var(--surface); stroke: var(--line); stroke-width: 1; stroke-linejoin: round; }
+html[data-theme="dark"] .map3-svg .map3-ocean { fill: #0d1014; }
+html[data-theme="dark"] .map3-svg .map3-land  { fill: #1a1f25; stroke: #2a3138; }
+
+/* ---------- SETTINGS — refined, more sleek/minimal/modern ---------- */
+/* Goals:
+   - Generous whitespace, fewer borders
+   - Card surfaces use very-low elevation
+   - Icons: smaller squircles, less candy-colored, more monochrome
+   - Single-column accent only on hover
+*/
+.appset {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 600px;
+  margin: -18px -26px -22px;
+  background: var(--surface);
+}
+.appset__sidebar {
+  background: transparent;
+  border-right: 1px solid var(--line-2);
+  padding: 18px 12px;
+  overflow-y: auto;
+}
+html[data-theme="dark"] .appset__sidebar {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.appset__navitem {
+  width: 100%;
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: transparent; border: 0;
+  font: inherit; font-size: 13px; color: var(--ink-2);
+  cursor: pointer; text-align: left;
+  transition: background 140ms var(--ease), color 140ms var(--ease);
+  margin-bottom: 2px;
+  letter-spacing: -0.005em;
+}
+.appset__navitem:hover { background: var(--surface-2); }
+.appset__navitem[data-active="true"] {
+  background: var(--surface-3);
+  color: var(--ink);
+  font-weight: 500;
+}
+html[data-theme="dark"] .appset__navitem[data-active="true"] {
+  background: rgba(255, 255, 255, 0.07);
+}
+.appset__navitem-icon {
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  flex-shrink: 0;
+  color: var(--ink-3);
+}
+.appset__navitem[data-active="true"] .appset__navitem-icon { color: var(--ink); }
+
+.appset__main {
+  padding: 32px 36px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+.appset__main-head {
+  margin-bottom: 24px;
+}
+.appset__main-head h3 {
+  margin: 0;
+  font-size: 22px; font-weight: 600;
+  letter-spacing: -0.022em;
+  color: var(--ink);
+}
+.appset__main-head p {
+  margin: 4px 0 0;
+  font-size: 13px; color: var(--ink-3);
+  letter-spacing: -0.005em;
+}
+
+/* Refined grouped list — softer, more minimal */
+.applist {
+  background: var(--surface-2);
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+html[data-theme="dark"] .applist {
+  background: rgba(255, 255, 255, 0.03);
+}
+.applist__row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line-2);
+  transition: background 140ms var(--ease);
+}
+.applist__row:first-child { border-top: none; }
+.applist__row:hover { background: var(--surface-3); }
+html[data-theme="dark"] .applist__row:hover { background: rgba(255, 255, 255, 0.04); }
+
+/* Monochrome icon tile — flat, no candy gradients */
+.applist__row-icon {
+  width: 28px; height: 28px;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  display: grid; place-items: center;
+  flex-shrink: 0;
+}
+html[data-theme="dark"] .applist__row-icon {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+/* Tone variants kept but muted */
+.applist__row-icon[data-tone="blue"]   { background: color-mix(in oklch, #3478f6 18%, var(--surface-3)); color: #3478f6; }
+.applist__row-icon[data-tone="green"]  { background: color-mix(in oklch, #34c759 18%, var(--surface-3)); color: #2da34a; }
+.applist__row-icon[data-tone="orange"] { background: color-mix(in oklch, #ff9500 18%, var(--surface-3)); color: #cc7700; }
+.applist__row-icon[data-tone="red"]    { background: color-mix(in oklch, #ff3b30 18%, var(--surface-3)); color: #cc2f26; }
+.applist__row-icon[data-tone="purple"] { background: color-mix(in oklch, #af52de 18%, var(--surface-3)); color: #8e3eb8; }
+.applist__row-icon[data-tone="indigo"] { background: color-mix(in oklch, #5856d6 18%, var(--surface-3)); color: #4845b3; }
+.applist__row-icon[data-tone="teal"]   { background: color-mix(in oklch, #5ac8fa 18%, var(--surface-3)); color: #3aa5d8; }
+html[data-theme="dark"] .applist__row-icon[data-tone="blue"]   { background: rgba(52,120,246,0.18);  color: #6f9aff; }
+html[data-theme="dark"] .applist__row-icon[data-tone="green"]  { background: rgba(52,199,89,0.18);   color: #6cd685; }
+html[data-theme="dark"] .applist__row-icon[data-tone="orange"] { background: rgba(255,149,0,0.20);   color: #ffb84a; }
+html[data-theme="dark"] .applist__row-icon[data-tone="red"]    { background: rgba(255,59,48,0.20);   color: #ff7a72; }
+html[data-theme="dark"] .applist__row-icon[data-tone="purple"] { background: rgba(175,82,222,0.20);  color: #c98aea; }
+html[data-theme="dark"] .applist__row-icon[data-tone="indigo"] { background: rgba(88,86,214,0.20);   color: #8a89e0; }
+html[data-theme="dark"] .applist__row-icon[data-tone="teal"]   { background: rgba(90,200,250,0.18);  color: #87d8f8; }
+
+.applist__row-body { flex: 1; min-width: 0; }
+.applist__row-title {
+  font-size: 13.5px; font-weight: 500; color: var(--ink);
+  letter-spacing: -0.005em;
+}
+.applist__row-desc {
+  font-size: 12px; color: var(--ink-3);
+  margin-top: 2px;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+}
+.applist__row-tail {
+  display: flex; align-items: center; gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px; color: var(--ink-3);
+}
+.applist__row-chevron {
+  color: var(--ink-3);
+  width: 14px; height: 14px;
+  display: grid; place-items: center;
+  opacity: 0.7;
+}
+
+/* Group label */
+.applist__label {
+  font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 26px 4px 8px;
+  font-weight: 500;
+}
+.applist__label:first-child { margin-top: 0; }
+
+/* Profile hero — much more restrained */
+.appset__profile {
+  display: flex; align-items: center; gap: 18px;
+  padding: 22px 18px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-2);
+  border-radius: 0;
+  margin: 0 -4px 28px;
+  padding-left: 4px; padding-right: 4px;
+}
+html[data-theme="dark"] .appset__profile { background: transparent; }
+.appset__profile-avatar {
+  width: 60px; height: 60px;
+  border-radius: 50%;
+  background: var(--ink); color: var(--surface);
+  display: grid; place-items: center;
+  font-size: 20px; font-weight: 500;
+  flex-shrink: 0;
+  letter-spacing: -0.01em;
+}
+.appset__profile-body { flex: 1; min-width: 0; }
+.appset__profile-name {
+  font-size: 17px; font-weight: 600; letter-spacing: -0.018em;
+  color: var(--ink);
+}
+.appset__profile-email {
+  font-size: 13px; color: var(--ink-3);
+  margin-top: 2px;
+  font-family: inherit;
+  letter-spacing: -0.005em;
+}
+.appset__profile-plan {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 8px;
+  padding: 3px 9px;
+  background: var(--surface-3);
+  border-radius: 6px;
+  font-size: 10.5px; color: var(--ink-2);
+  letter-spacing: 0.04em;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+html[data-theme="dark"] .appset__profile-plan {
+  background: rgba(255, 255, 255, 0.08);
+}

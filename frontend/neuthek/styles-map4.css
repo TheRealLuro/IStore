@@ -1,0 +1,156 @@
+/* ============================================================
+   Map v4 — Leaflet + CartoDB tiles, refined pins and popup
+   ============================================================ */
+.map4-shell {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  background: var(--surface-2);
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  position: relative;
+}
+.map4-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  z-index: 5;
+}
+.map4-toolbar__title {
+  font-size: 13px; font-weight: 500; letter-spacing: -0.005em; color: var(--ink);
+}
+.map4-toolbar__zoom { display: flex; align-items: center; gap: 4px; }
+.map4-zoom-label {
+  font-size: 11px; font-weight: 500;
+  color: var(--ink-2);
+  padding: 0 10px; min-width: 78px;
+  text-align: center;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.map4-canvas { flex: 1; min-height: 0; width: 100%; cursor: grab; }
+.map4-canvas:active { cursor: grabbing; }
+/* Tile-matching backdrop so a fast zoom-out doesn't flash white before
+   the new tile pyramid resolves. Picked to roughly match the ocean tone
+   of CartoDB Voyager (light) and DarkMatter (dark). The tiles cover this
+   completely once loaded — this is the underlay during transitions. */
+.map4-canvas .leaflet-container {
+  background: #d6dde2;
+  font-family: inherit;
+  /* Smooth Leaflet's zoom transition curve. Default uses a cubic-bezier
+     close to ease-out; tightening it makes zooming feel decisive instead
+     of laggy on dense tile sets. */
+  --leaflet-zoom-anim-duration: 0.25s;
+}
+html[data-theme="dark"] .map4-canvas .leaflet-container { background: #1a1f29; }
+/* Smoother tile fade-in so individual tiles don't pop in jagged. */
+.map4-canvas .leaflet-tile {
+  transition: opacity 220ms ease-out;
+}
+.map4-canvas .leaflet-control-attribution {
+  background: color-mix(in oklch, var(--surface) 80%, transparent);
+  color: var(--ink-3); font-size: 10px;
+  padding: 2px 6px; border-radius: 6px 0 0 0;
+}
+.map4-canvas .leaflet-control-attribution a { color: var(--ink-2); }
+
+/* Pins */
+.map4-pin-wrap { background: transparent !important; border: 0 !important; }
+.map4-pin {
+  position: relative; width: 40px; height: 48px;
+  display: grid; place-items: center;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.25));
+  transition: transform 160ms cubic-bezier(0.32,0.72,0,1);
+}
+.map4-pin:hover { transform: translateY(-2px) scale(1.05); z-index: 1000; }
+.map4-pin::after {
+  content: ""; position: absolute;
+  bottom: 0; left: 50%; transform: translateX(-50%) rotate(45deg);
+  width: 10px; height: 10px;
+  background: var(--surface);
+  border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink);
+}
+.map4-pin__thumb {
+  width: 36px; height: 36px; border-radius: 50%;
+  background-size: cover; background-position: center;
+  border: 2px solid var(--ink);
+  background-color: var(--surface);
+  position: relative; z-index: 1;
+}
+.map4-pin__dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--ink);
+  border: 3px solid var(--surface);
+  position: relative; z-index: 1;
+  margin-bottom: 6px;
+}
+
+/* Cluster (round badge, no tail) */
+.map4-pin--cluster {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--ink); color: var(--surface);
+  display: grid; place-items: center;
+  border: 3px solid var(--surface);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  font-size: 13px; font-weight: 600; letter-spacing: 0;
+  font-feature-settings: "tnum";
+}
+.map4-pin--cluster::after { display: none; }
+.map4-pin--cluster:hover { transform: scale(1.08); }
+
+/* Dark theme: invert pin chrome so they pop on dark tiles */
+html[data-theme="dark"] .map4-pin::after {
+  background: #fff;
+  border-color: #fff;
+}
+html[data-theme="dark"] .map4-pin__thumb { border-color: #fff; }
+html[data-theme="dark"] .map4-pin__dot { background: #fff; border-color: #111; }
+html[data-theme="dark"] .map4-pin--cluster {
+  background: #fff; color: #0a0a0a; border-color: rgba(0,0,0,0.5);
+}
+
+/* Popup */
+.map4-pop {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 56px));
+  z-index: 700;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.12);
+  border-radius: 14px;
+  padding: 12px;
+  width: 280px;
+  z-index: 600;
+  backdrop-filter: blur(10px);
+  background: color-mix(in oklch, var(--surface) 92%, transparent);
+}
+.map4-pop::after {
+  content: ""; position: absolute;
+  bottom: -7px; left: 50%; transform: translateX(-50%) rotate(45deg);
+  width: 12px; height: 12px;
+  background: var(--surface);
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.map4-pop__head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 10px; margin-bottom: 10px;
+}
+.map4-pop__title { font-size: 14px; font-weight: 600; color: var(--ink); letter-spacing: -0.005em; }
+.map4-pop__meta { font-size: 11.5px; color: var(--ink-3); margin-top: 2px; }
+.map4-pop__grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;
+}
+.map4-pop__tile {
+  aspect-ratio: 1; border-radius: 8px;
+  background-size: cover; background-position: center;
+  background-color: var(--surface-3);
+  border: 1px solid var(--line-2);
+  cursor: pointer; padding: 0;
+  transition: transform 160ms ease;
+}
+.map4-pop__tile:hover { transform: scale(1.03); }
+.map4-pop__tile--lg {
+  aspect-ratio: 16/10; width: 100%; border-radius: 10px;
+}

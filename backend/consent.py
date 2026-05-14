@@ -305,10 +305,23 @@ async def withdraw(
 # the canonical reference until a per-scope policy lands).
 
 
+class ScopeDetail(BaseModel):
+    state: str  # 'GRANTED' | 'WITHDRAWN' | 'NONE'
+    granted_at: datetime | None = None
+    expires_at: datetime | None = None
+    policy_version: str | None = None
+
+
 class ScopesStatus(BaseModel):
-    """Map of scope → state for the FE consent panel."""
+    """Map of scope → state for the FE consent panel.
+
+    `states` is the legacy shape (kept so the existing FE consent panel
+    keeps working without churn). `details` carries the same data plus
+    timestamps so the UI can render "Granted on May 9, 2026" etc.
+    """
 
     states: dict[str, str]
+    details: dict[str, ScopeDetail]
 
 
 @router.get("/scopes", response_model=ScopesStatus)
@@ -319,13 +332,25 @@ async def get_scope_states(
     """One-shot view of every supported scope's current state.
 
     A simpler shape than calling /consent/{kind} N times — used by the
-    Account → Privacy panel so a single render shows every toggle.
+    Account → Privacy panel so a single render shows every toggle, plus
+    its grant/withdraw timestamp for the "Granted on …" subtitle.
     """
-    out: dict[str, str] = {}
+    states: dict[str, str] = {}
+    details: dict[str, ScopeDetail] = {}
     for kind in SUPPORTED_SCOPES:
         rec = await _latest_consent(session, user.id, kind=kind)
-        out[kind] = rec.state if rec else "NONE"
-    return ScopesStatus(states=out)
+        if rec is None:
+            states[kind] = "NONE"
+            details[kind] = ScopeDetail(state="NONE")
+        else:
+            states[kind] = rec.state
+            details[kind] = ScopeDetail(
+                state=rec.state,
+                granted_at=rec.granted_at,
+                expires_at=rec.expires_at,
+                policy_version=rec.policy_version,
+            )
+    return ScopesStatus(states=states, details=details)
 
 
 @router.get("/{kind}", response_model=ConsentStatus)

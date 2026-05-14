@@ -147,3 +147,10 @@ export interface ImageGeoResponse {
 }
 
 export const getImageGeo = () => api.get<ImageGeoResponse>("/images/geo");
+
+/** Re-extracts EXIF GPS from existing originals and populates the
+ *  `image_geo` table. Used when the user grants `gps_retention` consent
+ *  *after* uploading — the photos retain EXIF in MinIO so a backfill
+ *  brings them onto the map. Requires the consent scope to be active. */
+export const backfillImageGeo = () =>
+  api.post<{ examined: number; inserted: number }>("/images/geo/backfill");

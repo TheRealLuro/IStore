@@ -1,457 +1,706 @@
-# IStore — Roadmap
+# neuthek — Roadmap
 
-Working file for the project beyond Phase 11. Reorganized 2026-05-04 to capture
-the new ideas/requirements/rules dump.
+> Project renamed from **IStore → neuthek** on 2026-05-09. The codebase
+> directory layout still references `IStore` in places; rename can land
+> incrementally (folder, repo URL, package name, README, CI, infra).
 
----
-
-## Currently broken (priority order)
-
-### 1. PreviewPanel shows the wrong document bitmap
-The "framework showdown.pdf" preview tab is rendering "LBLF.pdf" content (Part 1
-— Inventory…). Likely a cache key collision in `frontend/src/utils/docRender.ts`
-(`getCachedPreview` / `setCachedPreview`) — the cache keys on `file.id`, but the
-bitmap is being reused across cards. Check the `useEffect` in
-[ThumbnailRenderer.tsx](frontend/src/components/ThumbnailRenderer.tsx) — verify
-the cancellation flag actually discards the wrong bitmap when files swap quickly.
-
-### 2. Face recognition still misses extreme close-ups (B&W eye-only crop)
-`buffalo_l` RetinaFace requires landmarks (eyes + nose + mouth + jaw). An
-eye-only B&W crop is structurally below the model's capability; lowering
-`det_thresh` to 0.3 helped marginal cases but not this one. Options:
-- Add a "verify person" UI flow so the user can manually attach a face crop to
-  a person (stop trying to auto-detect what the model can't see).
-- Try a second-pass detector (e.g. mediapipe) only when `buffalo_l` returns 0
-  faces and `face_likelihood > 0.7`.
+This file tracks **what's still open** — broken, partial, or planned.
+Shipped work is intentionally not listed. Read commit history (or the
+detailed status fields per item below) for what's done.
 
 ---
 
-## Done since the last reorg
+## 1. Currently broken / partial
 
-- **Phase 10 — doc card UI**: FileCard 4:3 uniform, ThumbnailRenderer fills
-  edge-to-edge.
-- **Phase 11 — AI Vision summaries (v1)**: BLIP captions + DistilBART doc
-  summaries + sumy fallback + named-person splice + Account regenerate.
-- **Phase 11 v2 — Florence-2 + Qwen2.5 rewriter (2026-05-04)**:
-  - Florence-2-large primary captioner (`<MORE_DETAILED_CAPTION>` for body,
-    `<OCR>` for whiteboard/classroom/screenshot/document scenes).
-  - Qwen2.5-1.5B-Instruct rewriter takes (caption, names, OCR, scene) and
-    produces one natural search-friendly sentence.
-  - Regex `_clean_caption` + `_splice_names` + first-person pronoun rewrite
-    kept as deterministic fallback when either model is unavailable.
-  - BLIP retained as a caption-only fallback.
-  - `pyproject.toml` adds `accelerate>=1.0`; transformers stays pinned `<5.0`.
-- **PreviewPanel layout (2026-05-04)**: when the panel opens, the gallery
-  shifts right (`md:pr-[480px]`) and a `backdrop-blur-[2px]` overlay sits
-  between gallery and panel so the preview reads as the focal element.
-- **Pronoun rewriting (regex)**: `_polish_after_splice` drops "that is" /
-  "who is" filler and rewrites third-person → first-person when the spliced
-  name is "Me" / "I".
-- **RetinaFace `det_thresh=0.3`** (was 0.5) — picks up borderline B&W faces.
-- **Search-click bug**: removed the click-away `setQuery("")` in SearchBar.
-- **Phase 12 — folders + project status (2026-05-04)**:
-  - Migration 0010 — new `folders` table (recursive `parent_folder_id`,
-    soft delete, unique partial index on `(user_id, parent, lower(name))`)
-    plus `images.folder_id`, `images.status`, `images.status_color`.
-  - `Folder` model + `FolderRead/Create/Update`, `ImageMove`, `StatusSet`
-    schemas.
-  - `backend/api/folders.py` — `GET / POST / PATCH / DELETE` with
-    recursive-CTE soft-delete and cycle-prevention on moves.
-  - `PATCH /images/{id}/move` (drag-into-folder) and
-    `PATCH /images/{id}/status` (set/clear project status).
-  - FE: `FolderCard`, `NewFolderModal`, `Breadcrumb`, `JumpToTop`,
-    `StatusPicker`, `ProfileSection`. `filterStore` carries `folderId` +
-    `folderPath`. `FileGrid` mixes folders-then-files.
-  - Search and person-view bypass folder scope via `?all=true`.
-- **C7 UI polish**: jump-to-top button (scrolls past 1× viewport),
-  preview panel tightened (`rounded-[28px]` corners, `top-4 right-4`
-  insets, h-12 header).
-- **C4 profile**: AccountModal now leads with a `ProfileSection` that
-  edits email and password. Both flows re-auth with the current
-  password (locally) before submitting; password change uses the same
-  rules as signup.
-- **Login button polish**: `bg-fg text-fg-inverse rounded-full h-12`
-  (Apple-inverse pill) on the LoginPage.
-- **Phase 13 — Section C (2026-05-04, second pass)**:
-  - **C1**: folder action menu (Popover with Rename / Set status /
-    Delete) replacing the no-op kebab; HTML5 drag-and-drop file→folder
-    via custom MIME `application/x-istore-image`; sort dropdown
-    (`SortMenu.tsx`) with 6 modes — folders still render first.
-  - **C2 (scaffold)**: `cloud_links` + `cloud_files` migration 0014;
-    `backend/cloud_sync.py` worker stub with provider scopes + clear
-    NotImplementedError gating; `backend/api/cloud.py` endpoints
-    returning 503 with a "needs A2/A3" message; FE `connectProvider`
-    button surfaces the message rather than failing silently.
-  - **C3 (scaffold)**: `image_geo` migration 0013; EXIF GPS extract in
-    `backend/image.py` gated by `gps_retention` consent; `/images/geo`
-    endpoint; FE `MapView` using maplibre-gl + supercluster (lazy
-    `@vite-ignore` import, list fallback when libs absent); Map / Grid
-    toggle in topbar.
-  - **C4**: per-scope consent toggles via new generic
-    `/consent/{kind}/grant|withdraw` endpoints + `PrivacyPanel.tsx`;
-    storage breakdown card in `AccountModal`; email re-verification
-    on change (`UserManager.on_after_update` hook).
-  - **C6**: SMTP settings in `config.py`; `backend/email_send.py`
-    templates wired into `UserManager.on_after_register /
-    on_after_request_verify / on_after_forgot_password /
-    on_after_reset_password`; fastapi-users `get_reset_password_router`
-    + `get_verify_router` mounted; `recovery_codes` migration 0011 +
-    `RecoveryCode` model + argon2-hashed 8-code regenerate +
-    `/account/recovery-codes/login` (stateless JWT issue with
-    constant-time mismatch path); LoginPage gains
-    forgot/reset/recovery/verifying flows that consume `?action=&token=`
-    URL params; AccountModal grows a Recovery Codes row + display
-    modal that copy-to-clipboards the freshly-issued codes.
-  - **C7**: light-theme tokens aligned to Apple HIG system grays
-    (`--bg-page` → #F5F5F7, `--bg-elevated` → #F2F2F7, `--bg-border`
-    → #E5E5E7); shadow `md` softened to a layered Apple-style stack.
-  - **C8**: `current_superuser` dependency; `backend/api/admin.py` with
-    `/admin/storage`, `/admin/users`, `/admin/users/{id}/quota`,
-    `/admin/audit`; `users.quota_bytes` migration 0012 +
-    `/storage/usage` honors per-user override; FE `AdminPanel.tsx`
-    fullscreen dialog with Storage / Users / Audit tabs; entry button
-    only renders for `is_superuser=true`.
+### 1.1 PreviewPanel doc-bitmap cache collision
+"framework showdown.pdf" preview tab renders "LBLF.pdf" content. Cache
+key collision in [frontend/src/utils/docRender.ts](frontend/src/utils/docRender.ts)
+(`getCachedPreview` / `setCachedPreview`) — cache keys on `file.id` but
+the bitmap is reused across cards. Verify the cancellation flag in
+[ThumbnailRenderer.tsx](frontend/src/components/ThumbnailRenderer.tsx)
+discards the wrong bitmap when files swap quickly.
 
-- **Phase 13 audit pass (2026-05-04, third pass)**:
-  - Fixed `backend/api/cloud.py` `revoke_link` — `from __future__
-    import annotations` + `-> None` return type combined with
-    `status_code=204` tripped FastAPI's
-    `is_body_allowed_for_status_code` assertion (the future import
-    leaves the annotation as the *string* `"None"`, which FastAPI
-    treats as a serialized response model). Dropped the `-> None`
-    annotation and left a comment so we don't reintroduce it.
-  - Fixed `backend/email_send.py` — dev-mode stub used `logger.info`,
-    but uvicorn silences non-uvicorn loggers below WARNING by
-    default, so verification + reset links vanished into the void on
-    a fresh install. Switched to `sys.stderr.write` + flush so the
-    link prints unconditionally; verified end-to-end by triggering
-    `/auth/forgot-password` and seeing the JWT show up in the
-    uvicorn terminal.
-  - Migrations 0011–0014 applied successfully against the dev DB
-    (`account_recovery`, `admin_quota`, `image_geo`, `cloud_sync`).
-  - Full test suite green: **82/82** in ~133 s.
-  - FE type-check green after a one-line fix in
-    `MapView.tsx`: `typeof import("supercluster").default` →
-    `typeof import("supercluster")` (modern supercluster types
-    expose the class as the module's default export, not as a
-    `.default` member).
+### 1.2 Face recognition misses extreme close-ups
+`buffalo_l` RetinaFace requires landmarks (eyes + nose + mouth + jaw).
+Eye-only B&W crops are structurally below the model's capability;
+`det_thresh=0.3` helped marginal cases but not extreme ones. Fix in
+**D7**: when a user manually labels a photo as containing a person,
+retry detection at a much lower threshold before falling back to
+manual-attach UI.
+
+### 1.3 Map: pins still bare lat/lng
+Pass-5 wired the map (canvas always renders, cross-folder query, EXIF
+backfill, fitBounds). Still TODO: reverse-geocode pass so popup shows
+"Big Sur, CA" instead of `36.27, -121.81`. Backend would call out to
+Nominatim or a self-hosted geocoder and cache results in `image_geo.place`
+(column already exists, currently always null).
+
+### 1.4 No backend column for `is_starred`
+Preview Star button persists to `localStorage["neuthek.starred"]` —
+works across reloads on the same device, doesn't sync. Sprint 2:
+add `images.is_starred` (bool, indexed), expose
+`PATCH /images/{id}/star`, switch UI to optimistic React Query
+mutations. localStorage layer becomes a hydration source for optimistic
+updates and then dies.
+
+### 1.5 No backend for sharing / "Shared with"
+Fake "Shared with" rows removed in pass-5. Real sharing needs:
+`share_grants` table (`image_id` → `user_id` or email + role + when),
+`POST /images/{id}/shares` to invite, `DELETE /images/{id}/shares/{id}`
+to revoke, `GET /images/{id}/shares` for the preview panel to populate
+`file.sharedWith`. Long pole — likely Sprint 3+.
+
+### 1.6 Storage bar query fires unauthenticated
+Sidebar's `useQuery(["storage"])` fires even on the auth screen
+because the Sidebar isn't gated on `signedIn`. Silent 401 — quiet but
+wasteful. Gate the query on `enabled: !!user`.
+
+### 1.7 Folder counts: subfolder count missing
+FolderCard shows `item_count` but not `subfolder_count`. Backend
+already returns both — surface both in the FE.
+
+### 1.8 Per-image rename modal not wired
+`RenameModal.onSave` writes a local `nameOverrides` map; not persisted.
+Needs **C1.1** backend (`PATCH /images/{id}/name`) before the FE flip.
+
+### 1.9 Theme tokens leftover
+neuthek uses `--ink-*` / `--surface-*` tokens. Some legacy
+`--bg-page` / `--bg-elevated` references and Tailwind class fragments
+still exist in `frontend/neuthek/styles/*.css`. Sweep and remove.
+
+### 1.10 Dead npm deps
+`mammoth`, `react-pdf`, `xlsx`, `html2canvas`, `@radix-ui/*`,
+`lucide-react`, `fuse.js`, `date-fns`, `maplibre-gl`, `supercluster`
+are leftovers from the pre-deletion frontend. Audit and remove.
+
+### 1.11 Settings: features hidden until backends ship
+The Settings rail (Account / Privacy / Security / AI features / Your
+data) is now fully wired for everything that has a backend. The
+following sections are deliberately hidden in the UI today and need
+backend work before they come back:
+- **Plan / Invoices** (in Account tab) — needs Stripe / billing
+  backend.
+- **Notifications tab** (entire tab gone) — needs email + push
+  notification backends + `notification_prefs` table.
+- **Activity log** (in Your data) — needs a per-user
+  `/account/activity` export endpoint (audit log already exists for
+  superuser; this is the user-facing slice).
+- **Trash** (in Your data) — needs `/account/trash` listing +
+  `/account/trash/empty` endpoint.
+- **2FA TOTP** beyond recovery codes — pyotp + QR endpoint.
+- **Per-scope `expires_at`** on Privacy rows — backend now returns it
+  via `/consent/scopes`, but the UI just shows `granted_at` for now.
+  Surface "Expires Apr 14, 2029" subtitle once retention preferences
+  are user-controllable.
+
+### 1.12 Admin overlay: per-row actions not wired
+Storage / Users / Audit tabs read live data, but per-user actions
+on the Users tab (edit quota → `updateUserQuota`, promote/demote
+role → `updateUserRole`) aren't wired. Endpoints exist; UI work only.
+Models / Tasks / Logs / System / Processes / Hardware tabs are still
+prototype mock — keep behind the `MOCK` pill until **C8.2** / **F1**
+backend surfaces land.
 
 ---
 
-## Next-up roadmap (priority groupings)
+## 2. Compliance / hard requirements (block public deployment)
 
-The buckets below are ordered by the "must" rules at the bottom of this file:
-**security/privacy/compliance work blocks anything that touches user data**.
-Don't ship new ML/UX features until the corresponding privacy + security gates
-are in place.
+> NEVER mark these "done" until verified end-to-end with tests + a
+> security review. Consent does not override illegal storage, secret
+> leakage, or insufficient encryption.
 
-### A. Hard requirements before any public deployment
-
-> **NEVER mark these "done" until verified end-to-end with tests + a security
-> review.** Consent does not override illegal storage, secret leakage, or
-> insufficient encryption.
-
-#### A1. Upload validation hardening
-- Validate MIME type *and* magic bytes (don't trust `Content-Type`).
-- Re-decode every image through Pillow before storage; reject anything that
-  fails decode (catches polyglot uploads).
-- Strip dangerous metadata (XML payloads in SVG, embedded scripts, etc.).
+### A1. Upload validation hardening ⏳
+- MIME type *and* magic bytes (don't trust `Content-Type`).
+- Re-decode every image through Pillow before storage; reject decode
+  failures (catches polyglot uploads).
+- Strip dangerous metadata (XML payloads in SVG, embedded scripts).
 - Per-user upload size + count rate limits.
-- Reject zip bombs and oversized archive contents *after* archive support
-  lands (see C2).
+- Reject zip bombs / oversized archive contents (after **C1.5** lands).
 - Quarantine bucket for files awaiting validation; only promote to
   `originals` after all checks pass.
+- Generalize beyond images: when **E** lands (contacts, passwords,
+  saves, IoT) each new data type needs its own validator + quarantine
+  rule. Single dispatch table keyed by `data_kind`.
 
-#### A2. Encryption at rest + in transit
-- TLS everywhere — API, MinIO, frontend, admin tools. No plaintext HTTP in any
-  environment label other than `dev`.
-- MinIO server-side encryption (SSE-S3 or SSE-KMS) on all three buckets.
-- Postgres data-at-rest encryption (volume-level on the host or `pgcrypto`
-  for the most sensitive columns: face embeddings, EXIF, summary text).
+### A2. Encryption at rest + in transit 🟡
+- TLS everywhere — API, MinIO, frontend, admin tools. No plaintext
+  HTTP outside `dev`.
+- MinIO server-side encryption (SSE-S3 or SSE-KMS) on all buckets.
+  Prod compose has `MINIO_SSE_MODE=sse-s3`; verify it's actually on.
+- Postgres data-at-rest encryption (volume-level on the host or
+  `pgcrypto` for sensitive columns: face embeddings, EXIF, summary text).
 - Backups encrypted with a key the host doesn't store.
 - Separate encryption keys for biometric tables vs. content tables.
+- Once **E** lands: each new data type gets its own encryption envelope.
+  Vaulted data (passwords) MUST be E2E with a user-derived key the
+  server never sees.
 
-#### A3. Secret management
-- No `.env` in git; commit a `.env.example` with placeholders only.
+### A3. Secret management ⏳
+- No `.env` in git; commit `.env.example` with placeholders only.
 - Rotate `JWT_SECRET`, MinIO root creds, DB passwords on a schedule.
-- Move secrets out of compose files into a secret manager (Vault, Docker
-  secrets, or platform-native).
+- Move secrets out of compose files into a secret manager (Vault,
+  Docker secrets, platform-native).
 - Audit log every secret access (who read, when, from where).
 
-#### A4. Access control + audit
+### A4. Access control + audit ⏳
 - RBAC on top of per-user filtering — admin/superuser/user roles.
 - Signed download URLs for `originals` + `served`; expire ≤ 5 min.
-- Rate-limit auth endpoints (5/min per IP, exponential backoff after lockout).
+- Rate-limit auth endpoints (5/min per IP, exponential backoff after
+  lockout).
 - Brute-force protection (account lock after N failed attempts).
-- Append-only audit log: auth events, deletes, consent changes, admin actions.
-- Postgres RLS policies for biometric tables (currently app-layer enforced).
+- Append-only audit log: auth events, deletes, consent changes, admin
+  actions.
+- Postgres RLS policies for biometric tables (currently app-layer
+  enforced).
 
-#### A5. Deletion that actually deletes everything
-The single most-skipped feature. When a user deletes an image *or* their
-account, all of these must go:
-- `originals` object
-- `served` variant
-- thumbnail caches (frontend IndexedDB + backend if any)
-- CLIP embedding row
-- AI Vision summary text + topic + points
-- EXIF row
-- detected face crops in `faces` bucket
-- face embeddings (`faces.embedding`)
-- face detections (`face_detections`)
-- person rows that have no remaining faces
-- bandit reward / arm history (or anonymized)
-- audit log entries reference but are NOT deleted (legal retention)
-- backup invalidation eventually (document the retention)
-Add an integration test that uploads, deletes, and asserts every table + bucket
-returns 0 rows / 0 objects for the target.
+### A5. Deletion that actually deletes ⏳
+The single most-skipped feature. When a user deletes an image *or* the
+account, all of the following must go:
+- `originals` object, `served` variant
+- Thumbnail caches (FE IndexedDB + BE caches)
+- CLIP embedding row, AI summary text/topic/points
+- EXIF row, GPS row
+- Detected face crops in `faces` bucket
+- Face embeddings (`faces.embedding`), face detections
+  (`face_detections`)
+- Person rows that have no remaining faces
+- Bandit reward / arm history (or anonymized)
+- Audit log entries: referenced but NOT deleted (legal retention)
+- Backup invalidation eventually (document the retention)
+- Once **E** lands: contacts, password vault items, save blobs, IoT
+  telemetry — each with its own eraser worker.
 
-#### A6. Compliance scaffolding
-- `LICENSE` file (Apache 2.0 likely best fit — patent grant + permissive).
-- `PRIVACY.md` — what we collect, why, retention, deletion process, embedding
-  handling, biometric handling.
-- `TERMS.md` — usage terms, dispute resolution, age gate.
-- `SECURITY.md` — disclosure email, supported versions.
-- `DATA_PROCESSING.md` — for B2B users (DPA template).
-- Cookie banner if any cookies are set; document `Set-Cookie` for every cookie.
-- Age gate (under-13 prohibited unless full COPPA flow is built).
-- Consent log: every consent grant/revoke gets a row with timestamp, IP,
+Add an integration test that uploads, deletes, and asserts every
+table + bucket returns 0 rows / 0 objects for the target.
+
+### A6. Compliance scaffolding 🟡
+- ⏳ **PRIVACY.md** — what we collect, why, retention, deletion
+  process, embedding handling, biometric handling.
+- ⏳ **SECURITY.md** — disclosure email, supported versions.
+- ⏳ **DATA_PROCESSING.md** — for B2B users (DPA template).
+- ⏳ Cookie banner if any cookies are set; document `Set-Cookie` for
+  every cookie.
+- ⏳ Age gate (under-13 prohibited unless full COPPA flow is built).
+- ⏳ Consent log: every grant/revoke gets a row with timestamp, IP,
   user-agent, scope.
 
-#### A7. Repo hygiene
-The user dump explicitly said: don't push test scripts that help attackers.
-- Audit current git history for: real user images, real EXIF, real
-  embeddings, production credentials, DB dumps. Use `git log --stat -p` and
-  `git filter-repo` if anything sensitive is found.
+### A7. Repo hygiene ⏳
+- Audit git history for: real user images, real EXIF, real
+  embeddings, prod credentials, DB dumps. Use `git log --stat -p` and
+  `git filter-repo` if anything sensitive surfaces.
 - `.gitignore` everything that could leak (`.env`, `data/`, `*.dump`).
-- Tests use synthetic fixtures only (current state is mostly fine — the tiny
-  PNGs in `test_summarize.py` are generated, not user photos).
-- Remove `frontend/node_modules/` from git tracking if it's there (the
-  current `git status` shows tracked changes to it, which is wrong).
-- Add a CI step that fails on committed secrets (gitleaks / trufflehog).
+- Tests use synthetic fixtures only.
+- CI step that fails on committed secrets (gitleaks / trufflehog).
 
-### B. Privacy / consent
+---
 
-> **The Rules at the bottom of this file are non-negotiable.** Re-read before
-> writing anything that touches embeddings, faces, or AI tags.
+## 3. Privacy / consent
 
-#### B1. EXIF / GPS handling
-- Strip EXIF (especially GPS) by default on upload. Store only the fields the
-  user explicitly opts into ("show camera info on previews").
-- Surface the choice in the consent flow at signup, not buried in settings.
-- Redact GPS from the EXIF preview row even when the data exists in the file. ( unless user consents.)
+### B1. EXIF / GPS handling ⏳
+- Strip EXIF (especially GPS) by default on upload. Store only fields
+  the user explicitly opts into ("show camera info on previews").
+- Surface the choice in the consent flow at signup, not buried in
+  settings.
+- Redact GPS from EXIF preview row even when data exists in the file
+  (unless user consents).
 
-#### B2. AI/biometric consent flow
-- Single explicit opt-in per scope: `face_detection`, `face_recognition`,
-  `semantic_search`, `ai_summary`, `bandit_compression_telemetry`.
-- Each scope has its own retention period and revocation flow.
-- Revoke = immediate deletion of derived data, not "we'll stop processing
-  next month" — the lawsuits target the deceptive lag.
-- Display the current consent state in Account, with the date granted, the
-  scope text the user agreed to, and a one-click revoke per scope.
+### B2. Consent BEFORE signup ⏳
+Today neuthek shows consents *after* the form; legal requirement is
+"before account creation." Reorder so the register call only fires
+post-consent (wiring is half-there in
+`auth.jsx → handleConsentsComplete`).
 
-#### B3. Export + portability
-- `/account/export` returns a zip: originals + a JSON sidecar with all
+### B3. Export + portability ⏳
+- `/account/export` returns a zip: originals + JSON sidecar with all
   metadata + embeddings (encrypted) + summaries + people + consent log.
-- Re-export must be rate-limited (1/day per user).
-- Email a download link rather than streaming inline; link is signed,
-  expires in 24h.
+- Re-export rate-limited (1/day per user).
+- Email a download link; link is signed, expires in 24 h.
 
-#### B4. Retention sweepers
-- Originals: 30-day default (already documented), configurable per-user up
-  to a cap.
+### B4. Retention sweepers ⏳
+- Originals: 30-day default, configurable per-user up to a cap.
 - Bandit telemetry: 90 days then anonymize.
 - Audit log: 1 year then archive.
 - Deleted-account grace: 30 days then hard-delete everything.
 - Each sweeper writes to the audit log so we can prove deletion happened.
 
-### C. Features the user asked for
+---
 
-> Each item below has a **status** line (✅ done / 🟡 partial / ⏳ next /
-> ⛔ blocked-on) and a **Next concrete step** so anyone picking this up
-> can start without re-deriving scope.
+## 4. Product features
 
-#### C1. Folders, archives, and project organization
-- ✅ **Folders end-to-end**: schema, API, FE, breadcrumb, click-to-enter,
-  unique-name guard, recursive soft-delete, cycle-safe move.
-- ✅ **Project status labels** on files (chip on FileCard + PreviewPanel
-  picker + `PATCH /images/{id}/status`).
-- ✅ **Folder action menu** (`FolderCard` Popover): inline rename, set
-  status (label + color from a small palette), delete (confirm prompt).
-  Backed by existing `PATCH/DELETE /folders/{id}`.
-- ✅ **Drag-and-drop file → folder**: `FileCard` is `draggable`, sets
-  `application/x-istore-image=<id>` on dragstart; `FolderCard` accepts
-  the drop and calls `moveImageToFolder(id, folderId)` with a
-  `ring-2 ring-accent` highlight on hover.
-- ✅ **Sort controls**: `SortMenu.tsx` in topbar, 6 modes
-  (uploaded asc/desc, name asc/desc, size asc/desc). Persisted to
-  `filterStore.sortMode`; folders still render first regardless.
-- ⏳ **Zip / 7z / tar / rar uploads**: blocked on **A1 upload validation**
-  — archive paths are an extra attack surface (zip-slip, zip-bomb).
-  When ready:
-  1. New endpoint `POST /folders/upload-archive` (multipart). Body
-     fields: `file`, optional `parent_folder_id`. Cap raw size at
-     ~200 MB; reject anything bigger up-front.
-  2. Inspect the archive *before* extracting: total uncompressed size
-     ≤ 5× compressed (zip-bomb gate), entry count ≤ 5,000, max depth
-     ≤ 10, no entry path containing `..` or absolute prefix
-     (zip-slip), no symlinks (Python `zipfile` doesn't extract them
-     by default — keep it that way).
-  3. Auto-create a folder named after the archive stem.
-  4. For each entry, route through the existing image upload pipeline
-     so MIME validation, magic-bytes check, and bandit compression
-     all apply. Set `folder_id` on each.
-  5. Persist `source_archive_id` (column already added in 0010) so a
-     future re-pack endpoint can rebuild the archive.
-  - **Re-pack on download** (later): `GET /folders/{id}/archive` streams
-    a zip of the folder contents in their original layout.
-- ⏳ **Sort controls**: grid sort by upload-time / name / size; folders
-  always first. Currently always upload-time-desc.
+### C1. Folders, files, naming, organization
+- ⏳ **C1.1 Rename files**: `PATCH /images/{id}/name` validating
+  type-correct conventions (no path separators; preserves extension;
+  rejects reserved Windows names like `CON`, `PRN`; trims to 255 bytes;
+  collapses whitespace). Updates `images.original_name` only; storage
+  key stays UUID. Re-runs search index update.
+- ⏳ **C1.2 AI-suggested smart names**: "Suggest a name" affordance on
+  rename that asks the existing summarizer for 3 short, filename-safe
+  proposals from content (e.g. "Whiteboard sketch — auth flow"). Reuses
+  Florence-2 + Qwen. Never auto-renames without confirmation.
+- ⏳ **C1.3 Type-pill ∧ folder visibility**: type pills (Images /
+  Documents / etc.) currently hide folders containing them. Required:
+  folder stays visible iff it contains ≥ 1 file of that type
+  (recursive). Either extend `GET /folders` with `?contains_type=...`
+  or compute client-side from the listing.
+- ⏳ **C1.4 Clear search history**: search bar keeps recent queries
+  with no clear control. Add a "Clear history" button at the dropdown
+  bottom + `DELETE /search/history` endpoint.
+- ⏳ **C1.5 Archive uploads (zip / 7z / tar / rar)** — blocked on **A1**:
+  1. `POST /folders/upload-archive` (multipart). Cap raw size ~200 MB.
+  2. Inspect before extracting: total uncompressed ≤ 5× compressed,
+     entry count ≤ 5 000, max depth ≤ 10, no `..` or absolute paths,
+     no symlinks.
+  3. Auto-create folder from archive stem; route every entry through
+     the existing image upload pipeline so MIME / magic-bytes /
+     bandit-compression all apply.
+  4. Persist `source_archive_id` (column already added in 0010) so a
+     future re-pack endpoint can rebuild.
+- ⏳ **C1.6 Tag system (status-as-tag unification)**: user intent is
+  "status should just be tags." Add a generic `tags` table + many-to-
+  many `image_tags`, migrate `images.status` / `images.status_color`
+  into named tags ("In Review", "Published", …), let users create
+  arbitrary tags with colors. Filter pills become tag filters; folder
+  statuses follow the same model.
+- ⏳ **Set folder status from menu** — legacy popover had it; deferred
+  into **C1.6** unification.
 
-#### C2. Cloud sync (Drive / iCloud / GitHub / etc.)
-- ⛔ **Blocked on A2/A3** (encrypted secret storage) — OAuth tokens are
-  long-lived credentials and must be encrypted at rest with a key
-  the host doesn't store. Don't ship until A2 lands.
-- **Concrete plan when unblocked, one provider at a time**:
-  1. **Drive first** — biggest user value, cleanest API, well-documented
-     compliance ("Limited Use" requirements for sensitive scopes). Steps:
-     - Register an OAuth client; only request `drive.readonly` scope.
-     - New table `cloud_links(user_id, provider, encrypted_refresh_token,
-       scopes, last_synced_at, status)`.
-     - Hourly sync worker pulls file listings, diffs against
-       `cloud_files(user_id, provider, remote_id, local_image_id,
-       remote_modified, sha256)`, downloads new/changed files, runs
-       them through the existing upload pipeline with a synthesized
-       folder per-source-folder.
-     - Conflict resolution: source wins (pull-only), surface
-       conflicts in a banner.
-     - Compliance check: Google's Limited Use terms forbid using
-       Drive content to train models — disable AI summary + face
-       scan on synced files unless user opts in per-source.
-  2. **GitHub** — only repos the user owns; treat each repo as a
-     folder. Skip secrets (.env, credentials.json, *.pem) by
-     pattern. Useful but lower demand than Drive.
-  3. **iCloud** — no first-party sync API for third parties. Either
-     skip, or build a Mac-only Finder companion. Defer.
-  4. **Dropbox / OneDrive** — same pattern as Drive; lower priority.
+### C2. Cloud sync (Drive / iCloud / GitHub / etc.)
+- ⛔ Blocked on **A2/A3** (encrypted secret storage). OAuth refresh
+  tokens are long-lived credentials.
+- One provider at a time; Drive first (biggest user value, cleanest
+  API, well-documented Limited Use compliance).
+  1. `drive.readonly` scope only.
+  2. `cloud_links(user_id, provider, encrypted_refresh_token, scopes,
+     last_synced_at, status)`.
+  3. Hourly worker pulls listings, diffs against `cloud_files(user_id,
+     provider, remote_id, local_image_id, remote_modified, sha256)`,
+     pulls new/changed through the existing upload pipeline with a
+     synthesized folder per source-folder.
+  4. Pull-only; conflicts surfaced in a banner.
+  5. Disable AI summary + face scan on synced files unless user opts
+     in per-source (Google Limited Use forbids using Drive content to
+     train models).
+- GitHub second (own repos, treat each repo as a folder, skip secrets
+  by pattern). iCloud / Dropbox / OneDrive deferred.
 
-#### C3. Sort by GPS location
-- ⛔ **Blocked on B1** (EXIF strip on by default) — we can't render a
-  map until users have explicitly opted *in* to GPS retention.
-- **Concrete plan when unblocked**:
-  1. Add `lat REAL`, `lng REAL` columns to `images` (or a sibling
-     `image_geo` table for clean B1 deletion). Populate during
-     Pass A from EXIF.
-  2. New endpoint `GET /images/geo` returns `[id, lat, lng,
-     thumbnail_url]` only for images with consent + non-null GPS.
-  3. FE: a "Map" view tab next to "Grid". Use **maplibre-gl** (BSD,
-     no token, Mapbox-compatible style) over OpenStreetMap raster
-     tiles to avoid Mapbox's commercial license. Cluster with
-     `supercluster`.
-  4. Click cluster → grid view filtered to that lat/lng bbox.
+### C3. Map view refinements
+- ⛔ Blocked on **B1** (EXIF strip on by default + per-user opt-in).
+- Mechanically wired (pass-5) and visually approved — current
+  CartoDB Voyager / DarkMatter look stays. Outstanding refinements:
+  1. Reverse-geocode worker that fills `image_geo.place` (see 1.3) so
+     popups read "Big Sur, CA" instead of bare lat/lng. Cache results
+     server-side (Nominatim is rate-limited).
+  2. Migrate the inline pixel-space clusterer to `supercluster` once
+     pin counts pass ~2 000 — current clustering re-walks every visible
+     point on each render, which won't scale past that. Click cluster
+     → gallery view filtered by cluster bbox.
+  3. Per-pin animated entrance (staggered scale-in) when first arriving
+     after a fitBounds — visual polish, not load-bearing.
 
-#### C4. Profile / settings area
-- ✅ **Email + password change** (`ProfileSection.tsx`) — re-auths
-  with current password before submitting, then re-issues JWT.
-- ⏳ **Display name edit**: 5 lines added to `ProfileSection`. Wait
-  until display_name is actually surfaced anywhere in the UI.
-- ⏳ **Email re-verification on change**: blocked on **C6**.
-  Currently the email column updates immediately. Once SMTP is wired
-  up (C6), the flow becomes:
-  - PATCH /users/me with new email → server stages it as
-    `pending_email`, sends a verification mail, clears
-    `is_verified=False` until clicked.
-- ⏳ **Per-scope consent toggles**: today the consent modal is a
-  single bundle. Split into individual scopes (face_detection,
-  face_recognition, semantic_search, ai_summary,
-  bandit_compression_telemetry). New endpoint `PATCH /consent/{scope}`
-  with body `{state: 'GRANTED' | 'WITHDRAWN'}`.
-- ⏳ **Storage usage breakdown + retention controls**: `StorageBar`
-  already shows totals. Add a "Storage" section to AccountModal
-  with the per-category breakdown (already on `/storage/usage`)
-  and a slider for original-retention (default 30 days).
-- ⏳ **Cloud provider connect buttons**: blocked on C2.
+### C4. Profile / settings
+- ⏳ **C4.1 Display name on signup** — registration form gains required
+  "Display name" field; persisted as `users.display_name`; used in the
+  topbar greeting and across the UI in place of email.
+- ⏳ **C4.2 "Me" → display-name binding** — when the user classifies a
+  person as **Me**, the summarizer must (a) auto-rename that person row
+  to the user's display name and (b) splice the display name (not "Me")
+  into AI summaries. If `display_name` is empty, prompt during the
+  classification flow.
+- ⏳ **C4.3 Email re-verification on change** — backend hook is there;
+  needs the FE staged-email banner ("Click the link we sent to <new>;
+  until then, your account email is still <old>").
+- ⏳ **C4.5 Storage retention controls** — surface the per-category
+  breakdown (already on `/storage/usage`) and add a slider for
+  original-retention (default 30 days).
+- ⏳ **C4.6 Cloud provider connect buttons** — blocked on **C2**.
 
-#### C5. Easy setup script
-- ⏳ **Not started.** Real chunk of work — a Python script that:
-  1. Detects platform (Win/Linux/Mac), available storage drives
-     (`psutil.disk_partitions`), prompts the user to pick a path.
-  2. Probes for CUDA (`nvidia-smi`), AMD (`rocm-smi`), Apple Silicon
-     (`uname -m == arm64` on Darwin). Suggests the right torch
-     wheel index URL.
-  3. Generates `.env` with a fresh `JWT_SECRET` (`secrets.token_urlsafe(48)`),
-     MinIO root creds, DB password.
-  4. Either runs `docker compose up -d` or installs natively
-     (asks the user).
-  5. Optional: a tiny `Tk` or `webbrowser`-launched single-page
-     wizard so the visual matches the app (Tailwind via CDN is fine
-     for a one-page wizard).
-- **Concrete first step**: write a CLI-only `scripts/setup.py` that
-  prints a numbered checklist + writes `.env`. Wizard UI later.
+### C5. Onboarding & B2B migration
+- ⏳ **C5.1 Easy setup script** (single-host, dev/self-host):
+  1. Detect platform (Win/Linux/Mac), available drives, prompt for
+     path.
+  2. Probe for CUDA / AMD / Apple Silicon / Intel ARC; suggest the
+     right torch wheel index URL (ties into **F1**).
+  3. Generate `.env` with fresh `JWT_SECRET`
+     (`secrets.token_urlsafe(48)`), MinIO root creds, DB password.
+  4. Either `docker compose up -d` or native install (user picks).
+  5. Optional `Tk` / `webbrowser`-launched single-page wizard.
+  - **First step**: CLI-only `scripts/setup.py` that prints a
+    numbered checklist + writes `.env`. Wizard UI later.
+- ⏳ **C5.2 B2B migration tooling** — headline B2B promise is
+  "switching from your current drive should be smooth, quick, simple."
+  1. Bulk import endpoints: drag-a-folder-tree (server-side walks an
+     SMB / NAS / mounted path with a service-account credential), or
+     desktop companion that streams uploads with resume support.
+  2. Per-source scopes: pulled files get a per-source consent scope
+     (e.g. "AI summarization for Marketing share = on, for HR share =
+     off") so legal can sign off per dataset.
+  3. Migration dry-run: report estimated total bytes, file count,
+     incompatible types, and blocked-by-policy items before commit.
+  4. Provider plug-ins: Drive / OneDrive / Dropbox / Box / S3 / SMB.
+     Each is a thin adapter over the same `cloud_files` schema (fans
+     out from **C2**).
+  5. Side-by-side phase: keep both systems live with one-way pull
+     until the customer flips DNS / clients to neuthek.
 
-#### C6. Account recovery
-- ⛔ **Blocked on email infra.** Pick one:
-  1. Bring-your-own SMTP (cheap, works with Gmail App Passwords for
-     dev). Variables: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`,
-     `SMTP_FROM`.
+### C6. Account recovery
+- ⛔ Blocked on email infra. Pick one:
+  1. Bring-your-own SMTP (cheap; works with Gmail App Passwords).
   2. Transactional provider (Postmark / SendGrid / Resend).
-  Either way: new module `backend/email.py` with a
-  `send_template(to, template, ctx)` that the recovery + verification
-  flows call.
-- **Then**:
-  1. **Forgot password**: fastapi-users already has the routes —
-     `POST /auth/forgot-password`, `POST /auth/reset-password`.
-     Wire `UserManager.on_after_forgot_password` to send the email.
-  2. **Email verification on signup**:
-     `UserManager.on_after_register` → send verification mail;
-     `is_verified=False` until clicked. Block sensitive endpoints
-     (delete account, export, password change) behind `is_verified`.
-  3. **Recovery codes**: new `recovery_codes(user_id, code_hash,
-     used_at)`. Generate 8 codes once at signup, show them once,
-     store argon2-hashed.
-  4. **TOTP 2FA**: `pyotp` + a QR code endpoint, second-factor
-     check in the auth flow. Lower priority.
+- Then:
+  1. Forgot-password (fastapi-users routes already exist; wire
+     `UserManager.on_after_forgot_password`).
+  2. Email verification on signup; gate sensitive endpoints behind
+     `is_verified`.
+  3. Recovery codes (already scaffolded in 0011).
+  4. TOTP 2FA via `pyotp` + QR endpoint. Lower priority.
 
-#### C7. UI polish
-- ✅ **Jump-to-top** button (`JumpToTop.tsx`) — appears past 1×
-  viewport, smooth-scrolls.
-- ✅ **Preview panel** — `rounded-[28px]`, `top-4 right-4` insets,
-  `h-12` header (was `h-14`), border softened to `border-divider/80`.
-- ⏳ **Light theme**: needs token review — Apple-style means:
-  - Card background closer to pure white (`#FAFAFA` → `#FFFFFF`).
-  - Page background a faint cool gray (`#F5F5F7`).
-  - Border tokens a single hairline (1px, `#E5E5E7`).
-  - Shadows strictly small (`0 1px 2px rgb(0 0 0 / 0.04)`) — heavy
-    shadows look "Material" not "Apple".
-  - Increase line-height + tighten letter-spacing on headers
-    (`tracking-[-0.01em]`).
+### C7. Light theme refinement ⏳
+Tokens close to Apple HIG, shadows strictly small
+(`0 1px 2px rgb(0 0 0 / 0.04)`); tighten letter-spacing on headers
+(`tracking-[-0.01em]`).
 
-#### C8. Dev dashboard
-- ⛔ **Blocked on A4** (RBAC). The route only makes sense behind
-  `is_superuser`, and right now `is_superuser` only protects a single
-  retention sweeper endpoint.
-- **Concrete plan when unblocked**:
-  1. New router `backend/api/admin.py` mounted at `/admin/*`,
-     all endpoints depend on a `current_superuser` from fastapi-users.
-  2. `GET /admin/storage` — total bytes per bucket, per-user
-     breakdown (top 50). Reuses the storage endpoint with an
-     `as_admin` flag.
-  3. `GET /admin/users` — list, with quota / total used / last
-     active.
-  4. `PATCH /admin/users/{id}/quota` — set per-user quota.
-  5. `GET /admin/audit` — paginated audit log viewer
-     (filter by user, action, time window).
-  6. FE: `/admin` route (only rendered if `user.is_superuser`),
-     same component library as the main app.
+### C8. Dev / Admin dashboard
+- ⏳ **C8.1 Visual / UX overhaul**: dev view "needs way more
+  refinements visually, tool-wise, and ease of use." Concrete passes:
+  1. Replace modal-fullscreen `AdminPanel` with a routed `/admin`
+     page with its own layout (sidebar tabs, breadcrumbs).
+  2. Global search box that filters across users, audit events, images.
+  3. Empty / loading / error states for every tab.
+  4. Bulk-action toolbar (bulk quota, bulk delete, bulk consent
+     revocation).
+- ⏳ **C8.2 Model training visibility**: surface live training /
+  fine-tuning runs — current step, loss curve, GPU usage, ETA. Save
+  checkpoints to a `models/` bucket as `.pkl` / `safetensors` with
+  metadata row (`model_runs(id, model_name, started_at, finished_at,
+  val_loss, artifact_key)`). Powers **D5**.
+- ⏳ **C8.3 Quick-action runners**: from the dev view, trigger a
+  re-summarize, re-embed, or re-detect-faces for a user / folder /
+  date range without leaving the UI.
 
-### D. Phase 9 — Hardening (carried over)
+---
 
-- arq + Redis worker for the vision pipeline (pure refactor; pipeline
+## 5. Search & AI quality
+
+### D1. Better image summaries 🟡
+- ✅ OCR cap raised 400→1500 chars in the Qwen rewriter prompt
+  (whiteboards stop being truncated mid-equation).
+- ✅ Florence-2 detailed caption + scene-gated OCR + Qwen rewrite live.
+- ⏳ Add a scene-and-objects pass (RAM++ tags or Places365) and feed
+  those into Qwen's prompt as structured hints for better content
+  understanding ("auth-flow review on a whiteboard" instead of
+  "person standing near a whiteboard").
+- ⏳ Person-aware splice using display-name binding (**C4.2**) instead
+  of "Me" / generic third-person.
+- ⏳ Held-out eval set: "user search queries that should match this
+  image" — measure recall@5 to drive prompt tuning.
+
+### D2. Better document summaries 🟡
+- ✅ Replaced DistilBART with Qwen2.5-Instruct as primary summarizer.
+  Long docs are chunked → per-chunk summaries → merged in a second
+  pass (map-reduce). DistilBART stays as fallback. LLM also fills in
+  topic + keypoints when extraction returned nothing usable.
+- ✅ pdfminer.six fallback for layout-heavy / two-column PDFs that
+  pypdf can't parse.
+- ⏳ Per-chunk embeddings indexed alongside the doc so we can answer
+  "where in this doc is X" — enables jump-to-section hits in semantic
+  search.
+- ⏳ OCR fallback for image-only PDFs (scanned docs return 0 text from
+  both pypdf and pdfminer; route through Florence-2 OCR per page).
+
+### D3. Hybrid search (CLIP + FTS) 🟡
+- ✅ `GET /search` now blends CLIP cosine similarity (visual) with
+  Postgres FTS over `summary` + `summary_topic` + `summary_points` +
+  `original_filename` (textual). Weighted 0.45 CLIP / 0.55 text.
+  Migration `0017_summary_fts` adds a generated tsvector column with
+  a GIN index for query-time speed.
+- ⏳ **Re-summarize backfill**: run `POST /images/backfill-summaries`
+  on existing rows to populate the new doc summary fields. Existing
+  DistilBART output is fine but lower quality than the new Qwen path.
+- ⏳ **Score telemetry**: log (query, top-10 ids, blend weights) per
+  search so we can tune the blend without guessing. Anonymized,
+  consent-gated under `bandit_compression_telemetry`.
+
+### D4. Semantic search through folders ⏳
+Blocked on **D1**+**D2** stabilizing. Once content summaries are
+reliable, extend semantic search to match folder *titles + aggregated
+child summaries* so a query like "the trip to Mexico" hits the folder,
+not just the photos. Cache an aggregate embedding per folder;
+invalidate on child add/move/delete.
+
+### D5. Command-style search bar ⏳
+Treat the search bar as a small DSL parser:
+- `/find <query>` → semantic search (default).
+- `/show people: <name>[ + <name>...]` → filter by people.
+- `/best photo of <subject>` → run **D7** over the matching set.
+- `/in <folder>` → scope to a folder by name.
+- `/type <pill>` → restrict file kind.
+- `/before <date>` / `/after <date>` → temporal filters.
+
+Falls back to natural-language query if no command prefix.
+
+### D6. Fine-tune the summary model from search behavior ⏳
+- ⛔ Blocked on **C8.2** (model-training pipeline).
+- Log (query → clicked result) pairs (consented) and use them as a
+  soft-label dataset to fine-tune the rewriter so future summaries
+  match the way *this* user phrases their searches. Per-user adapter
+  (LoRA) so we don't pollute a global model.
+
+### D7. Best-of-set image picker ⏳
+User flow: select N similar photos, "Pick the best." Backend scores
+by sharpness, exposure, eyes-open / smile (face landmark signal),
+composition (rule-of-thirds), and an optional user-preference axis
+("subjectively best per this user"). Returns a ranked list with the
+top one highlighted; user can override and the override is logged
+for **D6**.
+
+### D8. Person re-detection on user signal ⏳
+1. UI affordance on a photo: "Mark as containing a person."
+2. Backend re-runs RetinaFace at `det_thresh=0.15` *and* falls back
+   to mediapipe face-mesh if `buffalo_l` still finds nothing.
+3. If still empty, prompt the user to draw a box and attach a person
+   manually — that crop becomes a labeled face for `face_recognition`.
+
+---
+
+## 6. Multi-data-type platform
+
+> Vision: neuthek stores **everything** — contacts, passwords, game
+> saves, IoT data — not just images. Each type must be (a)
+> distinguishable and (b) compatible with the existing features
+> (search, encryption, sharing, retention).
+
+### E1. Data-type taxonomy + schema ⏳
+Promote `images` to be one row in a wider `assets` table keyed by
+`data_kind` (`image`, `video`, `document`, `contact`, `password`,
+`save`, `iot_event`). Type-specific tables hang off `assets.id`. New
+types are added as a new sub-table + handler module without touching
+the core gallery flow.
+
+### E2. Contacts ⏳
+Import vCard / CSV; per-contact fields (name, emails, phones, notes,
+photo). Searchable, foldered, taggable. Photo doubles as a face
+source for face_recognition (with consent).
+
+### E3. Passwords (vault) ⏳
+**Hard requirement: end-to-end encryption.** Server stores ciphertext
+only; encryption key derives from the user's password via Argon2id and
+never leaves the client. Recovery via recovery codes (**C6**). Schema:
+`vault_items(id, asset_id, ciphertext, nonce, kdf_params, schema_version)`.
+
+### E4. Game saves ⏳
+Treat as opaque blobs with a versioned history (last N versions
+retained, prune oldest). Per-game folder. Optional upload-from-
+companion-app for desktop launchers.
+
+### E5. IoT data ⏳
+Time-series ingestion endpoint (`POST /iot/ingest`) per device-token;
+stores rows in a partitioned `iot_events` table. FE shows a per-
+device timeline + simple chart. Retention is per-device with a hard cap.
+
+### E6. Cross-type features ⏳
+- Search must work across types: a query for "Jason" should match
+  contacts AND images of Jason AND any document that names him. Tag
+  system from **C1.6** is shared.
+- Encryption envelopes per type (**A2**).
+- Per-type retention sweeper (**B4**).
+
+---
+
+## 7. Hardware compatibility & quantization
+
+> Goal: neuthek self-hosts cleanly on whatever the user has — NVIDIA
+> CUDA, AMD ROCm, Intel ARC / oneAPI, Apple Silicon Metal, or
+> CPU-only — without manual model-format wrangling.
+
+### F1. Backend runs on all major GPU/CPU vendors ⏳
+Detection layer (in **C5.1** setup script + at runtime) picks the
+right backend:
+- NVIDIA CUDA → torch + onnxruntime-gpu.
+- AMD ROCm (Linux) → torch + onnxruntime-rocm.
+- Apple Silicon → torch + MPS / CoreML for vision models.
+- Intel ARC / iGPU → onnxruntime + OpenVINO EP.
+- CPU fallback → onnxruntime CPU + ggml/llama.cpp for the rewriter.
+
+Runtime probes the device once at boot and writes the chosen backend
+to a `runtime.toml` so we don't re-probe on every inference.
+
+### F2. Model quantization ⏳
+- Florence-2-large → 8-bit GPTQ for ≥ 8 GB GPUs, 4-bit for smaller;
+  CPU path uses ONNX INT8.
+- Qwen2.5-1.5B → 4-bit GGUF for CPU/Apple, GPTQ for CUDA/ROCm.
+- CLIP / RetinaFace → ONNX INT8.
+- Make the quant level a config option, not a code change.
+
+### F3. Headless / low-resource mode ⏳
+Setup wizard offers a "Lite" profile that disables Florence-2 + Qwen
+and falls back to BLIP captions + sumy summaries. Useful for
+Raspberry-Pi-class hosts and as a no-AI privacy stance for paranoid
+users.
+
+---
+
+## 8. Collaboration on shared documents
+
+> User intent: when documents or slideshows are shared, there should
+> be an edit tab where people can comment or edit them as a team.
+
+### G1. Sharing primitive ⏳
+Per-asset share link with explicit permission (`view`, `comment`,
+`edit`); link is signed, expires, revocable. Recipients see a
+stripped-down viewer that doesn't expose the rest of the owner's
+library.
+
+### G2. Comments ⏳
+`comments(id, asset_id, author_user_id_or_email, body, anchor_json,
+created_at)` where `anchor_json` is a free-form pointer (page+rect
+for PDFs, slide index for slideshows, time range for video). FE
+renders pins on the asset and a thread panel on the right.
+
+### G3. Real-time team editing ⏳
+Document type only at first; out of scope for images. Likely path:
+y.js + a relay WebSocket, persisted snapshot per N seconds. Big,
+separate workstream — schedule after **F** lands so we know what
+hardware budget we're working with on self-host.
+
+---
+
+## 9. Repo & docs hygiene
+
+### H1. README rewrite ⏳
+Currently asserts "frontend files exist as placeholders" — no longer
+true. New structure: hero + screenshots, "what you can actually do,"
+install (one-liner via **C5.1**), self-host notes, status of features,
+security posture, contributing, license.
+
+### H2. Code-comment balance ⏳
+Sweep `backend/` and `frontend/src/` for:
+- Comments that just restate the next line ("// increment i").
+- Multi-paragraph docstrings on internal helpers.
+- Out-of-date "TODO" comments referring to phases that shipped.
+
+Keep comments that explain *why* (constraints, hidden invariants,
+workaround for a specific bug).
+
+### H3. GitHub-ready .md files ⏳
+Every top-level `.md` rendered on github.com should look intentional:
+short headings, no broken anchors, no internal paths that only make
+sense locally, link to the right files. In scope: README, ROADMAP
+(this file slimmed for public), CONTRIBUTING, SECURITY, PRIVACY,
+TERMS, LICENSE summary.
+
+### H4. CI / lint tightening ⏳
+Add `ruff` + `mypy --strict` for backend; `tsc --noEmit` + `eslint`
+already run on FE — wire both into a GitHub Actions workflow that
+gates merges. Plus `gitleaks` for secrets (see **A7**).
+
+---
+
+## 10. Project rename: IStore → neuthek
+
+Decided 2026-05-09. The frontend already mounts as "neuthek"; the
+rest of the codebase, infra, and docs trail behind. Land each piece
+in its own commit so blame stays useful and reverts are cheap.
+
+### I.bis.1 Local checkout and code refs ⏳
+- Rename the repo directory `IStore/` → `neuthek/` on disk; update
+  any local `cd IStore` shortcuts.
+- Search/replace `IStore` → `neuthek` (case-preserving) across:
+  - `pyproject.toml` (`name`, `description`, console scripts).
+  - `frontend/package.json` (`"name": "istore-frontend"` →
+    `"name": "neuthek-frontend"`).
+  - `docker-compose*.yml`, `Dockerfile`s, image tags, network names.
+  - `alembic.ini` migration tag and any logger names.
+  - `backend/config.py` env prefixes (e.g. `ISTORE_*` → `NEUTHEK_*`)
+    with a deprecation read of the old prefix for one release.
+  - Test fixtures, sample data filenames, README, TERMS, PRIVACY,
+    SECURITY copy.
+- Storage bucket names — **do not rename live buckets**. Add new
+  `neuthek-{originals,served,faces,…}` buckets in MinIO and run a
+  one-time mirror; flip the config when ready, retire the old names
+  after a backup window.
+- Database name — same approach: pg_dump, restore into `neuthek`,
+  flip `DATABASE_URL`, keep the old DB read-only for 30 days.
+
+### I.bis.2 Hosting / external refs ⏳
+- GitHub repo rename (org admin) — GitHub keeps redirects, but update
+  SSH/HTTPS remotes everywhere they're hard-coded.
+- Domain: register `neuthek.app` (or chosen TLD) and set up
+  `privacy@`, `dpo@`, `security@`. Point legal docs at the new
+  contact addresses.
+- `LICENSE` `Copyright (c) … IStore Authors` → `neuthek Authors`.
+- Slack/Notion/Linear projects, OAuth client app names with Google /
+  Microsoft / Apple, transactional email "From" name.
+
+### I.bis.3 Brand surface in the app ⏳
+- Sidebar logo / favicon / OG image asset set.
+- Email templates (verification, reset, recovery codes) — header
+  brand, signature, From name.
+
+---
+
+## 11. Recommended priority order
+
+> Picked 2026-05-09. Each item links back to its detail above.
+
+### Sprint 2 — visible polish + ship-blocking compliance (next up)
+
+Frontend polish (1–2 days):
+1. Move /people lookups behind face-recognition consent (don't show
+   placeholder names on prod).
+2. Drop dead deps from `package.json` (1.10).
+3. Sidebar storage query gating (1.6).
+4. Folder counts: surface subfolder count (1.7).
+5. Per-image rename modal wiring (1.8 + **C1.1**).
+
+Compliance (parallel, ship-blocking):
+6. **A6** PRIVACY.md / SECURITY.md / DATA_PROCESSING.md.
+7. **A1** upload validation (MIME + magic bytes + rate limits).
+8. **A5** deletion integration test.
+9. **A2** SSE/TLS posture confirmation.
+10. **B2** consent collection BEFORE signup.
+
+### Sprint 3 — quality wins
+
+11. **D1** + **D2** finishing touches (scene-and-objects pass, RAM++
+    or Places365 hints; per-chunk embeddings; OCR fallback for image
+    PDFs). Hybrid search (D3) is already in.
+12. **D8** person re-detect on user signal.
+13. **C3** GPS map refinements (reverse-geocode + supercluster).
+14. **C4.2** "Me" → display-name binding.
+15. **1.4** `is_starred` backend column + endpoint.
+
+### Sprint 4 — onboarding & B2B funnel
+
+16. **C5.1** setup script.
+17. **C5.2** B2B migration tooling.
+18. **C2** Drive cloud sync (after **A2**/**A3**).
+19. **1.5** sharing backend (`share_grants` table + endpoints +
+    preview wiring).
+
+### Long-term roadmap
+
+20. **Section E** — multi-data-type platform.
+21. **Section F** — hardware compatibility & quantization.
+22. **Section G** — collaboration / comments / real-time edit.
+23. **Section H** — repo & docs hygiene.
+24. **I.bis** project rename — admin work, parallelizable.
+
+### Things to NOT work on yet
+- Plan / Invoices / Stripe billing UI — there's no payment backend
+  and won't be until commercial launch.
+- TOTP 2FA — recovery codes cover the lockout case adequately for
+  now; lower priority than C6.
+- Activity log panel UI — needs a per-user audit-export endpoint
+  that doesn't exist yet.
+- Plan card pricing copy — premature; pricing shouldn't be hard-coded.
+
+### Phase 9 backend hardening (carried over)
+- arq + Redis worker for the vision pipeline (refactor; pipeline
   function unchanged, only call site moves).
-- GPU inference subprocess with batching (50ms fill window) + Unix-socket
-  IPC.
-- Places365 for finer scene categorization (365 labels).
-- RAM++ for richer tag generation (~4k vocab; replaces the curated CLIP
-  zero-shot list).
+- GPU inference subprocess with batching (50 ms fill window) +
+  Unix-socket IPC.
+- Places365 for finer scene categorization (365 labels). Powers **D1**.
+- RAM++ for richer tag generation (~4 k vocab). Powers **D1**.
 - structlog + OpenTelemetry traces.
 - GPU OOM back-pressure to arq (block when queue depth > N).
 - Locust load test at 100 concurrent uploads.
@@ -459,39 +708,42 @@ The user dump explicitly said: don't push test scripts that help attackers.
 
 ---
 
-## Rules — non-negotiable
+## 12. Rules — non-negotiable
 
-These come straight from the user dump on 2026-05-04. **Read these before
-designing anything that handles user data.**
+These come straight from the user dump on 2026-05-04 (and reinforced
+2026-05-09). **Read these before designing anything that handles user
+data.**
 
 ### Privacy
-1. **Informed consent.** Users must understand what data we collect, what
-   AI processing happens, what's stored, how long, and how to delete. Plain
-   language. Especially for embeddings, faces, semantic search, biometric
-   features.
-2. **Security.** HTTPS, encryption (at rest + in transit), access controls,
-   secure storage, rate limiting, secret management, audit logging,
-   deletion systems. If we collect sensitive data and leak it from poor
-   security, consent does not save us.
+1. **Informed consent.** Users must understand what data we collect,
+   what AI processing happens, what's stored, how long, how to delete.
+   Plain language. Especially for embeddings, faces, semantic search,
+   biometric features. **Collected via popup before signup**, revoked
+   from settings.
+2. **Security.** HTTPS, encryption (at rest + in transit), access
+   controls, secure storage, rate limiting, secret management, audit
+   logging, deletion systems. **Every data type is encrypted** (images,
+   contacts, passwords, saves, IoT) — passwords end-to-end with a key
+   the server never sees.
 3. **Data minimization.** Only collect what's necessary. Embeddings for
    semantic search → reasonable. Personality vectors → much harder to
    justify.
-4. **User control.** Export, delete, revoke consent, disable AI features,
-   remove biometric data.
-5. **Honest disclosure.** No secret model training, no quiet expansion of
-   data usage. The biggest lawsuits come from deceptive practices.
+4. **User control.** Export, delete, revoke consent, disable AI
+   features, remove biometric data.
+5. **Honest disclosure.** No secret model training, no quiet expansion
+   of data usage. The biggest lawsuits come from deceptive practices.
 6. **Consent does not override everything.** Even with "I agree", some
    things stay illegal: unfair biometric practices, deceptive AI claims,
    unsafe retention, minor biometric data, discrimination profiling,
    inadequate security, hidden processing.
-7. **Safest framing for IStore**: "Private AI-assisted photo organization
-   for the account owner." Dangerous framing: "Global people recognition
-   and profiling." Huge legal difference.
+7. **Safest framing for neuthek**: "Private AI-assisted personal &
+   business storage for the account owner." Dangerous framing: "Global
+   people recognition and profiling." Huge legal difference.
 
 ### Biometrics (the highest-risk surface)
-The line is between "this image probably contains a face" (low risk) and
-"this is Jason / find all photos of this person / cluster these identities"
-(BIPA + GDPR special-category territory).
+The line is between "this image probably contains a face" (low risk)
+and "this is Jason / find all photos of this person / cluster these
+identities" (BIPA + GDPR special-category territory).
 - Opt-in only, written-consent-grade explicit.
 - Local/on-device processing where possible.
 - Separate biometric DB + separate keys.
@@ -503,57 +755,75 @@ The line is between "this image probably contains a face" (low risk) and
   portability, consent logging, processing records, breach notification.
 - **CCPA / CPRA** — California users; disclose collected data, allow
   deletion + export, disclose AI/derived metadata.
-- **BIPA** (Illinois) — written informed consent, public retention policy,
-  deletion schedule, no profit, secure storage. Violations are expensive.
+- **BIPA** (Illinois) — written informed consent, public retention
+  policy, deletion schedule, no profit, secure storage. Violations are
+  expensive.
 - **COPPA** — under-13 users prohibited unless fully compliant.
 
 ### AI/ML guidelines
-- Treat embeddings as sensitive data. Encrypt them. Delete with the source
-  image. Never expose raw vectors. Never allow cross-user similarity.
+- Treat embeddings as sensitive data. Encrypt them. Delete with the
+  source asset. Never expose raw vectors. Never allow cross-user
+  similarity.
 - Every vector query scoped to the authenticated owner.
 - No cross-user index, no shared semantic store, no accidental leakage.
+- **No silent model training on user data.** Per-user fine-tuning
+  (D6) requires a separate explicit opt-in scope and a per-user adapter,
+  never a shared global update.
 
 ### Security must-haves
-- Encryption: HTTPS everywhere; SSE on object storage; PG volume encryption
-  + `pgcrypto` for biometric columns; encrypted backups.
+- Encryption: HTTPS everywhere; SSE on object storage; PG volume
+  encryption + `pgcrypto` for biometric / vault columns; encrypted
+  backups.
 - Secrets: never commit, rotate on schedule, vault/secret manager.
 - Access control: RBAC, signed URLs, rate limits, brute-force lockout,
   audit log.
-- File validation: MIME + magic bytes, re-decode, size cap, malware scan,
-  metadata strip.
-- Logging: never log JWTs, raw bytes, embeddings, EXIF GPS, face metadata.
+- File validation: MIME + magic bytes, re-decode, size cap, malware
+  scan, metadata strip.
+- Logging: never log JWTs, raw bytes, embeddings, EXIF GPS, face
+  metadata, vault ciphertext.
 
 ### Repo rules
 Never commit: real user images, embeddings, EXIF-rich samples, prod
-credentials, DB dumps, biometric data.
-Use synthetic fixtures only.
+credentials, DB dumps, biometric data, vault ciphertext, real
+contacts, real IoT logs. Use synthetic fixtures only.
 
 ### Pre-launch checklist
-1. Security audit (auth/authz/JWT/upload/storage/secrets/rate-limit/deps).
-2. Privacy audit (every stored field — why, how long, can users delete it).
-3. Compliance checklist (Privacy + Terms + deletion + export + consent +
-   cookies + biometric opt-in).
+1. Security audit (auth/authz/JWT/upload/storage/secrets/rate-limit/
+   deps).
+2. Privacy audit (every stored field — why, how long, can users delete
+   it).
+3. Compliance checklist (Privacy + Terms + deletion + export + consent
+   + cookies + biometric opt-in + age gate).
 4. Infra hardening (HTTPS, encrypted backups, private object storage,
    firewall, monitoring, malware scanning).
 5. AI/ML review (no cross-user leakage, no hidden biometric processing,
    no accidental training on user data).
 6. Deletion testing (every table + bucket + cache + backup eventually).
 7. Threat modeling (image leakage, metadata leakage, biometric misuse,
-   bucket misconfig, search isolation failures).
+   bucket misconfig, search isolation failures, vault key extraction).
 8. External review (another dev + a security person + a privacy person).
 
 ### Required minimums before public release
 Privacy Policy · Terms of Service · License · Security policy · Contact
 email · Documented deletion process · Backup strategy · HTTPS · Strong
-secrets.
+secrets · Pre-signup consent popup flow.
 
 ---
 
-## Quick reference
+## 13. Quick reference
 
 - Run backend: `.venv/Scripts/python.exe -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --log-level info`
 - Run tests: `.venv/Scripts/python.exe -m pytest`
 - Apply migrations: `.venv/Scripts/python.exe -m alembic upgrade head`
-- Force-regenerate every summary: `POST /images/backfill-summaries?force=true&limit=500` (or **Account → Regenerate**)
-- After any change to `backend/`, **restart uvicorn** — it doesn't hot-reload
-  Python module changes by default.
+- Force-regenerate every summary: **Account → AI features → Library
+  maintenance → Re-summarize entire library** (or `POST
+  /images/backfill-summaries?force=true&limit=500`) — recommended after
+  the D2 Qwen-based
+  summarizer change so existing rows benefit.
+- After any change to `backend/`, **restart uvicorn** — it doesn't
+  hot-reload Python module changes by default.
+- Run frontend (neuthek): `cd frontend && npm run dev` (Vite, port 5173).
+  Production build: `npm run build`. Vite resolves `@/...` →
+  `frontend/src/...`; the neuthek source lives at `frontend/neuthek/src/`
+  and imports the API client + zustand stores via `@/api/*` and
+  `@/stores/*`.

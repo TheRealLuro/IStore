@@ -1,0 +1,111 @@
+/* Map view 2 — clean SVG world map */
+.map2-shell {
+  flex: 1; display: flex; flex-direction: column;
+  padding: 0; overflow: hidden;
+}
+.map2-canvas {
+  position: relative; flex: 1;
+  min-height: 540px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-4);
+  overflow: hidden;
+  margin: 0 8px 8px;
+}
+.map2-svg { width: 100%; height: 100%; display: block; }
+.map2-pins { position: absolute; inset: 0; pointer-events: none; }
+.map2-pin {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  background: transparent; border: 0; padding: 0; cursor: pointer;
+  pointer-events: auto;
+  z-index: 5;
+  transition: transform 200ms var(--ease);
+}
+.map2-pin:hover, .map2-pin[data-active="true"] {
+  transform: translate(-50%, -106%) scale(1.08);
+  z-index: 10;
+}
+.map2-pin__bubble {
+  display: block;
+  width: 38px; height: 38px;
+  border-radius: 999px;
+  background-size: cover; background-position: center;
+  background-color: var(--ink);
+  border: 3px solid var(--surface);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.28), 0 1px 3px rgba(0,0,0,0.2);
+}
+.map2-pin__bubble--cluster {
+  background: var(--ink); color: var(--surface);
+  display: grid; place-items: center;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px; font-weight: 600;
+}
+.map2-pin__shadow {
+  display: block;
+  width: 10px; height: 3px; border-radius: 50%;
+  background: rgba(0,0,0,0.30);
+  margin: 4px auto 0;
+  filter: blur(2px);
+}
+.map2-controls {
+  position: absolute; top: 14px; right: 14px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px; padding: 4px;
+  box-shadow: var(--shadow-1);
+  z-index: 6;
+}
+.map2-controls .btn-icon { width: 32px; height: 32px; border-radius: 8px; }
+.map2-legend {
+  position: absolute; bottom: 14px; left: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 12.5px; color: var(--ink-2);
+  box-shadow: var(--shadow-1);
+  max-width: 280px;
+  z-index: 6;
+}
+.map2-legend__title {
+  font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600; margin-bottom: 6px;
+}
+.map2-legend__hint { font-size: 11px; color: var(--ink-3); margin-top: 6px; }
+.map2-pop {
+  position: absolute; top: 14px; left: 14px;
+  width: 360px; max-width: calc(100% - 80px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  padding: 14px;
+  box-shadow: var(--shadow-2);
+  z-index: 7;
+  animation: pop 240ms var(--ease);
+}
+.map2-pop__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 10px; }
+.map2-pop__title { font-size: 14.5px; font-weight: 600; letter-spacing: -0.012em; }
+.map2-pop__meta { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.map2-pop__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.map2-pop__tile {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background-size: cover; background-position: center;
+  background-color: var(--surface-3);
+  border: 0; padding: 0; cursor: pointer;
+  overflow: hidden;
+  transition: transform 200ms var(--ease);
+}
+.map2-pop__tile:hover { transform: scale(1.04); }
+.map2-pop__tile-name {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10px; color: #fff;
+  background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
+  padding: 8px 6px 4px;
+  text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

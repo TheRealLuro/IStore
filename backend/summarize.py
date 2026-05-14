@@ -636,7 +636,11 @@ def _llm_rewrite_summary(
         if names:
             ctx_lines.append(f"People in image: {', '.join(names)}")
         if ocr_text:
-            ctx_lines.append(f"Visible text in image: {ocr_text[:400]}")
+            # 400 chars used to truncate classroom whiteboards mid-equation
+            # and cut off long screenshots before the meaningful content.
+            # 1500 still fits the prompt budget (Qwen2.5 ~3500 token cap)
+            # alongside caption/scene/setting context.
+            ctx_lines.append(f"Visible text in image: {ocr_text[:1500]}")
         if scene:
             ctx_lines.append(f"Scene: {scene.replace('_', ' ')}")
         if setting and setting != "unknown":
@@ -724,7 +728,10 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
     Florence-2 carries the load on its own.
     """
     frame = _extract_keyframe(raw_bytes)
-    caption = _florence2_caption(frame) if frame else None
+    # `_florence_caption` is the actual function name; an earlier draft
+    # called the missing `_florence2_caption`, which made every video
+    # summary silently fall back to "Preview unavailable".
+    caption = _florence_caption(frame) if frame else None
 
     topic = "Video"
     if image.original_filename:
@@ -787,9 +794,31 @@ def _summarize_document(
             points=[],
         )
 
+    # We still cap at `summarize_doc_max_chars` (default 20 000) so a 200-
+    # page PDF doesn't blow up generation memory, but the LLM path below
+    # internally chunk-summarizes within that budget instead of skimming
+    # the head.
     truncated = text[: settings.summarize_doc_max_chars]
-    summary = _extractive_summary(truncated)
+
+    # Try the instruction-LLM first. Qwen2.5-Instruct (already in memory
+    # for image rewriting) follows summarization prompts much better than
+    # DistilBART on non-news content. BART stays as a fallback so cold
+    # installs that haven't pulled the LLM weights still produce something.
+    summary = _llm_doc_summary(truncated, image.original_filename or "", topic)
+    if not summary:
+        summary = _extractive_summary(truncated)
+
+    # Auto-derive points when the LLM ran (it produces a single paragraph,
+    # not a bulleted list). Heuristic keypoints still work for docs that
+    # already use markdown list syntax.
     points = _extract_keypoints(truncated)
+    if not points and summary:
+        points = _llm_keypoints(truncated, image.original_filename or "")
+
+    # Topic upgrade: if extraction couldn't find a usable title (e.g.
+    # untitled PDF + first line was a page number), ask the LLM for one.
+    if not topic or len(topic) < 4 or topic.isdigit():
+        topic = _llm_doc_topic(truncated, image.original_filename or "") or topic
 
     return SummaryResult(
         topic=topic or "Document",
@@ -820,16 +849,28 @@ def _extract_doc_text(
 
 
 def _extract_pdf(raw: bytes) -> tuple[str, Optional[str]]:
+    """PDF text extraction. pypdf is the default; if it produces almost
+    nothing (typical for layout-heavy / two-column / image-PDFs) we fall
+    back to pdfminer.six which handles those better. Image-only PDFs
+    return empty text — caller emits a "could not extract" summary."""
     from pypdf import PdfReader  # type: ignore
 
     reader = PdfReader(BytesIO(raw))
     pages_text = []
-    for page in reader.pages[:30]:  # cap at 30 pages
+    for page in reader.pages[:50]:  # cap at 50 pages (was 30)
         try:
             pages_text.append(page.extract_text() or "")
         except Exception:
             continue
-    text = "\n\n".join(pages_text)
+    text = "\n\n".join(pages_text).strip()
+
+    # If pypdf bailed (returned <80 visible chars from a multi-page doc),
+    # try pdfminer.six. It's slower but parses encoded fonts and column
+    # layouts pypdf trips on.
+    if len(text) < 80 and len(reader.pages) > 0:
+        miner_text = _pdfminer_extract(raw)
+        if miner_text and len(miner_text) > len(text):
+            text = miner_text.strip()
 
     topic: Optional[str] = None
     md = reader.metadata or {}
@@ -843,6 +884,17 @@ def _extract_pdf(raw: bytes) -> tuple[str, Optional[str]]:
                 topic = line
                 break
     return text, topic
+
+
+def _pdfminer_extract(raw: bytes) -> str:
+    """pdfminer.six fallback. Returns "" on any failure (incl. missing
+    optional dep) so the caller keeps whatever pypdf produced."""
+    try:
+        from pdfminer.high_level import extract_text  # type: ignore
+
+        return extract_text(BytesIO(raw)) or ""
+    except Exception:
+        return ""
 
 
 def _extract_docx(raw: bytes) -> tuple[str, Optional[str]]:
@@ -932,6 +984,350 @@ def _extractive_summary(text: str) -> str:
 
     parts = re.split(r"(?<=[.!?])\s+", text)
     return " ".join(parts[:n]).strip()
+
+
+def _llm_doc_summary(
+    text: str, filename: str, topic: Optional[str]
+) -> Optional[str]:
+    """Summarize a document with Qwen2.5-Instruct.
+
+    For docs that fit in one prompt window (~6 000 chars / ~1 500 tokens
+    of context for the LLM, leaving room for instructions and reply) we
+    summarize directly. Longer docs get chunked, each chunk is
+    micro-summarized in one pass, then the chunk summaries are merged in
+    a second pass — classic map-reduce. The merged summary captures
+    breadth instead of skimming the first page (which was DistilBART's
+    failure mode).
+
+    Returns None when the LLM is disabled or unavailable; caller falls
+    back to BART → sumy → leading sentences.
+    """
+    if not settings.rewriter_enabled:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+
+    # Qwen2.5-1.5B handles ~3-4 K tokens cleanly; ~6 000 chars is a safe
+    # English budget that leaves room for the instruction and reply. Above
+    # that we chunk-and-merge.
+    CHUNK_BUDGET = 6000
+    chunks = _split_for_summary(text, CHUNK_BUDGET)
+
+    if len(chunks) == 1:
+        return _llm_summarize_chunk(chunks[0], filename, topic, is_full=True)
+
+    # Map: per-chunk summaries.
+    partials: list[str] = []
+    for c in chunks[:8]:  # cap fan-out — diminishing returns past 8 chunks
+        s = _llm_summarize_chunk(c, filename, topic, is_full=False)
+        if s:
+            partials.append(s)
+    if not partials:
+        return None
+
+    # Reduce: condense the partials into one summary.
+    merged_input = "\n\n".join(f"- {p}" for p in partials)
+    return _llm_merge_summaries(merged_input, filename, topic)
+
+
+def _split_for_summary(text: str, budget_chars: int) -> list[str]:
+    """Split on paragraph boundaries when possible, falling back to fixed-
+    size windows. Keeps each chunk ≤ budget_chars."""
+    if len(text) <= budget_chars:
+        return [text]
+    paras = re.split(r"\n\s*\n", text)
+    chunks: list[str] = []
+    current = ""
+    for p in paras:
+        if not p.strip():
+            continue
+        if len(current) + len(p) + 2 <= budget_chars:
+            current = (current + "\n\n" + p) if current else p
+        else:
+            if current:
+                chunks.append(current)
+            if len(p) <= budget_chars:
+                current = p
+            else:
+                # Single paragraph longer than the budget — hard-split.
+                for i in range(0, len(p), budget_chars):
+                    chunks.append(p[i : i + budget_chars])
+                current = ""
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _llm_summarize_chunk(
+    chunk: str, filename: str, topic: Optional[str], is_full: bool
+) -> Optional[str]:
+    """One LLM call. is_full=True asks for a final-quality summary; False
+    asks for a terse partial that will be merged later."""
+    try:
+        import torch
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        if is_full:
+            instructions = (
+                "Summarize the following document in 2–3 natural English "
+                "sentences (under 60 words total). Capture WHAT the "
+                "document is about and the most important specific points. "
+                "Use concrete nouns from the text — names, numbers, dates, "
+                "section titles. Do NOT begin with 'This document', 'The "
+                "document', or 'In summary'. Output only the summary."
+            )
+        else:
+            instructions = (
+                "Summarize this section of a document in ONE concise "
+                "English sentence (under 25 words). Use specific nouns "
+                "from the text. Output only the sentence."
+            )
+
+        ctx_lines = []
+        if filename:
+            ctx_lines.append(f"Filename: {filename}")
+        if topic:
+            ctx_lines.append(f"Title: {topic}")
+        ctx_lines.append("Content:\n" + chunk)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write concise, factual document summaries. "
+                    "You never invent details that are not in the input."
+                ),
+            },
+            {
+                "role": "user",
+                "content": instructions + "\n\n" + "\n".join(ctx_lines),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=3500
+        ).to(device)
+        prompt_len = inputs.input_ids.shape[1]
+
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=180 if is_full else 80,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        # Strip surrounding quotes / leading dashes.
+        reply = reply.lstrip("-•* ").strip().strip('"').strip("'").strip()
+        if not reply:
+            return None
+        # Keep the reply within sane bounds; the LLM occasionally rambles.
+        if len(reply) > 600:
+            reply = reply[:600].rsplit(".", 1)[0] + "."
+        return reply
+    except Exception:
+        logger.exception("qwen: doc summary chunk failed")
+        return None
+
+
+def _llm_merge_summaries(
+    partials_block: str, filename: str, topic: Optional[str]
+) -> Optional[str]:
+    try:
+        import torch
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        ctx_lines = []
+        if filename:
+            ctx_lines.append(f"Filename: {filename}")
+        if topic:
+            ctx_lines.append(f"Title: {topic}")
+        ctx_lines.append(
+            "Partial summaries (each line summarizes a different "
+            "section of the same document):"
+        )
+        ctx_lines.append(partials_block)
+
+        instructions = (
+            "Combine the partial summaries below into ONE coherent "
+            "summary of the whole document, 2–3 natural English "
+            "sentences, under 60 words total. Drop redundancy across "
+            "sections. Use specific nouns from the partials — names, "
+            "numbers, dates. Do NOT begin with 'This document', 'The "
+            "document', or 'In summary'. Output only the combined summary."
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write concise, factual document summaries. "
+                    "You never invent details."
+                ),
+            },
+            {
+                "role": "user",
+                "content": instructions + "\n\n" + "\n".join(ctx_lines),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=3500
+        ).to(device)
+        prompt_len = inputs.input_ids.shape[1]
+
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=180,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        reply = reply.lstrip("-•* ").strip().strip('"').strip("'").strip()
+        if not reply:
+            return None
+        if len(reply) > 600:
+            reply = reply[:600].rsplit(".", 1)[0] + "."
+        return reply
+    except Exception:
+        logger.exception("qwen: doc merge failed")
+        return None
+
+
+def _llm_doc_topic(text: str, filename: str) -> Optional[str]:
+    """Ask the LLM for a 3–8 word topic line when extraction failed."""
+    try:
+        import torch
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        head = text[:2000]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write concise, factual document titles. "
+                    "You never invent details."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Give a 3–8 word title that captures what this "
+                    "document is about. Use noun phrases (no verbs, no "
+                    "punctuation at the end). Output only the title.\n\n"
+                    f"Filename: {filename}\n\nContent:\n{head}"
+                ),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=3000
+        ).to(device)
+        prompt_len = inputs.input_ids.shape[1]
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=24,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        reply = reply.split("\n")[0].strip().strip('"').strip("'").strip()
+        if 3 <= len(reply) <= 80:
+            return reply
+        return None
+    except Exception:
+        logger.exception("qwen: doc topic failed")
+        return None
+
+
+def _llm_keypoints(text: str, filename: str) -> list[str]:
+    """Ask the LLM for 3 short key points when the heuristic returned
+    nothing (i.e. the doc has no markdown list syntax)."""
+    try:
+        import torch
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        head = text[:6000]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You extract concrete key points from documents. "
+                    "You never invent details."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "List up to 3 KEY POINTS from this document, one per "
+                    "line. Each point: a short clause (under 12 words) "
+                    "covering a specific fact, decision, or section. "
+                    "Output ONLY the lines, no numbering, no bullets, "
+                    "no preamble.\n\n"
+                    f"Filename: {filename}\n\nContent:\n{head}"
+                ),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=3500
+        ).to(device)
+        prompt_len = inputs.input_ids.shape[1]
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=120,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        points = []
+        for line in reply.splitlines():
+            cleaned = line.strip().lstrip("-•*").strip()
+            cleaned = re.sub(r"^\d+[\.\)]\s*", "", cleaned)
+            if 4 <= len(cleaned) <= 160:
+                points.append(cleaned)
+            if len(points) >= 3:
+                break
+        return points
+    except Exception:
+        logger.exception("qwen: keypoints failed")
+        return []
 
 
 def _bart_summary(text: str) -> Optional[str]:

@@ -1,0 +1,410 @@
+/* ============================================================
+   Refinements pass v3
+   - Brand "neuthek" text contrast in dark mode
+   - Auth tabs pill alignment + width
+   - Password floating label fix
+   - Found-1-more-face card text contrast
+   - Map: realistic land shapes + pinch/pan zoom
+   - Settings: Apple-style redesign
+   ============================================================ */
+
+/* ---------- BRAND TEXT FIX ---------- */
+/* The "neuthek" wordmark next to the logo was using --ink which is near-black
+   in light mode AND light-grey-on-dark in dark mode. In dark mode it was
+   rendering too dim. Force a high-contrast token. */
+html[data-theme="dark"] .sidebar__brand,
+html[data-theme="dark"] .auth__brand-mark {
+  color: rgba(255, 255, 255, 0.96);
+}
+html:not([data-theme="dark"]) .sidebar__brand,
+html:not([data-theme="dark"]) .auth__brand-mark {
+  color: #0a0a0a;
+}
+
+/* ---------- AUTH TABS PILL ---------- */
+/* The previous fix forced align-self left but the pill markup measures relative
+   to .auth__tabs. Restore center alignment, give the container a fixed width
+   so the pill (50% width) sits correctly under each tab.                    */
+.auth__tabs {
+  align-self: center !important;
+  margin: 0 auto 22px !important;
+  display: inline-flex !important;
+  gap: 0 !important;
+  padding: 4px !important;
+  background: var(--surface-3) !important;
+  border-radius: 999px !important;
+  position: relative !important;
+}
+.auth__tab {
+  position: relative; z-index: 2;
+  padding: 8px 18px;
+  font-size: 13.5px; font-weight: 500;
+  color: var(--ink-3);
+  background: transparent; border: 0;
+  cursor: pointer; border-radius: 999px;
+  transition: color 200ms var(--ease);
+  min-width: 120px;
+  text-align: center;
+}
+.auth__tab[data-active="true"] { color: var(--ink); }
+.auth__tabs-pill {
+  position: absolute;
+  top: 4px; bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  background: var(--surface);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  transition: transform 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  z-index: 1;
+}
+.auth__tabs-pill[data-mode="signin"] { transform: translateX(100%); }
+html[data-theme="dark"] .auth__tabs-pill {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+}
+
+/* ---------- PASSWORD FLOATING LABEL ---------- */
+/* The floating label needs to show "Password" until focused/filled. Provide
+   a sensible default state and a fallback :placeholder-shown selector. */
+.field__label-floating {
+  position: absolute;
+  top: 50%; left: 16px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-size: 14px; color: var(--ink-3);
+  transition: top 180ms var(--ease), font-size 180ms var(--ease), color 180ms var(--ease);
+  background: transparent;
+  padding: 0 4px;
+}
+.field__label-floating--up {
+  top: 0; font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+.input--floating {
+  height: 56px;
+  padding: 18px 14px 8px !important;
+}
+.field { position: relative; }
+.field__label-floating::after {
+  content: " ";
+}
+
+/* ---------- FOUND 1 MORE FACE — readable text ---------- */
+/* The success card was using a light green background with white-on-green
+   text that became unreadable. Force contrast. */
+.preview__retry--ok {
+  background: color-mix(in oklch, #10b981 14%, var(--surface)) !important;
+  border: 1px solid color-mix(in oklch, #10b981 30%, var(--line)) !important;
+}
+.preview__retry--ok .preview__retry-title,
+.preview__retry--ok .preview__retry-sub {
+  color: var(--ink) !important;
+}
+.preview__retry--ok .preview__retry-icon {
+  background: #10b981 !important;
+  color: white !important;
+}
+html[data-theme="dark"] .preview__retry--ok {
+  background: color-mix(in oklch, #10b981 22%, transparent) !important;
+}
+html[data-theme="dark"] .preview__retry--ok .preview__retry-title { color: #d4f5e2 !important; }
+html[data-theme="dark"] .preview__retry--ok .preview__retry-sub   { color: rgba(212, 245, 226, 0.78) !important; }
+
+/* ---------- MAP UPGRADE ---------- */
+/* Realistic land shapes + pinch/pan zoom interactions */
+.map3-shell {
+  position: relative;
+  flex: 1;
+  display: flex; flex-direction: column;
+  background: var(--surface-2);
+  margin: 0 8px 8px;
+  border-radius: var(--radius-4);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  min-height: 540px;
+}
+.map3-canvas {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.map3-canvas[data-panning="true"] { cursor: grabbing; }
+.map3-stage {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.map3-svg { width: 100%; height: 100%; display: block; }
+.map3-pins {
+  position: absolute; inset: 0; pointer-events: none;
+}
+.map3-pin {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  background: transparent; border: 0; padding: 0; cursor: pointer;
+  pointer-events: auto;
+  z-index: 5;
+  transition: transform 220ms var(--ease);
+}
+.map3-pin:hover, .map3-pin[data-active="true"] {
+  transform: translate(-50%, -106%) scale(1.1);
+  z-index: 10;
+}
+.map3-pin__bubble {
+  display: block;
+  width: 38px; height: 38px;
+  border-radius: 999px;
+  background-size: cover; background-position: center;
+  background-color: var(--ink);
+  border: 3px solid var(--surface);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.22);
+}
+.map3-pin__bubble--cluster {
+  background: var(--ink); color: var(--surface);
+  display: grid; place-items: center;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px; font-weight: 600;
+}
+.map3-pin__shadow {
+  display: block;
+  width: 10px; height: 3px; border-radius: 50%;
+  background: rgba(0,0,0,0.34);
+  margin: 4px auto 0;
+  filter: blur(2px);
+}
+
+.map3-controls {
+  position: absolute; top: 14px; right: 14px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px; padding: 4px;
+  box-shadow: var(--shadow-1);
+  z-index: 6;
+}
+.map3-controls .btn-icon { width: 32px; height: 32px; border-radius: 8px; }
+.map3-zoom-readout {
+  position: absolute;
+  bottom: 14px; right: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font: 11px "Geist Mono", ui-monospace, monospace;
+  color: var(--ink-3);
+  z-index: 6;
+}
+.map3-hint {
+  position: absolute;
+  bottom: 14px; left: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 11.5px; color: var(--ink-3);
+  display: flex; align-items: center; gap: 10px;
+  box-shadow: var(--shadow-1);
+  z-index: 6;
+  max-width: 360px;
+}
+.map3-hint kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: 10px "Geist Mono", ui-monospace, monospace;
+  color: var(--ink-2);
+}
+.map3-pop {
+  position: absolute; top: 14px; left: 14px;
+  width: 360px; max-width: calc(100% - 80px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  padding: 14px;
+  box-shadow: var(--shadow-2);
+  z-index: 7;
+  animation: pop 240ms var(--ease);
+}
+.map3-pop__head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;
+  margin-bottom: 10px;
+}
+.map3-pop__title { font-size: 14.5px; font-weight: 600; letter-spacing: -0.012em; }
+.map3-pop__meta { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.map3-pop__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.map3-pop__tile {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background-size: cover; background-position: center;
+  background-color: var(--surface-3);
+  border: 0; padding: 0; cursor: pointer;
+  overflow: hidden;
+  transition: transform 200ms var(--ease);
+}
+.map3-pop__tile:hover { transform: scale(1.04); }
+
+/* ---------- SETTINGS — Apple-style redesign ---------- */
+.appset {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  height: 560px;
+  margin: -18px -26px -22px;
+}
+.appset__sidebar {
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+  padding: 14px 8px;
+  overflow-y: auto;
+}
+html[data-theme="dark"] .appset__sidebar {
+  background: rgba(0, 0, 0, 0.18);
+}
+.appset__navitem {
+  width: 100%;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: transparent; border: 0;
+  font: inherit; font-size: 13.5px; color: var(--ink-2);
+  cursor: pointer; text-align: left;
+  transition: all 140ms var(--ease);
+  margin-bottom: 1px;
+}
+.appset__navitem:hover { background: var(--surface-3); }
+.appset__navitem[data-active="true"] {
+  background: var(--ink); color: var(--surface);
+}
+.appset__navitem-icon {
+  width: 22px; height: 22px;
+  display: grid; place-items: center;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.appset__navitem[data-active="true"] .appset__navitem-icon { color: var(--surface); }
+
+.appset__main {
+  padding: 24px 28px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+.appset__main-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 18px;
+}
+.appset__main-head h3 {
+  margin: 0;
+  font-size: 18px; font-weight: 600;
+  letter-spacing: -0.018em;
+}
+.appset__main-head p {
+  margin: 4px 0 0;
+  font-size: 12.5px; color: var(--ink-3);
+}
+
+/* Apple-style grouped list */
+.applist {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+html[data-theme="dark"] .applist {
+  background: rgba(255, 255, 255, 0.04);
+}
+.applist__row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line-2);
+}
+.applist__row:first-child { border-top: none; }
+.applist__row-icon {
+  width: 28px; height: 28px;
+  border-radius: 7px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  display: grid; place-items: center;
+  flex-shrink: 0;
+}
+.applist__row-icon[data-tone="blue"]   { background: #3478f6; color: white; }
+.applist__row-icon[data-tone="green"]  { background: #34c759; color: white; }
+.applist__row-icon[data-tone="orange"] { background: #ff9500; color: white; }
+.applist__row-icon[data-tone="red"]    { background: #ff3b30; color: white; }
+.applist__row-icon[data-tone="purple"] { background: #af52de; color: white; }
+.applist__row-icon[data-tone="indigo"] { background: #5856d6; color: white; }
+.applist__row-icon[data-tone="teal"]   { background: #5ac8fa; color: white; }
+
+.applist__row-body { flex: 1; min-width: 0; }
+.applist__row-title {
+  font-size: 13.5px; font-weight: 500; color: var(--ink);
+  letter-spacing: -0.005em;
+}
+.applist__row-desc {
+  font-size: 11.5px; color: var(--ink-3);
+  margin-top: 1px;
+  line-height: 1.4;
+}
+.applist__row-tail {
+  display: flex; align-items: center; gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px; color: var(--ink-3);
+}
+.applist__row-chevron {
+  color: var(--ink-3);
+  width: 16px; height: 16px;
+  display: grid; place-items: center;
+}
+
+/* Group label, à la macOS / iOS */
+.applist__label {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 22px 6px 8px;
+  font-weight: 500;
+}
+.applist__label:first-child { margin-top: 0; }
+
+/* Profile hero */
+.appset__profile {
+  display: flex; align-items: center; gap: 16px;
+  padding: 18px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  margin-bottom: 22px;
+}
+html[data-theme="dark"] .appset__profile { background: rgba(255, 255, 255, 0.04); }
+.appset__profile-avatar {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: var(--ink); color: var(--surface);
+  display: grid; place-items: center;
+  font-size: 22px; font-weight: 600;
+  flex-shrink: 0;
+}
+.appset__profile-body { flex: 1; min-width: 0; }
+.appset__profile-name {
+  font-size: 17px; font-weight: 600; letter-spacing: -0.018em;
+}
+.appset__profile-email {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px; color: var(--ink-3);
+  margin-top: 2px;
+}
+.appset__profile-plan {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  background: var(--surface-3);
+  border-radius: 6px;
+  font-size: 10.5px; color: var(--ink-2);
+  letter-spacing: 0.04em;
+}

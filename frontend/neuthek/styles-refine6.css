@@ -1,0 +1,164 @@
+/* ============================================================
+   Refinements pass v7 — definitive
+   ============================================================ */
+
+/* ---------- PASSWORD: text TRUE-CENTER without hacks ----------
+   Reset everything and use simple flex-center. Padding handles top label space when filled. */
+.input--floating {
+  height: 56px !important;
+  padding: 0 16px !important;
+  line-height: normal !important;
+  display: flex !important;
+  align-items: center !important;
+  font-size: 15px;
+}
+.input--floating::placeholder { color: transparent !important; }
+
+/* When filled/focused, text shifts to bottom 2/3 so label can ride at top */
+.input--floating:focus,
+.field:has(.field__label-floating--up) .input--floating {
+  padding-top: 18px !important;
+  padding-bottom: 0 !important;
+  align-items: flex-end !important;
+}
+.input--floating:focus { outline: none; }
+
+/* Floating label sits in true center when resting */
+.field__label-floating {
+  position: absolute;
+  top: 50% !important;
+  left: 16px !important;
+  transform: translateY(-50%) !important;
+  pointer-events: none;
+  font-size: 15px !important;
+  color: var(--ink-3);
+  font-weight: 400;
+  background: transparent;
+  padding: 0; margin: 0;
+  line-height: 1;
+  transition: top 220ms cubic-bezier(0.32,0.72,0,1),
+              transform 220ms cubic-bezier(0.32,0.72,0,1),
+              font-size 220ms cubic-bezier(0.32,0.72,0,1),
+              color 200ms ease;
+  z-index: 2;
+}
+.field__label-floating--up,
+.input--floating:focus + .field__label-floating {
+  top: 11px !important;
+  transform: translateY(0) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.02em;
+}
+
+/* ---------- SETTINGS — sign-out fix + cleaner scrollbar ---------- */
+/* Constrain sign-out hover to the sidebar, no bleed */
+.appset__sidebar { padding: 22px 12px !important; overflow-x: hidden; position: relative; }
+.appset__navitem--danger {
+  margin: 8px 0 0 !important;
+  padding: 12px 14px !important;
+  border-radius: 10px !important;
+  border-top: 1px solid var(--line-2);
+  width: calc(100% - 0px);
+  color: var(--ink-2) !important;
+  background: transparent !important;
+  font-size: 13.5px !important;
+  opacity: 0.75;
+  display: flex; align-items: center; gap: 10px;
+  transition: opacity 160ms ease, background 160ms ease, color 160ms ease;
+}
+.appset__navitem--danger:hover {
+  background: var(--surface-2) !important;
+  color: var(--ink) !important;
+  opacity: 1;
+}
+.appset__navitem--danger .appset__navitem-icon { color: var(--ink-3) !important; }
+html[data-theme="dark"] .appset__navitem--danger { color: rgba(255,255,255,0.5) !important; }
+html[data-theme="dark"] .appset__navitem--danger:hover { background: rgba(255,255,255,0.06) !important; color: var(--ink) !important; }
+
+/* Settings: hide outer modal overflow scrollbar; only inner panes scroll */
+.appset { overflow: hidden !important; border-radius: inherit; }
+.appset__sidebar, .appset__main { scrollbar-gutter: stable; }
+.appset__sidebar::-webkit-scrollbar,
+.appset__main::-webkit-scrollbar { width: 4px !important; }
+.appset__sidebar::-webkit-scrollbar-thumb,
+.appset__main::-webkit-scrollbar-thumb {
+  background: rgba(127,127,127,0.2);
+  border-radius: 999px;
+}
+.appset__sidebar::-webkit-scrollbar-thumb:hover,
+.appset__main::-webkit-scrollbar-thumb:hover { background: rgba(127,127,127,0.4); }
+
+/* Hide modal-host overflow scroll for settings frame */
+.modal:has(.appset) { overflow: hidden !important; }
+.modal:has(.appset)::-webkit-scrollbar { display: none; }
+
+/* ---------- MAP POPUP — show actual image, fix close ---------- */
+.map3-pop {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.25), 0 2px 8px rgba(0,0,0,0.15);
+  border-radius: 14px;
+  padding: 14px;
+}
+.map3-pop__head .btn-icon {
+  z-index: 5; position: relative;
+  pointer-events: auto !important;
+}
+.map3-pop__tile {
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-color: var(--surface-3);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  cursor: pointer;
+  display: block;
+  overflow: hidden;
+}
+
+/* ---------- PREVIEW — backdrop blur on background ---------- */
+.app[data-preview="open"] main.gallery,
+.app[data-preview="open"] .topbar,
+.app[data-preview="open"] .subbar {
+  filter: blur(0.5px) brightness(0.85);
+  transition: filter 280ms ease;
+}
+/* Add scrim layer behind preview panel */
+.app[data-preview="open"]::before {
+  content: "";
+  position: fixed;
+  inset: 0 472px 0 0;
+  background: rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 40;
+  pointer-events: none;
+  animation: scrimIn 280ms ease both;
+}
+@keyframes scrimIn {
+  from { opacity: 0; backdrop-filter: blur(0); }
+  to   { opacity: 1; }
+}
+@media (max-width: 1100px) {
+  .app[data-preview="open"]::before { inset: 0 32px 0 0; }
+}
+/* Preview panel above scrim */
+.preview { z-index: 41; }
+
+/* Map popup must stay sharp above the preview scrim */
+.app[data-preview="open"] .map4-pop {
+  filter: none !important;
+  z-index: 50 !important;
+}
+.app[data-preview="open"] .map4-shell {
+  isolation: isolate;
+  z-index: 0;
+  position: relative;
+}
+.app[data-preview="open"] .map4-shell .leaflet-marker-pane,
+.app[data-preview="open"] .map4-shell .leaflet-tooltip-pane {
+  z-index: 50 !important;
+}
+
+/* ---------- MAP popup also gets blurred backdrop look — keep readable ---------- */
+.map3-pop { backdrop-filter: blur(8px); background: color-mix(in oklch, var(--surface) 88%, transparent); }

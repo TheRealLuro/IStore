@@ -344,6 +344,76 @@ async def list_image_geo(
     }
 
 
+@router.post("/geo/backfill")
+async def backfill_image_geo(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Re-extract EXIF GPS from this user's existing originals and
+    populate `image_geo`. Uploads that happened *before* the user
+    granted `gps_retention` consent leave the originals in MinIO but
+    skip the geo row — the comment in `image.py:store_upload`
+    promises a backfill path; this is it.
+
+    No-op when the consent scope is not active. Returns counts so the
+    UI can toast "wired N points."
+    """
+    from backend.image import _exif_gps  # local import — same module
+
+    if not await is_scope_active(session, user.id, "gps_retention"):
+        raise HTTPException(
+            status_code=403,
+            detail="GPS retention consent is not active. Grant it in Settings → Privacy first.",
+        )
+
+    # Walk this user's images that don't already have a geo row. Only
+    # touch images with EXIF-bearing originals (JPEG/HEIC/TIFF); skip
+    # WebP/PNG/etc. since they don't carry EXIF GPS in practice.
+    images = (
+        await session.execute(
+            select(Image)
+            .outerjoin(ImageGeo, ImageGeo.image_id == Image.id)
+            .where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+                ImageGeo.image_id.is_(None),
+                Image.mime_type_original.in_(["image/jpeg", "image/heic", "image/heif", "image/tiff"]),
+            )
+            .limit(2000)
+        )
+    ).scalars().all()
+
+    inserted = 0
+    examined = 0
+    for image in images:
+        examined += 1
+        try:
+            raw, _mime = await fetch_original(image)
+        except Exception:
+            continue
+        if not raw:
+            continue
+        gps = _exif_gps(raw)
+        if gps is None:
+            continue
+        session.add(
+            ImageGeo(
+                image_id=image.id,
+                user_id=user.id,
+                lat=gps["lat"],
+                lng=gps["lng"],
+                taken_at=gps["taken_at"],
+                captured_with=gps["captured_with"],
+            )
+        )
+        inserted += 1
+
+    if inserted:
+        await session.commit()
+
+    return {"examined": examined, "inserted": inserted}
+
+
 @router.get("/{image_id}", response_model=ImageRead)
 async def get_image(
     image_id: UUID,

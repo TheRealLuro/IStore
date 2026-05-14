@@ -1,0 +1,359 @@
+/* ============================================================
+   Settings refinement v2 — cleaner, calmer, more focused
+   - Larger, breathable layout
+   - Quieter sidebar with subtle active state
+   - Hero card consolidated with plan + avatar + actions
+   - Consistent group-list with hairline dividers, hover lift
+   - Better section headers and helper copy
+   ============================================================ */
+
+.appset {
+  grid-template-columns: 240px 1fr !important;
+  min-height: 600px;
+  height: min(76vh, 720px);
+  overflow: hidden;
+  max-width: 100%;
+}
+.appset, .appset * { box-sizing: border-box; }
+.modal:has(.appset) { overflow: hidden !important; }
+.modal__body:has(.appset) { overflow: hidden !important; }
+.appset__main { overflow-x: hidden !important; min-width: 0; max-width: 100%; }
+.appset__sidebar { overflow-x: hidden !important; min-width: 0; }
+.appset .applist, .appset .applist * { max-width: 100%; }
+.appset .applist__row-desc { overflow-wrap: anywhere; }
+
+/* Pretty scrollbars (webkit + firefox) */
+.appset__main, .appset__sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.appset__main::-webkit-scrollbar,
+.appset__sidebar::-webkit-scrollbar { width: 8px; height: 8px; }
+.appset__main::-webkit-scrollbar-thumb,
+.appset__sidebar::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.appset__main::-webkit-scrollbar-thumb:hover,
+.appset__sidebar::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+.appset__main::-webkit-scrollbar-track,
+.appset__sidebar::-webkit-scrollbar-track { background: transparent; }
+
+/* Sidebar — softer, more spaced */
+.appset__sidebar {
+  padding: 22px 18px !important;
+  background: var(--surface-2) !important;
+  border-right: 1px solid var(--line) !important;
+  display: flex !important;
+  flex-direction: column;
+}
+html[data-theme="dark"] .appset__sidebar {
+  background: rgba(255, 255, 255, 0.018) !important;
+}
+
+.appset__sidebar::before {
+  content: "Settings";
+  display: block;
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 500;
+  padding: 4px 14px 16px;
+}
+
+.appset__navitem {
+  padding: 9px 12px !important;
+  border-radius: 9px !important;
+  font-size: 13.5px !important;
+  gap: 12px !important;
+  margin-bottom: 2px;
+  color: var(--ink-2);
+  transition: background 140ms ease, color 140ms ease;
+}
+.appset__navitem:hover { background: var(--surface-3) !important; color: var(--ink); }
+.appset__navitem[data-active="true"] {
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 0 0 1px var(--line-2);
+}
+html[data-theme="dark"] .appset__navitem[data-active="true"] {
+  background: rgba(255,255,255,0.08) !important;
+  box-shadow: none;
+}
+
+.appset__navitem-icon {
+  width: 22px !important; height: 22px !important;
+  border-radius: 6px;
+  color: var(--ink-3) !important;
+}
+.appset__navitem[data-active="true"] .appset__navitem-icon { color: var(--ink) !important; }
+
+/* Main pane — more generous padding */
+.appset__main {
+  padding: 36px 44px !important;
+}
+.appset__main-head {
+  margin-bottom: 28px !important;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line-2);
+}
+.appset__main-head h3 {
+  font-size: 24px !important;
+  letter-spacing: -0.022em !important;
+  font-weight: 600 !important;
+}
+.appset__main-head p {
+  font-size: 13.5px !important;
+  margin-top: 6px !important;
+  color: var(--ink-3);
+  letter-spacing: -0.005em;
+}
+
+/* ---------- Profile hero card v2 ----------
+   Consolidated card with avatar / name / plan badge / Manage button. */
+.appset__profile {
+  margin: 0 0 32px !important;
+  padding: 20px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--line-2) !important;
+  border-radius: 14px !important;
+  border-bottom: 1px solid var(--line-2) !important;
+  gap: 18px !important;
+}
+html[data-theme="dark"] .appset__profile {
+  background: rgba(255,255,255,0.025) !important;
+}
+.appset__profile-avatar {
+  width: 56px !important; height: 56px !important;
+  font-size: 18px !important;
+  background: linear-gradient(135deg, var(--ink) 0%, color-mix(in oklch, var(--ink) 70%, var(--brand, #3478f6)) 100%);
+}
+.appset__profile-name {
+  font-size: 16px !important;
+  letter-spacing: -0.012em !important;
+}
+.appset__profile-email { font-size: 12.5px !important; }
+.appset__profile-plan {
+  font-size: 9.5px !important;
+  padding: 3px 8px !important;
+  letter-spacing: 0.06em !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+}
+html[data-theme="dark"] .appset__profile-plan {
+  background: rgba(255,255,255,0.05) !important;
+  border-color: rgba(255,255,255,0.08);
+}
+
+/* ---------- Group list v2 — hairline rows ---------- */
+.applist {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-2) !important;
+  border-radius: 12px !important;
+  margin-bottom: 4px;
+}
+html[data-theme="dark"] .applist {
+  background: rgba(255,255,255,0.02) !important;
+  border-color: rgba(255,255,255,0.06) !important;
+}
+.applist__row {
+  padding: 13px 16px !important;
+  gap: 14px;
+  border-top-color: var(--line-2) !important;
+}
+html[data-theme="dark"] .applist__row { border-top-color: rgba(255,255,255,0.05) !important; }
+.applist__row:hover {
+  background: color-mix(in oklch, var(--surface-2) 60%, transparent) !important;
+}
+.applist__row-icon {
+  width: 30px !important; height: 30px !important;
+  border-radius: 8px !important;
+}
+.applist__row-title {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+}
+.applist__row-desc {
+  font-size: 12px !important;
+  margin-top: 3px !important;
+  color: var(--ink-3);
+}
+.applist__row-tail {
+  font-size: 12px !important;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+.applist__row-tail .mono { color: var(--ink-3); }
+
+/* Group labels — clearer rhythm */
+.applist__label {
+  font-size: 10.5px !important;
+  letter-spacing: 0.07em !important;
+  margin: 28px 4px 10px !important;
+  color: var(--ink-3);
+  font-weight: 600 !important;
+}
+.applist__label:first-of-type { margin-top: 8px !important; }
+
+/* Sign out at bottom — red on hover */
+.appset__sidebar-spacer { flex: 1; }
+.appset__navitem--danger {
+  margin-top: auto;
+  padding-top: 11px !important;
+  padding-bottom: 11px !important;
+  border-radius: 9px !important;
+  margin-bottom: 16px !important;
+  margin-top: 12px !important;
+  font-weight: 400 !important;
+  color: var(--ink-2) !important;
+  position: relative;
+  border-top: 0 !important;
+}
+.appset__navitem--danger:hover {
+  background: color-mix(in oklch, #ff3b30 12%, transparent) !important;
+  color: #cc2f26 !important;
+}
+.appset__navitem--danger:hover .appset__navitem-icon { color: #cc2f26 !important; }
+html[data-theme="dark"] .appset__navitem--danger:hover {
+  background: rgba(255, 59, 48, 0.14) !important;
+  color: #ff7a72 !important;
+}
+html[data-theme="dark"] .appset__navitem--danger:hover .appset__navitem-icon { color: #ff7a72 !important; }
+.appset__navitem--danger::before { display: none !important; }
+
+/* Per-tab tone accents on left edge of active nav */
+.appset__navitem[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: -18px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 0 2px 2px 0;
+  background: var(--ink);
+}
+.appset__navitem { position: relative; }
+
+/* Ensure avatar + name baseline pairing reads cleanly */
+.appset__profile-body { padding-right: 8px; }
+
+/* "Manage" / "Edit" trailing button styling consistency */
+.appset__profile .btn--secondary { white-space: nowrap; }
+
+/* Inline forms / matrix for tab content */
+.sec-form {
+  padding: 14px 16px 18px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line-2);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sec-form label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 11.5px; color: var(--ink-3);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+.sec-form .input { font-size: 13px; padding: 8px 10px; }
+
+.sess-row { position: relative; }
+.sess-row__cur {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  background: color-mix(in oklch, #34c759 18%, transparent);
+  color: #2da34a;
+  padding: 2px 6px; border-radius: 4px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+html[data-theme="dark"] .sess-row__cur { background: rgba(52,199,89,0.18); color: #6cd685; }
+.sess-row__revoke { color: #cc2f26 !important; }
+html[data-theme="dark"] .sess-row__revoke { color: #ff7a72 !important; }
+
+.notif-matrix {
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  overflow: hidden;
+}
+html[data-theme="dark"] .notif-matrix { background: rgba(255,255,255,0.02); border-color: rgba(255,255,255,0.06); }
+.notif-matrix__head, .notif-matrix__row {
+  display: grid;
+  grid-template-columns: 1fr 64px 64px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+.notif-matrix__head {
+  font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600;
+  border-bottom: 1px solid var(--line-2);
+  padding: 10px 16px;
+}
+.notif-matrix__head > div:not(:first-child) { text-align: center; }
+.notif-matrix__row + .notif-matrix__row { border-top: 1px solid var(--line-2); }
+html[data-theme="dark"] .notif-matrix__row + .notif-matrix__row { border-top-color: rgba(255,255,255,0.05); }
+.notif-matrix__row > div:not(:first-child) { display: grid; place-items: center; }
+.notif-matrix__title { font-size: 13.5px; font-weight: 500; color: var(--ink); }
+.notif-matrix__desc { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+
+/* Key-value rows inside expansion panels */
+.kv-row {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px;
+  padding: 6px 0;
+}
+.kv-row + .kv-row { border-top: 1px solid var(--line-2); }
+.kv-row > span { color: var(--ink-3); }
+.kv-row > strong { color: var(--ink); font-weight: 500; }
+
+/* Plan picker grid */
+.plan-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+}
+.plan-card {
+  text-align: left;
+  background: var(--surface); border: 1.5px solid var(--line-2);
+  border-radius: 10px; padding: 12px;
+  cursor: pointer; transition: all 0.12s;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.plan-card:hover { border-color: var(--ink-3); }
+.plan-card[data-active="true"] { border-color: var(--accent, #0a84ff); background: color-mix(in oklch, var(--accent, #0a84ff) 6%, var(--surface)); }
+.plan-card__name { font-size: 14px; font-weight: 600; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+.plan-card__cur { font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; background: rgba(52,199,89,0.15); color: #2da34a; padding: 2px 5px; border-radius: 4px; font-weight: 600; }
+html[data-theme="dark"] .plan-card__cur { background: rgba(52,199,89,0.18); color: #6cd685; }
+.plan-card__size { font-size: 12.5px; color: var(--ink-3); }
+.plan-card__price { font-size: 13px; font-weight: 600; color: var(--ink); margin-top: 4px; }
+
+/* Invoice rows */
+.inv-row {
+  display: grid; grid-template-columns: 110px 1fr 80px auto;
+  align-items: center; gap: 12px;
+  padding: 10px 16px;
+  font-size: 13px;
+}
+.inv-row__date { color: var(--ink); font-weight: 500; }
+.inv-row__plan { color: var(--ink-3); font-size: 12.5px; }
+.inv-row__amt { color: var(--ink); text-align: right; }
+
+/* Storage breakdown */
+.storage-bar {
+  display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--line-2);
+}
+.storage-bar__seg { height: 100%; }
+.storage-legend {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 12px;
+  font-size: 13px;
+}
+.storage-legend__row { display: flex; align-items: center; gap: 8px; color: var(--ink); }
+.storage-legend__dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+
+/* Expanded chevron rotation hook */
+.applist__row[data-expanded="true"] { background: color-mix(in oklch, var(--ink) 3%, transparent); }
+html[data-theme="dark"] .applist__row[data-expanded="true"] { background: rgba(255,255,255,0.03); }

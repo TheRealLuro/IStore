@@ -50,8 +50,18 @@ export type ConsentScope =
   | "semantic_search"
   | "bandit_compression_telemetry";
 
+export interface ScopeDetail {
+  state: ConsentState;
+  granted_at: string | null;
+  expires_at: string | null;
+  policy_version: string | null;
+}
+
 export const getConsentScopes = () =>
-  api.get<{ states: Record<ConsentScope, ConsentState> }>("/consent/scopes");
+  api.get<{
+    states: Record<ConsentScope, ConsentState>;
+    details: Record<ConsentScope, ScopeDetail>;
+  }>("/consent/scopes");
 
 export const grantScope = (scope: ConsentScope) =>
   api.post<ConsentStatus>(`/consent/${scope}/grant`);

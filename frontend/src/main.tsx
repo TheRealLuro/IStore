@@ -2,8 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "react-hot-toast";
-import App from "./App";
-import "./index.css";
+import { App } from "../neuthek/src/app.jsx";
+import "../neuthek/styles/index.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,11 +22,14 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <Toaster
         position="bottom-right"
         toastOptions={{
-          className:
-            "!bg-card !text-fg !border !border-border !rounded-2xl !shadow-card",
           style: {
+            background: "var(--surface, #fff)",
+            color: "var(--ink, #111)",
+            border: "1px solid var(--line, rgba(0,0,0,0.08))",
+            borderRadius: 12,
             padding: "10px 14px",
-            fontSize: "13px",
+            fontSize: 13,
+            fontFamily: "Geist, system-ui, sans-serif",
           },
         }}
       />

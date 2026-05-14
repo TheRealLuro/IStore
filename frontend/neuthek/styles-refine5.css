@@ -1,0 +1,144 @@
+/* ============================================================
+   Refinements pass v6 — definitive fixes
+   ============================================================ */
+
+/* ---------- PASSWORD PLACEHOLDER — true vertical center ----------
+   Reset all earlier conflicting rules. Approach:
+   - Input: 56px tall, NO vertical padding, line-height matches height,
+     so text/placeholder is centered. When focused-or-filled, push text
+     down 8px and shrink line-height so the floating label can sit on top.
+*/
+.input--floating {
+  height: 56px !important;
+  padding: 0 16px !important;
+  line-height: 56px !important;
+  display: block !important;
+  font-size: 15px;
+  vertical-align: middle;
+}
+.input--floating::placeholder { color: transparent !important; }
+
+/* Focused or filled — sink text into the lower half */
+.input--floating:focus,
+.field:has(.field__label-floating--up) .input--floating {
+  padding-top: 18px !important;
+  padding-bottom: 4px !important;
+  line-height: 1.2 !important;
+}
+
+/* Reset the v5 rule that broke alignment */
+.field:has(.field__label-floating--up) .input--floating { align-items: unset !important; }
+
+/* Floating label */
+.field__label-floating {
+  position: absolute;
+  top: 50% !important;
+  left: 16px !important;
+  transform: translateY(-50%) !important;
+  pointer-events: none;
+  font-size: 15px !important;
+  color: var(--ink-3);
+  font-weight: 400;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  line-height: 1;
+  transition:
+    top 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    font-size 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    color 200ms ease;
+  z-index: 2;
+}
+.field__label-floating--up,
+.input--floating:focus + .field__label-floating {
+  top: 11px !important;
+  transform: translateY(0) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.02em;
+  color: var(--ink-3) !important;
+}
+.input--floating:focus + .field__label-floating { color: var(--ink-2) !important; }
+
+
+/* ---------- TRUSTED DEVICES — proper laptop icon ----------
+   account.jsx uses icon="device" — now defined in icons.jsx with a
+   laptop glyph. Keep the indigo tone tile but no bigger. */
+
+
+/* ---------- SIGN OUT — quieter, less intrusive ----------
+   Remove red, place at sidebar bottom as a clean ghost button. */
+.appset__navitem--danger {
+  color: var(--ink-2) !important;
+  margin-top: 0;
+  border-top: 1px solid var(--line-2);
+  padding-top: 14px !important;
+  margin: 8px 4px 0 !important;
+  border-radius: 8px !important;
+  font-size: 13.5px !important;
+  opacity: 0.75;
+  transition: opacity 160ms ease, background 160ms ease;
+}
+.appset__navitem--danger:hover {
+  background: var(--surface-2) !important;
+  color: var(--ink) !important;
+  opacity: 1;
+}
+.appset__navitem--danger .appset__navitem-icon { color: var(--ink-3) !important; }
+.appset__navitem--danger:hover .appset__navitem-icon { color: var(--ink) !important; }
+html[data-theme="dark"] .appset__navitem--danger { color: rgba(255,255,255,0.55) !important; }
+html[data-theme="dark"] .appset__navitem--danger .appset__navitem-icon { color: rgba(255,255,255,0.45) !important; }
+html[data-theme="dark"] .appset__navitem--danger:hover { color: var(--ink) !important; }
+
+
+/* ---------- MAP — visual polish ---------- */
+
+/* Lakes — same color as ocean, no border */
+.map3-svg .map3-lake { fill: var(--surface-2); stroke: none; }
+html[data-theme="dark"] .map3-svg .map3-lake { fill: #0d1014; }
+
+/* City dots */
+.map3-svg .map3-city-dot {
+  fill: var(--ink-3);
+  opacity: 0.7;
+}
+.map3-svg .map3-city-label {
+  fill: var(--ink-2);
+  font-family: Geist, system-ui, sans-serif;
+  font-weight: 500;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--surface-2);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+html[data-theme="dark"] .map3-svg .map3-city-label {
+  stroke: #0d1014;
+  fill: rgba(255,255,255,0.65);
+}
+
+/* Refine ocean: subtle vertical gradient feel via lighter tint at lat = 0 */
+.map3-svg .map3-ocean { fill: var(--surface-2); }
+html[data-theme="dark"] .map3-svg .map3-ocean { fill: #0b0e12; }
+
+/* Better land contrast — slightly elevated */
+.map3-svg .map3-land {
+  fill: var(--surface);
+  stroke: var(--line);
+  stroke-width: 0.8;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 0 color-mix(in oklch, var(--ink) 4%, transparent));
+}
+html[data-theme="dark"] .map3-svg .map3-land {
+  fill: #1c2229;
+  stroke: #2d343c;
+}
+
+/* Graticule — fainter so dots/cities pop */
+.map3-svg .map3-grat {
+  stroke: var(--line-2);
+  stroke-width: 0.5;
+  fill: none;
+  opacity: 0.35;
+}
+html[data-theme="dark"] .map3-svg .map3-grat { stroke: #20262d; opacity: 0.5; }

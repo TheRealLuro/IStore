@@ -1,0 +1,157 @@
+/* ============================================================
+   Refinement pass v4 — final polish
+   - Password resting label: vertically centered properly
+   - Map: clean canvas/SVG sizing, more land detail handled in JS
+   - Preview: backdrop blur, working close button, image lightbox
+   - Settings: cleaner scrollbar, contained sign-out hover state
+   ============================================================ */
+
+/* ---------- FLOATING LABEL (final) — true vertical centering ----------
+   The previous reset used asymmetric padding (22 top / 10 bottom) which
+   pushed the geometric center down. Switch to a proper text-line layout:
+   the input itself is fixed-height with line-height matching it, so the
+   resting label visually centers without padding tricks. */
+.input--floating {
+  height: 64px !important;
+  padding: 0 16px !important;
+  font-size: 15px;
+  line-height: 64px;
+}
+.input--floating:focus,
+.input--floating:not(:placeholder-shown) {
+  padding: 26px 16px 8px !important;
+  line-height: 30px;
+}
+.field__label-floating {
+  position: absolute;
+  top: 0; left: 16px;
+  height: 64px;
+  display: flex; align-items: center;
+  pointer-events: none;
+  font-size: 15px;
+  color: var(--ink-3);
+  background: transparent;
+  padding: 0;
+  transform: none !important;
+  transition:
+    height 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    font-size 220ms cubic-bezier(0.32, 0.72, 0, 1),
+    color 200ms ease;
+  z-index: 2;
+}
+.field__label-floating--up,
+.input--floating:focus + .field__label-floating {
+  height: 22px;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  align-items: center;
+  padding-top: 4px;
+}
+.input--floating:focus + .field__label-floating { color: var(--ink-2); }
+
+/* Password field: input + eye toggle as siblings (no extra wrapping div).
+   Reserve right space for the eye button. */
+.field--pwd { position: relative; }
+.input--pwd { padding-right: 48px !important; }
+.field--pwd .auth__pwd-toggle {
+  position: absolute;
+  right: 12px; top: 12px;
+  transform: none;
+}
+
+/* ---------- PREVIEW PANEL — working close, image lightbox, backdrop ---------- */
+.preview-backdrop {
+  position: fixed; inset: 0;
+  background: color-mix(in oklab, var(--ink) 40%, transparent);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  z-index: 90;
+  animation: bd-fade 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+@keyframes bd-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.preview {
+  z-index: 100 !important;
+  pointer-events: auto;
+}
+.preview .btn-icon { pointer-events: auto; }
+
+/* When preview is open, don't shift gallery anymore — the backdrop
+   covers it. Lets the panel feel like a true overlay. */
+.app[data-preview="open"] .gallery,
+.app[data-preview="open"] .topbar,
+.app[data-preview="open"] .subbar { padding-right: 28px !important; }
+
+/* hero image is now click-to-zoom */
+.preview__hero { cursor: zoom-in; transition: filter 200ms; }
+.preview__hero:hover { filter: brightness(1.04); }
+
+/* Image lightbox */
+.lightbox {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.92);
+  z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  animation: bd-fade 200ms ease;
+  cursor: zoom-out;
+}
+.lightbox__img {
+  max-width: 92vw; max-height: 92vh;
+  border-radius: 8px;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+  animation: lb-pop 280ms cubic-bezier(0.32, 0.72, 0, 1.05);
+}
+@keyframes lb-pop {
+  from { transform: scale(0.94); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.lightbox__close {
+  position: absolute; top: 18px; right: 18px;
+  width: 36px; height: 36px;
+  border: none; border-radius: 50%;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  cursor: pointer;
+  display: grid; place-items: center;
+  transition: background 160ms;
+}
+.lightbox__close:hover { background: rgba(255,255,255,0.22); }
+
+/* ---------- SETTINGS — cleaner scrollbar, contained sign-out hover ---------- */
+.appset__main {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+.appset__main::-webkit-scrollbar { width: 8px; }
+.appset__main::-webkit-scrollbar-track { background: transparent; }
+.appset__main::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 4px;
+  border: 2px solid var(--surface);
+}
+.appset__main::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+
+.appset__sidebar {
+  scrollbar-width: none;
+}
+.appset__sidebar::-webkit-scrollbar { display: none; }
+
+/* Sign-out button: contained hover (no overflow), monochrome, subtle */
+.appset__navitem--danger {
+  margin: 4px 8px 8px !important;
+  width: calc(100% - 16px) !important;
+  border-radius: 8px;
+  color: var(--ink-2) !important;
+  opacity: 0.78;
+  transition: background 160ms, opacity 160ms, color 160ms;
+}
+.appset__navitem--danger:hover {
+  background: color-mix(in oklab, var(--danger) 10%, transparent) !important;
+  color: var(--danger) !important;
+  opacity: 1;
+}
+.appset__navitem--danger .appset__navitem-icon {
+  background: transparent !important;
+  color: inherit !important;
+}
