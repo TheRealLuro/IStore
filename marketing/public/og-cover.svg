@@ -11,18 +11,33 @@
   </defs>
   <rect width="1200" height="630" fill="url(#bg)"/>
 
-  <!-- Mark -->
-  <g transform="translate(80, 80)">
-    <rect width="80" height="80" rx="22" fill="#ffffff"/>
-    <circle cx="28" cy="28" r="14" fill="#0a0a0a"/>
-    <circle cx="58" cy="58" r="8" fill="#8a8a8a"/>
+  <!-- Constellation glyph (scaled 32 -> 100 via translate+scale) -->
+  <g transform="translate(80,80) scale(3.125)">
+    <rect x="0" y="0" width="32" height="32" rx="8" ry="8" fill="#ffffff"/>
+    <rect x="1.5" y="1.5" width="29" height="29" rx="6.5" ry="6.5"
+          fill="none" stroke="rgba(0,0,0,0.06)" stroke-width="0.7"/>
+    <g stroke="#0a0a0a" stroke-width="0.7" stroke-linecap="round" opacity="0.6">
+      <line x1="9"  y1="22" x2="11" y2="9" />
+      <line x1="11" y1="9"  x2="22" y2="22" />
+      <line x1="22" y1="22" x2="24" y2="10" />
+      <line x1="9"  y1="14" x2="17" y2="15" />
+      <line x1="17" y1="15" x2="24" y2="10" />
+    </g>
+    <g fill="#0a0a0a">
+      <circle cx="9"  cy="22" r="1.4" />
+      <circle cx="11" cy="9"  r="1.4" />
+      <circle cx="22" cy="22" r="1.4" />
+      <circle cx="9"  cy="14" r="1.0" />
+      <circle cx="17" cy="15" r="1.0" />
+      <circle cx="24" cy="10" r="2.3" />
+    </g>
   </g>
-  <text x="190" y="135" font-family="Geist, system-ui, sans-serif"
+
+  <text x="220" y="145" font-family="Geist, system-ui, sans-serif"
         font-weight="600" font-size="48" fill="#ffffff" letter-spacing="-1">
     neuthek
   </text>
 
-  <!-- Headline -->
   <text x="80" y="320" font-family="Geist, system-ui, sans-serif"
         font-weight="600" font-size="84" letter-spacing="-3"
         fill="url(#ink)">
@@ -34,20 +49,18 @@
     cloud storage solution.
   </text>
 
-  <!-- Sub -->
   <text x="80" y="500" font-family="Geist, system-ui, sans-serif"
         font-weight="400" font-size="28" fill="#b5b5b5">
-    Open source. Self-hostable. Semantic search.
+    AI-aware. Privacy-first. In active development.
   </text>
   <text x="80" y="540" font-family="Geist, system-ui, sans-serif"
         font-weight="400" font-size="28" fill="#b5b5b5">
-    Hosted version coming soon.
+    Join the waitlist — neuthek.com
   </text>
 
-  <!-- Footer dot -->
   <circle cx="1100" cy="555" r="8" fill="#f59e0b"/>
   <text x="1080" y="560" font-family="Geist Mono, monospace"
         font-size="18" fill="#b5b5b5" text-anchor="end">
-    neuthek.com
+    coming soon
   </text>
 </svg>

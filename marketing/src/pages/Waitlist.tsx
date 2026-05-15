@@ -1,28 +1,11 @@
 import { useState } from "react";
 import { postWaitlistSignup, type WaitlistUseCase } from "../api";
 
-/* The form below POSTs to the FastAPI backend's public
-   /waitlist/signup endpoint when a backend is reachable.
-
-   When the marketing site is deployed to Render without
-   VITE_API_BASE_URL pointing at a public backend (i.e. the
-   pre-launch state), the POST falls through to localStorage
-   so the visitor still gets confirmation and we don't lose
-   the signal. The next session will replay it once the real
-   endpoint is wired. */
-
-type Stored = { email: string; use: string; at: string };
-
-function saveLocal(entry: Stored) {
-  try {
-    const raw = localStorage.getItem("neuthek.waitlist") || "[]";
-    const list: Stored[] = JSON.parse(raw);
-    list.push(entry);
-    localStorage.setItem("neuthek.waitlist", JSON.stringify(list));
-  } catch {
-    /* ignore quota / private-mode failures */
-  }
-}
+/* The form below POSTs to the marketing-site's own /api/waitlist/signup
+   endpoint (served by ../server.mjs in the same Render Web Service as
+   this SPA). No dependency on the main neuthek backend — the marketing
+   surface is fully self-contained so it can run on Render while the
+   rest of the product is still in development. */
 
 export default function Waitlist() {
   const [email, setEmail] = useState("");
@@ -40,20 +23,18 @@ export default function Waitlist() {
 
     try {
       await postWaitlistSignup({ email: email.trim().toLowerCase(), use_case: use });
-      saveLocal({ email, use, at: new Date().toISOString() });
       setStatus("done");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
-      // Server unreachable (e.g. on static-hosted preview without a
-      // public backend yet): preserve the signal locally so the user
-      // still sees confirmation, but tell them honestly.
-      if (
-        msg === "offline" ||
+      const networkFailure =
         msg.startsWith("server-error") ||
-        msg === "TypeError" ||
-        (err as Error)?.name === "TypeError"
-      ) {
-        saveLocal({ email, use, at: new Date().toISOString() });
+        msg === "Failed to fetch" ||
+        (err as Error)?.name === "TypeError";
+
+      if (networkFailure) {
+        // Marketing site is up but the API isn't reachable — e.g. the
+        // Express server hasn't been deployed yet. Tell the visitor
+        // honestly that the signup didn't go through.
         setStatus("done-offline");
         return;
       }
@@ -93,28 +74,24 @@ export default function Waitlist() {
                 <h2>You're on the list.</h2>
                 <p style={{ marginTop: 16 }}>
                   We saved <code>{email}</code>. We'll email you when
-                  the hosted version opens for early users.
+                  the hosted version opens for early users and again
+                  at general availability.
                 </p>
                 <p style={{ marginTop: 12 }}>
-                  In the meantime, the source code is yours to run today.
+                  In the meantime, watch the roadmap for what's
+                  landing next.
                 </p>
               </div>
             )}
 
             {status === "done-offline" && (
               <div>
-                <h2>Saved locally.</h2>
+                <h2>Couldn't reach the server.</h2>
                 <p style={{ marginTop: 16 }}>
-                  Our signup endpoint isn't reachable from this page
-                  right now, so we stored <code>{email}</code> in your
-                  browser as a placeholder. When the hosted backend is
-                  wired up here, we'll honor entries that were saved
-                  early.
-                </p>
-                <p style={{ marginTop: 12, fontSize: 14, color: "var(--ink-3)" }}>
-                  Running the open-source build locally? Set{" "}
-                  <code>VITE_API_BASE_URL</code> to your backend and
-                  redeploy.
+                  The signup endpoint isn't responding right now, so
+                  <code> {email}</code> was not saved. Please try
+                  again in a moment, or reach out at the email in the
+                  footer.
                 </p>
               </div>
             )}
@@ -176,10 +153,10 @@ export default function Waitlist() {
           <div>
             <h3>While you wait</h3>
             <ul style={{ paddingLeft: 18, color: "var(--ink-2)", lineHeight: 1.8 }}>
-              <li>Spin up the open-source build on your own hardware</li>
-              <li>Read the roadmap to see what's shipping toward launch</li>
-              <li>File issues or contribute on the public repo</li>
-              <li>Check the compare table to see how it stacks up against the big providers</li>
+              <li>Read the roadmap to see what we're building toward launch</li>
+              <li>Check the features page for what the engine will do</li>
+              <li>Compare neuthek's design to the big providers you use today</li>
+              <li>Decide whether self-host or hosted is the right fit when each opens</li>
             </ul>
           </div>
         </div>

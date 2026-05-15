@@ -1,9 +1,11 @@
 /* The comparison below is intentionally factual and conservative.
-   Every "Yes" / "No" / "Limited" reflects what each provider's own
-   public documentation describes as of this writing. We avoid
-   speculative claims about internal infrastructure or future plans.
-   Brand names below are used nominatively to describe the products,
-   not to imply endorsement or affiliation. */
+   Every "Yes" / "No" / "Limited" for the third-party providers
+   reflects what their public documentation describes as of this
+   writing. For the neuthek column we deliberately mark capabilities
+   as "Planned" — nothing is publicly released yet, so claiming
+   anything as a current feature would be misleading.
+   Brand names below are used nominatively to describe each
+   product, not to imply endorsement or affiliation. */
 
 import { Link } from "react-router-dom";
 
@@ -11,7 +13,7 @@ type Cell = { label: string; tone?: "good" | "bad" | "mid" };
 type Row = { feature: string; cells: Cell[] };
 
 const HEADERS = [
-  "neuthek (self-host)",
+  "neuthek (planned)",
   "Google Photos",
   "Apple iCloud Photos",
   "Microsoft OneDrive",
@@ -23,7 +25,7 @@ const ROWS: Row[] = [
   {
     feature: "You hold the data on your hardware",
     cells: [
-      { label: "Yes", tone: "good" },
+      { label: "Planned (self-host)", tone: "mid" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -34,7 +36,7 @@ const ROWS: Row[] = [
   {
     feature: "Source code is open and auditable",
     cells: [
-      { label: "Yes", tone: "good" },
+      { label: "Planned at release", tone: "mid" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -45,7 +47,7 @@ const ROWS: Row[] = [
   {
     feature: "Semantic / natural-language image search",
     cells: [
-      { label: "Yes", tone: "good" },
+      { label: "Planned (core feature)", tone: "mid" },
       { label: "Yes", tone: "good" },
       { label: "Yes", tone: "good" },
       { label: "Limited", tone: "mid" },
@@ -56,7 +58,7 @@ const ROWS: Row[] = [
   {
     feature: "Vector embeddings stored in your own database",
     cells: [
-      { label: "Yes", tone: "good" },
+      { label: "Planned (self-host)", tone: "mid" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -67,7 +69,7 @@ const ROWS: Row[] = [
   {
     feature: "No mandatory cloud account",
     cells: [
-      { label: "Yes", tone: "good" },
+      { label: "Planned (self-host)", tone: "mid" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -78,7 +80,7 @@ const ROWS: Row[] = [
   {
     feature: "Free tier",
     cells: [
-      { label: "Self-host: free" },
+      { label: "Self-host: free when released" },
       { label: "15 GB shared with Google account" },
       { label: "5 GB across iCloud" },
       { label: "5 GB free" },
@@ -100,7 +102,7 @@ const ROWS: Row[] = [
   {
     feature: "Documented export of full library",
     cells: [
-      { label: "Yes (raw filesystem + DB dump)", tone: "good" },
+      { label: "Planned (pre-launch commitment)", tone: "mid" },
       { label: "Yes (Google Takeout)" },
       { label: "Yes" },
       { label: "Yes" },
@@ -111,7 +113,7 @@ const ROWS: Row[] = [
   {
     feature: "Runs on your own GPU / NPU",
     cells: [
-      { label: "Yes (CUDA / XPU / MPS)", tone: "good" },
+      { label: "Planned (CUDA / XPU / MPS)", tone: "mid" },
       { label: "No", tone: "bad" },
       { label: "Apple devices only", tone: "mid" },
       { label: "No", tone: "bad" },
@@ -120,9 +122,9 @@ const ROWS: Row[] = [
     ],
   },
   {
-    feature: "Hosted (managed) version available",
+    feature: "Available today",
     cells: [
-      { label: "Coming soon", tone: "mid" },
+      { label: "Not yet", tone: "bad" },
       { label: "Yes" },
       { label: "Yes" },
       { label: "Yes" },
@@ -138,12 +140,13 @@ export default function Compare() {
       <section className="page-head">
         <div className="container fade-in">
           <span className="eyebrow">Compare</span>
-          <h1>How neuthek differs from the big-cloud default.</h1>
+          <h1>How neuthek will differ from the big-cloud default.</h1>
           <p className="lead">
-            We don't think the big providers are bad at storage — they're
-            very good. The trade-off is who holds your data, your
-            embeddings, and your search history. Below is the honest
-            picture, based on what each provider documents publicly.
+            We don't think the big providers are bad at storage —
+            they're very good. The trade-off is who holds your data,
+            your embeddings, and your search history. Below is the
+            honest picture, based on what each provider documents
+            publicly and what we're designing toward.
           </p>
         </div>
       </section>
@@ -175,9 +178,12 @@ export default function Compare() {
             </table>
           </div>
           <p style={{ marginTop: 14, fontSize: 12, color: "var(--ink-3)" }}>
-            Brand names belong to their respective owners and are referenced
-            here to describe each product. Capabilities reflect public
-            documentation at the time of writing and may change.
+            Brand names belong to their respective owners and are
+            referenced here to describe each product. Third-party
+            capabilities reflect public documentation at the time of
+            writing and may change. The neuthek column is
+            forward-looking — nothing in that column is publicly
+            available yet.
           </p>
         </div>
       </section>
@@ -189,24 +195,26 @@ export default function Compare() {
             <div className="card">
               <h3>Stay with the big cloud if…</h3>
               <p>
-                You don't want to operate any infrastructure, you trust
-                the provider's privacy posture, and you're happy with
-                what their search box returns today.
+                You don't want to operate any infrastructure, you
+                trust the provider's privacy posture, and you're
+                happy with what their search box returns today.
               </p>
             </div>
             <div className="card">
-              <h3>Self-host neuthek if…</h3>
+              <h3>Plan for neuthek self-host if…</h3>
               <p>
-                You want a server you own, embeddings that never leave
-                your network, and a search experience you can extend or
-                fork. You're comfortable running Docker.
+                You want a server you own, embeddings that never
+                leave your network, and a search experience you can
+                extend or fork. You're comfortable running Docker.
+                The open-source release hasn't dropped yet — get on
+                the waitlist for the announcement.
               </p>
               <p style={{ marginTop: 12 }}>
-                <Link to="/developers" className="btn btn--primary">Get started</Link>
+                <Link to="/waitlist" className="btn btn--primary">Join waitlist</Link>
               </p>
             </div>
             <div className="card">
-              <h3>Wait for managed neuthek if…</h3>
+              <h3>Plan for hosted neuthek if…</h3>
               <p>
                 You want the same product as self-host, but operated
                 by us — backups, GPU inference, HTTPS, account

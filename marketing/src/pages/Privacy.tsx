@@ -35,17 +35,19 @@ export default function Privacy() {
 
       <section className="section">
         <div className="container">
-          <h2>The self-hosted build.</h2>
+          <h2>The self-hosted build (when it releases).</h2>
           <p style={{ marginTop: 12, maxWidth: 760 }}>
-            When you run neuthek on your own hardware, the project does
-            not transmit your images, embeddings, or metadata to us or
-            to any third party. The application stack — Postgres,
-            MinIO, Redis, FastAPI — runs entirely under your control.
+            When the open-source build is published and you run it
+            on your own hardware, the project will not transmit
+            your images, embeddings, or metadata to us or to any
+            third party. The application stack — Postgres, S3-compatible
+            object storage, Redis, FastAPI — will run entirely under
+            your control.
           </p>
           <ul style={{ marginTop: 16, paddingLeft: 18, color: "var(--ink-2)", lineHeight: 1.8, maxWidth: 760 }}>
-            <li>Originals stay on your MinIO instance until you delete them or their configurable expiry passes.</li>
+            <li>Originals stay on your object store until you delete them or their configurable expiry passes.</li>
             <li>Embeddings, tags, scenes, and content-type labels live in your Postgres only.</li>
-            <li>EXIF metadata is preserved on uploaded originals; a stripper is on the roadmap.</li>
+            <li>EXIF metadata is preserved on uploaded originals; an opt-in stripper is planned before release.</li>
             <li>JWTs are issued and validated locally with a secret you provide.</li>
             <li>The optional vision pipeline runs on your CPU or GPU; it does not call any remote API.</li>
           </ul>

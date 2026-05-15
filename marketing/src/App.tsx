@@ -13,6 +13,7 @@ import Pricing from "./pages/Pricing";
 import Waitlist from "./pages/Waitlist";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
+import Admin from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 
 function ScrollToTop() {
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="/waitlist"   element={<Waitlist />} />
           <Route path="/privacy"    element={<Privacy />} />
           <Route path="/terms"      element={<Terms />} />
+          <Route path="/admin"      element={<Admin />} />
           <Route path="*"           element={<NotFound />} />
         </Routes>
       </main>

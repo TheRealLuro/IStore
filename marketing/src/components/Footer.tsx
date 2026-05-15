@@ -9,8 +9,9 @@ export default function Footer() {
         <div className="footer__brand">
           <WordMark />
           <p>
-            Open-source, AI-aware personal storage. Self-host the full stack
-            today; the managed hosted version is in development.
+            The next best cloud storage solution. AI-aware, privacy-first,
+            in active development. Nothing publicly released yet — join
+            the waitlist for the launch ping.
           </p>
         </div>
         <div>
@@ -40,8 +41,8 @@ export default function Footer() {
         </div>
       </div>
       <div className="container footer__bottom">
-        <span>(c) {year} neuthek. Source code released under an open-source license.</span>
-        <span>Hosted version: coming soon</span>
+        <span>(c) {year} neuthek. Source release planned under an open-source license.</span>
+        <span>Nothing released yet — coming soon</span>
       </div>
     </footer>
   );

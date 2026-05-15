@@ -1,59 +1,37 @@
 # neuthek marketing
 
-Static onboarding + marketing site for neuthek. Vite + React +
-TypeScript, Geist fonts, no Tailwind. Designed to deploy to Render
-as a fully static site so we can wire Stripe and a real backend
-into the main repo without touching this surface.
+The public marketing + onboarding site for neuthek. Self-contained:
+Express + Vite + React + TypeScript, with a Postgres-backed waitlist
+that runs on a single Render Web Service. No dependency on the main
+neuthek backend — designed to ship to the public internet before any
+other piece of the product is released.
 
-## Local dev
-
-```bash
-cd marketing
-npm install
-npm run dev      # http://127.0.0.1:5180
-```
-
-## Build + preview
-
-```bash
-npm run build
-npm run preview  # http://127.0.0.1:4180
-```
-
-## Deploy to Render
-
-This folder ships a Render blueprint at `render.yaml`. Either:
-
-- Point the Render dashboard at this repo and select the blueprint, or
-- `render blueprint deploy --root marketing` from the CLI.
-
-The site is fully static. There are no env secrets required, and
-no backend is called from these pages today. The waitlist form
-saves to `localStorage` only — see the inline comment in
-`src/pages/Waitlist.tsx` for the rollout plan.
-
-## Layout
+## What lives here
 
 ```
 marketing/
-  index.html
-  package.json
-  vite.config.ts
-  render.yaml
+  server.mjs           <- Express server (API + static SPA)
+  index.html           <- SPA shell
+  package.json         <- frontend + server deps
+  vite.config.ts       <- dev: proxies /api -> 5181
+  render.yaml          <- Render blueprint (Web Service + Postgres)
   public/
-    favicon.svg
+    favicon.svg        <- Constellation Glyph (the brand mark)
+    og-cover.svg
     robots.txt
-    _redirects        <- SPA fallback for static hosts
+    sitemap.xml
+    site.webmanifest
   src/
     main.tsx
     App.tsx
     styles.css
+    api.ts             <- frontend client for /api/waitlist + /api/admin
     components/
-      Banner.tsx       <- persistent "hosted not live yet"
+      Banner.tsx       <- persistent "nothing released yet" banner
       Nav.tsx
       Footer.tsx
-      WordMark.tsx     <- animated logo
-      TechCarousel.tsx <- revolving stack ribbon
+      WordMark.tsx     <- the inline-SVG brand mark
+      TechCarousel.tsx
     pages/
       Home.tsx
       Features.tsx
@@ -62,18 +40,80 @@ marketing/
       Roadmap.tsx
       Compare.tsx
       Pricing.tsx
-      Waitlist.tsx
+      Waitlist.tsx     <- POSTs to /api/waitlist/signup
+      Admin.tsx        <- admin viewer at /#/admin (Basic Auth)
       Privacy.tsx
       Terms.tsx
       NotFound.tsx
 ```
 
+## Local dev (two-process)
+
+```bash
+cd marketing
+npm install
+
+# terminal 1 — Express server on 5181
+npm run dev:server
+
+# terminal 2 — Vite SPA on 5180, proxies /api -> 5181
+npm run dev
+```
+
+Open http://127.0.0.1:5180. The /api proxy is wired in
+[vite.config.ts](vite.config.ts) so frontend `fetch("/api/...")` calls
+work without CORS.
+
+### Local dev (single-process)
+
+Build the SPA into `dist/` then run only Express:
+
+```bash
+npm run build
+ADMIN_PASS=hunter2 npm start
+# http://127.0.0.1:5181
+```
+
+## Production: Render
+
+1. Point Render at the repo, select the [render.yaml](render.yaml) blueprint
+   with `rootDir: marketing`.
+2. Render provisions a free Postgres database and a free Web Service.
+3. In the Render dashboard's **Environment** tab for the web service,
+   set `ADMIN_PASS` to a strong password (the blueprint has
+   `sync: false` so it's never committed).
+4. Visit `https://<your-render-domain>/` to see the marketing site,
+   and `https://<your-render-domain>/#/admin` for the waitlist viewer.
+
+The Postgres connection string is auto-injected as `DATABASE_URL`;
+the server detects it and uses Postgres for storage. Without
+`DATABASE_URL` (e.g. local dev), the server falls back to SQLite at
+`./data/waitlist.db`.
+
+## API
+
+### Public
+
+| Method | Path                  | Behavior |
+|--------|-----------------------|----------|
+| GET    | /api/health           | `{ok:true, backend:"postgres"|"sqlite"}` |
+| POST   | /api/waitlist/signup  | `{email, use_case}` → `{ok:true, already_signed_up:false}`. Rate-limited 10/min/IP, idempotent on email, anti-enumeration response. |
+
+### Admin (HTTP Basic Auth via ADMIN_USER / ADMIN_PASS)
+
+| Method | Path                                | Behavior |
+|--------|-------------------------------------|----------|
+| GET    | /api/admin/waitlist                 | List signups, newest first, max 500. |
+| PATCH  | /api/admin/waitlist/:id/notified    | Flip `notified=true` + stamp `notified_at`. |
+
 ## Editing rules
 
-- Every claim about the product must be true today, or marked
-  "planned" / "coming soon" — no aspirational marketing language
-  presented as shipped behavior.
-- Competitor mentions are nominative only. No vendor logos that
-  aren't ours; brand names quoted as text.
-- The persistent `Banner` reminding visitors that the hosted
-  version is not live must stay until the hosted launch.
+- Every claim about the product must be either truthful **today** (the
+  rare case — e.g. "this site is online") or marked as **planned /
+  coming / in development**. The product is not publicly released.
+- Don't write "today," "free today," "available now," or invite people
+  to `git clone` until the open-source build is actually published.
+- Competitor mentions are nominative only. No vendor logos that aren't
+  ours; brand names quoted as text.
+- The persistent `Banner` reminding visitors that nothing is released
+  yet must stay until the public launch.

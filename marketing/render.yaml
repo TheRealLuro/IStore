@@ -1,37 +1,48 @@
 # Render blueprint for the neuthek marketing site.
 #
-# Deploy by pointing Render at this repo and selecting this blueprint
-# from the marketing/ subdirectory, or by running:
-#   render blueprint deploy --root marketing
+# Single Web Service runs Express (server.mjs) which:
+#   1. Serves the Vite-built SPA from ./dist on every non-/api/* GET
+#   2. Hosts /api/waitlist/signup (public, rate-limited)
+#   3. Hosts /api/admin/waitlist (HTTP Basic Auth)
 #
-# The site is fully static — no backend, no env secrets, no DB.
+# Storage is a free-tier Render Postgres database (via DATABASE_URL).
+# No dependency on the main neuthek backend — this whole surface is
+# self-contained and can run before any other piece of the product
+# is publicly released.
+#
+# Deploy:
+#   1. Point Render at this repo
+#   2. Apply this blueprint (rootDir: marketing)
+#   3. Set ADMIN_PASS in the Render dashboard's "Environment" tab
+#      (the default empty value disables the admin viewer until set)
+
+databases:
+  - name: neuthek-marketing-db
+    plan: free
+    databaseName: neuthek_waitlist
+    user: neuthek
 
 services:
   - type: web
     name: neuthek-marketing
-    runtime: static
+    runtime: node
+    plan: free
     rootDir: marketing
     buildCommand: npm install && npm run build
-    staticPublishPath: dist
+    startCommand: node server.mjs
+    healthCheckPath: /api/health
     pullRequestPreviewsEnabled: true
-    headers:
-      - path: /*
-        name: X-Frame-Options
-        value: DENY
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-      - path: /*
-        name: Referrer-Policy
-        value: strict-origin-when-cross-origin
-      - path: /*
-        name: Permissions-Policy
-        value: camera=(), microphone=(), geolocation=()
-      - path: /assets/*
-        name: Cache-Control
-        value: public, max-age=31536000, immutable
-    routes:
-      # The app uses HashRouter, so a single index.html serves every route.
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: PORT
+        value: "10000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: neuthek-marketing-db
+          property: connectionString
+      - key: ADMIN_USER
+        value: admin
+      - key: ADMIN_PASS
+        # SET THIS IN THE RENDER DASHBOARD — sync:false keeps it out of git.
+        sync: false

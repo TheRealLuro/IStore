@@ -1,35 +1,36 @@
-/* The lists below are pulled directly from the project's todo.md.
-   Anything labeled "shipped" has a SHIPPED marker in the source repo.
-   Anything labeled "building" or "planned" reflects the priority order
-   the team has actually committed to — no marketing fiction. */
+/* The lists below are pulled directly from the team's internal
+   development tracker. Everything is pre-release: items marked
+   "engine-complete" are working in the internal build but have
+   not been published; items in "active work" are being built
+   right now; items in "designed" are spec'd but not started. */
 
-const shipped = [
-  { t: "Sharing primitive (G1)", d: "Per-image grants with email pinning, argon2-hashed tokens, server-enforced 1-day cap for new recipients, and full audit trail." },
-  { t: "Settings backlog (1.2)", d: "TOTP-based 2FA, in-app and email notification preferences, per-account plan card, per-scope token expiry." },
-  { t: "Admin overlay un-mock (1.3)", d: "Live system, hardware, processes, models, tasks, and logs panels — no mock data." },
-  { t: "Upload validation hardening (A1)", d: "Polyglot trailer stripping, dispatch-table validators, forensic quarantine, audit on rejection." },
-  { t: "Sprint B — AI quality", d: "Image and search quality improvements landed across the vision pipeline." },
+const engineComplete = [
+  { t: "Sharing primitive", d: "Per-image grants with email pinning, hashed share tokens, server-enforced 1-day cap for new recipients, full audit trail." },
+  { t: "Settings + 2FA", d: "TOTP-based two-factor authentication, in-app and email notification preferences, plan card, per-scope token expiry." },
+  { t: "Admin overlay", d: "Live system, hardware, processes, models, tasks, and logs panels — no mock data." },
+  { t: "Upload validation hardening", d: "Polyglot trailer stripping, dispatch-table validators, forensic quarantine, audit on rejection." },
+  { t: "AI quality pass", d: "Image and search quality improvements landed across the vision pipeline." },
   { t: "Content-aware compression", d: "Photos at WebP q=82 (max 4096px); screenshots, documents, illustrations, icons fall to WebP lossless." },
   { t: "Semantic search", d: "768-dim OpenCLIP ViT-L-14 embeddings with pgvector cosine similarity, scoped per user." },
   { t: "Bulk-action toolbar", d: "Move to / new folder with selection / delete / pick-best-of in the gallery." },
 ];
 
-const building = [
-  { t: "Compliance scaffolding (Sprint C)", d: "Encryption at rest + in transit (A2), secret management (A3), real audit log (A4), full deletion (A5), pre-launch compliance (A6), repo hygiene (A7)." },
-  { t: "EXIF / GPS handling (B1)", d: "Strip or surface location/device metadata before public sharing or hosted launch." },
-  { t: "Consent before signup (B2)", d: "Explicit consent gates ahead of account creation, ahead of biometric features." },
-  { t: "Backend across all major GPU/CPU vendors (F1)", d: "CUDA / Intel XPU / Apple MPS dispatch in place; widening hardware coverage and probe accuracy." },
+const activeWork = [
+  { t: "Compliance scaffolding", d: "Encryption at rest + in transit, secret management, real audit log, full deletion, pre-launch compliance, repo hygiene." },
+  { t: "EXIF / GPS handling", d: "Strip or surface location/device metadata before public sharing or hosted launch." },
+  { t: "Consent before signup", d: "Explicit consent gates ahead of account creation, ahead of biometric features." },
+  { t: "Cross-vendor accelerator support", d: "CUDA / Intel XPU / Apple MPS dispatch is in place; widening hardware coverage and probe accuracy." },
 ];
 
-const planned = [
-  { t: "Folders, files, naming, organization (C1)", d: "First-class folders, drag/drop reorganization, multi-select moves." },
-  { t: "Cloud sync (C2)", d: "Pull from Google Drive / iCloud / GitHub into your neuthek library." },
-  { t: "Hybrid search (D3)", d: "CLIP semantic + Postgres full-text fused with rank reciprocal scoring." },
-  { t: "Better summaries (D1, D2)", d: "Image and document summaries with user-tunable verbosity." },
-  { t: "Multi-data-type platform (E1+)", d: "Contacts, password vault, game saves, IoT data — same privacy posture, same per-user isolation." },
-  { t: "Comments + real-time editing (G2, G3)", d: "Layered on top of the sharing primitive once that surface stabilizes." },
-  { t: "Model quantization (F2)", d: "Smaller-footprint vision models for low-resource self-hosters." },
-  { t: "Repo &amp; docs hygiene (H1–H4)", d: "README rewrite, comment balance, GitHub-ready docs, CI / lint tightening." },
+const designed = [
+  { t: "Folders, files, naming, organization", d: "First-class folders, drag/drop reorganization, multi-select moves." },
+  { t: "Cloud sync", d: "Pull from Google Drive / iCloud / GitHub into your neuthek library." },
+  { t: "Hybrid search", d: "CLIP semantic + Postgres full-text fused with reciprocal-rank scoring." },
+  { t: "Better summaries", d: "Image and document summaries with user-tunable verbosity." },
+  { t: "Multi-data-type platform", d: "Contacts, password vault, game saves, IoT data — same privacy posture, same per-user isolation." },
+  { t: "Comments + real-time editing", d: "Layered on top of the sharing primitive once that surface stabilizes." },
+  { t: "Model quantization", d: "Smaller-footprint vision models for low-resource self-hosters." },
+  { t: "Docs hygiene", d: "README rewrite, comment balance, GitHub-ready docs, CI / lint tightening." },
 ];
 
 export default function Roadmap() {
@@ -38,11 +39,14 @@ export default function Roadmap() {
       <section className="page-head">
         <div className="container fade-in">
           <span className="eyebrow">Roadmap</span>
-          <h1>What's shipped, what's next, and what's on the horizon.</h1>
+          <h1>What's working in dev, what's being built, what's on the horizon.</h1>
           <p className="lead">
-            This page is generated from the same todo.md the team works
-            against. If something has not landed yet, it sits in
-            "building" or "planned" — never in "shipped."
+            All items below describe the internal development build.
+            Nothing on this page is publicly released yet — neither
+            the open-source nor the hosted version. "Engine-complete"
+            means it works in our development environment; "active
+            work" means we're building it now; "designed" means it's
+            spec'd but not started.
           </p>
         </div>
       </section>
@@ -51,26 +55,26 @@ export default function Roadmap() {
         <div className="container">
           <div className="roadmap">
             <div className="roadmap__col roadmap__col--shipped">
-              <h3>Shipped</h3>
+              <h3>Engine-complete</h3>
               <ul className="roadmap__list">
-                {shipped.map((x) => (
+                {engineComplete.map((x) => (
                   <li key={x.t}><strong>{x.t}.</strong> {x.d}</li>
                 ))}
               </ul>
             </div>
             <div className="roadmap__col roadmap__col--building">
-              <h3>Building now</h3>
+              <h3>Active work</h3>
               <ul className="roadmap__list">
-                {building.map((x) => (
+                {activeWork.map((x) => (
                   <li key={x.t}><strong>{x.t}.</strong> {x.d}</li>
                 ))}
               </ul>
             </div>
             <div className="roadmap__col roadmap__col--planned">
-              <h3>Planned</h3>
+              <h3>Designed</h3>
               <ul className="roadmap__list">
-                {planned.map((x) => (
-                  <li key={x.t} dangerouslySetInnerHTML={{ __html: `<strong>${x.t}.</strong> ${x.d}` }} />
+                {designed.map((x) => (
+                  <li key={x.t}><strong>{x.t}.</strong> {x.d}</li>
                 ))}
               </ul>
             </div>
@@ -80,10 +84,11 @@ export default function Roadmap() {
 
       <section className="section">
         <div className="container">
-          <h2>Pre-launch checklist for the hosted version.</h2>
+          <h2>Pre-launch checklist.</h2>
           <p className="lead" style={{ marginTop: 12 }}>
-            We will not enable hosted accounts before all of this is in
-            place. These are commitments, not aspirations.
+            We won't release publicly — open source or hosted —
+            before every item below is in place. These are commitments,
+            not aspirations.
           </p>
           <div className="cards">
             <div className="card"><h3>Encryption</h3><p>At rest and in transit, with managed keys and a documented rotation policy.</p></div>

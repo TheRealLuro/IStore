@@ -4,9 +4,10 @@ export default function Banner() {
   return (
     <div className="banner" role="status">
       <span className="banner__dot" aria-hidden />
-      <strong>Public hosted version is not live yet.</strong>{" "}
-      Self-host today, or
-      <Link to="/waitlist">join the waitlist</Link>.
+      <strong>neuthek is in active development.</strong>{" "}
+      Nothing is released yet — neither the hosted service nor the
+      open-source build. Want the launch ping?
+      <Link to="/waitlist">Join the waitlist</Link>.
     </div>
   );
 }

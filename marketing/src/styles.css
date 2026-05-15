@@ -200,6 +200,11 @@ p {
 }
 
 /* ---------- WordMark ---------- */
+/* The mark is an inline SVG "constellation glyph" — see
+   src/components/WordMark.tsx. Animations live below:
+     - .wordmark__dot--active  pulses (scale + opacity)
+     - .wordmark__halo         expands outward like a ring
+     - .wordmark__lines        breathe their stroke opacity */
 
 .wordmark {
   display: inline-flex;
@@ -210,44 +215,44 @@ p {
   letter-spacing: -0.01em;
 }
 .wordmark__mark {
-  display: inline-block;
-  width: 22px; height: 22px;
-  background: var(--ink);
-  border-radius: 6px;
-  position: relative;
-  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.wordmark__mark::before,
-.wordmark__mark::after {
-  content: "";
-  position: absolute; inset: 0;
-  background: var(--surface);
-  border-radius: 50%;
-}
-.wordmark__mark::before {
-  width: 8px; height: 8px;
-  top: 4px; left: 4px;
-  animation: orbit 6s linear infinite;
-}
-.wordmark__mark::after {
-  width: 4px; height: 4px;
-  bottom: 4px; right: 4px;
-  background: var(--ink-3);
-  animation: orbit 9s linear reverse infinite;
+.wordmark__mark svg {
+  display: block;
 }
 
-@keyframes orbit {
-  0%   { transform: translate(0, 0); }
-  25%  { transform: translate(8px, 0); }
-  50%  { transform: translate(8px, 8px); }
-  75%  { transform: translate(0, 8px); }
-  100% { transform: translate(0, 0); }
+.wordmark__dot--active {
+  transform-origin: 24px 10px;
+  animation: dot-pulse 2.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+}
+.wordmark__halo {
+  transform-origin: 24px 10px;
+  animation: halo-expand 2.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  opacity: 0;
+}
+.wordmark__lines {
+  animation: lines-breathe 4.8s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(0.78); opacity: 0.7; }
+}
+
+@keyframes halo-expand {
+  0%   { transform: scale(0.9); opacity: 0.55; }
+  80%  { transform: scale(2.1); opacity: 0; }
+  100% { transform: scale(2.1); opacity: 0; }
+}
+
+@keyframes lines-breathe {
+  0%, 100% { opacity: 0.42; }
+  50%      { opacity: 0.78; }
 }
 
 .wordmark--lg { font-size: 28px; }
-.wordmark--lg .wordmark__mark { width: 32px; height: 32px; border-radius: 9px; }
-.wordmark--lg .wordmark__mark::before { width: 12px; height: 12px; top: 6px; left: 6px; }
-.wordmark--lg .wordmark__mark::after  { width: 6px;  height: 6px;  bottom: 6px; right: 6px; }
 
 /* ---------- Hero ---------- */
 

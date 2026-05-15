@@ -18,11 +18,11 @@
     <title>neuthek — the next best cloud storage solution</title>
     <meta
       name="description"
-      content="neuthek is the next best cloud storage solution: open-source, AI-aware personal storage you can self-host today. Semantic image search by what you remember, content-aware compression, and a privacy-first design. Managed hosted version coming soon."
+      content="neuthek is the next best cloud storage solution: an AI-aware personal cloud in active development. Semantic search by what you remember, content-aware compression, privacy-first design. Self-host and hosted versions both coming — join the waitlist."
     />
     <meta
       name="keywords"
-      content="neuthek, cloud storage, open source cloud storage, self-hosted cloud storage, semantic image search, AI photo storage, personal cloud, privacy-first storage, Google Photos alternative, iCloud alternative, OneDrive alternative, Dropbox alternative, OpenCLIP, pgvector, MinIO, FastAPI, photo management, content-aware compression, the next best cloud storage solution"
+      content="neuthek, cloud storage, the next best cloud storage solution, semantic image search, AI photo storage, personal cloud, privacy-first storage, open source cloud storage, self-hosted cloud storage, Google Photos alternative, iCloud alternative, OneDrive alternative, Dropbox alternative, OpenCLIP, pgvector, FastAPI, photo management, content-aware compression, upcoming"
     />
     <meta name="author" content="neuthek" />
     <meta name="theme-color" content="#0a0a0a" />
@@ -35,7 +35,7 @@
     <meta property="og:title" content="neuthek — the next best cloud storage solution" />
     <meta
       property="og:description"
-      content="Open-source, AI-aware personal storage you can self-host today. Semantic image search, content-aware compression, privacy by design. Hosted version coming soon."
+      content="An AI-aware personal cloud in active development. Semantic image search, content-aware compression, privacy by design. Self-host and hosted versions both coming — join the waitlist."
     />
     <meta property="og:image" content="https://neuthek.com/og-cover.svg" />
     <meta property="og:image:width" content="1200" />
@@ -48,7 +48,7 @@
     <meta name="twitter:title" content="neuthek — the next best cloud storage solution" />
     <meta
       name="twitter:description"
-      content="Open-source AI storage you can run yourself. Semantic image search, smart compression, JWT auth. Hosted version coming soon."
+      content="An AI-aware personal cloud in active development. Semantic image search, smart compression, JWT auth + 2FA. Self-host and hosted both planned — join the waitlist."
     />
     <meta name="twitter:image" content="https://neuthek.com/og-cover.svg" />
     <meta name="twitter:image:alt" content="neuthek — storage that thinks for you" />
@@ -60,7 +60,7 @@
     <meta name="application-name" content="neuthek" />
     <meta
       name="ai-content-summary"
-      content="neuthek is an open-source, self-hostable, AI-aware personal storage backend (FastAPI + Postgres + pgvector + MinIO + Redis + OpenCLIP). Lets users search their image library by natural language (e.g. 'snowy roof at sunset'), runs content-aware compression (WebP q=82 for photos, lossless WebP for screenshots and documents), and stores 768-dim CLIP embeddings in your own database. Managed hosted version is in development; the open-source build runs today."
+      content="neuthek is an AI-aware personal cloud storage product in active development. The engine is being built around FastAPI + PostgreSQL + pgvector + S3-compatible object storage + Redis + OpenCLIP ViT-L-14. Users will search their image library by natural language (e.g. 'snowy roof at sunset'), benefit from content-aware compression (WebP q=82 for photos, lossless WebP for screenshots/documents), and own their 768-dim CLIP embeddings in a database they control. Two delivery modes are planned: open-source self-host and managed hosted. Nothing is publicly released yet — visitors can join a waitlist for the launch ping."
     />
 
     <!-- Structured data: Organization + WebSite + SoftwareApplication.
@@ -78,7 +78,7 @@
           "name": "neuthek",
           "url": "https://neuthek.com/",
           "logo": "https://neuthek.com/favicon.svg",
-          "description": "neuthek builds open-source AI-aware personal storage. Self-host today; hosted version coming soon."
+          "description": "neuthek is building an AI-aware personal cloud storage product. Self-host and hosted versions are both in development; nothing is publicly released yet."
         },
         {
           "@type": "WebSite",
@@ -94,22 +94,23 @@
           "name": "neuthek",
           "applicationCategory": "Storage",
           "applicationSubCategory": "CloudStorage",
-          "operatingSystem": "Linux, macOS, Windows (via Docker)",
-          "description": "Open-source, AI-aware, self-hostable personal cloud storage with semantic image search and content-aware compression. The next best cloud storage solution.",
-          "softwareVersion": "0.1.0",
+          "operatingSystem": "Linux, macOS, Windows (via Docker, planned)",
+          "description": "An AI-aware personal cloud storage product in active development. Semantic image search and content-aware compression. The next best cloud storage solution. Self-host and hosted versions both planned; nothing publicly released yet.",
+          "softwareVersion": "0.1.0-dev",
           "offers": [
             {
               "@type": "Offer",
-              "name": "Self-host",
+              "name": "Self-host (planned)",
               "price": "0",
               "priceCurrency": "USD",
-              "availability": "https://schema.org/InStock"
+              "availability": "https://schema.org/PreOrder",
+              "description": "Open-source self-host build will be free when released."
             },
             {
               "@type": "Offer",
-              "name": "Managed (hosted)",
+              "name": "Managed (planned)",
               "availability": "https://schema.org/PreOrder",
-              "description": "Managed hosted version coming soon; join the waitlist."
+              "description": "Managed hosted version is in development; join the waitlist."
             }
           ],
           "featureList": [
