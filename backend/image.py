@@ -203,9 +203,17 @@ async def store_upload(
     if category != "image":
         return await _store_non_image(session, user, filename, raw_bytes, content_type, sha, category)
 
-    with PILImage.open(BytesIO(raw_bytes)) as pil:
-        pil.load()
-        width, height = pil.size
+    # Width / height come pre-computed from validate_upload's PIL pass.
+    # The previous duplicate `PILImage.open(...)` here was a 50-200 ms
+    # synchronous block per upload that ran on the event loop. The
+    # fallback path (post-merge upload paths that didn't surface the
+    # dims) is kept for safety but should never fire.
+    width = validated.width
+    height = validated.height
+    if width is None or height is None:
+        with PILImage.open(BytesIO(raw_bytes)) as pil:
+            pil.load()
+            width, height = pil.size
 
     vision = await _maybe_run_vision(raw_bytes)
 
@@ -232,25 +240,30 @@ async def store_upload(
     )
     plan = decision.plan
 
-    served_bytes = compress(raw_bytes, plan)
+    # Compress the served variant on a worker thread so the PIL pass
+    # doesn't block the event loop. Same encoder + quality as before
+    # — same output bytes — just runs off the asyncio main thread.
+    served_bytes = await asyncio.to_thread(compress, raw_bytes, plan)
 
     safe_name = filename or "image"
     original_key = f"users/{user.id}/originals/{uuid4().hex}/{safe_name}"
     served_key = f"users/{user.id}/served/{uuid4().hex}.{plan.extension}"
 
-    storage.put(
-        storage.bucket_originals,
-        original_key,
-        raw_bytes,
-        content_type or "application/octet-stream",
-        sse_scope="content",
-    )
-    storage.put(
-        storage.bucket_served,
-        served_key,
-        served_bytes,
-        plan.mime,
-        sse_scope="content",
+    # Push both blobs to MinIO in parallel — they're independent writes
+    # on different bucket keys. Sequential `put`s used to add another
+    # 100-500 ms per upload waiting on the second round-trip after the
+    # first finished.
+    await asyncio.gather(
+        asyncio.to_thread(
+            storage.put,
+            storage.bucket_originals, original_key, raw_bytes,
+            content_type or "application/octet-stream",
+        ),
+        asyncio.to_thread(
+            storage.put,
+            storage.bucket_served, served_key, served_bytes,
+            plan.mime,
+        ),
     )
 
     image = Image(

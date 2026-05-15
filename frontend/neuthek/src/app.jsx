@@ -239,19 +239,43 @@ function FiltersDropdown({
   clearAllFilters,
   activeCount,
 }) {
+  const [search, setSearch] = useStateApp("");
+  const detailsRef = useRefApp(null);
+  const inputRef = useRefApp(null);
+
+  // Auto-focus the search input when the dropdown opens, and clear it
+  // when it closes — the Cmd-K-style "type immediately" pattern is the
+  // fastest way for the user to home in on a specific filter without
+  // scanning the whole list.
+  useEffectApp(() => {
+    const el = detailsRef.current;
+    if (!el) return;
+    const onToggle = () => {
+      if (el.open) {
+        // Defer focus so it lands after the panel finishes rendering.
+        setTimeout(() => inputRef.current?.focus(), 0);
+      } else {
+        setSearch("");
+      }
+    };
+    el.addEventListener("toggle", onToggle);
+    return () => el.removeEventListener("toggle", onToggle);
+  }, []);
+
   const indoorCount = facets.indoor_outdoor.find(f => f.value === "indoor")?.count;
   const outdoorCount = facets.indoor_outdoor.find(f => f.value === "outdoor")?.count;
   const groups = [
     {
       label: "Scene",
       chips: [
-        indoorCount > 0 && { val: filterIndoorOutdoor === "indoor", label: "Indoor", count: indoorCount,
+        indoorCount > 0 && { val: filterIndoorOutdoor === "indoor", label: "Indoor", count: indoorCount, hint: "indoor",
           onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "indoor" ? null : "indoor") },
-        outdoorCount > 0 && { val: filterIndoorOutdoor === "outdoor", label: "Outdoor", count: outdoorCount,
+        outdoorCount > 0 && { val: filterIndoorOutdoor === "outdoor", label: "Outdoor", count: outdoorCount, hint: "outdoor",
           onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "outdoor" ? null : "outdoor") },
-        ...(facets.scenes || []).slice(0, 12).map(s => ({
+        ...(facets.scenes || []).map(s => ({
           val: filterScene === s.value,
           label: s.value.replace(/_/g, " "),
+          hint: s.value,
           count: s.count,
           onClick: () => setFilterScene(filterScene === s.value ? null : s.value),
         })),
@@ -260,22 +284,45 @@ function FiltersDropdown({
     {
       label: "Content",
       chips: [
-        facets.with_faces > 0 && { val: filterHasFaces === true, label: "Has people", count: facets.with_faces,
+        facets.with_faces > 0 && { val: filterHasFaces === true, label: "Has people", count: facets.with_faces, hint: "people faces",
           onClick: () => setFilterHasFaces(filterHasFaces === true ? null : true) },
-        facets.with_gps > 0 && { val: filterHasGps === true, label: "Has location", count: facets.with_gps,
+        facets.with_gps > 0 && { val: filterHasGps === true, label: "Has location", count: facets.with_gps, hint: "location gps map",
           onClick: () => setFilterHasGps(filterHasGps === true ? null : true) },
-        ...(facets.content_types || []).filter(c => c.value && c.value !== "photo").slice(0, 8).map(c => ({
+        ...(facets.content_types || []).filter(c => c.value && c.value !== "photo").map(c => ({
           val: filterContentType === c.value,
           label: c.value,
+          hint: c.value,
           count: c.count,
           onClick: () => setFilterContentType(filterContentType === c.value ? null : c.value),
         })),
       ].filter(Boolean),
     },
-  ].filter(g => g.chips.length > 0);
+  ];
+
+  // Substring filter — searches both the visible label AND a hint
+  // string so e.g. "gps" finds "Has location" even though the visible
+  // label doesn't contain "gps". Matching is case-insensitive.
+  const q = search.trim().toLowerCase();
+  const filteredGroups = q
+    ? groups
+        .map(g => ({
+          ...g,
+          chips: g.chips.filter(c =>
+            c.label.toLowerCase().includes(q) || (c.hint || "").toLowerCase().includes(q)
+          ),
+        }))
+        .filter(g => g.chips.length > 0)
+    : groups.filter(g => g.chips.length > 0);
+
+  // Top section: just the chips that are currently active. Lets the
+  // user see what they've selected without scrolling — and tap them
+  // off without remembering which group they came from.
+  const activeChips = groups.flatMap(g => g.chips.filter(c => c.val));
+  const totalChipCount = groups.reduce((n, g) => n + g.chips.length, 0);
+  const filteredCount = filteredGroups.reduce((n, g) => n + g.chips.length, 0);
 
   return (
-    <details className="filters-dd">
+    <details className="filters-dd" ref={detailsRef}>
       <summary className="btn btn--ghost btn--sm filters-dd__btn" data-active={anyFilterActive}>
         <Icon name="sort" size={12}/> Filters
         {activeCount > 0 && (
@@ -283,27 +330,94 @@ function FiltersDropdown({
         )}
       </summary>
       <div className="filters-dd__panel">
-        {groups.map(g => (
-          <div key={g.label} className="filters-dd__group">
-            <div className="filters-dd__group-label">{g.label}</div>
+        <div className="filters-dd__search">
+          <Icon name="search" size={12}/>
+          <input
+            ref={inputRef}
+            type="text"
+            placeholder={`Search ${totalChipCount} filters…`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              // Esc clears the input first, then closes the dropdown
+              // on a second press — standard Apple-style Cmd-K UX.
+              if (e.key === "Escape") {
+                if (search) { setSearch(""); e.stopPropagation(); }
+                else if (detailsRef.current) { detailsRef.current.open = false; }
+              }
+              // Enter applies the first matching filter — the user
+              // can type "outdoor" + Enter to one-tap apply.
+              if (e.key === "Enter") {
+                const first = filteredGroups[0]?.chips[0];
+                if (first) {
+                  first.onClick();
+                  setSearch("");
+                  if (detailsRef.current) detailsRef.current.open = false;
+                }
+              }
+            }}
+          />
+          {search && (
+            <button
+              type="button"
+              className="filters-dd__search-clear"
+              onClick={() => { setSearch(""); inputRef.current?.focus(); }}
+              aria-label="Clear search"
+            >
+              <Icon name="x" size={10}/>
+            </button>
+          )}
+        </div>
+
+        {activeChips.length > 0 && !q && (
+          <div className="filters-dd__group filters-dd__group--active">
+            <div className="filters-dd__group-label">Active</div>
             <div className="filters-dd__chips">
-              {g.chips.map(c => (
+              {activeChips.map(c => (
                 <button
-                  key={c.label}
+                  key={"active-" + c.label}
                   type="button"
                   onClick={c.onClick}
                   className="chip"
-                  data-active={c.val}
+                  data-active="true"
+                  title="Click to remove"
                 >
                   {c.label}
-                  {c.count != null && (
-                    <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
-                  )}
+                  <Icon name="x" size={10} style={{ marginLeft: 4 }}/>
                 </button>
               ))}
             </div>
           </div>
-        ))}
+        )}
+
+        {filteredCount === 0 ? (
+          <div className="filters-dd__empty">
+            No filters match "{search}".
+          </div>
+        ) : (
+          filteredGroups.map(g => (
+            <div key={g.label} className="filters-dd__group">
+              <div className="filters-dd__group-label">{g.label}</div>
+              <div className="filters-dd__chips">
+                {g.chips.map(c => (
+                  <button
+                    key={c.label}
+                    type="button"
+                    onClick={c.onClick}
+                    className="chip"
+                    data-active={c.val}
+                  >
+                    {c.label}
+                    {c.count != null && (
+                      <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+
         {anyFilterActive && (
           <div className="filters-dd__foot">
             <button type="button" onClick={clearAllFilters} className="btn btn--ghost btn--sm">

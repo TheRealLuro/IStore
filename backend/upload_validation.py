@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import re
 import zipfile
@@ -143,6 +144,11 @@ class ValidatedUpload:
     original_raw_bytes: bytes
     mime_type: str
     category: str
+    # Pre-computed dimensions from the validate-time PIL decode so the
+    # caller doesn't have to re-decode the file just to read width/height.
+    # None for non-image categories (no decode happened).
+    width: int | None = None
+    height: int | None = None
 
 
 _GENERIC_CLIENT_MIME = {
@@ -331,6 +337,32 @@ def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, s
     raise UploadValidationError("Unsupported image format.", 415)
 
 
+def _validate_sync(
+    user_id: UUID, filename: str | None, raw_bytes: bytes, client_mime: str | None,
+) -> ValidatedUpload:
+    """Pure-CPU portion of validate_upload — runs in a worker thread so
+    the asyncio event loop isn't blocked by the PIL re-encode pass on
+    every upload. The async wrapper below puts this on `asyncio.to_thread`
+    so concurrent uploads don't serialize the API per-file.
+    """
+    detected_mime, category = detect_magic(raw_bytes, filename)
+    if not _client_mime_ok(client_mime, detected_mime):
+        raise UploadValidationError(
+            f"Content-Type does not match file bytes ({html.escape(detected_mime)}).",
+            415,
+        )
+    if category == "image":
+        sanitized, w, h, sanitized_mime = _sanitize_image(raw_bytes, detected_mime)
+        return ValidatedUpload(
+            filename, sanitized, raw_bytes, sanitized_mime, "image", w, h,
+        )
+    if detected_mime in _OOXML.values():
+        _inspect_ooxml(raw_bytes, filename)
+    if detected_mime.startswith("text/") or detected_mime == "application/json":
+        _reject_scriptable_text(raw_bytes)
+    return ValidatedUpload(filename, raw_bytes, raw_bytes, detected_mime, category)
+
+
 async def validate_upload(
     *,
     user_id: UUID,
@@ -344,27 +376,38 @@ async def validate_upload(
         raise UploadValidationError("Upload exceeds the per-file size limit.", 413)
 
     q_key = f"users/{user_id}/quarantine/{uuid4().hex}/{filename or 'upload'}"
-    storage.put(
-        storage.bucket_quarantine,
-        q_key,
-        raw_bytes,
+    # Parallelize: kick the quarantine write off in a worker thread so
+    # the PIL re-decode + re-encode below runs at the same time. They
+    # used to be sequential, costing 200-1500 ms per upload on top of
+    # the inevitable Pillow work.
+    quarantine_task = asyncio.to_thread(
+        storage.put,
+        storage.bucket_quarantine, q_key, raw_bytes,
         client_mime or "application/octet-stream",
-        sse_scope="content",
     )
     try:
-        detected_mime, category = detect_magic(raw_bytes, filename)
-        if not _client_mime_ok(client_mime, detected_mime):
-            raise UploadValidationError(
-                f"Content-Type does not match file bytes ({html.escape(detected_mime)}).",
-                415,
-            )
-        if category == "image":
-            sanitized, _, _, sanitized_mime = _sanitize_image(raw_bytes, detected_mime)
-            return ValidatedUpload(filename, sanitized, raw_bytes, sanitized_mime, "image")
-        if detected_mime in _OOXML.values():
-            _inspect_ooxml(raw_bytes, filename)
-        if detected_mime.startswith("text/") or detected_mime == "application/json":
-            _reject_scriptable_text(raw_bytes)
-        return ValidatedUpload(filename, raw_bytes, raw_bytes, detected_mime, category)
+        # Validate body runs in a worker thread — PIL pixel ops (verify,
+        # decode, re-encode) hold the GIL, so doing this on the asyncio
+        # event loop blocks every other request for the duration of the
+        # encode. The thread offload keeps the API responsive even when
+        # several uploads land at once.
+        validated, _q = await asyncio.gather(
+            asyncio.to_thread(_validate_sync, user_id, filename, raw_bytes, client_mime),
+            quarantine_task,
+        )
+        return validated
+    except Exception:
+        # Make sure the quarantine task is awaited (or cancelled) even
+        # if validation raised, so we don't leak a half-uploaded blob.
+        try:
+            await quarantine_task
+        except Exception:
+            pass
+        raise
     finally:
-        storage.delete(storage.bucket_quarantine, q_key)
+        # Best-effort cleanup of the quarantine blob. Run off-thread
+        # because storage.delete is also synchronous MinIO.
+        try:
+            await asyncio.to_thread(storage.delete, storage.bucket_quarantine, q_key)
+        except Exception:
+            pass
