@@ -179,22 +179,64 @@ async def enforce_rate_limit(
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail)
 
 
+async def _tier_limits_for(user_id: str) -> tuple[int, int]:
+    """Look up the rate limits for the user's current tier.
+
+    Returns (uploads_per_hour, bytes_per_day). Free is the floor;
+    Pro/Business override upward. If the subscription row or plan
+    row is missing we fall back to the global `upload_max_*` settings
+    so existing dev installs (no `plans` table populated yet) keep
+    working.
+
+    Implementation note: we look up by `user_id` not by the User
+    object so the route handler doesn't have to load extra rows on
+    every upload. The query is one SELECT against a two-column
+    table joined on PK; the cost is below the noise floor of the
+    upload itself.
+    """
+    try:
+        from uuid import UUID
+
+        from sqlalchemy import select
+
+        from backend.db import SessionLocal
+        from backend.models import Plan, Subscription
+
+        async with SessionLocal() as session:
+            sub = (
+                await session.execute(
+                    select(Subscription).where(Subscription.user_id == UUID(user_id))
+                )
+            ).scalar_one_or_none()
+            tier = sub.tier if sub is not None else "free"
+            plan = (
+                await session.execute(select(Plan).where(Plan.tier == tier))
+            ).scalar_one_or_none()
+            if plan is not None:
+                return plan.upload_max_per_hour, plan.upload_max_bytes_per_day
+    except Exception:
+        # DB unreachable or `plans` not migrated yet — fall through.
+        pass
+    return settings.upload_max_count_per_hour, settings.upload_max_bytes_per_day
+
+
 async def enforce_upload_limits(user_id: str, request: Request, byte_count: int) -> None:
     if not settings.security_rate_limits_enabled:
         return
     ip = client_ip(request)
+    count_cap, byte_cap = await _tier_limits_for(user_id)
     await enforce_rate_limit(
         key=f"upload:count:{user_id}:{ip}",
-        limit=settings.upload_max_count_per_hour,
+        limit=count_cap,
         window_seconds=3600,
-        detail="Upload rate limit exceeded",
+        detail="Upload rate limit exceeded for your plan",
     )
     await enforce_rate_limit(
         key=f"upload:bytes:{user_id}",
-        limit=settings.upload_max_bytes_per_day,
+        limit=byte_cap,
         window_seconds=24 * 3600,
         amount=byte_count,
-        detail="Daily upload byte limit exceeded",
+        detail="Daily upload byte limit exceeded for your plan",
     )
 
 

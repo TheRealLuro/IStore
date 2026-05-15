@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
 import { Switch as SwitchSP } from "./primitives.jsx";
 import { getStorageUsage } from "@/api/storage";
+import { getSubscription, openPortal } from "@/api/billing";
 import {
   getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login,
   getAccountActivity, getAccountTrash, emptyAccountTrash,
@@ -135,7 +136,7 @@ function PasswordPage({ onBack }) {
         <div className="det-field">
           <label className="det-field__label">Confirm new password</label>
           <input className="input" type="password" value={cf} onChange={e => setCf(e.target.value)} placeholder="Repeat new password" autoComplete="new-password"/>
-          {cf && nw !== cf && <div className="det-field__hint" style={{ color: "#cc2f26" }}>Passwords don't match.</div>}
+          {cf && nw !== cf && <div className="det-field__hint" style={{ color: "var(--danger)" }}>Passwords don't match.</div>}
         </div>
         <div className="det-actions">
           <button className="btn btn--primary" disabled={!valid || busy} onClick={submit}>
@@ -300,7 +301,7 @@ function TotpDisableForm({ onDone }) {
           border: "1px solid var(--line)", background: "var(--surface-2)",
         }}
       />
-      <button type="submit" className="btn btn--secondary" style={{ color: "#cc2f26" }} disabled={busy}>
+      <button type="submit" className="btn btn--secondary" style={{ color: "var(--danger)" }} disabled={busy}>
         {busy ? "Working…" : "Turn off 2FA"}
       </button>
     </form>
@@ -554,7 +555,7 @@ function PlanPage() {
           <button className="btn btn--primary" disabled={sel === "pro"}>
             {sel === "pro" ? "Current plan" : "Switch to " + plans.find(p => p.id === sel).name}
           </button>
-          <button className="btn btn--ghost" style={{ color: "#cc2f26" }}>Cancel subscription</button>
+          <button className="btn btn--ghost" style={{ color: "var(--danger)" }}>Cancel subscription</button>
         </div>
       </DetSection>
     </>
@@ -621,7 +622,7 @@ function FaceDetailPage() {
       <div className="det-danger">
         <div className="det-danger__title">Delete all face data</div>
         <div className="det-danger__desc">Removes every embedding and named-person grouping. Your photos are not affected. This can't be undone.</div>
-        <button className="btn btn--secondary" style={{ color: "#cc2f26" }}>Delete face data…</button>
+        <button className="btn btn--secondary" style={{ color: "var(--danger)" }}>Delete face data…</button>
       </div>
     </>
   );
@@ -662,7 +663,7 @@ function LocationDetailPage() {
       <div className="det-danger">
         <div className="det-danger__title">Strip GPS from existing photos</div>
         <div className="det-danger__desc">Permanently removes location data from all 2,841 existing photos. The Map view will lose its pins.</div>
-        <button className="btn btn--secondary" style={{ color: "#cc2f26" }}>Strip GPS from all photos…</button>
+        <button className="btn btn--secondary" style={{ color: "var(--danger)" }}>Strip GPS from all photos…</button>
       </div>
     </>
   );
@@ -928,7 +929,7 @@ function TrashPage({ onBack }) {
             <button className="btn btn--ghost" onClick={() => setConfirm(false)} disabled={busy}>Cancel</button>
           </div>
         ) : (
-          <button className="btn btn--secondary" style={{ color: "#cc2f26" }}
+          <button className="btn btn--secondary" style={{ color: "var(--danger)" }}
                   onClick={() => setConfirm(true)} disabled={count === 0}>Empty trash…</button>
         )}
       </div>
@@ -1170,14 +1171,23 @@ export function NotificationsPanel() {
 
 // ---------- §1.2.4 Plan card ----------
 //
-// Honest version of the Plan panel — shows real storage usage from
-// /storage/usage and the current quota. No fake invoices, no fake
-// Stripe checkout. When billing actually lands (separate workstream,
-// not part of this slice), this is where the upgrade affordance goes.
+// Reads the user's current subscription tier from /billing/subscription
+// and the real used/quota numbers from /storage/usage. Shows an
+// Upgrade or Manage-subscription button depending on tier.
+//
+// The upgrade flow takes the user to /billing (full-page pricing
+// cards) so we don't try to fit the embedded-checkout iframe inside
+// the Account modal — the embedded form needs vertical room and its
+// own URL the user can refresh.
 export function PlanCard() {
   const { data: usage } = useQuery({
     queryKey: ["storage-usage"],
     queryFn: getStorageUsage,
+    staleTime: 30_000,
+  });
+  const { data: sub } = useQuery({
+    queryKey: ["billing-subscription"],
+    queryFn: getSubscription,
     staleTime: 30_000,
   });
   const user = useAuthStore((s) => s.user);
@@ -1185,18 +1195,42 @@ export function PlanCard() {
   const quota = usage?.quota_bytes ?? 0;
   const pct = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
   const tone = pct >= 90 ? "orange" : pct >= 70 ? "amber" : "green";
+
+  const tier = sub?.tier || "free";
+  const tierLabel = tier === "pro" ? "Pro" : tier === "business" ? "Business" : "Free";
+  const cadence = sub?.interval === "year" ? "annual" : sub?.interval === "month" ? "monthly" : null;
+  const status = sub?.status || "active";
+  const periodEnd = sub?.current_period_end ? new Date(sub.current_period_end) : null;
+
+  const onManage = async () => {
+    try {
+      const { url } = await openPortal(window.location.origin + "/");
+      window.location.href = url;
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Could not open billing portal");
+    }
+  };
+
   return (
     <div className="det-card" style={{ marginBottom: 12 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Free plan</div>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>
+            {tierLabel}{cadence ? ` — ${cadence}` : ""} plan
+          </div>
           <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
-            Everything in neuthek runs on your hardware. There's no
-            paid tier today — billing lands separately when the project
-            is ready for it.
+            {tier === "free"
+              ? "50 GB storage and standard rate limits. Upgrade to unlock larger libraries and faster uploads."
+              : status === "past_due"
+              ? "Payment failed. Stripe will retry; resolve from the customer portal to avoid downgrade."
+              : sub?.cancel_at_period_end && periodEnd
+              ? `Set to cancel on ${periodEnd.toLocaleDateString()}. Resubscribe any time from the portal.`
+              : periodEnd
+              ? `Renews ${periodEnd.toLocaleDateString()}.`
+              : "Subscription active."}
           </div>
         </div>
-        <StatusPill tone={tone}>{pct.toFixed(0)}% used</StatusPill>
+        <StatusPill tone={status === "past_due" ? "orange" : tone}>{pct.toFixed(0)}% used</StatusPill>
       </div>
       <div style={{ marginTop: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--ink-3)" }}>
@@ -1234,12 +1268,52 @@ export function PlanCard() {
             ))}
         </div>
       )}
-      <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 6, background: "var(--surface-2, rgba(0,0,0,0.03))", fontSize: 12, color: "var(--ink-2)" }}>
-        Need more space? Either raise the per-user quota from the
-        admin console (operators only) or run a sweep on your trash
-        from the "Your data" tab. Paid tiers + invoice exports will be
-        added when the project starts charging.
+      <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+        {tier === "free" ? (
+          <a
+            href="/billing"
+            style={{
+              display: "inline-block", padding: "10px 16px",
+              borderRadius: 8, background: "var(--ink)", color: "var(--surface)",
+              textDecoration: "none", fontSize: 13, fontWeight: 600,
+            }}
+          >
+            Upgrade plan
+          </a>
+        ) : (
+          <>
+            <button
+              onClick={onManage}
+              style={{
+                padding: "10px 16px", borderRadius: 8, border: "none",
+                background: "var(--ink)", color: "var(--surface)",
+                fontSize: 13, fontWeight: 600, cursor: "pointer",
+              }}
+              disabled={!sub?.stripe_configured}
+            >
+              Manage subscription
+            </button>
+            <a
+              href="/billing"
+              style={{
+                display: "inline-block", padding: "10px 16px",
+                borderRadius: 8, border: "1px solid var(--line)",
+                background: "transparent", color: "var(--ink)",
+                textDecoration: "none", fontSize: 13, fontWeight: 600,
+              }}
+            >
+              Change plan
+            </a>
+          </>
+        )}
       </div>
+      {!sub?.stripe_configured && (
+        <div style={{ marginTop: 10, fontSize: 11, color: "var(--ink-3)" }}>
+          Billing isn't configured on this deployment — paid plans
+          are disabled. Operators: set <code>STRIPE_SECRET_KEY</code>
+          and friends in <code>.env</code>.
+        </div>
+      )}
       {user?.is_superuser && (
         <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-3)" }}>
           Superuser? Per-user quota override lives in <code>/admin → Users</code>.

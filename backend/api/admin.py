@@ -512,10 +512,15 @@ async def admin_models(
     for r in runs:
         runs_by_id.setdefault(r["model_id"], []).append(r)
     models = []
+    enabled_resident_mb = 0
+    enabled_per_inference_mb = 0
     for m in list_configured_models():
         rs = runs_by_id.get(m["id"], [])
         # Latest run wins (`list_model_runs` already orders desc).
         latest = rs[0] if rs else None
+        if m.get("enabled"):
+            enabled_resident_mb += int(m.get("vram_resident_mb") or 0)
+            enabled_per_inference_mb += int(m.get("vram_per_inference_mb") or 0)
         models.append({
             **m,
             "state": (latest or {}).get("state", "configured"),
@@ -525,10 +530,39 @@ async def admin_models(
             "worker_id": (latest or {}).get("worker_id"),
             "load_count": len(rs),
         })
+
+    # GPU sample shape varies by backend (torch.cuda, nvidia-smi,
+    # WMI fallback). We pick the first detected device's free/total
+    # so the dashboard can compare "needed" vs. "available."
+    devices = (gpu.get("devices") or [])
+    total_mb: int | None = None
+    free_mb: int | None = None
+    if devices:
+        first = devices[0]
+        for key in ("memory_total_mb", "vram_total_mb", "total_mb"):
+            if first.get(key) is not None:
+                total_mb = int(first[key])
+                break
+        for key in ("memory_free_mb", "vram_free_mb", "free_mb"):
+            if first.get(key) is not None:
+                free_mb = int(first[key])
+                break
+
     return {
         "models": models,
         "inference_backend": backend_label,
         "gpu_available": bool(gpu.get("available")),
+        # VRAM accounting — used by the admin Models tab's
+        # "How much VRAM for N concurrent users" estimator. The FE
+        # computes total_for_n = resident + n * per_inference; we
+        # send the components plus the GPU's headroom so the tab can
+        # color-code "fits" / "tight" / "overcommitted."
+        "vram": {
+            "resident_mb_total": enabled_resident_mb,
+            "per_inference_mb_total": enabled_per_inference_mb,
+            "gpu_total_mb": total_mb,
+            "gpu_free_mb": free_mb,
+        },
     }
 
 

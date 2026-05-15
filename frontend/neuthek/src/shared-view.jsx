@@ -13,7 +13,6 @@
 import React, { useEffect, useState } from "react";
 import { tokens } from "@/api/client";
 import { claimShare, extractEmailFromHash, previewShare } from "@/api/shares";
-import { SharedAssetView } from "./shared-asset-view.jsx";
 import { useAuthStore } from "@/stores/authStore";
 
 export function SharedView({ token }) {
@@ -22,9 +21,11 @@ export function SharedView({ token }) {
   const bootstrap = useAuthStore((s) => s.bootstrap);
 
   const [preview, setPreview] = useState(null);
-  const [claim, setClaim] = useState(null);
   const [error, setError] = useState("");
-  const [phase, setPhase] = useState("loading"); // loading | needs_signup | viewing | error
+  // loading | needs_signup | error. The previous "viewing" phase is
+  // gone — signed-in claim success window.location.replace's to the
+  // recipient's own /?view=shared tab.
+  const [phase, setPhase] = useState("loading");
 
   useEffect(() => { bootstrap(); }, [bootstrap]);
 
@@ -41,23 +42,20 @@ export function SharedView({ token }) {
       const hasToken = !!tokens.get();
       if (hasToken && user) {
         // Logged in — try to claim. If it works, we're a recipient.
-        // Fetch the public preview metadata in parallel so the
-        // viewer header has the filename + sharer name without a
-        // second round trip. Email comes from the URL fragment if
-        // the sharer included it; if not we can't run preview (it
-        // requires email pinning), and the viewer falls back to
-        // generic copy.
+        // Once the grant is bound to this user, we drop them into
+        // their own app's Shared tab instead of rendering a
+        // standalone viewer. The shared item opens there in a modal
+        // preview, and the user stays inside their library context
+        // (sidebar, search, etc.) rather than landing on a one-off
+        // tab that doesn't link back. The previous standalone
+        // SharedAssetView is still mounted in the unauth public
+        // landing flow below — receivers who haven't signed up yet
+        // need the standalone "claim my account first" UX.
         try {
-          const [c, p] = await Promise.all([
-            claimShare(token),
-            emailFromHash
-              ? previewShare(token, emailFromHash).catch(() => null)
-              : Promise.resolve(null),
-          ]);
+          const c = await claimShare(token);
           if (cancelled) return;
-          setClaim(c);
-          if (p) setPreview(p);
-          setPhase("viewing");
+          window.location.replace(`/?view=shared&share=${encodeURIComponent(c.share_id)}`);
+          return;
         } catch (e) {
           // Claim failed — fall back to the public preview so we can
           // tell the user "this link isn't for this account" without
@@ -138,19 +136,9 @@ export function SharedView({ token }) {
     );
   }
 
-  if (phase === "viewing") {
-    return (
-      <SharedAssetView
-        shareId={claim.share_id}
-        claim={{
-          ...claim,
-          image_filename: preview?.image_filename,
-          image_category: preview?.image_category || "image",
-        }}
-        sharerName={preview?.sharer_display_name}
-      />
-    );
-  }
+  // (No `phase === "viewing"` branch anymore — the signed-in claim
+  // success path window.location.replace's to /?view=shared&share=…
+  // and the recipient lands in their own app's Shared tab.)
 
   // needs_signup — public landing card.
   return (

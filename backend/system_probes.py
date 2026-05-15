@@ -1219,7 +1219,27 @@ def list_configured_models() -> list[dict[str, Any]]:
     """Build a registry from `settings` of every ML model neuthek talks
     to. Status is "configured" — actually-loaded state lives inside the
     ml-worker container and would need a worker→API IPC to surface;
-    that's tracked in C8.2 (model_runs table) and out of scope here."""
+    that's tracked in C8.2 (model_runs table) and out of scope here.
+
+    VRAM accounting (`vram_resident_mb` + `vram_per_inference_mb`)
+    powers the admin Models tab's "VRAM for N concurrent users"
+    estimator. Numbers are conservative defaults sourced from each
+    model card + measured peak in our profile harness; tweak them
+    when you swap variants. The math the API does is:
+
+        total_for_n = resident + n * per_inference
+
+    `resident` is the weights cost — paid once per ml-worker that
+    has the model loaded. `per_inference` is the activation peak for
+    a single forward pass; serial workers (current default) only pay
+    this once at a time, but a multi-worker fleet pays it per worker.
+    The dashboard's "Concurrent users" input doubles as a fleet
+    sizing dial: 1 user ≈ 1 worker (today's reality), 10 users ≈ 10
+    workers if you scale out.
+
+    All numbers are MB. Defaults assume fp16 where the model
+    supports it; bump if you're running fp32 / no-quant variants.
+    """
     items: list[dict[str, Any]] = [
         {
             "id": "clip",
@@ -1228,6 +1248,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": settings.clip_pretrained,
             "role": "image embeddings",
             "enabled": True,
+            "vram_resident_mb": 1200,
+            "vram_per_inference_mb": 400,
         },
         {
             "id": "florence2",
@@ -1236,6 +1258,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": None,
             "role": "image captioning",
             "enabled": True,
+            "vram_resident_mb": 1700,
+            "vram_per_inference_mb": 900,
         },
         {
             "id": "caption_fallback",
@@ -1244,6 +1268,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": None,
             "role": "image captioning (fallback)",
             "enabled": True,
+            "vram_resident_mb": 900,
+            "vram_per_inference_mb": 300,
         },
         {
             "id": "qwen",
@@ -1252,6 +1278,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": None,
             "role": "summary rewriter",
             "enabled": True,
+            "vram_resident_mb": 3000,
+            "vram_per_inference_mb": 500,
         },
         {
             "id": "internvl2",
@@ -1260,6 +1288,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": None,
             "role": "rich VLM description",
             "enabled": bool(getattr(settings, "heavy_vlm_enabled", False)),
+            "vram_resident_mb": 8500,
+            "vram_per_inference_mb": 1500,
         },
         {
             "id": "retinaface",
@@ -1268,6 +1298,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": None,
             "role": "face detection",
             "enabled": True,
+            "vram_resident_mb": 300,
+            "vram_per_inference_mb": 200,
         },
         {
             "id": "arcface",
@@ -1276,6 +1308,8 @@ def list_configured_models() -> list[dict[str, Any]]:
             "variant": None,
             "role": "face embeddings",
             "enabled": True,
+            "vram_resident_mb": 500,
+            "vram_per_inference_mb": 200,
         },
     ]
     return items

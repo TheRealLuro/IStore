@@ -158,7 +158,8 @@ async def db_client(_test_db, monkeypatch) -> AsyncClient:
                     audit_log, cloud_files, cloud_links, feedback_events,
                     bandit_state, recovery_codes, image_geo, share_grants,
                     face_detections, faces, persons, consent_records,
-                    image_tags, folders, images, users
+                    image_tags, folders, images, stripe_events,
+                    subscriptions, users
                 RESTART IDENTITY CASCADE
                 """
             )

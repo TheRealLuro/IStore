@@ -55,7 +55,7 @@ export default function Hosting() {
               <li>GPU inference for CLIP embeddings on upload</li>
               <li>Same JWT + per-user isolation as the self-hosted build</li>
               <li>Per-account export and account deletion</li>
-              <li>Pricing: published before launch</li>
+              <li>Plans + pricing: published with the launch</li>
             </ul>
             <p style={{ marginTop: 20 }}>
               <Link to="/waitlist" className="btn btn--primary">Join waitlist</Link>

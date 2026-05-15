@@ -5,7 +5,32 @@ import { Toaster } from "react-hot-toast";
 import { App } from "../neuthek/src/app.jsx";
 import { SharedView } from "../neuthek/src/shared-view.jsx";
 import { AdminPage } from "../neuthek/src/admin-page.jsx";
+import {
+  BillingPage,
+  BillingCheckoutPage,
+  BillingReturnPage,
+} from "../neuthek/src/billing.jsx";
 import "../neuthek/styles/index.css";
+
+// Apply the saved theme BEFORE any component mounts so every entry
+// point — gallery, share viewer, admin dashboard, billing pages —
+// renders against the right CSS variable set on first paint. Without
+// this, /billing and /admin used to flash light-mode until <App/>'s
+// effect ran, which never fired on those routes (they don't mount
+// <App/>).
+function applyInitialTheme(): void {
+  try {
+    const saved = localStorage.getItem("neuthek.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.setAttribute("data-theme", saved);
+      return;
+    }
+  } catch {}
+  const prefersDark =
+    window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.setAttribute("data-theme", prefersDark ? "dark" : "light");
+}
+applyInitialTheme();
 
 // Path-based dispatch at boot. We avoid React Router so the gallery
 // app, the share viewer, and the admin dashboard each load only what
@@ -20,6 +45,15 @@ function bootstrap(): JSX.Element {
   }
   if (path === "/admin" || path.startsWith("/admin/")) {
     return <AdminPage/>;
+  }
+  if (path === "/billing/return") {
+    return <BillingReturnPage/>;
+  }
+  if (path === "/billing/checkout") {
+    return <BillingCheckoutPage/>;
+  }
+  if (path === "/billing" || path === "/billing/") {
+    return <BillingPage/>;
   }
   return <App/>;
 }

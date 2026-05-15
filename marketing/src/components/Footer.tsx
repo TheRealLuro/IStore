@@ -19,7 +19,6 @@ export default function Footer() {
           <ul className="footer__links">
             <li><Link to="/features">Features</Link></li>
             <li><Link to="/hosting">Hosting</Link></li>
-            <li><Link to="/pricing">Pricing</Link></li>
             <li><Link to="/roadmap">Roadmap</Link></li>
           </ul>
         </div>

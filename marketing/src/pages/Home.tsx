@@ -132,7 +132,7 @@ export default function Home() {
                 The hosted plan will run the same stack on
                 infrastructure we operate — backups, GPU inference,
                 HTTPS, account lifecycle handled — with the same
-                privacy posture. Pricing comes with the launch.
+                privacy posture. Plans published with the launch.
               </p>
               <p style={{ marginTop: 16 }}>
                 <Link to="/waitlist" className="btn btn--primary">Join waitlist</Link>

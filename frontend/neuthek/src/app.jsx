@@ -38,6 +38,7 @@ const AdminOverlay = React.lazy(() =>
   import("./admin.jsx").then((m) => ({ default: m.AdminOverlay })),
 );
 import { NewFolderModal } from "./folder-modals.jsx";
+import { SharedGalleryView } from "./shared.jsx";
 import { useAuthStore } from "@/stores/authStore";
 import {
   listFiles, getImageGeo, servedUrl, renameImage,
@@ -993,7 +994,37 @@ export function App() {
       toast.error(e?.detail || "Could not record consent");
     }
   };
-  const [view, setView] = useStateApp("gallery");
+  // The Shared tab is reachable two ways:
+  //   - Sidebar click (sets view="shared" directly)
+  //   - /share/{token} redirect after claim → /?view=shared&share=<id>
+  // Read the query string ONCE at mount so refreshing while on the
+  // Shared tab keeps the user there. Once consumed, the `share` param
+  // is stripped (see `consumeInitialShareId` below) so a follow-up
+  // refresh doesn't keep popping the preview.
+  const _initialViewParams = useMemoApp(() => {
+    if (typeof window === "undefined") return { view: "gallery", shareId: null };
+    const params = new URLSearchParams(window.location.search);
+    const v = params.get("view");
+    const sid = params.get("share");
+    return {
+      view: v === "shared" ? "shared" : "gallery",
+      shareId: sid || null,
+    };
+  }, []);
+  const [view, setView] = useStateApp(_initialViewParams.view);
+  const [initialShareId, setInitialShareId] = useStateApp(_initialViewParams.shareId);
+  // Strip the `share` query param once the Shared view consumes it.
+  const consumeInitialShareId = useRefApp(null);
+  consumeInitialShareId.current = () => {
+    setInitialShareId(null);
+    try {
+      const u = new URL(window.location.href);
+      if (u.searchParams.has("share")) {
+        u.searchParams.delete("share");
+        window.history.replaceState({}, "", u.toString());
+      }
+    } catch {}
+  };
   const [empty, setEmpty] = useStateApp(false);
   const [query, setQuery] = useStateApp("");
   const [sort, setSort] = useStateApp("recent");
@@ -1643,7 +1674,12 @@ export function App() {
           </div>
         )}
 
-        {isMap
+        {view === "shared"
+          ? <SharedGalleryView
+              initialShareId={initialShareId}
+              onClearShareParam={() => consumeInitialShareId.current && consumeInitialShareId.current()}
+            />
+          : isMap
           ? <React.Suspense fallback={<div style={{ padding: 40, color: "var(--ink-3)" }}>Loading map…</div>}>
               <MapView items={allFilesMapped} onPick={(f) => setSelectedFile(f)}/>
             </React.Suspense>

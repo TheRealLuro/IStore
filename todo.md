@@ -7,59 +7,7 @@
 This file tracks **what's still open** — broken, partial, or planned.
 Shipped work isn't listed here; read `git log` for that.
 
-> **Last shipped (2026-05-14/15)**: §1.1 + G1 sharing primitive
-> (`share_grants` table + 7-route API + public `/share/{token}` viewer
-> + ShareModal + bulk-share); §1.3 admin-overlay un-mock (all 6
-> previously-mock tabs read real state via `backend/system_probes.py`
-> + 6 new `/admin/*` endpoints; health rollup, friendly audit lines,
-> thermals + NICs, kind-badge GPU display). First slices of §C8.2
-> (`worker_heartbeats` + `model_runs` tables + worker emitter +
-> dashboard wiring) and §F1 (multi-vendor accelerator probes —
-> torch.cuda, IPEX-XPU, OpenVINO, WMI/lspci/PnP). 13 pytest cases
-> for sharing pass; full sharer + recipient + revoke flow + admin
-> overlay end-to-end smoke-tested in the browser. Before it: Sprint
-> B + B+ AI-quality work (Florence-2 multi-model pipeline, Qwen
-> rewriter, InternVL2 gated, PDF OCR, face re-detect cascade,
-> reverse-geocode, Activity log, Trash).
-> **Next up**: Sprint C (compliance + ship-blocking work). See §11.
-
----
-
-## 1. Currently broken / partial
-
-> Section closed as of 2026-05-15 — every item that was here is now
-> shipped. The historical record below stays in case operators want
-> to read the resolution notes.
-
-### 1.2 Settings backlog ✅ SHIPPED 2026-05-15
-All four sub-items closed:
-
-- **TOTP 2FA** (§1.2.2) — new migration 0024 adds
-  `users.totp_secret_enc` (Fernet-encrypted via `backend.secret_box`),
-  `totp_enabled`, `totp_verified_at`. New router
-  [backend/api/two_factor.py](backend/api/two_factor.py) wires
-  `/account/2fa/{setup,verify,disable,status}` +
-  `/auth/jwt/login-totp`. `UserManager.on_after_login` raises 401
-  `totp_required` when 2FA is on, so the standard login endpoint
-  can't issue a token for TOTP-enabled accounts. FE shows an inline
-  QR (rendered server-side via `qrcode`) + a code-entry step in the
-  sign-in form.
-- **Notifications** (§1.2.3) — `notification_prefs` table keyed
-  `(user_id, kind, channel)`; kinds = product_updates,
-  security_alerts, account_activity, storage_warnings; channels =
-  email + in_app. security_alerts default ON. Endpoints at
-  `/account/notifications` (GET / PATCH). Tab restored to the
-  Settings rail with a 4×2 toggle grid. Push channel deferred until
-  the service-worker pass.
-- **Plan / Invoices** (§1.2.4 *honest version*) — Account tab now
-  renders a `PlanCard` reading `/storage/usage` with the real
-  per-category breakdown + percent-of-quota meter tinted by
-  threshold. No fake invoices, no fake Stripe checkout — the card
-  says "no paid tier today" and leaves the upgrade affordance blank.
-  Real billing lands as a separate workstream.
-- **Per-scope `expires_at`** on Privacy rows — surfaced in `subFor`
-  alongside "Granted …". The backend's been returning it since the
-  consent state machine landed; the FE just wasn't formatting it.
+**Next up:** Sprint C (compliance + ship-blocking work). See §11.
 
 ---
 
@@ -68,53 +16,6 @@ All four sub-items closed:
 > NEVER mark these "done" until verified end-to-end with tests + a
 > security review. Consent does not override illegal storage, secret
 > leakage, or insufficient encryption.
-
-### A1. Upload validation hardening ✅ SHIPPED 2026-05-15
-Every bullet that doesn't depend on the C1.5 archive uploader is in:
-
-- **MIME + magic bytes** — `detect_magic` in
-  [backend/upload_validation.py](backend/upload_validation.py) sniffs
-  the first 512 bytes (JPEG / PNG / GIF / WebP / TIFF / PDF / OOXML
-  ZIP / text) and ignores the client `Content-Type` for routing,
-  using it only to reject obvious mismatches via `_client_mime_ok`.
-- **Pillow re-decode + re-encode** — `_sanitize_image` calls
-  `verify()` then `load()`, rejects decode failures with 415, and
-  re-encodes JPEG/PNG/WebP/GIF/TIFF. The originals bucket only ever
-  sees the sanitized output, so trailing-data polyglots
-  (valid JPEG + appended `<script>`) lose the appended bytes at the
-  encoder boundary. Verified by
-  `test_image_polyglot_trailer_is_stripped_from_originals`.
-- **Strip dangerous metadata** — SVG and HTML/script uploads are
-  rejected outright; `_reject_scriptable_text` blocks `<script>`,
-  `<iframe>`, `javascript:` etc. in any text-shaped document.
-- **Per-user upload size + count rate limits** — `enforce_upload_limits`
-  in [backend/security.py](backend/security.py) keys per
-  `(user_id, ip)` for count and per-`user_id` for daily bytes; Redis
-  in prod, in-memory fallback in dev.
-- **Quarantine bucket** — every upload is mirrored to
-  `bucket_quarantine` in parallel with validation. On success the
-  quarantine blob is deleted (it was scratch). On failure it's
-  **kept** and an `upload.quarantined` audit row records the
-  quarantine key, byte count, client MIME, reason, and status code
-  — operators can inspect rejected payloads without those bytes
-  ever touching `originals`. Verified by
-  `test_quarantine_keeps_blob_on_rejection_and_audits` +
-  `test_quarantine_blob_is_deleted_on_success`.
-- **Single dispatch table keyed by `data_kind`** — `_VALIDATORS`
-  registry maps `image / document / video / other` to
-  per-kind handlers. New §E data types (contact / password / save /
-  iot_event) register via `register_validator(kind, fn)` without
-  touching the dispatch path. Verified by
-  `test_validator_dispatch_table_accepts_registration`.
-
-Still owing (not blocking §A1 closure):
-- **Reject zip bombs / oversized archive contents** — handled for
-  OOXML (`_inspect_ooxml`: entry count, ratio, depth, path
-  traversal, symlinks). The general archive uploader is **C1.5**;
-  when that lands its handler reuses `_inspect_ooxml`'s checks
-  with the same constants.
-- A retention sweeper for the quarantine bucket itself lives in
-  **§B4** — quarantined blobs persist indefinitely until then.
 
 ### A2. Encryption at rest + in transit 🟡
 - TLS everywhere — API, MinIO, frontend, admin tools. No plaintext
@@ -211,21 +112,19 @@ post-consent (wiring is half-there in
 - Email a download link; link is signed, expires in 24 h.
 
 ### B4. Retention sweepers ⏳
-- Originals: 30-day default, configurable per-user up to a cap.
+> Originals + quarantine sweepers shipped (see git log). Still owed:
 - Bandit telemetry: 90 days then anonymize.
 - Audit log: 1 year then archive.
 - Deleted-account grace: 30 days then hard-delete everything.
 - Each sweeper writes to the audit log so we can prove deletion happened.
+- Per-user retention cap (originals horizon) — see **C4.5**.
 
 ---
 
 ## 4. Product features
 
 ### C1. Folders, files, naming, organization
-- ✅ **C1.1 Rename files** — shipped Sprint A. `PATCH /images/{id}/name`
-  with centralized `validate_image_filename` validator (path separators,
-  reserved Windows names, extension preservation, 255-byte cap, control
-  chars).
+> C1.1 Rename + C1.5 Archive uploads (zip / tar) shipped — see git log.
 - ⏳ **C1.2 AI-suggested smart names**: "Suggest a name" affordance on
   rename that asks the existing summarizer for 3 short, filename-safe
   proposals from content (e.g. "Whiteboard sketch — auth flow"). Reuses
@@ -238,16 +137,9 @@ post-consent (wiring is half-there in
 - ⏳ **C1.4 Clear search history**: search bar keeps recent queries
   with no clear control. Add a "Clear history" button at the dropdown
   bottom + `DELETE /search/history` endpoint.
-- ⏳ **C1.5 Archive uploads (zip / 7z / tar / rar)** — blocked on **A1**:
-  1. `POST /folders/upload-archive` (multipart). Cap raw size ~200 MB.
-  2. Inspect before extracting: total uncompressed ≤ 5× compressed,
-     entry count ≤ 5 000, max depth ≤ 10, no `..` or absolute paths,
-     no symlinks.
-  3. Auto-create folder from archive stem; route every entry through
-     the existing image upload pipeline so MIME / magic-bytes /
-     bandit-compression all apply.
-  4. Persist `source_archive_id` (column already added in 0010) so a
-     future re-pack endpoint can rebuild.
+- ⏳ **C1.5+ 7z / RAR support**: optional `py7zr` / `rarfile` extras to
+  extend the archive uploader beyond zip + tar. Today's endpoint
+  surfaces a clear 415 ("repack as zip or tar.gz") for those headers.
 - ⏳ **C1.6 Tag system (status-as-tag unification)**: user intent is
   "status should just be tags." Add a generic `tags` table + many-to-
   many `image_tags`, migrate `images.status` / `images.status_color`
@@ -353,23 +245,11 @@ Tokens close to Apple HIG, shadows strictly small
 (`tracking-[-0.01em]`).
 
 ### C8. Dev / Admin dashboard
-- ✅ **C8.1 Visual / UX overhaul** SHIPPED 2026-05-15. Empty / loading /
-  error states on every tab, health rollup banner, human-readable
-  audit/log lines, filter chips on Audit + Logs, **routed `/admin`
-  page** alongside the modal (with an "open as page →" link),
-  **global search** across users / audit / images via
-  `GET /admin/search`, **bulk Users actions** (bulk quota, bulk
-  delete superuser-only, bulk revoke-consent) wired via
-  `POST /admin/users/{bulk-quota, bulk-delete, bulk-revoke-consent}`.
-- 🟡 **C8.2 Model + worker visibility** — operator-side bits shipped.
-  `worker_heartbeats` + `model_runs` tables (migration 0023),
-  `backend/heartbeats.py` emitter, the ml-worker ships a one-shot
-  accelerator snapshot in heartbeat metadata, the Models tab shows
-  live device + GPU memory + last-used, MinIO `istore-models`
-  checkpoint bucket auto-created at boot. Still open:
-  - Training-run telemetry (current step / loss curve / ETA) lands
-    when D6 fine-tuning lands — extend `model_runs` with
-    `started_at` / `finished_at` / `val_loss` / `artifact_key` then.
+> C8.1 visual overhaul + C8.2 model/worker visibility (heartbeats,
+> model_runs, VRAM-per-user estimator) shipped — see git log.
+- ⏳ **C8.2+ Training-run telemetry** (step / loss curve / ETA) — lands
+  alongside D6 fine-tuning. Extends `model_runs` with `started_at` /
+  `finished_at` / `val_loss` / `artifact_key`.
 - ⏳ **C8.3 Quick-action runners**: from the dev view, trigger a
   re-summarize, re-embed, or re-detect-faces for a user / folder /
   date range without leaving the UI.
@@ -536,22 +416,9 @@ device timeline + simple chart. Retention is per-device with a hard cap.
 > CUDA, AMD ROCm, Intel ARC / oneAPI, Apple Silicon Metal, or
 > CPU-only — without manual model-format wrangling.
 
-### F1. Backend runs on all major GPU/CPU vendors 🟡
-**Detection + dispatch** shipped 2026-05-15. `backend.vision.runtime`
-chains torch.cuda → torch.backends.mps → torch.xpu (IPEX) → CPU and
-writes the choice to `runtime.toml` at first probe so model loads
-don't re-detect every time. The worker's accelerator probe lists
-everything torch.cuda, IPEX-XPU, OpenVINO `available_devices`, WMI
-Win32_PnPEntity ("AI Boost"/NPU) and lspci can see, and ships the
-snapshot in heartbeat metadata so the API container's Hardware tab
-renders the GPU/NPU/iGPU view with CUDA / iGPU / NPU kind badges
-even when the API process has no first-hand access. NVIDIA GPU
-passthrough is wired into the default `docker-compose.yml`; Intel
-iGPU + NPU passthrough is gated behind the opt-in
-`docker-compose.intel.yml` overlay (needs Intel WSL graphics + NPU
-drivers on the host).
-
-**Still open**:
+### F1. Backend runs on all major GPU/CPU vendors ⏳
+> Detection + dispatch + heartbeat-driven accelerator probe shipped —
+> see git log. Still open:
 - AMD ROCm (Linux) — needs `torch + onnxruntime-rocm` wheels + a
   ROCm CI image. The torch dispatcher will pick it up automatically
   when present.
@@ -580,17 +447,6 @@ users.
 
 > User intent: when documents or slideshows are shared, there should
 > be an edit tab where people can comment or edit them as a team.
-
-### G1. Sharing primitive ✅ SHIPPED 2026-05-14
-Per-image share grants live at
-[backend/api/shares.py](backend/api/shares.py) (7 routes), backed by
-the `share_grants` table (migration 0022). Argon2-hashed tokens,
-recipient-email pinning, server-side 1-day cap for new-user
-recipients, brute-force lockout on `/shares/claim`, public
-`/share/{token}` viewer that doesn't expose the rest of the owner's
-library. Permission set is currently `view_download`; comment/edit
-are tracked under **G2 / G3** below. 13 pytest cases pass in
-[tests/test_shares.py](tests/test_shares.py).
 
 ### G2. Comments ⏳
 `comments(id, asset_id, author_user_id_or_email, body, anchor_json,
@@ -680,58 +536,56 @@ in its own commit so blame stays useful and reverts are cheap.
 
 ---
 
+## 10b. Billing
+
+### J1. Stripe billing — follow-ups ⏳
+> Free / Pro / Business tiers, Embedded Checkout, signature-verified
+> webhooks, Customer Portal handoff all shipped — see git log + the
+> §J1 plumbing in [backend/billing.py](backend/billing.py) /
+> [backend/api/billing.py](backend/api/billing.py) /
+> [frontend/neuthek/src/billing.jsx](frontend/neuthek/src/billing.jsx).
+> Operator setup steps live in [.env.example](.env.example). Still
+> owing:
+- **Automatic Tax** — disabled in checkout until the operator wires
+  up Stripe Tax in the dashboard.
+- **VAT / GST collection** — out of scope until Stripe Tax is set up.
+- **`past_due` grace UI** — status flips but tier doesn't yank;
+  needs a dedicated banner + grace clock during Stripe dunning.
+- **Promo codes / annual upgrade discounts** — Stripe supports
+  natively, needs route exposure.
+- **In-app plan-change flow** — today plan swap goes through Stripe's
+  Customer Portal. Could land `subscription.modify(...)` direct if
+  the friction proves real.
+
+---
+
 ## 11. Recommended priority order
-
-> Each item links back to its detail above. Sprint A + B + B+ landed
-> (2026-05-13/14). Start at C.
-
-### Sprint B — AI quality ✅ LANDED 2026-05-14
-
-D1 multi-model pipeline (Florence-2 regions + OD + OpenCLIP concept
-vocab + gated InternVL2-4B + Qwen synthesis), D2 PDF OCR fallback via
-PyMuPDF, D8 face re-detect cascade with mediapipe — all shipped. Doc
-preview rasterize + summary `topic`/prompt sharpening landed in the
-B+ patch.
 
 ### Sprint C — compliance (next, ship-blocking; ~1 week)
 
-4. **A6** audit existing PRIVACY.md / SECURITY.md /
+1. **A6** audit existing PRIVACY.md / SECURITY.md /
    DATA_PROCESSING.md; fill gaps; wire consent log row per grant.
-5. **A1** finishing — per-user rate limits + persistent quarantine
-   bucket (most of the validator already shipped).
-6. **A5** deletion integration test (uses fixtures in
+2. **A5** deletion integration test (uses fixtures in
    `tests/conftest.py`).
-7. **A2** SSE/TLS posture confirmation in prod compose.
+3. **A2** SSE/TLS posture confirmation in prod compose.
 
 ### Sprint D — sharing + onboarding (~2 weeks)
 
-8. ✅ **§1.1 + G1** sharing primitive — `share_grants` table + 7-route
-   `/shares/...` API + ShareModal + public viewer. (Landed 2026-05-14.)
-8a. ✅ **§1.2** Settings backlog — TOTP 2FA + Notifications +
-    Plan card + per-scope Expires_at. (Landed 2026-05-15.)
-9. **G2** comments — `comments` table + pin overlay + thread panel.
-10. **C5.1** setup script — platform detect, GPU probe, `.env`
-    generation, `docker compose` or native install.
-11. **C5.2** B2B migration — bulk import + per-source scopes +
-    dry-run + provider plugins.
-12. **C2** Drive cloud sync — pull-only, AI-off by default per
-    Limited Use.
+4. **G2** comments — `comments` table + pin overlay + thread panel.
+5. **C5.1** setup script — platform detect, GPU probe, `.env`
+   generation, `docker compose` or native install.
+6. **C5.2** B2B migration — bulk import + per-source scopes +
+   dry-run + provider plugins.
+7. **C2** Drive cloud sync — pull-only, AI-off by default per
+   Limited Use.
 
 ### Sprint E — multi-axis filters + UX polish (~1 week)
 
-13. **C9** multi-axis image filtering — backend params + chip UI +
-    URL persistence.
-14. **C3** map refinements — supercluster migration once > 2 000 pins
-    (reverse-geocode fill already shipped).
-15. **C4.2** "Me" → display-name binding.
-16. **§1.2** surface or hide remaining backend-gated Settings rows
-    (Plan/Invoices/Notifications/2FA TOTP/per-scope `expires_at`).
-17. ✅ **§1.3** unmock the remaining Admin overlay tabs — all 6 tabs
-    read real state, health rollup banner, human-readable
-    audit/log/task rendering, kind-badged GPU/NPU view, first slices
-    of **C8.2** (worker_heartbeats + model_runs) and **F1**
-    (multi-vendor accelerator detection) landed alongside.
-    (Landed 2026-05-15.)
+8. **C9** multi-axis image filtering — backend params + chip UI +
+   URL persistence.
+9. **C3** map refinements — supercluster migration once > 2 000 pins
+   (reverse-geocode fill already shipped).
+10. **C4.2** "Me" → display-name binding.
 
 ### Sprint F — multi-data-type platform (months)
 
@@ -744,24 +598,16 @@ B+ patch.
 
 ### Sprint G — hardware + collab + hygiene (longest tail)
 
-26. 🟡 **F1** hardware dispatch — detection + torch dispatch
-    (CUDA→MPS→XPU→CPU) + `runtime.toml` shipped 2026-05-15. Still
-    owing: ROCm wheels, OpenVINO inference path (model conversion to
-    IR for NPU), AMD quantization variants.
-27. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
+11. **F1** tail — ROCm wheels, OpenVINO inference path (NPU), AMD
+    quant variants.
+12. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
     CLIP / RetinaFace INT8).
-28. **F3** Lite profile.
-29. **G3** real-time team editing (y.js + WebSocket).
-30. **D6** fine-tune from search (once **C8.2** ships).
-31. **D7** best-of-set picker.
-32. **H1–H4** repo hygiene + CI tightening.
-33. **I.bis** project rename — admin churn, parallelizable.
-
-### Things to NOT work on yet
-- Plan / Invoices / Stripe billing UI — no payment backend.
-- TOTP 2FA — recovery codes adequate; lower priority than **C6**.
-- Activity log panel UI — needs a per-user audit-export endpoint.
-- Plan-card pricing copy — premature.
+13. **F3** Lite profile.
+14. **G3** real-time team editing (y.js + WebSocket).
+15. **D6** fine-tune from search (once C8.2 training telemetry ships).
+16. **D7** best-of-set picker.
+17. **H1–H4** repo hygiene + CI tightening.
+18. **I.bis** project rename — admin churn, parallelizable.
 
 ---
 

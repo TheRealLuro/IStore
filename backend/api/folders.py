@@ -19,15 +19,28 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.archive_upload import extract_archive_into_folder
 from backend.auth.users import current_active_user
+from backend.config import settings
 from backend.db import get_session
 from backend.models import Folder, Image, User
 from backend.schemas import FolderCreate, FolderRead, FolderUpdate
+from backend.security import enforce_upload_limits
+from backend.upload_validation import UploadValidationError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/folders", tags=["folders"])
@@ -306,6 +319,79 @@ async def create_folder_with_images(
     await session.commit()
     await session.refresh(folder)
     return _to_read(folder, item_count=moved, subfolder_count=0)
+
+
+@router.post("/upload-archive", status_code=status.HTTP_201_CREATED)
+async def upload_archive(
+    request: Request,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    file: Annotated[UploadFile, File(...)],
+    parent_folder_id: Annotated[UUID | None, Form()] = None,
+) -> dict:
+    """§C1.5 — Extract a zip / tar archive into a new auto-named folder.
+
+    Each entry is routed through the standard `store_upload` pipeline,
+    so per-file MIME / magic-bytes / Pillow re-encode / quarantine /
+    bandit-compression all apply. Archive-level safety (entry count,
+    expansion ratio, path traversal, symlinks, depth) uses the same
+    constants as `_inspect_ooxml` so OOXML and general archives share
+    one security posture.
+
+    Body: multipart with a single `file` field. Optional
+    `parent_folder_id` form field places the auto-created folder under
+    an existing folder; default is root.
+
+    Response shape:
+      {
+        "folder_id":         "<uuid>",
+        "source_archive_id": "<uuid>",
+        "accepted":          int,   # entries that landed as Image rows
+        "rejected":          int,   # entries `store_upload` rejected
+        "skipped":           int,   # directory / empty entries
+        "rejected_details":  [ { "path", "reason", "status" }, ... ]
+      }
+    """
+    raw = await file.read(settings.upload_max_bytes + 1)
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty upload")
+    if len(raw) > settings.upload_max_bytes:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            "Archive exceeds the per-file size limit.",
+        )
+    # The archive is one upload as far as the rate limiter is concerned —
+    # per-entry counts would let a small zip flood the daily byte ceiling
+    # without the limiter noticing.
+    await enforce_upload_limits(str(user.id), request, len(raw))
+
+    if parent_folder_id is not None:
+        parent = await session.get(Folder, parent_folder_id)
+        if (
+            parent is None
+            or parent.user_id != user.id
+            or parent.deleted_at is not None
+        ):
+            raise HTTPException(404, "Parent folder not found")
+
+    try:
+        result = await extract_archive_into_folder(
+            session=session,
+            user=user,
+            raw_bytes=raw,
+            filename=file.filename,
+            parent_folder_id=parent_folder_id,
+        )
+    except UploadValidationError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    return {
+        "folder_id": str(result.folder_id),
+        "source_archive_id": str(result.source_archive_id),
+        "accepted": result.accepted,
+        "rejected": result.rejected,
+        "skipped": result.skipped_dirs,
+        "rejected_details": result.rejected_details,
+    }
 
 
 @router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)

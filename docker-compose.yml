@@ -85,6 +85,15 @@ services:
       MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-istore-quarantine}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
       JWT_LIFETIME_SECONDS: "86400"
+      # Fernet key for symmetric encryption of TOTP secrets + cloud-OAuth
+      # refresh tokens (backend.secret_box). MUST be stable across
+      # rebuilds — otherwise stored ciphertext becomes unreadable and
+      # users with 2FA can't sign in. Compose pulls it from the host's
+      # `.env` via the `${VAR}` substitution. If the host doesn't have
+      # one yet, secret_box auto-bootstraps a fresh key on first call,
+      # but that key won't persist past a `down/up` cycle unless this
+      # variable carries it forward.
+      CLOUD_ENCRYPTION_KEY: ${CLOUD_ENCRYPTION_KEY:-}
       FRONTEND_BASE_URL: http://localhost:5173
       REQUIRE_SIGNED_DOWNLOADS: "false"
       # HF cache lives on the model_cache volume so a rebuild doesn't
@@ -155,6 +164,9 @@ services:
       MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-istore-faces}
       MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-istore-quarantine}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
+      # Same Fernet key as the API container — the worker reads
+      # encrypted refresh tokens for cloud-sync jobs.
+      CLOUD_ENCRYPTION_KEY: ${CLOUD_ENCRYPTION_KEY:-}
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
       WORKER_LOG_LEVEL: INFO

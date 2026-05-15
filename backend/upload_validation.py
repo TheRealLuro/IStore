@@ -247,30 +247,62 @@ def _reject_scriptable_text(data: bytes) -> None:
         raise UploadValidationError("Scriptable document content is not accepted.", 415)
 
 
+def _inspect_zip_safety(
+    zf: zipfile.ZipFile,
+    *,
+    error_label: str,
+) -> list[zipfile.ZipInfo]:
+    """Shared zip-bomb / path-traversal / symlink inspection.
+
+    Used by both `_inspect_ooxml` (OOXML containers — `.docx` / `.xlsx` /
+    `.pptx`) and the §C1.5 general archive uploader. Same constants
+    (`upload_max_archive_entries`, `upload_max_archive_ratio`,
+    `upload_max_archive_depth`) so the security posture is identical
+    on every code path that ingests a ZIP.
+
+    `error_label` is spliced into the rejection detail so the user sees
+    "Document archive…" vs. "Archive…" depending on the upload route.
+    Returns the validated list of entries so the caller can iterate them
+    without re-scanning.
+    """
+    infos = zf.infolist()
+    if len(infos) > settings.upload_max_archive_entries:
+        raise UploadValidationError(f"{error_label} has too many entries.", 415)
+    compressed = sum(max(i.compress_size, 0) for i in infos) or 1
+    uncompressed = sum(max(i.file_size, 0) for i in infos)
+    if uncompressed > compressed * settings.upload_max_archive_ratio:
+        raise UploadValidationError(
+            f"{error_label} expansion ratio is too high.", 415
+        )
+    for info in infos:
+        name = info.filename.replace("\\", "/")
+        path = PurePosixPath(name)
+        parts = [p for p in path.parts if p not in {"", "."}]
+        if name.startswith("/") or ".." in parts:
+            raise UploadValidationError(
+                f"{error_label} contains an unsafe path.", 415
+            )
+        if len(parts) > settings.upload_max_archive_depth:
+            raise UploadValidationError(
+                f"{error_label} nesting is too deep.", 415
+            )
+        # Unix symlink bit in external_attr.
+        if (info.external_attr >> 16) & 0o170000 == 0o120000:
+            raise UploadValidationError(
+                f"{error_label} contains a symlink.", 415
+            )
+    return infos
+
+
 def _inspect_ooxml(data: bytes, filename: str | None) -> None:
     try:
         with zipfile.ZipFile(BytesIO(data)) as zf:
-            infos = zf.infolist()
-            if len(infos) > settings.upload_max_archive_entries:
-                raise UploadValidationError("Document archive has too many entries.", 415)
-            compressed = sum(max(i.compress_size, 0) for i in infos) or 1
-            uncompressed = sum(max(i.file_size, 0) for i in infos)
-            if uncompressed > compressed * settings.upload_max_archive_ratio:
-                raise UploadValidationError("Document archive expansion ratio is too high.", 415)
+            infos = _inspect_zip_safety(zf, error_label="Document archive")
             names = {i.filename for i in infos}
             if "[Content_Types].xml" not in names:
-                raise UploadValidationError("Office document is missing content type metadata.", 415)
-            for info in infos:
-                name = info.filename.replace("\\", "/")
-                path = PurePosixPath(name)
-                parts = [p for p in path.parts if p not in {"", "."}]
-                if name.startswith("/") or ".." in parts:
-                    raise UploadValidationError("Document archive contains an unsafe path.", 415)
-                if len(parts) > settings.upload_max_archive_depth:
-                    raise UploadValidationError("Document archive nesting is too deep.", 415)
-                # Unix symlink bit in external_attr.
-                if (info.external_attr >> 16) & 0o170000 == 0o120000:
-                    raise UploadValidationError("Document archive contains a symlink.", 415)
+                raise UploadValidationError(
+                    "Office document is missing content type metadata.", 415
+                )
     except zipfile.BadZipFile as exc:
         raise UploadValidationError("Office document is not a valid ZIP container.", 415) from exc
 

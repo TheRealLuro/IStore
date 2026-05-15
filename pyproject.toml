@@ -37,6 +37,10 @@ dependencies = [
     # leaves the host).
     "pyotp>=2.9.0",
     "qrcode>=8.0",
+    # Stripe billing — embedded checkout, webhooks, customer portal.
+    # SDK imports lazily inside `backend/billing.py` so the API still
+    # boots when `STRIPE_SECRET_KEY` is empty (dev / self-host).
+    "stripe>=11.0",
 ]
 
 [project.optional-dependencies]

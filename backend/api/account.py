@@ -54,7 +54,7 @@ from backend.models import (
     Tag,
     User,
 )
-from backend.retention import sweep_expired_originals
+from backend.retention import sweep_expired_originals, sweep_expired_quarantine
 from backend.storage import storage
 from backend.trainer import apply_drift_discount, consume_feedback
 
@@ -581,6 +581,44 @@ async def admin_retention_sweep(
         blob_errors=res.blob_errors,
         rows_nulled=res.rows_nulled,
         bytes_freed=res.bytes_freed,
+    )
+
+
+class QuarantineSweepResponse(BaseModel):
+    scanned: int
+    blobs_deleted: int
+    blob_errors: int
+    bytes_freed: int
+    cutoff: str
+
+
+@admin_router.post("/quarantine/sweep", response_model=QuarantineSweepResponse)
+async def admin_quarantine_sweep(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_days: int | None = None,
+) -> QuarantineSweepResponse:
+    """§B4 — delete forensic-quarantine bytes past the retention window.
+
+    The `audit_log` row written at rejection time is preserved; only
+    the bytes in `bucket_quarantine` go away. Pass `?retention_days=N`
+    to override the configured default for a single sweep (useful
+    after a security incident when ops need a deeper trim).
+    """
+    if not user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Superuser required")
+    try:
+        res = await sweep_expired_quarantine(
+            session, retention_days=retention_days
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return QuarantineSweepResponse(
+        scanned=res.scanned,
+        blobs_deleted=res.blobs_deleted,
+        blob_errors=res.blob_errors,
+        bytes_freed=res.bytes_freed,
+        cutoff=res.cutoff_iso,
     )
 
 

@@ -800,3 +800,80 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# ----- Stripe billing (migration 0025) -----
+
+
+class Plan(Base):
+    """Seeded tier catalog (free / pro / business). Stripe Price IDs
+    live in env vars; the row records the env-var name so the runtime
+    can pull the live ID without a migration when Prices rotate."""
+
+    __tablename__ = "plans"
+
+    tier: Mapped[str] = mapped_column(String(16), primary_key=True)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    monthly_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    annual_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    monthly_price_id_env: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    annual_price_id_env: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    quota_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    upload_max_per_hour: Mapped[int] = mapped_column(nullable=False)
+    upload_max_bytes_per_day: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    features: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    sort_order: Mapped[int] = mapped_column(nullable=False, server_default="0")
+
+
+class Subscription(Base):
+    """One row per user (PK = user_id). Tier flips and interval swaps
+    (monthly ↔ annual) update this row in place — Stripe issues a new
+    subscription_id on plan change, so the latest ID overwrites the
+    previous."""
+
+    __tablename__ = "subscriptions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tier: Mapped[str] = mapped_column(String(16), nullable=False, server_default="free")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, server_default="active")
+    # 'month' | 'year' — NULL on the free seed row.
+    interval: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    current_period_start: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    current_period_end: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    cancel_at_period_end: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class StripeEvent(Base):
+    """Webhook idempotency table. `id` is the Stripe `evt_…` id;
+    presence means we've seen the event. `processed_at` flips once
+    the handler completes — a row with NULL processed_at is a
+    half-handled event that the next delivery can re-attempt."""
+
+    __tablename__ = "stripe_events"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    processed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )

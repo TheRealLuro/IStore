@@ -9,7 +9,6 @@ import Hosting from "./pages/Hosting";
 import Developers from "./pages/Developers";
 import Roadmap from "./pages/Roadmap";
 import Compare from "./pages/Compare";
-import Pricing from "./pages/Pricing";
 import Waitlist from "./pages/Waitlist";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
@@ -38,7 +37,6 @@ export default function App() {
           <Route path="/developers" element={<Developers />} />
           <Route path="/roadmap"    element={<Roadmap />} />
           <Route path="/compare"    element={<Compare />} />
-          <Route path="/pricing"    element={<Pricing />} />
           <Route path="/waitlist"   element={<Waitlist />} />
           <Route path="/privacy"    element={<Privacy />} />
           <Route path="/terms"      element={<Terms />} />

@@ -891,8 +891,44 @@ function RealModelsTab({ open }) {
     staleTime: 30_000,
     refetchInterval: open ? 30_000 : false,
   });
+  // "Concurrent users" estimator — 1 ml-worker per user is the
+  // realistic shape today (queue is serial, but you'd scale workers
+  // to handle parallel load). Slider goes 1–20, default 1.
+  const [concurrent, setConcurrent] = useStateAd(1);
   if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
   if (!data) return null;
+
+  // Per-model totals at the current N. enabled_only — disabled models
+  // don't count toward the fleet's VRAM footprint.
+  const fmtMb = (mb) => {
+    if (mb == null || mb < 0) return "—";
+    if (mb < 1024) return `${Math.round(mb)} MB`;
+    return `${(mb / 1024).toFixed(1)} GB`;
+  };
+  const vram = data.vram || {};
+  const enabledModels = data.models.filter((m) => m.enabled);
+  const residentTotalMb = vram.resident_mb_total || 0;
+  const perInferenceTotalMb = vram.per_inference_mb_total || 0;
+  const totalForNMb = residentTotalMb + concurrent * perInferenceTotalMb;
+  const gpuTotalMb = vram.gpu_total_mb;
+  const gpuFreeMb = vram.gpu_free_mb;
+  // Color tone for the summary header — green if comfortable,
+  // amber if within 25% of total, red if over.
+  let fitsTone = "var(--ink-3)";
+  let fitsLabel = null;
+  if (gpuTotalMb != null) {
+    if (totalForNMb <= gpuTotalMb * 0.75) {
+      fitsTone = "var(--success)";
+      fitsLabel = "comfortable headroom";
+    } else if (totalForNMb <= gpuTotalMb) {
+      fitsTone = "var(--warning)";
+      fitsLabel = "tight — close to capacity";
+    } else {
+      fitsTone = "var(--danger)";
+      fitsLabel = "over budget — won't fit at this concurrency";
+    }
+  }
+
   return (
     <div>
       <div className="admin-callout" style={{ marginBottom: 14 }}>
@@ -905,6 +941,67 @@ function RealModelsTab({ open }) {
             : "No GPU detected — models load on CPU. Performance will be lower."}
         </p>
       </div>
+
+      {/* VRAM estimator — drives the right-hand "Total for N" column
+          and the summary card via the slider. */}
+      <div
+        className="admin-card"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto",
+          gap: 16,
+          alignItems: "center",
+          marginBottom: 14,
+          padding: 16,
+          background: "var(--surface)",
+          border: "1px solid var(--line)",
+          borderRadius: 12,
+        }}
+      >
+        <div style={{ display: "grid", gap: 4 }}>
+          <div className="admin-card__label" style={{ color: "var(--ink-3)", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+            Estimated VRAM for {concurrent} concurrent user{concurrent === 1 ? "" : "s"}
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+            <span style={{ fontSize: 24, fontWeight: 700, color: fitsTone }}>
+              {fmtMb(totalForNMb)}
+            </span>
+            {gpuTotalMb != null && (
+              <span style={{ fontSize: 13, color: "var(--ink-3)" }}>
+                of {fmtMb(gpuTotalMb)} {gpuFreeMb != null && `(${fmtMb(gpuFreeMb)} free)`}
+              </span>
+            )}
+            {fitsLabel && (
+              <span style={{ fontSize: 12, color: fitsTone, fontWeight: 600 }}>
+                · {fitsLabel}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
+            {fmtMb(residentTotalMb)} resident + {concurrent} × {fmtMb(perInferenceTotalMb)} per-inference
+            · {enabledModels.length} enabled model{enabledModels.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        <div style={{ display: "grid", gap: 6, minWidth: 220, justifyItems: "stretch" }}>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", textAlign: "right" }}>
+            Concurrent users
+          </div>
+          <input
+            type="range"
+            min={1}
+            max={20}
+            step={1}
+            value={concurrent}
+            onChange={(e) => setConcurrent(Number(e.target.value))}
+            style={{ width: "100%", accentColor: "var(--ink)" }}
+            aria-label="Concurrent users to estimate"
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--ink-4)" }}>
+            <span>1</span><span>5</span><span>10</span><span>15</span><span>20</span>
+          </div>
+        </div>
+      </div>
+
       <table className="admin-table">
         <thead>
           <tr>
@@ -912,47 +1009,68 @@ function RealModelsTab({ open }) {
             <th>Model</th>
             <th>State</th>
             <th>Device</th>
-            <th style={{ textAlign: "right" }}>GPU mem</th>
+            <th style={{ textAlign: "right" }}>Resident VRAM</th>
+            <th style={{ textAlign: "right" }}>+/inference</th>
+            <th style={{ textAlign: "right" }}>Total for {concurrent}</th>
             <th>Last used</th>
           </tr>
         </thead>
         <tbody>
-          {data.models.map((m) => (
-            <tr key={m.id}>
-              <td>
-                <strong>{m.label}</strong>
-                <div style={{ color: "var(--ink-3)", fontSize: 11 }}>{m.role}</div>
-                <div style={{ color: "var(--ink-4)", fontSize: 10, fontFamily: "monospace" }}>{m.name}</div>
-              </td>
-              <td className="mono" style={{ color: "var(--ink-3)" }}>{m.variant || "—"}</td>
-              <td>
-                <span style={{
-                  fontSize: 11, padding: "2px 6px", borderRadius: 4,
-                  background: m.state === "loaded" ? "rgba(44, 122, 75, 0.12)" :
-                              m.state === "error" ? "rgba(192, 57, 43, 0.12)" :
-                              "rgba(0, 0, 0, 0.05)",
-                  color: m.state === "loaded" ? "var(--success, #2c7a4b)" :
-                         m.state === "error" ? "var(--danger, #c0392b)" :
-                         "var(--ink-3)",
-                }}>
-                  {m.state}
-                </span>
-              </td>
-              <td className="mono" style={{ color: m.device ? undefined : "var(--ink-3)" }}>
-                {m.device || (m.enabled ? "—" : "disabled")}
-              </td>
-              <td className="mono" style={{ textAlign: "right" }}>
-                {m.memory_allocated_bytes ? admBytes(m.memory_allocated_bytes) : "—"}
-              </td>
-              <td style={{ fontSize: 11, color: "var(--ink-3)" }}>{fmtRelativeTime(m.last_used_at)}</td>
-            </tr>
-          ))}
+          {data.models.map((m) => {
+            const resMb = m.vram_resident_mb || 0;
+            const perMb = m.vram_per_inference_mb || 0;
+            const total = m.enabled ? resMb + concurrent * perMb : 0;
+            return (
+              <tr key={m.id}>
+                <td>
+                  <strong>{m.label}</strong>
+                  <div style={{ color: "var(--ink-3)", fontSize: 11 }}>{m.role}</div>
+                  <div style={{ color: "var(--ink-4)", fontSize: 10, fontFamily: "monospace" }}>{m.name}</div>
+                </td>
+                <td className="mono" style={{ color: "var(--ink-3)" }}>{m.variant || "—"}</td>
+                <td>
+                  <span style={{
+                    fontSize: 11, padding: "2px 6px", borderRadius: 4,
+                    background: m.state === "loaded" ? "rgba(74, 222, 128, 0.14)" :
+                                m.state === "error" ? "rgba(248, 113, 113, 0.14)" :
+                                "var(--surface-3)",
+                    color: m.state === "loaded" ? "var(--success)" :
+                           m.state === "error" ? "var(--danger)" :
+                           "var(--ink-3)",
+                  }}>
+                    {m.state}
+                  </span>
+                </td>
+                <td className="mono" style={{ color: m.device ? undefined : "var(--ink-3)" }}>
+                  {m.device || (m.enabled ? "—" : "disabled")}
+                </td>
+                <td className="mono" style={{ textAlign: "right", color: m.enabled ? "var(--ink-2)" : "var(--ink-3)" }}>
+                  {fmtMb(resMb)}
+                </td>
+                <td className="mono" style={{ textAlign: "right", color: m.enabled ? "var(--ink-2)" : "var(--ink-3)" }}>
+                  {fmtMb(perMb)}
+                </td>
+                <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: m.enabled ? "var(--ink)" : "var(--ink-3)" }}>
+                  {m.enabled ? fmtMb(total) : "—"}
+                </td>
+                <td style={{ fontSize: 11, color: "var(--ink-3)" }}>{fmtRelativeTime(m.last_used_at)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
-      <div style={{ color: "var(--ink-3)", fontSize: 11, marginTop: 12 }}>
-        Models report load/unload via the worker_heartbeats / model_runs
-        tables (C8.2). State stays "configured" until the worker first
-        loads the model on a job — that's the truthful cold state.
+      <div style={{ color: "var(--ink-3)", fontSize: 11, marginTop: 12, lineHeight: 1.5 }}>
+        VRAM numbers are conservative estimates from each model card +
+        our profile harness, assuming fp16 where the model supports
+        it. "Resident" is the cost of holding weights loaded;
+        "+/inference" is peak activation memory for a single forward
+        pass. "Total for N" = resident + N × per-inference — accurate
+        when one ml-worker is dedicated per concurrent inference (the
+        scale-out shape). A single serial worker pays the resident
+        cost plus one inference regardless of queue length, so the
+        N=1 row is the floor for any deployment. Tweak the per-model
+        defaults in <code>backend/system_probes.py:list_configured_models</code>
+        when you change a variant or quantization level.
       </div>
     </div>
   );

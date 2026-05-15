@@ -19,6 +19,12 @@ _FILE_ENV_NAMES = {
     "BACKUP_AGE_RECIPIENT",
     "MINIO_SSE_KMS_KEY_ID_CONTENT",
     "MINIO_SSE_KMS_KEY_ID_BIOMETRIC",
+    # Stripe billing — secrets only. Publishable key and price IDs
+    # are not secret; they ship via plain env. The webhook secret is
+    # critical: a leak lets an attacker forge subscription state by
+    # POSTing crafted events to `/billing/webhook`.
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
 }
 
 
@@ -90,6 +96,12 @@ class Settings(BaseSettings):
     upload_max_archive_entries: int = Field(default=5_000)
     upload_max_archive_depth: int = Field(default=10)
     upload_max_archive_ratio: int = Field(default=5)
+    # §B4 — how long rejected-upload payloads sit in the quarantine
+    # bucket before the retention sweeper deletes them. The audit row
+    # written at rejection time persists forever; this controls only
+    # the bytes. Default 30 days gives ops a generous forensic
+    # window while keeping bucket growth bounded.
+    upload_quarantine_retention_days: int = Field(default=30)
 
     download_url_ttl_seconds: int = Field(default=300)
     require_signed_downloads: bool = Field(default=False)
@@ -176,9 +188,43 @@ class Settings(BaseSettings):
         default="http://localhost:8000/cloud/callback/google_drive"
     )
 
+    # ---- Stripe billing (migration 0025) ----
+    # All empty → billing endpoints return 503 and `users.quota_bytes`
+    # falls back to the per-user override or the global default. This
+    # is the dev / self-host default; production deploys set the
+    # secret + webhook secret + price IDs from the Stripe dashboard.
+    #
+    # NEVER commit the secret_key or webhook_secret — they live in
+    # `.env` (gitignored) or via `*_FILE` mounts (Docker/K8s secrets).
+    # publishable_key and price IDs are NOT secret and can ship in
+    # plain `.env`.
+    stripe_secret_key: str = Field(default="")
+    stripe_publishable_key: str = Field(default="")
+    stripe_webhook_secret: str = Field(default="")
+    # Stripe Price IDs (`price_…`) — one per (tier, interval). Empty
+    # values disable upgrades for that tier/interval but don't break
+    # the API. Operators paste these from Stripe Dashboard → Products.
+    stripe_price_id_pro_monthly: str = Field(default="")
+    stripe_price_id_pro_annual: str = Field(default="")
+    stripe_price_id_business_monthly: str = Field(default="")
+    stripe_price_id_business_annual: str = Field(default="")
+    # Where Stripe Embedded Checkout redirects after success. The FE
+    # serves a result page that polls /billing/subscription so the
+    # plan card flips as soon as the webhook lands.
+    stripe_checkout_return_url: str = Field(
+        default="http://localhost:5173/billing/return?session_id={CHECKOUT_SESSION_ID}"
+    )
+
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() not in {"dev", "test", "local"}
+
+    @property
+    def stripe_enabled(self) -> bool:
+        """True when the API has enough Stripe config to actually
+        sell something. Used by route handlers to 503 cleanly when
+        billing isn't set up (dev / self-host)."""
+        return bool(self.stripe_secret_key) and bool(self.stripe_webhook_secret)
 
     @model_validator(mode="after")
     def _normalize_values(self) -> "Settings":

@@ -69,8 +69,8 @@ function RealActivityLogPanel() {
             style={{
               minWidth: 8, alignSelf: "stretch",
               borderLeft: "2px solid",
-              borderColor: activityTone(e.action) === "green" ? "#34c759"
-                          : activityTone(e.action) === "orange" ? "#ff9500"
+              borderColor: activityTone(e.action) === "green" ? "var(--success)"
+                          : activityTone(e.action) === "orange" ? "var(--warning)"
                           : "var(--ink-3)",
               marginRight: 4,
             }}
@@ -676,7 +676,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                               panel={<RealTrashPanel onEmptied={() => tog("trash")}/>}/>
                 </div>
 
-                <div className="applist__label" style={{ color: "#ff3b30" }}>Danger zone</div>
+                <div className="applist__label" style={{ color: "var(--danger)" }}>Danger zone</div>
                 <div className="applist">
                   <Row icon="trash" tone="red" title="Delete account" desc="Permanently remove your library"
                        tail={<Chev/>} onClick={() => onOpenSubmodal?.("delete")}/>
