@@ -424,6 +424,74 @@ async def admin_system(
         "minio": minio_info,
         "health": health,
         "user_activity": activity,
+        # §A2 — encryption posture rollup so the admin Storage tab can
+        # show "are we encrypted?" at a glance without the operator
+        # piecing together env vars from three places.
+        "encryption": _encryption_posture(),
+    }
+
+
+def _encryption_posture() -> dict:
+    """Snapshot of every encryption knob the deployment exposes.
+
+    Returns a flat dict the FE renders into the System tab's
+    "Encryption posture" block. Values are deliberately copy-safe:
+    keys are present-or-absent (no key material leaks back to the
+    browser), and the boolean rollup (`ok`) is true iff every
+    in-scope knob is set to its hardened value.
+    """
+    transit_ok = (
+        settings.minio_secure
+        and not settings.frontend_base_url.startswith("http://")
+    )
+    sse_mode = settings.minio_sse_mode
+    sse_ok = sse_mode in {"sse-s3", "sse-kms"}
+    kms_keys_separated = (
+        sse_mode == "sse-kms"
+        and bool(settings.minio_sse_kms_key_id_content)
+        and bool(settings.minio_sse_kms_key_id_biometric)
+        and settings.minio_sse_kms_key_id_content != settings.minio_sse_kms_key_id_biometric
+    )
+    # Fernet key: validate without exposing the secret. Returns one
+    # of 'valid' / 'invalid' / 'unset'.
+    fernet_state = "unset"
+    if settings.cloud_encryption_key:
+        try:
+            from cryptography.fernet import Fernet  # noqa: PLC0415
+            Fernet(settings.cloud_encryption_key.encode())
+            fernet_state = "valid"
+        except Exception:
+            fernet_state = "invalid"
+    pg_at_rest = settings.postgres_at_rest_encryption or "unset"
+    backups_encrypted = bool(settings.backup_age_recipient)
+
+    in_scope_ok = (
+        transit_ok
+        and sse_ok
+        and (sse_mode != "sse-kms" or kms_keys_separated)
+        and fernet_state == "valid"
+        and (settings.is_production is False or pg_at_rest == "host_volume_confirmed")
+        and (settings.is_production is False or backups_encrypted)
+    )
+    return {
+        "ok": in_scope_ok,
+        "transit": {
+            "minio_secure": settings.minio_secure,
+            "frontend_https": not settings.frontend_base_url.startswith("http://"),
+        },
+        "object_storage": {
+            "sse_mode": sse_mode,
+            "kms_keys_separated": kms_keys_separated,
+        },
+        "secret_box": {
+            "fernet_key": fernet_state,  # valid | invalid | unset
+        },
+        "database": {
+            "at_rest": pg_at_rest,  # 'host_volume_confirmed' | other | unset
+        },
+        "backups": {
+            "age_recipient_set": backups_encrypted,
+        },
     }
 
 

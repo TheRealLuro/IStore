@@ -73,8 +73,52 @@ async def validate_production_settings() -> None:
         errors.append("POSTGRES_AT_REST_ENCRYPTION=host_volume_confirmed is required.")
     if settings.minio_sse_mode not in {"sse-s3", "sse-kms"}:
         errors.append("MINIO_SSE_MODE must be sse-s3 or sse-kms outside dev/test.")
+    if settings.minio_sse_mode == "sse-kms":
+        # When KMS is enabled, both key IDs MUST be set — falling back
+        # to SseS3 silently for the biometric scope defeats the §A2
+        # "separate keys for biometric vs. content" requirement and
+        # the operator would never notice the drift from the dashboard.
+        if not settings.minio_sse_kms_key_id_content:
+            errors.append(
+                "MINIO_SSE_KMS_KEY_ID_CONTENT is required when MINIO_SSE_MODE=sse-kms."
+            )
+        if not settings.minio_sse_kms_key_id_biometric:
+            errors.append(
+                "MINIO_SSE_KMS_KEY_ID_BIOMETRIC is required when MINIO_SSE_MODE=sse-kms."
+            )
+        if (
+            settings.minio_sse_kms_key_id_content
+            and settings.minio_sse_kms_key_id_biometric
+            and settings.minio_sse_kms_key_id_content == settings.minio_sse_kms_key_id_biometric
+        ):
+            errors.append(
+                "MINIO_SSE_KMS_KEY_ID_CONTENT and MINIO_SSE_KMS_KEY_ID_BIOMETRIC must "
+                "differ — same-key separation defeats the threat model."
+            )
     if not settings.backup_age_recipient:
         errors.append("BACKUP_AGE_RECIPIENT is required for encrypted backups.")
+    # CLOUD_ENCRYPTION_KEY is the Fernet key for TOTP secrets +
+    # cloud-OAuth refresh tokens. In prod we require the operator to
+    # set it explicitly — the secret_box auto-bootstrap is a dev
+    # convenience that writes an ephemeral key to /app/.env inside
+    # the container, which evaporates on rebuild and renders every
+    # piece of ciphertext unreadable. We've hit that bug in dev; we
+    # never want to hit it in prod.
+    if not settings.cloud_encryption_key:
+        errors.append(
+            "CLOUD_ENCRYPTION_KEY must be set explicitly (the dev auto-bootstrap "
+            "doesn't survive container rebuilds and would orphan every encrypted secret)."
+        )
+    else:
+        try:
+            from cryptography.fernet import Fernet  # noqa: PLC0415 — lazy import keeps boot light when cloud creds are off
+            Fernet(settings.cloud_encryption_key.encode())
+        except Exception:
+            errors.append(
+                "CLOUD_ENCRYPTION_KEY is not a valid Fernet key "
+                "(must be 44-char URL-safe base64). Regenerate with "
+                "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`."
+            )
     await require_redis_when_production()
     if errors:
         raise RuntimeError("Production configuration is unsafe: " + " ".join(errors))
