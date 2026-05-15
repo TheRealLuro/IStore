@@ -7,43 +7,25 @@
 This file tracks **what's still open** — broken, partial, or planned.
 Shipped work isn't listed here; read `git log` for that.
 
-> **Last shipped**: Sprint D first slice (2026-05-14/15) — per-image
-> sharing primitive: `share_grants` table (migration 0022), full
-> `/images/{id}/shares` + `/shares/...` API (7 routes), argon2-hashed
-> tokens, recipient-email pinning, server-side 1-day cap for
-> new-user recipients, brute-force lockout on the claim path, public
-> `/share/{token}` viewer with auth-gated claim, ShareModal in preview
-> panel, bulk-share in the action bar, Shared sidebar count wired to
-> `/shares/incoming`. 13 pytest cases pass; full sharer + recipient +
-> revoke flow smoke-tested in the browser end-to-end. Before it:
-> Sprint B + B+ (summary progress, multi-model image+doc pipeline,
-> Florence-2/OpenCLIP/InternVL2/Qwen, PDF OCR, summary_signals,
-> Starred, folder back, admin per-row, D8 face re-detect cascade
-> + mediapipe, reverse-geocode worker, Activity log + Trash).
-> Also shipped 2026-05-15: §1.3 admin-overlay un-mock — all 6
-> previously-mock tabs (Models / Tasks / Logs / System / Processes /
-> Hardware) now read real state via psutil + Redis + MinIO probes;
-> new module `backend/system_probes.py` + 6 new `/admin/*` endpoints.
+> **Last shipped (2026-05-14/15)**: §1.1 + G1 sharing primitive
+> (`share_grants` table + 7-route API + public `/share/{token}` viewer
+> + ShareModal + bulk-share); §1.3 admin-overlay un-mock (all 6
+> previously-mock tabs read real state via `backend/system_probes.py`
+> + 6 new `/admin/*` endpoints; health rollup, friendly audit lines,
+> thermals + NICs, kind-badge GPU display). First slices of §C8.2
+> (`worker_heartbeats` + `model_runs` tables + worker emitter +
+> dashboard wiring) and §F1 (multi-vendor accelerator probes —
+> torch.cuda, IPEX-XPU, OpenVINO, WMI/lspci/PnP). 13 pytest cases
+> for sharing pass; full sharer + recipient + revoke flow + admin
+> overlay end-to-end smoke-tested in the browser. Before it: Sprint
+> B + B+ AI-quality work (Florence-2 multi-model pipeline, Qwen
+> rewriter, InternVL2 gated, PDF OCR, face re-detect cascade,
+> reverse-geocode, Activity log, Trash).
 > **Next up**: Sprint C (compliance + ship-blocking work). See §11.
 
 ---
 
 ## 1. Currently broken / partial
-
-### 1.1 No backend for sharing ✅ SHIPPED 2026-05-14
-`share_grants` table (migration 0022) + full router at
-[backend/api/shares.py](backend/api/shares.py):
-`POST/GET /images/{id}/shares`, `DELETE /images/{id}/shares/{share_id}`,
-`GET /shares/incoming`, `POST /shares/claim`,
-`GET /shares/{share_id}/asset` + `/signed/{variant}`,
-`GET /shares/preview/{token}` (unauth, rate-limited). Sharer picks
-recipient email + duration; existing-user recipients get the sharer's
-duration, new users get a server-enforced 1-day window starting at
-claim. Tokens are urlsafe-base64-32 stored as argon2 hashes. Brute
-force protected via the existing `SecurityControlsMiddleware` lockout
-machinery. Preview panel "Shared with" row + bulk-action Share +
-public `/share/{token}` viewer all wired. 13 pytest cases pass in
-[tests/test_shares.py](tests/test_shares.py).
 
 ### 1.2 Settings: features still hidden until their backends ship
 The Settings rail (Account / Privacy / Security / AI features / Your
@@ -56,30 +38,6 @@ sections remain hidden because they each need a new backend surface:
 - **Per-scope `expires_at`** on Privacy rows — backend already
   returns it via `/consent/scopes`; UI shows only `granted_at` for now.
   Surface "Expires …" once retention preferences are user-controllable.
-
-### 1.3 Admin overlay non-Users tabs still mock ✅ SHIPPED 2026-05-15
-Every tab now reads real backend state. Six new endpoints in
-[backend/api/admin.py](backend/api/admin.py):
-`GET /admin/system` (uptime + DB pool + Redis + MinIO bucket sizes),
-`GET /admin/hardware` (CPU/memory/disks/GPU via psutil + torch.cuda
-fallback to nvidia-smi), `GET /admin/processes` (top-N by CPU%),
-`GET /admin/models` (configured model registry from settings),
-`GET /admin/tasks` (Redis queue depth + active set + recent audit
-rows), `GET /admin/logs` (audit log tail). New module
-[backend/system_probes.py](backend/system_probes.py) wraps psutil
-cross-platform with conservative None-on-failure shapes. FE wired
-in [admin.jsx](frontend/neuthek/src/admin.jsx) — every mock constant
-deleted, MOCK badge removed, sparklines now seeded from real
-samples. Smoke-tested in the browser end-to-end.
-
-Remaining future work (C8.2 / F1):
-- Per-model memory + load state needs ml-worker → API IPC
-  (a `model_runs` table per todo §C8.2).
-- ml-worker visibility on /admin/processes needs a
-  `worker_heartbeats` Redis-set or DB table when API + worker
-  run in separate containers.
-- Vendor-specific hardware probes (SMART, fans, thermals, PSU,
-  NIC) need per-vendor adapters per todo §F1.
 
 ---
 
@@ -339,19 +297,25 @@ Tokens close to Apple HIG, shadows strictly small
 (`tracking-[-0.01em]`).
 
 ### C8. Dev / Admin dashboard
-- ⏳ **C8.1 Visual / UX overhaul**: dev view "needs way more
-  refinements visually, tool-wise, and ease of use." Concrete passes:
-  1. Replace modal-fullscreen `AdminPanel` with a routed `/admin`
-     page with its own layout (sidebar tabs, breadcrumbs).
+- 🟡 **C8.1 Visual / UX overhaul** — partial: empty/loading/error states
+  on every tab, health rollup banner, human-readable audit/log lines,
+  filter chips on Audit + Logs all shipped 2026-05-15. Still open:
+  1. Replace modal `AdminPanel` with a routed `/admin` page with its
+     own layout (sidebar tabs, breadcrumbs).
   2. Global search box that filters across users, audit events, images.
-  3. Empty / loading / error states for every tab.
-  4. Bulk-action toolbar (bulk quota, bulk delete, bulk consent
+  3. Admin-side bulk actions (bulk quota, bulk delete, bulk consent
      revocation).
-- ⏳ **C8.2 Model training visibility**: surface live training /
-  fine-tuning runs — current step, loss curve, GPU usage, ETA. Save
-  checkpoints to a `models/` bucket as `.pkl` / `safetensors` with
-  metadata row (`model_runs(id, model_name, started_at, finished_at,
-  val_loss, artifact_key)`). Powers **D5**.
+- 🟡 **C8.2 Model + worker visibility** — first slice shipped
+  2026-05-15: `worker_heartbeats` + `model_runs` tables
+  (migration 0023), `backend/heartbeats.py` emitter, the ml-worker
+  ships a one-shot accelerator snapshot in heartbeat metadata, the
+  Models tab shows live device + GPU memory + last-used. Still open:
+  - Training-run telemetry — current step / loss curve / ETA. Today
+    we capture *inference* model state, not training. Once we run
+    fine-tunes (D6) we extend `model_runs` to include training
+    columns (`started_at`, `finished_at`, `val_loss`, `artifact_key`).
+  - Saving checkpoints to a `models/` MinIO bucket as
+    `.pkl` / `safetensors` with metadata pointers.
 - ⏳ **C8.3 Quick-action runners**: from the dev view, trigger a
   re-summarize, re-embed, or re-detect-faces for a user / folder /
   date range without leaving the UI.
@@ -518,17 +482,29 @@ device timeline + simple chart. Retention is per-device with a hard cap.
 > CUDA, AMD ROCm, Intel ARC / oneAPI, Apple Silicon Metal, or
 > CPU-only — without manual model-format wrangling.
 
-### F1. Backend runs on all major GPU/CPU vendors ⏳
-Detection layer (in **C5.1** setup script + at runtime) picks the
-right backend:
-- NVIDIA CUDA → torch + onnxruntime-gpu.
+### F1. Backend runs on all major GPU/CPU vendors 🟡
+**Detection** shipped 2026-05-15 — the ml-worker probes every
+accelerator at startup via `backend.system_probes.probe_accelerators_full`
+(torch.cuda → torch.xpu/IPEX → OpenVINO `available_devices` → WMI
+Win32_PnPEntity for "AI Boost"/NPU → lspci) and ships the snapshot in
+heartbeat metadata. The admin Hardware tab renders every accelerator
+with `CUDA / iGPU / NPU` kind badges + OpenVINO targetability + an
+"inaccessible" flag when the host OS sees it but the container can't.
+Plus GPU passthrough wired into docker-compose for NVIDIA.
+
+**Dispatch** still open — the worker today only uses CUDA when
+available; we don't yet fall back to MPS / OpenVINO EP / ROCm for the
+actual model loading:
 - AMD ROCm (Linux) → torch + onnxruntime-rocm.
 - Apple Silicon → torch + MPS / CoreML for vision models.
-- Intel ARC / iGPU → onnxruntime + OpenVINO EP.
+- Intel ARC / iGPU → onnxruntime + OpenVINO EP (Florence-2 + Qwen
+  via OpenVINO IR; CLIP via onnxruntime).
+- Intel NPU → OpenVINO with `device='NPU'`. Container needs
+  `/dev/accel` passthrough + the Intel NPU driver mounted.
 - CPU fallback → onnxruntime CPU + ggml/llama.cpp for the rewriter.
 
-Runtime probes the device once at boot and writes the chosen backend
-to a `runtime.toml` so we don't re-probe on every inference.
+Runtime should probe the device once at boot and write the chosen
+backend to a `runtime.toml` so we don't re-probe on every inference.
 
 ### F2. Model quantization ⏳
 - Florence-2-large → 8-bit GPTQ for ≥ 8 GB GPUs, 4-bit for smaller;
@@ -550,11 +526,16 @@ users.
 > User intent: when documents or slideshows are shared, there should
 > be an edit tab where people can comment or edit them as a team.
 
-### G1. Sharing primitive ⏳
-Per-asset share link with explicit permission (`view`, `comment`,
-`edit`); link is signed, expires, revocable. Recipients see a
-stripped-down viewer that doesn't expose the rest of the owner's
-library.
+### G1. Sharing primitive ✅ SHIPPED 2026-05-14
+Per-image share grants live at
+[backend/api/shares.py](backend/api/shares.py) (7 routes), backed by
+the `share_grants` table (migration 0022). Argon2-hashed tokens,
+recipient-email pinning, server-side 1-day cap for new-user
+recipients, brute-force lockout on `/shares/claim`, public
+`/share/{token}` viewer that doesn't expose the rest of the owner's
+library. Permission set is currently `view_download`; comment/edit
+are tracked under **G2 / G3** below. 13 pytest cases pass in
+[tests/test_shares.py](tests/test_shares.py).
 
 ### G2. Comments ⏳
 `comments(id, asset_id, author_user_id_or_email, body, anchor_json,
@@ -669,8 +650,8 @@ B+ patch.
 
 ### Sprint D — sharing + onboarding (~2 weeks)
 
-8. **§1.1 + G1** sharing primitive — `share_grants` table,
-   `POST/DELETE/GET /images/{id}/shares`, preview-panel wiring.
+8. ✅ **§1.1 + G1** sharing primitive — `share_grants` table + 7-route
+   `/shares/...` API + ShareModal + public viewer. (Landed 2026-05-14.)
 9. **G2** comments — `comments` table + pin overlay + thread panel.
 10. **C5.1** setup script — platform detect, GPU probe, `.env`
     generation, `docker compose` or native install.
@@ -688,8 +669,12 @@ B+ patch.
 15. **C4.2** "Me" → display-name binding.
 16. **§1.2** surface or hide remaining backend-gated Settings rows
     (Plan/Invoices/Notifications/2FA TOTP/per-scope `expires_at`).
-17. **§1.3** unmock the remaining Admin overlay tabs (Models / Tasks /
-    Logs / System / Processes / Hardware) once **C8.2** / **F1** land.
+17. ✅ **§1.3** unmock the remaining Admin overlay tabs — all 6 tabs
+    read real state, health rollup banner, human-readable
+    audit/log/task rendering, kind-badged GPU/NPU view, first slices
+    of **C8.2** (worker_heartbeats + model_runs) and **F1**
+    (multi-vendor accelerator detection) landed alongside.
+    (Landed 2026-05-15.)
 
 ### Sprint F — multi-data-type platform (months)
 
@@ -702,7 +687,10 @@ B+ patch.
 
 ### Sprint G — hardware + collab + hygiene (longest tail)
 
-26. **F1** hardware dispatch (CUDA / ROCm / MPS / OpenVINO / CPU).
+26. 🟡 **F1** hardware dispatch — detection slice shipped 2026-05-15
+    (multi-vendor probe + heartbeat propagation + dashboard render).
+    Still owing: actual model-load fallback (MPS / ROCm / OpenVINO EP
+    / IPEX-XPU) when CUDA isn't present; `runtime.toml` caching.
 27. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
     CLIP / RetinaFace INT8).
 28. **F3** Lite profile.
