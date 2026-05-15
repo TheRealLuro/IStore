@@ -800,35 +800,3 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
-
-
-class WaitlistSignup(Base):
-    """Public-facing waitlist signups from the marketing site.
-
-    Written by an unauthenticated POST /waitlist/signup (rate-limited);
-    read by admin GET /admin/waitlist. We keep this table off the
-    user-data CASCADE chain on purpose — a waitlist entry should
-    survive an unrelated user deletion event so launch notifications
-    still go out."""
-
-    __tablename__ = "waitlist_signups"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(CITEXT, nullable=False, unique=True)
-    use_case: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default="personal"
-    )
-    source: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default="marketing-site"
-    )
-    ip: Mapped[Optional[str]] = mapped_column(INET, nullable=True)
-    user_agent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    notified: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="false"
-    )
-    notified_at: Mapped[Optional[datetime]] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
-    )

@@ -34,8 +34,6 @@ import {
   bulkUpdateQuota,
   bulkDeleteUsers,
   bulkRevokeConsent,
-  listWaitlist,
-  markWaitlistNotified,
 } from "@/api/admin";
 
 function admBytes(n) {
@@ -424,7 +422,6 @@ export function AdminOverlay({ open, onClose }) {
         {[
           { id: "storage",   label: "Storage" },
           { id: "users",     label: "Users" },
-          { id: "waitlist",  label: "Waitlist" },
           { id: "audit",     label: "Audit" },
           { id: "models",    label: "Models" },
           { id: "tasks",     label: "Tasks" },
@@ -442,7 +439,6 @@ export function AdminOverlay({ open, onClose }) {
       <div className="modal__body admin__body">
         {tab === "storage"   && <RealStorageTab open={open} activity={systemSnap?.user_activity}/>}
         {tab === "users"     && <RealUsersTab open={open}/>}
-        {tab === "waitlist"  && <RealWaitlistTab open={open}/>}
         {tab === "audit"     && <RealAuditTab open={open}/>}
         {tab === "models"    && <RealModelsTab open={open}/>}
         {tab === "tasks"     && <RealTasksTab open={open}/>}
@@ -840,227 +836,6 @@ const ACTION_FILTERS = [
   { id: "admin",   label: "Admin",    prefix: "admin.",   color: "#c0392b" },
   { id: "account", label: "Account",  prefix: "account.", color: "#0e7a98" },
 ];
-
-// ---------- Waitlist (marketing-site signups) ----------
-
-function fmtDateShort(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    year: "numeric", month: "short", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  });
-}
-
-function csvEscape(value) {
-  const s = value == null ? "" : String(value);
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function downloadCsv(filename, rows) {
-  const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\r\n");
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function RealWaitlistTab({ open }) {
-  const qc = useQueryClient();
-  const [filter, setFilter] = useStateAd("all"); // all | pending | notified
-  const [search, setSearch] = useStateAd("");
-
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["admin-waitlist"],
-    queryFn: () => listWaitlist(500),
-    enabled: open,
-    staleTime: 10_000,
-    refetchInterval: open ? 30_000 : false,
-  });
-
-  if (error) {
-    return (
-      <div style={{ color: "var(--bad)", padding: 14 }}>
-        Failed to load waitlist: {error.message || String(error)}
-      </div>
-    );
-  }
-  if (isLoading) {
-    return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
-  }
-
-  const all = data || [];
-  const q = search.trim().toLowerCase();
-  const filtered = all.filter((row) => {
-    if (filter === "pending" && row.notified) return false;
-    if (filter === "notified" && !row.notified) return false;
-    if (!q) return true;
-    return (
-      row.email.toLowerCase().includes(q) ||
-      (row.use_case || "").toLowerCase().includes(q)
-    );
-  });
-
-  const pendingCount = all.filter((r) => !r.notified).length;
-  const notifiedCount = all.length - pendingCount;
-
-  function exportCsv() {
-    const rows = [
-      ["id", "email", "use_case", "source", "ip", "notified", "notified_at", "created_at", "user_agent"],
-      ...all.map((r) => [
-        r.id, r.email, r.use_case, r.source, r.ip || "",
-        r.notified ? "yes" : "no",
-        r.notified_at || "",
-        r.created_at,
-        r.user_agent || "",
-      ]),
-    ];
-    const today = new Date().toISOString().slice(0, 10);
-    downloadCsv(`neuthek-waitlist-${today}.csv`, rows);
-  }
-
-  async function onMarkNotified(id) {
-    try {
-      await markWaitlistNotified(id);
-      await qc.invalidateQueries({ queryKey: ["admin-waitlist"] });
-      toast.success("Marked as notified");
-    } catch (e) {
-      toast.error("Couldn't mark as notified");
-    }
-  }
-
-  async function copyAll() {
-    const emails = filtered.map((r) => r.email).join(", ");
-    try {
-      await navigator.clipboard.writeText(emails);
-      toast.success(`Copied ${filtered.length} email${filtered.length === 1 ? "" : "s"}`);
-    } catch {
-      toast.error("Clipboard blocked by browser");
-    }
-  }
-
-  return (
-    <div>
-      <div className="admin-callout" style={{ marginBottom: 14 }}>
-        <div className="admin-callout__title">
-          Waitlist signups from the marketing site
-        </div>
-        <p>
-          Pending: <strong>{pendingCount}</strong> ·
-          Notified: <strong style={{ marginLeft: 6 }}>{notifiedCount}</strong> ·
-          Total: <strong style={{ marginLeft: 6 }}>{all.length}</strong>
-        </p>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-        {["all", "pending", "notified"].map((f) => (
-          <button
-            key={f}
-            className="btn btn--ghost btn--sm"
-            onClick={() => setFilter(f)}
-            style={{
-              fontWeight: filter === f ? 600 : undefined,
-              borderColor: filter === f ? "var(--ink)" : undefined,
-              textTransform: "capitalize",
-            }}
-          >
-            {f}
-          </button>
-        ))}
-        <input
-          type="search"
-          placeholder="Search email or use case…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{
-            flex: 1,
-            minWidth: 200,
-            padding: "6px 10px",
-            border: "1px solid var(--line)",
-            borderRadius: 8,
-            fontSize: 13,
-          }}
-        />
-        <button className="btn btn--ghost btn--sm" onClick={copyAll}
-          disabled={filtered.length === 0}>
-          Copy emails
-        </button>
-        <button className="btn btn--secondary btn--sm" onClick={exportCsv}
-          disabled={all.length === 0}>
-          Export CSV
-        </button>
-      </div>
-
-      {filtered.length === 0 ? (
-        <div style={{ color: "var(--ink-3)", padding: 14 }}>
-          {all.length === 0
-            ? "No signups yet. The waitlist endpoint is live and ready."
-            : "No entries match this filter."}
-        </div>
-      ) : (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Use case</th>
-              <th>Signed up</th>
-              <th>IP</th>
-              <th>Status</th>
-              <th style={{ width: 140 }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((r) => (
-              <tr key={r.id}>
-                <td style={{ fontWeight: 500 }}>{r.email}</td>
-                <td style={{ color: "var(--ink-3)", textTransform: "capitalize" }}>{r.use_case}</td>
-                <td className="mono" style={{ color: "var(--ink-3)", fontSize: 12 }}>
-                  {fmtDateShort(r.created_at)}
-                </td>
-                <td className="mono" style={{ color: "var(--ink-4)", fontSize: 12 }}>
-                  {r.ip || "—"}
-                </td>
-                <td>
-                  {r.notified ? (
-                    <span style={{
-                      color: "var(--success)", fontSize: 12,
-                      background: "rgba(21,128,61,0.08)",
-                      padding: "2px 8px", borderRadius: 999,
-                    }}>
-                      Notified · {fmtRelativeTime(r.notified_at)}
-                    </span>
-                  ) : (
-                    <span style={{
-                      color: "var(--warning)", fontSize: 12,
-                      background: "rgba(161,98,7,0.08)",
-                      padding: "2px 8px", borderRadius: 999,
-                    }}>
-                      Pending
-                    </span>
-                  )}
-                </td>
-                <td>
-                  {!r.notified && (
-                    <button
-                      className="btn btn--ghost btn--sm"
-                      onClick={() => onMarkNotified(r.id)}
-                    >
-                      Mark notified
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
-}
 
 function RealAuditTab({ open }) {
   const [filter, setFilter] = useStateAd("all");
