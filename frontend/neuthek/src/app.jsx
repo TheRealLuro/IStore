@@ -208,7 +208,10 @@ const t = {
   requireFace: false,
   allowEarlyAI: true,
   showCookieBanner: true,
-  showPeopleStrip: true,
+  // People strip removed from the All Files page — the People sidebar
+  // tab is the canonical place to find people, and the strip ate
+  // ~80px of vertical space at the top of every gallery view.
+  showPeopleStrip: false,
   showFolders: true,
   density: "regular",
   brandPitch: "",
@@ -216,6 +219,102 @@ const t = {
   showLogout: true,
   showFab: true,
 };
+
+// FiltersDropdown — single subbar control that collapses every facet
+// chip (scene / content type / indoor-outdoor / has-faces / has-gps)
+// into one button + a popover. The popover is a `<details>` so we
+// don't need our own outside-click handler — clicking elsewhere on
+// the page just leaves it open until Escape or another click on the
+// summary; that's the standard `<details>` UX. Active filters get a
+// numeric badge on the button so the count stays glanceable when
+// the dropdown is closed.
+function FiltersDropdown({
+  facets,
+  filterScene, setFilterScene,
+  filterContentType, setFilterContentType,
+  filterIndoorOutdoor, setFilterIndoorOutdoor,
+  filterHasFaces, setFilterHasFaces,
+  filterHasGps, setFilterHasGps,
+  anyFilterActive,
+  clearAllFilters,
+  activeCount,
+}) {
+  const indoorCount = facets.indoor_outdoor.find(f => f.value === "indoor")?.count;
+  const outdoorCount = facets.indoor_outdoor.find(f => f.value === "outdoor")?.count;
+  const groups = [
+    {
+      label: "Scene",
+      chips: [
+        indoorCount > 0 && { val: filterIndoorOutdoor === "indoor", label: "Indoor", count: indoorCount,
+          onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "indoor" ? null : "indoor") },
+        outdoorCount > 0 && { val: filterIndoorOutdoor === "outdoor", label: "Outdoor", count: outdoorCount,
+          onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "outdoor" ? null : "outdoor") },
+        ...(facets.scenes || []).slice(0, 12).map(s => ({
+          val: filterScene === s.value,
+          label: s.value.replace(/_/g, " "),
+          count: s.count,
+          onClick: () => setFilterScene(filterScene === s.value ? null : s.value),
+        })),
+      ].filter(Boolean),
+    },
+    {
+      label: "Content",
+      chips: [
+        facets.with_faces > 0 && { val: filterHasFaces === true, label: "Has people", count: facets.with_faces,
+          onClick: () => setFilterHasFaces(filterHasFaces === true ? null : true) },
+        facets.with_gps > 0 && { val: filterHasGps === true, label: "Has location", count: facets.with_gps,
+          onClick: () => setFilterHasGps(filterHasGps === true ? null : true) },
+        ...(facets.content_types || []).filter(c => c.value && c.value !== "photo").slice(0, 8).map(c => ({
+          val: filterContentType === c.value,
+          label: c.value,
+          count: c.count,
+          onClick: () => setFilterContentType(filterContentType === c.value ? null : c.value),
+        })),
+      ].filter(Boolean),
+    },
+  ].filter(g => g.chips.length > 0);
+
+  return (
+    <details className="filters-dd">
+      <summary className="btn btn--ghost btn--sm filters-dd__btn" data-active={anyFilterActive}>
+        <Icon name="sort" size={12}/> Filters
+        {activeCount > 0 && (
+          <span className="filters-dd__badge">{activeCount}</span>
+        )}
+      </summary>
+      <div className="filters-dd__panel">
+        {groups.map(g => (
+          <div key={g.label} className="filters-dd__group">
+            <div className="filters-dd__group-label">{g.label}</div>
+            <div className="filters-dd__chips">
+              {g.chips.map(c => (
+                <button
+                  key={c.label}
+                  type="button"
+                  onClick={c.onClick}
+                  className="chip"
+                  data-active={c.val}
+                >
+                  {c.label}
+                  {c.count != null && (
+                    <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {anyFilterActive && (
+          <div className="filters-dd__foot">
+            <button type="button" onClick={clearAllFilters} className="btn btn--ghost btn--sm">
+              <Icon name="x" size={11}/> Clear all
+            </button>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
 
 // People view picker — grid of every person + unlabeled cluster, sized
 // for the page (not a strip). Clicking a card drills into that person's
@@ -983,6 +1082,28 @@ export function App() {
                 </button>
               </span>
             )}
+            {/* Filters — single dropdown button collapsing the scene /
+                place / face / location chips into one compact control.
+                Previously these all wrapped across the topbar as a third
+                row that ate vertical real estate. The badge shows the
+                active count so it stays glanceable at a distance. */}
+            {!isMap && view !== "trash" && facets && (
+              <FiltersDropdown
+                facets={facets}
+                filterScene={filterScene} setFilterScene={setFilterScene}
+                filterContentType={filterContentType} setFilterContentType={setFilterContentType}
+                filterIndoorOutdoor={filterIndoorOutdoor} setFilterIndoorOutdoor={setFilterIndoorOutdoor}
+                filterHasFaces={filterHasFaces} setFilterHasFaces={setFilterHasFaces}
+                filterHasGps={filterHasGps} setFilterHasGps={setFilterHasGps}
+                anyFilterActive={anyFilterActive}
+                clearAllFilters={clearAllFilters}
+                activeCount={[
+                  filterScene, filterContentType, filterIndoorOutdoor,
+                  filterHasFaces === true ? true : null,
+                  filterHasGps === true ? true : null,
+                ].filter(v => v != null).length}
+              />
+            )}
             <button className="btn btn--ghost btn--sm" onClick={() => setShowNewFolder(true)}>
               <Icon name="folderPlus" size={12}/> New folder
             </button>
@@ -998,73 +1119,6 @@ export function App() {
             >
               <Icon name={layoutMode === "grid" ? "list" : "grid"} size={15}/>
             </button>
-          </div>
-        )}
-
-        {/* Filter chips — drives the new server-side scene/face/gps
-            filter axes. Hidden on the Map / Trash views (they have
-            their own scope) and when no facets exist (empty library). */}
-        {!isMap && view !== "trash" && facets && (
-          <div style={{
-            padding: "4px 28px 6px",
-            display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
-            fontSize: 11.5,
-          }}>
-            {[
-              { val: filterIndoorOutdoor === "indoor",
-                label: "Indoor", count: facets.indoor_outdoor.find(f => f.value === "indoor")?.count,
-                onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "indoor" ? null : "indoor") },
-              { val: filterIndoorOutdoor === "outdoor",
-                label: "Outdoor", count: facets.indoor_outdoor.find(f => f.value === "outdoor")?.count,
-                onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "outdoor" ? null : "outdoor") },
-              { val: filterHasFaces === true,
-                label: "Has people", count: facets.with_faces,
-                onClick: () => setFilterHasFaces(filterHasFaces === true ? null : true) },
-              { val: filterHasGps === true,
-                label: "Has location", count: facets.with_gps,
-                onClick: () => setFilterHasGps(filterHasGps === true ? null : true) },
-              ...(facets.scenes || []).slice(0, 6).map(s => ({
-                val: filterScene === s.value,
-                label: s.value.replace(/_/g, " "),
-                count: s.count,
-                onClick: () => setFilterScene(filterScene === s.value ? null : s.value),
-              })),
-              ...(facets.content_types || [])
-                .filter(c => c.value && c.value !== "photo")
-                .slice(0, 4)
-                .map(c => ({
-                  val: filterContentType === c.value,
-                  label: c.value,
-                  count: c.count,
-                  onClick: () => setFilterContentType(filterContentType === c.value ? null : c.value),
-                })),
-            ]
-              .filter(c => c.count != null && c.count > 0)
-              .map((c) => (
-                <button
-                  key={c.label}
-                  type="button"
-                  onClick={c.onClick}
-                  className="chip"
-                  data-active={c.val}
-                >
-                  {c.label}
-                  {c.count != null && (
-                    <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
-                  )}
-                </button>
-              ))}
-            {anyFilterActive && (
-              <button
-                type="button"
-                onClick={clearAllFilters}
-                className="chip"
-                style={{ color: "var(--ink-3)" }}
-                title="Clear all filters"
-              >
-                <Icon name="x" size={10}/> Clear
-              </button>
-            )}
           </div>
         )}
 
