@@ -236,9 +236,9 @@ post-consent (wiring is half-there in
 
 ### C4. Profile / settings
 - ⏳ **C4.1 Display name on signup** — registration form gains required
-  "Display name" field; persisted as `users.display_name`; used in the
+  "name" field; persisted as `users.display_name`; used in the
   topbar greeting and across the UI in place of email.
-- ⏳ **C4.2 "Me" → display-name binding** — when the user classifies a
+- ⏳ **C4.2 "Me" → name binding** — when the user classifies a
   person as **Me**, the summarizer must (a) auto-rename that person row
   to the user's display name and (b) splice the display name (not "Me")
   into AI summaries. If `display_name` is empty, prompt during the
