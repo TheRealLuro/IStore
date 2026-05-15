@@ -1363,6 +1363,62 @@ async def bulk_delete(
     return {"deleted": [str(i) for i in res.image_ids], "count": len(res.image_ids)}
 
 
+@router.post("/bulk-move")
+async def bulk_move(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    body: dict,
+) -> dict:
+    """Move N images to a folder (or back to root with `folder_id=null`).
+
+    Body: `{ "ids": ["<uuid>", ...], "folder_id": "<uuid>" | null }`.
+    Owner-scoped — silently skips ids that don't belong to this user.
+    Validates the destination folder exists for this user (when not
+    null). Returns the count actually moved.
+    """
+    from sqlalchemy import update as sa_update
+    from backend.models import Folder
+
+    raw_ids = body.get("ids") or []
+    try:
+        image_ids = [UUID(str(x)) for x in raw_ids]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"Invalid id list: {exc}"
+        )
+    if not image_ids:
+        return {"moved": 0}
+
+    folder_id = body.get("folder_id")
+    if folder_id is not None:
+        try:
+            folder_id = UUID(str(folder_id))
+        except (TypeError, ValueError):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid folder_id")
+        # Verify the folder belongs to this user and isn't deleted —
+        # otherwise the FK update would either fail (cross-user write
+        # blocked by RLS) or hide the moved images from the user.
+        folder = await session.get(Folder, folder_id)
+        if (
+            folder is None
+            or folder.user_id != user.id
+            or folder.deleted_at is not None
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Folder not found")
+
+    res = await session.execute(
+        sa_update(Image)
+        .where(
+            Image.id.in_(image_ids),
+            Image.user_id == user.id,
+            Image.deleted_at.is_(None),
+        )
+        .values(folder_id=folder_id)
+    )
+    await session.commit()
+    return {"moved": int(res.rowcount or 0), "folder_id": str(folder_id) if folder_id else None}
+
+
 @router.post("/bulk-restore")
 async def bulk_restore(
     user: Annotated[User, Depends(current_active_user)],

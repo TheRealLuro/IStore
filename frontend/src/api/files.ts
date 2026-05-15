@@ -94,6 +94,32 @@ export async function bulkRestore(ids: string[]): Promise<{ count: number }> {
   return api.post<{ count: number }>("/images/bulk-restore", ids);
 }
 
+/** Move N images to a folder (or back to root with `folderId=null`).
+ *  Owner-scoped server-side — silently skips ids that don't belong. */
+export async function bulkMove(
+  ids: string[],
+  folderId: string | null,
+): Promise<{ moved: number; folder_id: string | null }> {
+  return api.post<{ moved: number; folder_id: string | null }>(
+    "/images/bulk-move",
+    { ids, folder_id: folderId },
+  );
+}
+
+/** Create a new folder AND move the supplied images into it in one
+ *  transaction. Replaces the awkward two-step "create folder, then go
+ *  back and move files" flow when the user multi-selects. */
+export async function createFolderWithImages(
+  name: string,
+  imageIds: string[],
+  parentFolderId: string | null = null,
+): Promise<{ id: string; name: string; item_count: number }> {
+  return api.post<{ id: string; name: string; item_count: number }>(
+    "/folders/with-images",
+    { name, image_ids: imageIds, parent_folder_id: parentFolderId },
+  );
+}
+
 export async function searchSemantic(q: string, limit = 30): Promise<(FileItem & { score: number })[]> {
   const params = new URLSearchParams({ q, limit: String(limit) });
   return api.get<(FileItem & { score: number })[]>(`/search/?${params.toString()}`);

@@ -39,7 +39,12 @@ const AdminOverlay = React.lazy(() =>
 );
 import { NewFolderModal } from "./folder-modals.jsx";
 import { useAuthStore } from "@/stores/authStore";
-import { listFiles, getImageGeo, servedUrl, renameImage, getSummarizeProgress, searchSemantic, getFacets } from "@/api/files";
+import {
+  listFiles, getImageGeo, servedUrl, renameImage,
+  getSummarizeProgress, searchSemantic, getFacets,
+  bulkDelete, bulkMove, createFolderWithImages,
+} from "@/api/files";
+import { listFolders } from "@/api/folders";
 import { listPeople, faceCropUrl } from "@/api/people";
 import { AuthedThumb } from "./auth-image.jsx";
 import { EditableName } from "./nameable-chip.jsx";
@@ -219,6 +224,203 @@ const t = {
   showLogout: true,
   showFab: true,
 };
+
+// Bulk-action toolbar surfaced in the subbar whenever multi-select
+// has at least one entry. Wraps the four actions the user actually
+// wants on a selection — Move to folder · New folder w/ selection ·
+// Pick best of (images-only) · Delete — plus a Clear/exit button.
+// Built local to <App/> via lazy-imported helpers so the toolbar
+// owns the queryClient invalidation contract for each action.
+function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestOf }) {
+  const qc = useQueryClient();
+  const moveDdRef = useRefApp(null);
+  const newFolderDdRef = useRefApp(null);
+  const [newFolderName, setNewFolderName] = useStateApp("");
+  const [busy, setBusy] = useStateApp(null); // "move" | "new" | "delete"
+
+  const { data: folders = [] } = useQuery({
+    queryKey: ["folders", null],
+    queryFn: () => listFolders(null),
+    staleTime: 30_000,
+  });
+
+  const invalidateAll = () => {
+    qc.invalidateQueries({ queryKey: ["files"] });
+    qc.invalidateQueries({ queryKey: ["folders"] });
+    qc.invalidateQueries({ queryKey: ["facets"] });
+  };
+
+  const doMoveTo = async (folderId) => {
+    if (busy) return;
+    setBusy("move");
+    try {
+      const r = await bulkMove(selectedIds, folderId);
+      toast.success(
+        folderId
+          ? `Moved ${r.moved} to "${folders.find(f => f.id === folderId)?.name || "folder"}"`
+          : `Moved ${r.moved} to root`
+      );
+      invalidateAll();
+      onClear();
+    } catch (e) {
+      toast.error(e?.detail || "Move failed");
+    } finally {
+      setBusy(null);
+      if (moveDdRef.current) moveDdRef.current.open = false;
+    }
+  };
+
+  const doCreateFolderWithSelection = async (e) => {
+    e?.preventDefault();
+    const name = newFolderName.trim();
+    if (!name || busy) return;
+    setBusy("new");
+    try {
+      const f = await createFolderWithImages(name, selectedIds, null);
+      toast.success(`Created "${f.name}" with ${f.item_count} files`);
+      invalidateAll();
+      onClear();
+      setNewFolderName("");
+      if (newFolderDdRef.current) newFolderDdRef.current.open = false;
+    } catch (err) {
+      toast.error(err?.detail || "Create failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doDelete = async () => {
+    if (busy) return;
+    if (!window.confirm(`Move ${selectedIds.length} item${selectedIds.length === 1 ? "" : "s"} to trash?`)) return;
+    setBusy("delete");
+    try {
+      const r = await bulkDelete(selectedIds);
+      toast.success(`Moved ${r.count} to trash`);
+      invalidateAll();
+      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      onClear();
+    } catch (e) {
+      toast.error(e?.detail || "Delete failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="bulk-bar" role="toolbar" aria-label="Bulk actions">
+      <span className="bulk-bar__count">
+        {selectedIds.length} selected
+      </span>
+
+      {/* Move to existing folder */}
+      <details className="sort-dd" ref={moveDdRef}>
+        <summary className="btn btn--ghost btn--sm sort-dd__btn" title="Move selection to folder">
+          <Icon name="folder" size={12}/> Move to
+          <Icon name="chevronDown" size={11} style={{ marginLeft: 2, opacity: 0.7 }}/>
+        </summary>
+        <div className="sort-dd__panel" style={{ minWidth: 200, maxHeight: 280, overflowY: "auto" }}>
+          <button
+            type="button"
+            className="sort-dd__opt"
+            onClick={() => doMoveTo(null)}
+            disabled={busy === "move"}
+          >
+            <span><Icon name="home" size={11} style={{ marginRight: 6 }}/>Root (no folder)</span>
+          </button>
+          {folders.length === 0 && (
+            <div style={{ padding: 10, fontSize: 12, color: "var(--ink-3)" }}>
+              No folders yet — use "New folder" instead.
+            </div>
+          )}
+          {folders.map(f => (
+            <button
+              key={f.id}
+              type="button"
+              className="sort-dd__opt"
+              onClick={() => doMoveTo(f.id)}
+              disabled={busy === "move"}
+            >
+              <span><Icon name="folder" size={11} style={{ marginRight: 6 }}/>{f.name}</span>
+              <span style={{ color: "var(--ink-4)", fontSize: 11 }}>{f.item_count}</span>
+            </button>
+          ))}
+        </div>
+      </details>
+
+      {/* New folder with selection — single round trip */}
+      <details className="sort-dd" ref={newFolderDdRef}>
+        <summary className="btn btn--ghost btn--sm sort-dd__btn" title="Create folder with selection">
+          <Icon name="folderPlus" size={12}/> New folder
+          <Icon name="chevronDown" size={11} style={{ marginLeft: 2, opacity: 0.7 }}/>
+        </summary>
+        <div className="sort-dd__panel" style={{ minWidth: 240, padding: 10 }}>
+          <form onSubmit={doCreateFolderWithSelection} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <label style={{ fontSize: 11, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+              New folder name
+            </label>
+            <input
+              autoFocus
+              type="text"
+              placeholder="e.g. Trip 2026"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                borderRadius: 7,
+                color: "var(--ink)",
+                fontSize: 13,
+                outline: "none",
+              }}
+            />
+            <button
+              type="submit"
+              className="btn btn--primary btn--sm"
+              disabled={!newFolderName.trim() || busy === "new"}
+            >
+              {busy === "new"
+                ? "Creating…"
+                : `Create + add ${selectedIds.length} file${selectedIds.length === 1 ? "" : "s"}`}
+            </button>
+          </form>
+        </div>
+      </details>
+
+      {/* Pick best of — only meaningful when the selection is all photos */}
+      {selectedAreAllImages && (
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={onPickBestOf}
+          title="Pick the best photo from this selection"
+        >
+          <Icon name="wand" size={12}/> Pick best of
+        </button>
+      )}
+
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm bulk-bar__danger"
+        onClick={doDelete}
+        disabled={busy === "delete"}
+        title="Move selection to trash"
+      >
+        <Icon name="trash" size={12}/> {busy === "delete" ? "Deleting…" : "Delete"}
+      </button>
+
+      <button
+        type="button"
+        className="btn-icon"
+        onClick={onClear}
+        title="Clear selection"
+        aria-label="Clear selection"
+      >
+        <Icon name="x" size={13}/>
+      </button>
+    </div>
+  );
+}
 
 // SortDropdown — collapses the three sort tabs (Recent / Name / Size)
 // into one compact subbar control. The inline direction arrow lets
@@ -1210,18 +1412,20 @@ export function App() {
                 direction without leaving the dropdown. */}
             <SortDropdown sort={sort} sortDir={sortDir} setSort={setSort} setSortDir={setSortDir}/>
             <div className="topbar__spacer"/>
+            {/* Bulk-action toolbar — replaces the bare "N selected · Clear"
+                so multi-select actually has reach. Move / new-folder /
+                pick-best-of / delete all operate on the selection set;
+                the bar collapses entirely when nothing's selected. */}
             {multiSelected.size > 0 && (
-              <span style={{ fontSize: 12, color: "var(--ink-2)", marginRight: 8 }}>
-                {multiSelected.size} selected
-                <button
-                  className="btn btn--ghost btn--sm"
-                  style={{ marginLeft: 8 }}
-                  onClick={clearMultiSelected}
-                  title="Clear selection"
-                >
-                  Clear
-                </button>
-              </span>
+              <BulkActionBar
+                selectedIds={Array.from(multiSelected)}
+                selectedAreAllImages={Array.from(multiSelected).every(id => {
+                  const f = baseFiles.find(b => b.id === id);
+                  return f && f.type === "image";
+                })}
+                onClear={clearMultiSelected}
+                onPickBestOf={() => setShowBestOf(true)}
+              />
             )}
             {/* Filters — single dropdown button collapsing the scene /
                 place / face / location chips into one compact control.

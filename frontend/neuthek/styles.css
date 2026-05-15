@@ -444,6 +444,30 @@ input, textarea { font-family: inherit; }
   justify-content: start;
 }
 
+/* ---- Bulk-action toolbar — surfaces in the subbar when multi-select
+ * is non-empty. Wraps Move to / New folder / Pick best of / Delete
+ * around a count chip + clear button. The visual weight matches the
+ * subbar's other controls so it doesn't feel like a separate row. */
+.bulk-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+.bulk-bar__count {
+  color: var(--ink-2);
+  font-weight: 500;
+  padding-right: 4px;
+  margin-right: 2px;
+  border-right: 1px solid var(--line);
+}
+.bulk-bar__danger { color: var(--danger); }
+.bulk-bar__danger:hover { background: var(--danger-soft); }
+
 /* ---- Sort dropdown — single button collapsing the Recent / Name /
  * Size tabs. Same `<details>` primitive as the Filters dropdown. */
 .sort-dd {

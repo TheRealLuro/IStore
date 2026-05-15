@@ -223,6 +223,91 @@ async def update_folder(
     return _to_read(folder)
 
 
+@router.post(
+    "/with-images",
+    response_model=FolderRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_folder_with_images(
+    body: dict,
+    user: Annotated[User, Depends(current_active_user)] = ...,
+    session: Annotated[AsyncSession, Depends(get_session)] = ...,
+):
+    """Create a folder AND move N existing images into it in one shot.
+
+    Body: `{ "name": "...", "image_ids": ["<uuid>", ...],
+             "parent_folder_id"?: "<uuid>" }`.
+    The previous flow forced the user to (1) open New Folder, (2) name
+    it, (3) close, (4) re-select all the files, (5) drag them into the
+    new folder. This endpoint collapses that into one round trip the
+    multi-select toolbar can hit directly.
+
+    Folder creation + image-move both happen in a single transaction —
+    if the folder name conflicts with an existing one (409), no images
+    move; if image_ids is empty the folder is created on its own.
+    """
+    from backend.models import Image
+    from sqlalchemy import update as sa_update
+
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "Folder name required")
+    if len(name) > 200:
+        raise HTTPException(400, "Folder name too long")
+
+    parent_id = body.get("parent_folder_id")
+    if parent_id is not None:
+        try:
+            parent_id = UUID(str(parent_id))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid parent_folder_id")
+        parent = await session.get(Folder, parent_id)
+        if (
+            parent is None
+            or parent.user_id != user.id
+            or parent.deleted_at is not None
+        ):
+            raise HTTPException(404, "Parent folder not found")
+
+    raw_ids = body.get("image_ids") or []
+    try:
+        image_ids = [UUID(str(x)) for x in raw_ids]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"Invalid image_ids: {exc}")
+
+    folder = Folder(
+        user_id=user.id,
+        parent_folder_id=parent_id,
+        name=name,
+    )
+    session.add(folder)
+    try:
+        await session.flush()  # need folder.id before the image update
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            409,
+            "A folder with this name already exists in this location",
+        )
+
+    moved = 0
+    if image_ids:
+        res = await session.execute(
+            sa_update(Image)
+            .where(
+                Image.id.in_(image_ids),
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+            )
+            .values(folder_id=folder.id)
+        )
+        moved = int(res.rowcount or 0)
+
+    await session.commit()
+    await session.refresh(folder)
+    return _to_read(folder, item_count=moved, subfolder_count=0)
+
+
 @router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_folder(
     folder_id: UUID,
