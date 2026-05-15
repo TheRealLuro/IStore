@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     minio_bucket_served: str = Field(default="istore-served")
     minio_bucket_faces: str = Field(default="istore-faces")
     minio_bucket_quarantine: str = Field(default="istore-quarantine")
+    # C8.2 — fine-tune checkpoint storage. Contains .pkl / .safetensors
+    # written by the trainer when D6 fine-tuning eventually lands.
+    minio_bucket_models: str = Field(default="istore-models")
     # off | sse-s3 | sse-kms. KMS mode can use distinct key IDs for content
     # and biometric buckets.
     minio_sse_mode: str = Field(default="off")

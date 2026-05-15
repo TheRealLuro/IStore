@@ -20,6 +20,11 @@ class Storage:
         self.bucket_served = settings.minio_bucket_served
         self.bucket_faces = settings.minio_bucket_faces
         self.bucket_quarantine = settings.minio_bucket_quarantine
+        # C8.2 — checkpoint storage for fine-tuned models. Objects are
+        # `.pkl` / `.safetensors` files written by the trainer when a
+        # fine-tune (D6) finishes. The `model_runs` row points at the
+        # object key so the admin Models tab can offer a download.
+        self.bucket_models = getattr(settings, "minio_bucket_models", "istore-models")
 
     def _bucket_names(self) -> Iterable[str]:
         return (
@@ -27,6 +32,7 @@ class Storage:
             self.bucket_served,
             self.bucket_faces,
             self.bucket_quarantine,
+            self.bucket_models,
         )
 
     def ensure_buckets(self) -> None:

@@ -303,3 +303,53 @@ export const getAdminTasks = () =>
 
 export const getAdminLogs = (limit = 200) =>
   api.get<LogsSnapshot>(`/admin/logs?limit=${limit}`);
+
+// C8.1 — admin-side global search.
+export interface AdminSearchResult {
+  query: string;
+  users: {
+    id: string;
+    email: string;
+    display_name: string | null;
+    role: string;
+    is_superuser: boolean;
+  }[];
+  audit: {
+    id: number;
+    action: string;
+    user_id: string | null;
+    user_email: string | null;
+    created_at: string;
+    details: Record<string, unknown> | null;
+  }[];
+  images: {
+    id: string;
+    user_id: string;
+    original_filename: string | null;
+    summary_topic: string | null;
+    byte_size_served: number | null;
+    uploaded_at: string;
+  }[];
+}
+
+export const adminSearch = (q: string, limit = 10) =>
+  api.get<AdminSearchResult>(`/admin/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+// C8.1 — bulk admin actions.
+export interface BulkUserResult {
+  affected: number;
+  user_ids: string[];
+}
+
+export const bulkUpdateQuota = (userIds: string[], quotaBytes: number | null) =>
+  api.post<BulkUserResult>("/admin/users/bulk-quota", {
+    user_ids: userIds, quota_bytes: quotaBytes,
+  });
+
+export const bulkDeleteUsers = (userIds: string[]) =>
+  api.post<BulkUserResult>("/admin/users/bulk-delete", { user_ids: userIds });
+
+export const bulkRevokeConsent = (userIds: string[], kind: string | null = null) =>
+  api.post<BulkUserResult>("/admin/users/bulk-revoke-consent", {
+    user_ids: userIds, kind,
+  });

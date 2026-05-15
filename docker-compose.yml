@@ -173,6 +173,10 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # Intel iGPU (Arc / Xe) + NPU passthrough lives in
+    # docker-compose.intel.yml — opt in via:
+    #   docker compose -f docker-compose.yml -f docker-compose.intel.yml up -d
+    # See that file for the WSL graphics / NPU driver prerequisites.
     volumes:
       # Same source bind mount as the backend so editing
       # backend/summarize.py reflects in both containers without a

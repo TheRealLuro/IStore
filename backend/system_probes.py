@@ -936,12 +936,18 @@ async def sample_minio() -> dict[str, Any]:
     try:
         client = storage.client  # the underlying minio.Minio handle
         buckets = []
-        for name in [
+        bucket_names = [
             settings.minio_bucket_originals,
             settings.minio_bucket_served,
             settings.minio_bucket_faces,
             settings.minio_bucket_quarantine,
-        ]:
+        ]
+        # Models bucket arrived with C8.2 — older settings instances
+        # don't have it, so probe defensively.
+        models_bucket = getattr(settings, "minio_bucket_models", None)
+        if models_bucket:
+            bucket_names.append(models_bucket)
+        for name in bucket_names:
             try:
                 if not client.bucket_exists(name):
                     buckets.append({"name": name, "exists": False, "objects": 0, "size_bytes": 0})

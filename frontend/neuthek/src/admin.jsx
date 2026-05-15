@@ -30,6 +30,10 @@ import {
   getAdminModels,
   getAdminTasks,
   getAdminLogs,
+  adminSearch,
+  bulkUpdateQuota,
+  bulkDeleteUsers,
+  bulkRevokeConsent,
 } from "@/api/admin";
 
 function admBytes(n) {
@@ -202,6 +206,156 @@ function HealthBanner({ system }) {
   );
 }
 
+// 250ms debounce keeps the search box quiet while you're typing —
+// don't fire a /admin/search round trip on every keystroke.
+function useDebounced(value, ms = 250) {
+  const [v, setV] = useStateAd(value);
+  useEffectAd(() => {
+    const t = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return v;
+}
+
+// Header search box + results dropdown. Sits in the admin modal head
+// so it's visible from every tab. Clicking a result row jumps to the
+// owning tab (Users / Audit / Files) so the operator can drill in.
+function GlobalSearch({ onJumpToTab }) {
+  const [q, setQ] = useStateAd("");
+  const [focused, setFocused] = useStateAd(false);
+  const debounced = useDebounced(q.trim(), 250);
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-search", debounced],
+    queryFn: () => adminSearch(debounced, 8),
+    enabled: focused && debounced.length >= 2,
+    staleTime: 5_000,
+  });
+  const shouldShow = focused && debounced.length >= 2;
+  const total = (data?.users.length || 0) + (data?.audit.length || 0) + (data?.images.length || 0);
+  return (
+    <div style={{ position: "relative", marginTop: 10 }}>
+      <input
+        className="input"
+        placeholder="Search users · audit events · files (min 2 chars)"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 200)}
+        style={{
+          width: "100%", padding: "8px 12px", fontSize: 13,
+          background: "var(--surface-2)", border: "1px solid var(--line)",
+          borderRadius: 8, color: "var(--ink)",
+        }}
+      />
+      {shouldShow && (
+        <div
+          style={{
+            position: "absolute", top: "100%", left: 0, right: 0, marginTop: 6,
+            background: "var(--surface, #fff)", border: "1px solid var(--line)",
+            borderRadius: 8, boxShadow: "0 6px 22px rgba(0,0,0,0.12)",
+            maxHeight: 360, overflowY: "auto", zIndex: 50,
+          }}
+        >
+          {isLoading ? (
+            <div style={{ padding: 14, color: "var(--ink-3)", fontSize: 12 }}>Searching…</div>
+          ) : total === 0 ? (
+            <div style={{ padding: 14, color: "var(--ink-3)", fontSize: 12 }}>No matches.</div>
+          ) : (
+            <>
+              {data.users.length > 0 && (
+                <SearchGroup label={`Users (${data.users.length})`} onClickAll={() => onJumpToTab("users")}>
+                  {data.users.map((u) => (
+                    <SearchRow
+                      key={u.id}
+                      primary={u.display_name || u.email.split("@")[0]}
+                      secondary={u.email}
+                      tag={u.role}
+                      onClick={() => onJumpToTab("users")}
+                    />
+                  ))}
+                </SearchGroup>
+              )}
+              {data.audit.length > 0 && (
+                <SearchGroup label={`Audit (${data.audit.length})`} onClickAll={() => onJumpToTab("audit")}>
+                  {data.audit.map((a) => (
+                    <SearchRow
+                      key={a.id}
+                      primary={a.action}
+                      secondary={`${fmtRelativeTime(a.created_at)}${a.user_email ? ` · ${a.user_email}` : ""}`}
+                      onClick={() => onJumpToTab("audit")}
+                    />
+                  ))}
+                </SearchGroup>
+              )}
+              {data.images.length > 0 && (
+                <SearchGroup label={`Files (${data.images.length})`} onClickAll={() => onJumpToTab("storage")}>
+                  {data.images.map((img) => (
+                    <SearchRow
+                      key={img.id}
+                      primary={img.original_filename || "(unnamed)"}
+                      secondary={
+                        (img.summary_topic ? `${img.summary_topic} · ` : "") +
+                        (img.byte_size_served ? admBytes(img.byte_size_served) : "")
+                      }
+                      onClick={() => onJumpToTab("storage")}
+                    />
+                  ))}
+                </SearchGroup>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchGroup({ label, children, onClickAll }) {
+  return (
+    <div style={{ borderBottom: "1px solid var(--line, rgba(0,0,0,0.05))" }}>
+      <div
+        onClick={onClickAll}
+        style={{
+          padding: "6px 12px", fontSize: 10, fontWeight: 600, letterSpacing: "0.08em",
+          textTransform: "uppercase", color: "var(--ink-3)",
+          background: "var(--surface-2, rgba(0,0,0,0.02))",
+          cursor: "pointer",
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SearchRow({ primary, secondary, tag, onClick }) {
+  return (
+    <div
+      onMouseDown={(e) => { e.preventDefault(); onClick?.(); }}
+      style={{
+        padding: "8px 12px", cursor: "pointer", display: "flex",
+        gap: 10, alignItems: "center", borderBottom: "1px solid var(--line, rgba(0,0,0,0.04))",
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-2, rgba(0,0,0,0.03))")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "")}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 500 }}>{primary}</div>
+        {secondary && (
+          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 1 }}>{secondary}</div>
+        )}
+      </div>
+      {tag && (
+        <span style={{
+          fontSize: 10, padding: "1px 6px", borderRadius: 4,
+          background: "rgba(0,0,0,0.05)", color: "var(--ink-3)",
+        }}>{tag}</span>
+      )}
+    </div>
+  );
+}
+
 export function AdminOverlay({ open, onClose }) {
   const [tab, setTab] = useStateAd("storage");
 
@@ -226,6 +380,8 @@ export function AdminOverlay({ open, onClose }) {
   const headerUptime = systemSnap?.uptime?.host_uptime_seconds;
   const headerDisk = hwSnap?.disks?.[0];
 
+  const isRoutedPage = typeof window !== "undefined" && window.location.pathname === "/admin";
+
   return (
     <ModalAd open={open} onClose={onClose} size="xl" labelledBy="ad-title">
       <div className="modal__head admin__head">
@@ -233,6 +389,15 @@ export function AdminOverlay({ open, onClose }) {
           <h2 id="ad-title">
             <span className="admin__chip">DEV</span>
             Admin console
+            {!isRoutedPage && (
+              <a
+                href="/admin"
+                style={{ marginLeft: 10, fontSize: 11, fontWeight: 400, color: "var(--ink-3)", textDecoration: "underline dotted" }}
+                title="Open as full page"
+              >
+                open as page →
+              </a>
+            )}
           </h2>
           <p>
             {systemSnap ? (
@@ -248,6 +413,7 @@ export function AdminOverlay({ open, onClose }) {
             )}
           </p>
           <HealthBanner system={systemSnap}/>
+          <GlobalSearch onJumpToTab={(t) => setTab(t)}/>
         </div>
         <ModalCloseAd onClose={onClose}/>
       </div>
@@ -485,13 +651,80 @@ function QuotaCell({ user }) {
 }
 
 function RealUsersTab({ open }) {
+  const qc = useQueryClient();
   const [q, setQ] = useStateAd("");
+  const [selected, setSelected] = useStateAd(() => new Set());
   const { data, isLoading } = useQuery({
     queryKey: ["admin-users", q],
     queryFn: () => listAdminUsers(q || null, 100, 0),
     enabled: open,
     staleTime: 10_000,
   });
+  const rows = data || [];
+  const allChecked = rows.length > 0 && rows.every(u => selected.has(u.id));
+  const someChecked = rows.some(u => selected.has(u.id));
+  const toggleOne = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleAll = () => {
+    setSelected(allChecked ? new Set() : new Set(rows.map(u => u.id)));
+  };
+  const clearSelection = () => setSelected(new Set());
+
+  const doBulkQuota = async () => {
+    const raw = window.prompt("New quota for selected users (GB, blank = clear override):", "");
+    if (raw === null) return;
+    const trimmed = raw.trim();
+    let bytes = null;
+    if (trimmed !== "") {
+      const gb = parseFloat(trimmed);
+      if (isNaN(gb) || gb < 0) { toast.error("Invalid GB value"); return; }
+      bytes = Math.round(gb * 1024 ** 3);
+    }
+    try {
+      const r = await bulkUpdateQuota(Array.from(selected), bytes);
+      toast.success(`Quota updated for ${r.affected} user${r.affected === 1 ? "" : "s"}`);
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+      qc.invalidateQueries({ queryKey: ["admin-storage"] });
+      clearSelection();
+    } catch (e) {
+      toast.error(e?.detail || "Bulk quota failed");
+    }
+  };
+  const doBulkDelete = async () => {
+    if (!window.confirm(`Hard-delete ${selected.size} user${selected.size === 1 ? "" : "s"}? This drops their images, faces, share grants — irreversible.`)) return;
+    try {
+      const r = await bulkDeleteUsers(Array.from(selected));
+      toast.success(`Deleted ${r.affected} user${r.affected === 1 ? "" : "s"}`);
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+      qc.invalidateQueries({ queryKey: ["admin-storage"] });
+      qc.invalidateQueries({ queryKey: ["admin-system"] });
+      clearSelection();
+    } catch (e) {
+      toast.error(e?.detail || "Bulk delete failed");
+    }
+  };
+  const doBulkRevokeConsent = async () => {
+    const kind = window.prompt(
+      "Revoke which consent kind? (leave blank to revoke ALL granted scopes)\n" +
+      "Common kinds: face_recognition · gps_retention · ai_summary · semantic_search",
+      "",
+    );
+    if (kind === null) return;
+    try {
+      const r = await bulkRevokeConsent(Array.from(selected), kind.trim() || null);
+      toast.success(`Revoked consent for ${r.affected} user${r.affected === 1 ? "" : "s"}`);
+      qc.invalidateQueries({ queryKey: ["admin-users"] });
+      clearSelection();
+    } catch (e) {
+      toast.error(e?.detail || "Bulk revoke failed");
+    }
+  };
+
   return (
     <div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
@@ -505,6 +738,33 @@ function RealUsersTab({ open }) {
         <span style={{ color: "var(--ink-3)", fontSize: 12 }}>
           {data ? `${data.length} users` : ""}
         </span>
+        {selected.size > 0 && (
+          <div style={{
+            marginLeft: "auto", display: "flex", gap: 6, alignItems: "center",
+            padding: "4px 10px", borderRadius: 8, fontSize: 12,
+            background: "var(--surface-2, rgba(0,0,0,0.04))",
+            border: "1px solid var(--line, rgba(0,0,0,0.08))",
+          }}>
+            <strong style={{ marginRight: 4 }}>{selected.size} selected</strong>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={doBulkQuota}>
+              <Icon name="hard-drive" size={10}/> Quota
+            </button>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={doBulkRevokeConsent}>
+              <Icon name="shield" size={10}/> Revoke consent
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              style={{ color: "var(--danger, #c0392b)" }}
+              onClick={doBulkDelete}
+            >
+              <Icon name="trash" size={10}/> Delete
+            </button>
+            <button type="button" className="btn-icon" onClick={clearSelection} title="Clear">
+              <Icon name="x" size={11}/>
+            </button>
+          </div>
+        )}
       </div>
       {isLoading ? (
         <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>
@@ -512,6 +772,15 @@ function RealUsersTab({ open }) {
         <table className="admin-table admin-table--compact">
           <thead>
             <tr>
+              <th style={{ width: 28 }}>
+                <input
+                  type="checkbox"
+                  checked={allChecked}
+                  ref={(el) => { if (el) el.indeterminate = someChecked && !allChecked; }}
+                  onChange={toggleAll}
+                  aria-label="Select all"
+                />
+              </th>
               <th>User</th>
               <th>Role</th>
               <th>Verified</th>
@@ -522,8 +791,16 @@ function RealUsersTab({ open }) {
             </tr>
           </thead>
           <tbody>
-            {(data || []).map((u) => (
-              <tr key={u.id}>
+            {rows.map((u) => (
+              <tr key={u.id} style={{ background: selected.has(u.id) ? "var(--surface-2, rgba(0,0,0,0.03))" : undefined }}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(u.id)}
+                    onChange={() => toggleOne(u.id)}
+                    aria-label={`Select ${u.email}`}
+                  />
+                </td>
                 <td>
                   <strong>{u.display_name || u.email.split("@")[0]}</strong>
                   <div className="mono" style={{ color: "var(--ink-3)", fontSize: 11 }}>{u.email}</div>

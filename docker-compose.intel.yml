@@ -1,0 +1,34 @@
+# Intel iGPU (Arc / Xe) + NPU passthrough overlay (todo §F1).
+#
+# Activate with:
+#   docker compose -f docker-compose.yml -f docker-compose.intel.yml up -d
+#
+# Prerequisites on the host:
+#   - Windows 11 build 26052+ (NPU passthrough requirement)
+#   - Intel Graphics Driver for WSL2  (exposes /dev/dri inside the
+#     Linux distro Docker Desktop uses for engine isolation)
+#   - Intel NPU driver for WSL2       (exposes /dev/accel)
+#   - Inside the ml-worker container:
+#       pip install openvino openvino-tokenizers
+#       pip install intel-extension-for-pytorch \
+#         --extra-index-url \
+#         https://pytorch-extension.intel.com/release-whl/stable/xpu/cn/
+#
+# Once everything's wired the worker's accelerator probe will pick up
+# the new devices automatically — no code change needed on neuthek's
+# side. The Models tab will show CUDA / iGPU / NPU side-by-side.
+#
+# Sanity check after `docker compose up`:
+#   docker compose exec ml-worker python -c \
+#     "from openvino import Core; print(Core().available_devices)"
+# Expected: ['CPU', 'GPU', 'NPU']  (without iGPU/NPU drivers: just ['CPU'])
+
+services:
+  ml-worker:
+    devices:
+      - "/dev/dri:/dev/dri"
+      - "/dev/accel:/dev/accel"
+    group_add:
+      - "render"
+    environment:
+      OPENVINO_DEVICE: "${OPENVINO_DEVICE:-AUTO}"

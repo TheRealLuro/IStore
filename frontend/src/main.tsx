@@ -4,19 +4,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "react-hot-toast";
 import { App } from "../neuthek/src/app.jsx";
 import { SharedView } from "../neuthek/src/shared-view.jsx";
+import { AdminPage } from "../neuthek/src/admin-page.jsx";
 import "../neuthek/styles/index.css";
 
-// Public share-link viewer (todo §1.1 / G1). Lives at the root so a
-// recipient hitting /share/{token} never even loads the gallery
-// shell — keeps the owner's library off the wire entirely until the
-// recipient claims, and avoids React Router as a dependency. The
-// branch reads pathname once at boot; navigating from inside the
-// app to a /share URL will hit a fresh document load anyway.
+// Path-based dispatch at boot. We avoid React Router so the gallery
+// app, the share viewer, and the admin dashboard each load only what
+// they need. Reads pathname once at mount — switching between them
+// triggers a fresh document load, which is the right behavior since
+// each surface has very different auth + data needs.
 function bootstrap(): JSX.Element {
   const path = window.location.pathname;
   if (path.startsWith("/share/")) {
     const token = decodeURIComponent(path.slice("/share/".length).replace(/\/$/, ""));
     if (token) return <SharedView token={token}/>;
+  }
+  if (path === "/admin" || path.startsWith("/admin/")) {
+    return <AdminPage/>;
   }
   return <App/>;
 }
