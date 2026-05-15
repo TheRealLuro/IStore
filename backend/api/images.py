@@ -578,35 +578,14 @@ async def summarize_progress(
     pending = int(row.pending or 0)
     with_summary = int(row.with_summary or 0)
 
-    # Auto-drain: when there's pending work and the in-process tracker
-    # isn't already holding one, push a job onto the worker queue. The
-    # ml-worker container is the primary consumer; the inline fallback
-    # is for dev runs that don't have the worker container up.
-    if pending > 0 and not _SUMMARIZE_IN_FLIGHT:
-        img_id = (
-            await session.execute(
-                select(Image.id)
-                .where(
-                    Image.user_id == user.id,
-                    Image.deleted_at.is_(None),
-                    (Image.pending_summary.is_(True)) | (Image.summary.is_(None)),
-                )
-                .order_by(Image.uploaded_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if img_id is not None:
-            _SUMMARIZE_IN_FLIGHT.add(img_id)
-            await _enqueue_or_inline_fallback(
-                jobs.enqueue_summarize, img_id,
-                inline=lambda iid=img_id: _run_summarize_tracked(iid),
-            )
-            # When the queue path took it, the worker doesn't unset
-            # the in-flight tracker (it lives in another process).
-            # Discard immediately so future polls aren't gated on a
-            # stale entry; the next call re-checks the DB-side state
-            # rather than relying on this best-effort dedupe.
-            _SUMMARIZE_IN_FLIGHT.discard(img_id)
+    # NB: this endpoint used to auto-enqueue a fresh summarize job on
+    # every poll. With the FE polling every 2 s and the worker taking
+    # 30-90 s per image, that pushed dozens of duplicate jobs into the
+    # Redis queue per minute — same image processed over and over,
+    # wasting hours of Florence compute and pinning Postgres under a
+    # constant write load that made the rest of the API feel frozen.
+    # The ml-worker container drains the queue on its own; we don't
+    # need the API to bump it.
 
     return {
         "total": total,

@@ -53,16 +53,46 @@ def _client() -> aioredis.Redis:
     return _redis
 
 
-async def _enqueue(payload: dict[str, Any]) -> bool:
-    """Push a job onto the queue. Returns True on success, False on failure
-    (caller may then fall back to running the job inline).
+async def _enqueue_dedupe(payload: dict[str, Any], dedupe_key: str) -> bool:
+    """Push a job onto the queue ONLY if no job with the same dedupe key
+    is already pending or in-flight.
+
+    The dedupe set (`neuthek:jobs:active`) is keyed `<kind>:<image_id>`.
+    The worker removes its key from the set when it finishes. The atomic
+    SADD-then-RPUSH avoids the case where the API enqueues twice in a
+    single tick — common for upload + face_scan_then_summarize +
+    progress-poll spam, which previously piled up 100+ duplicate jobs
+    for the same image inside a couple of minutes.
+
+    Returns True if pushed, False if either Redis is down OR the job is
+    already in-flight (caller treats both the same — no-op).
     """
     try:
-        await _client().rpush(JOB_QUEUE_KEY, json.dumps(payload))
+        client = _client()
+        added = await client.sadd("neuthek:jobs:active", dedupe_key)
+        if added == 0:
+            return False  # already pending — drop silently
+        await client.rpush(JOB_QUEUE_KEY, json.dumps(payload))
         return True
     except Exception:
         logger.exception("jobs: enqueue failed for %s", payload.get("kind"))
         return False
+
+
+async def _enqueue(payload: dict[str, Any]) -> bool:
+    """Back-compat wrapper that uses kind+image_id as the dedupe key."""
+    key = f"{payload.get('kind')}:{payload.get('image_id')}"
+    return await _enqueue_dedupe(payload, key)
+
+
+async def mark_done(kind: str, image_id: str) -> None:
+    """Worker calls this after a job completes (success or failure) so
+    the API can re-enqueue if a new request for the same image comes in.
+    """
+    try:
+        await _client().srem("neuthek:jobs:active", f"{kind}:{image_id}")
+    except Exception:
+        pass
 
 
 async def enqueue_summarize(image_id: UUID) -> bool:

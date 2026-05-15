@@ -30,7 +30,7 @@ import { useAuthedBlobUrl } from "./auth-image.jsx";
 // retina without bloating JPEG size.
 const DEFAULT_CSS_WIDTH = 1100;
 
-function PdfPage({ fileId, pageIndex, aspectRatio, cssWidth, rootRef }) {
+function PdfPage({ fileId, pageIndex, aspectRatio, maxCssWidth, maxCssHeight, rootRef }) {
   const wrapRef = useRef(null);
   const [inView, setInView] = useState(false);
 
@@ -59,23 +59,30 @@ function PdfPage({ fileId, pageIndex, aspectRatio, cssWidth, rootRef }) {
     return () => obs.disconnect();
   }, [inView, rootRef]);
 
-  // DPR-aware width keeps page rasters crisp on retina without doubling
-  // bandwidth on standard displays. Clamped to the endpoint's 4096 max.
+  // Fit-to-frame: each page sits within the modal's visible viewport
+  // without forcing the user to scroll horizontally OR cropping a
+  // letter-format page off-screen. The width is min(modal-width,
+  // page-width-derived-from-height) — whichever constraint binds
+  // first decides the actual rendered size. For tall portrait pages
+  // (most docs), height binds and the page is centered horizontally.
+  // For wide landscape pages, width binds.
+  const widthByHeightConstraint = maxCssHeight * aspectRatio;
+  const cssWidth = Math.min(maxCssWidth, widthByHeightConstraint);
+  const cssHeight = Math.round(cssWidth / Math.max(aspectRatio, 0.001));
+
+  // DPR-aware render width keeps page rasters crisp on retina without
+  // doubling bandwidth on standard displays. Clamped to the endpoint's
+  // 4096 max.
   const dpr = typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
   const renderWidth = Math.min(4096, Math.round(cssWidth * dpr));
   const src = inView ? pdfPageUrl(fileId, pageIndex, renderWidth) : null;
   const blob = useAuthedBlobUrl(src);
 
-  // The wrapper height is derived from the page's aspect ratio so the
-  // scroll container's total height is correct from the moment meta
-  // resolves — pages slot in without nudging the user's scroll position.
-  const pxHeight = Math.round(cssWidth / Math.max(aspectRatio, 0.001));
-
   return (
     <div
       ref={wrapRef}
       className="pdf-page"
-      style={{ width: `${cssWidth}px`, height: `${pxHeight}px` }}
+      style={{ width: `${cssWidth}px`, height: `${cssHeight}px` }}
       data-page={pageIndex + 1}
     >
       {blob ? (
@@ -91,19 +98,25 @@ function PdfPage({ fileId, pageIndex, aspectRatio, cssWidth, rootRef }) {
 
 export function PdfPageStack({ fileId }) {
   const scrollRef = useRef(null);
-  const [cssWidth, setCssWidth] = useState(DEFAULT_CSS_WIDTH);
+  const [boxSize, setBoxSize] = useState({ width: DEFAULT_CSS_WIDTH, height: 800 });
 
-  // Pages are sized to the available width of the scroll container so
-  // they fit cleanly without horizontal scroll. We observe the
-  // container's width and resize the page wrappers — uniform width
-  // means uniform page raster width, which lets the backend cache
-  // heavily by (image_id, page, width).
+  // Track the scroll container's actual visible size so each page can
+  // be sized "fit-to-frame" — the first page should land entirely in
+  // the modal viewport (no zoomed-in close-up where you only see a
+  // strip of the page width). Resize observer keeps it accurate when
+  // the user resizes the window or rotates the device.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       const w = el.clientWidth;
-      if (w > 0) setCssWidth(Math.max(320, Math.min(DEFAULT_CSS_WIDTH, w)));
+      const h = el.clientHeight;
+      if (w > 0 && h > 0) {
+        setBoxSize({
+          width: Math.max(320, Math.min(DEFAULT_CSS_WIDTH, w)),
+          height: Math.max(320, h),
+        });
+      }
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -133,6 +146,13 @@ export function PdfPageStack({ fileId }) {
     return <div className="pdf-stack__state">Empty PDF</div>;
   }
 
+  // 28px subtracts the column padding inside `.pdf-stack__inner`.
+  // 36px reserves a sliver below each page for the gap before the
+  // next page starts (so the first page doesn't push the second
+  // entirely off-screen on its own).
+  const maxPageWidth = boxSize.width - 28;
+  const maxPageHeight = boxSize.height - 36;
+
   return (
     <div className="pdf-stack" ref={scrollRef}>
       <div className="pdf-stack__inner">
@@ -142,7 +162,8 @@ export function PdfPageStack({ fileId }) {
             fileId={fileId}
             pageIndex={i}
             aspectRatio={p.w / Math.max(p.h, 1)}
-            cssWidth={cssWidth - 28}
+            maxCssWidth={maxPageWidth}
+            maxCssHeight={maxPageHeight}
             rootRef={scrollRef}
           />
         ))}

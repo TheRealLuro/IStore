@@ -220,6 +220,63 @@ const t = {
   showFab: true,
 };
 
+// SortDropdown — collapses the three sort tabs (Recent / Name / Size)
+// into one compact subbar control. The inline direction arrow lets
+// the user flip asc/desc without leaving the popover. Built on the
+// same `<details>` primitive as `FiltersDropdown` for outside-click
+// dismissal.
+const SORT_OPTIONS = [
+  { id: "recent", label: "Recent",  defaultDir: "desc" },
+  { id: "name",   label: "Name",    defaultDir: "asc"  },
+  { id: "size",   label: "Size",    defaultDir: "asc"  },
+];
+function SortDropdown({ sort, sortDir, setSort, setSortDir }) {
+  const detailsRef = useRefApp(null);
+  const active = SORT_OPTIONS.find(o => o.id === sort) || SORT_OPTIONS[0];
+  const onPick = (id) => {
+    if (id === sort) {
+      setSortDir(d => d === "asc" ? "desc" : "asc");
+    } else {
+      setSort(id);
+      const def = SORT_OPTIONS.find(o => o.id === id)?.defaultDir || "desc";
+      setSortDir(def);
+    }
+    if (detailsRef.current) detailsRef.current.open = false;
+  };
+  return (
+    <details className="sort-dd" ref={detailsRef}>
+      <summary className="btn btn--ghost btn--sm sort-dd__btn">
+        <Icon name="sort" size={12}/>
+        {active.label}
+        <Icon
+          name={sortDir === "asc" ? "chevronUp" : "chevronDown"}
+          size={11}
+          style={{ marginLeft: 2, opacity: 0.7 }}
+        />
+      </summary>
+      <div className="sort-dd__panel">
+        {SORT_OPTIONS.map(o => (
+          <button
+            key={o.id}
+            type="button"
+            className="sort-dd__opt"
+            data-active={sort === o.id}
+            onClick={() => onPick(o.id)}
+          >
+            <span>{o.label}</span>
+            {sort === o.id && (
+              <Icon
+                name={sortDir === "asc" ? "chevronUp" : "chevronDown"}
+                size={11}
+              />
+            )}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 // FiltersDropdown — single subbar control that collapses every facet
 // chip (scene / content type / indoor-outdoor / has-faces / has-gps)
 // into one button + a popover. The popover is a `<details>` so we
@@ -1146,42 +1203,12 @@ export function App() {
 
         {!isMap && (
           <div className="subbar">
-            <div className="tabs" role="tablist">
-              {[
-                { id: "recent", label: "Recent" },
-                { id: "name",   label: "Name" },
-                { id: "size",   label: "Size" },
-              ].map(t => (
-                <button
-                  key={t.id}
-                  className="tab"
-                  data-active={sort === t.id}
-                  onClick={() => {
-                    if (sort === t.id) {
-                      // Re-clicking the active tab flips direction.
-                      setSortDir(d => d === "asc" ? "desc" : "asc");
-                    } else {
-                      setSort(t.id);
-                      // Recent defaults to newest-first; alphabetical /
-                      // numerical sorts default to A→Z / smallest-first.
-                      setSortDir(t.id === "recent" ? "desc" : "asc");
-                    }
-                  }}
-                  title={sort === t.id
-                    ? `Currently ${sortDir === "asc" ? "ascending" : "descending"} — click to flip`
-                    : `Sort by ${t.label}`}
-                >
-                  {t.label}
-                  {sort === t.id && (
-                    <Icon
-                      name={sortDir === "asc" ? "chevronUp" : "chevronDown"}
-                      size={11}
-                      style={{ marginLeft: 4, verticalAlign: "-1px" }}
-                    />
-                  )}
-                </button>
-              ))}
-            </div>
+            {/* Sort dropdown — single button instead of three side-by-side
+                tabs. Closed it shows just the active key + direction
+                arrow ("Recent ↓"); open it reveals all three options
+                with the asc/desc toggle inline so a re-click flips
+                direction without leaving the dropdown. */}
+            <SortDropdown sort={sort} sortDir={sortDir} setSort={setSort} setSortDir={setSortDir}/>
             <div className="topbar__spacer"/>
             {multiSelected.size > 0 && (
               <span style={{ fontSize: 12, color: "var(--ink-2)", marginRight: 8 }}>

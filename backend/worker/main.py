@@ -83,6 +83,8 @@ async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> 
 
 
 async def _process_job(session_factory, job: dict) -> None:
+    from backend.jobs import mark_done
+
     kind = job.get("kind")
     image_id_s = job.get("image_id")
     if not kind or not image_id_s:
@@ -91,21 +93,28 @@ async def _process_job(session_factory, job: dict) -> None:
     image_id = UUID(image_id_s)
     user_id = UUID(job["user_id"]) if job.get("user_id") else None
 
-    if kind == "summarize":
-        await _process_summarize(session_factory, image_id)
-    elif kind == "face_scan":
-        if user_id is None:
-            logger.warning("worker: face_scan missing user_id %s", job)
-            return
-        await _process_face_scan(session_factory, user_id, image_id)
-    elif kind == "face_scan_then_summarize":
-        if user_id is None:
-            logger.warning("worker: face_scan_then_summarize missing user_id %s", job)
-            return
-        await _process_face_scan(session_factory, user_id, image_id)
-        await _process_summarize(session_factory, image_id)
-    else:
-        logger.warning("worker: unknown job kind %s", kind)
+    try:
+        if kind == "summarize":
+            await _process_summarize(session_factory, image_id)
+        elif kind == "face_scan":
+            if user_id is None:
+                logger.warning("worker: face_scan missing user_id %s", job)
+                return
+            await _process_face_scan(session_factory, user_id, image_id)
+        elif kind == "face_scan_then_summarize":
+            if user_id is None:
+                logger.warning("worker: face_scan_then_summarize missing user_id %s", job)
+                return
+            await _process_face_scan(session_factory, user_id, image_id)
+            await _process_summarize(session_factory, image_id)
+        else:
+            logger.warning("worker: unknown job kind %s", kind)
+    finally:
+        # Always remove the dedupe key so a new request for the same
+        # image can re-enqueue. We pop in `finally` rather than after
+        # the try-block so a job that crashes mid-process doesn't
+        # permanently lock that image out of being re-summarized.
+        await mark_done(kind, image_id_s)
 
 
 async def main() -> None:
