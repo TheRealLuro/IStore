@@ -342,22 +342,31 @@ p {
 }
 .carousel__track {
   display: flex;
-  gap: 64px;
+  gap: 56px;
   width: max-content;
-  animation: scroll-x 36s linear infinite;
+  animation: scroll-x 42s linear infinite;
 }
 .carousel__item {
-  display: flex; align-items: center; gap: 10px;
-  font-family: "Geist Mono", monospace;
-  font-size: 14px;
-  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--ink-3);
   white-space: nowrap;
+  transition: color 200ms var(--ease);
 }
-.carousel__dot {
-  width: 8px; height: 8px;
-  background: var(--ink-4);
-  border-radius: 50%;
+.carousel__logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+  transition: color 200ms var(--ease);
 }
+.carousel__item:hover { color: var(--ink); }
+.carousel__item:hover .carousel__logo { color: var(--ink); }
+.carousel__name { letter-spacing: -0.01em; }
 .carousel:hover .carousel__track { animation-play-state: paused; }
 
 @keyframes scroll-x {

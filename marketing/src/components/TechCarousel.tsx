@@ -1,34 +1,24 @@
-/* Tech carousel — every entry below is a real dependency in pyproject.toml,
-   docker-compose.yml, or frontend/package.json. We list names rather than
-   trademarked logo bitmaps so we don't misrepresent any vendor's brand. */
+/* Tech carousel — what neuthek is being built on.
+ *
+ * Each item is a real dependency in our development tree (see
+ * marketing/README.md for the full stack). We render a uniform
+ * monochrome logo next to each name; the logos belong to their
+ * respective owners and are used here nominatively to describe
+ * the technologies, not to imply endorsement or affiliation. */
 
-const TECH = [
-  "FastAPI",
-  "PostgreSQL 16",
-  "pgvector",
-  "MinIO",
-  "Redis",
-  "Alembic",
-  "OpenCLIP (ViT-L-14)",
-  "Pillow",
-  "Docker Compose",
-  "Vite",
-  "React 18",
-  "TypeScript",
-  "PyTorch",
-  "argon2-cffi",
-  "fastapi-users",
-];
+import { TECH_STACK } from "./Logos";
 
 export default function TechCarousel() {
-  const items = [...TECH, ...TECH]; // duplicate for seamless loop
+  const items = [...TECH_STACK, ...TECH_STACK]; // duplicate for seamless loop
   return (
-    <div className="carousel" aria-label="Technologies neuthek is built on">
+    <div className="carousel" aria-label="Technologies neuthek is being built on">
       <div className="carousel__track">
-        {items.map((label, i) => (
-          <span className="carousel__item" key={`${label}-${i}`}>
-            <span className="carousel__dot" aria-hidden />
-            {label}
+        {items.map(({ name, Icon }, i) => (
+          <span className="carousel__item" key={`${name}-${i}`}>
+            <span className="carousel__logo" aria-hidden>
+              <Icon size={26} />
+            </span>
+            <span className="carousel__name">{name}</span>
           </span>
         ))}
       </div>
