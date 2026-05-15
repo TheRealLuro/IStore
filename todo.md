@@ -27,17 +27,39 @@ Shipped work isn't listed here; read `git log` for that.
 
 ## 1. Currently broken / partial
 
-### 1.2 Settings: features still hidden until their backends ship
-The Settings rail (Account / Privacy / Security / AI features / Your
-data) is wired for everything that has a backend. The following
-sections remain hidden because they each need a new backend surface:
-- **Plan / Invoices** (Account tab) — needs Stripe / billing.
-- **Notifications tab** (entire tab gone) — needs email + push
-  notification backends + `notification_prefs` table.
-- **2FA TOTP** beyond recovery codes — needs pyotp + QR endpoint.
-- **Per-scope `expires_at`** on Privacy rows — backend already
-  returns it via `/consent/scopes`; UI shows only `granted_at` for now.
-  Surface "Expires …" once retention preferences are user-controllable.
+> Section closed as of 2026-05-15 — every item that was here is now
+> shipped. The historical record below stays in case operators want
+> to read the resolution notes.
+
+### 1.2 Settings backlog ✅ SHIPPED 2026-05-15
+All four sub-items closed:
+
+- **TOTP 2FA** (§1.2.2) — new migration 0024 adds
+  `users.totp_secret_enc` (Fernet-encrypted via `backend.secret_box`),
+  `totp_enabled`, `totp_verified_at`. New router
+  [backend/api/two_factor.py](backend/api/two_factor.py) wires
+  `/account/2fa/{setup,verify,disable,status}` +
+  `/auth/jwt/login-totp`. `UserManager.on_after_login` raises 401
+  `totp_required` when 2FA is on, so the standard login endpoint
+  can't issue a token for TOTP-enabled accounts. FE shows an inline
+  QR (rendered server-side via `qrcode`) + a code-entry step in the
+  sign-in form.
+- **Notifications** (§1.2.3) — `notification_prefs` table keyed
+  `(user_id, kind, channel)`; kinds = product_updates,
+  security_alerts, account_activity, storage_warnings; channels =
+  email + in_app. security_alerts default ON. Endpoints at
+  `/account/notifications` (GET / PATCH). Tab restored to the
+  Settings rail with a 4×2 toggle grid. Push channel deferred until
+  the service-worker pass.
+- **Plan / Invoices** (§1.2.4 *honest version*) — Account tab now
+  renders a `PlanCard` reading `/storage/usage` with the real
+  per-category breakdown + percent-of-quota meter tinted by
+  threshold. No fake invoices, no fake Stripe checkout — the card
+  says "no paid tier today" and leaves the upgrade affordance blank.
+  Real billing lands as a separate workstream.
+- **Per-scope `expires_at`** on Privacy rows — surfaced in `subFor`
+  alongside "Granted …". The backend's been returning it since the
+  consent state machine landed; the FE just wasn't formatting it.
 
 ---
 
@@ -651,6 +673,8 @@ B+ patch.
 
 8. ✅ **§1.1 + G1** sharing primitive — `share_grants` table + 7-route
    `/shares/...` API + ShareModal + public viewer. (Landed 2026-05-14.)
+8a. ✅ **§1.2** Settings backlog — TOTP 2FA + Notifications +
+    Plan card + per-scope Expires_at. (Landed 2026-05-15.)
 9. **G2** comments — `comments` table + pin overlay + thread panel.
 10. **C5.1** setup script — platform detect, GPU probe, `.env`
     generation, `docker compose` or native install.
