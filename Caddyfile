@@ -1,0 +1,53 @@
+# Caddy site config for self-host TLS termination.
+#
+# Reads ${NEUTHEK_DOMAIN} and ${DOMAIN_ACME_EMAIL} from compose env.
+# Caddy auto-acquires + renews certificates from Let's Encrypt for
+# the configured domain. The backend stays on its private :8000.
+
+{
+    email {$DOMAIN_ACME_EMAIL}
+    admin off
+    servers {
+        protocols h1 h2 h3
+    }
+}
+
+{$NEUTHEK_DOMAIN:localhost} {
+    # Strip headers that leak server identity. Caddy advertises itself
+    # via the Server header by default; security-review tools nag.
+    header {
+        -Server
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+    }
+
+    # gzip + zstd both — zstd wins on modern browsers, gzip is the
+    # universal fallback. Lossy compression handled inside the
+    # backend's image pipeline, not here.
+    encode zstd gzip
+
+    # API + share-viewer + admin all live on the backend.
+    reverse_proxy backend:8000 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-For {remote_host}
+        # 24h grace for long-running uploads — pg_dump backups,
+        # 200MB archive uploads, etc.
+        transport http {
+            response_header_timeout 90s
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+}
+
+# Optional: expose MinIO console on a sibling subdomain. Uncomment +
+# point a CNAME at the host if operators want to admin MinIO via
+# https://minio.${NEUTHEK_DOMAIN} instead of the unsigned :9001 port.
+#
+# minio.{$NEUTHEK_DOMAIN} {
+#     reverse_proxy minio:9001
+#     header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+# }

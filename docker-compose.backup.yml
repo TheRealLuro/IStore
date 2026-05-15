@@ -1,0 +1,67 @@
+# Encrypted-backup sidecar overlay.
+#
+# The `backup-runner` service is on-demand (Compose profile `backup`)
+# so it doesn't sit running idle; you trigger it manually or via a
+# host-side cron / scheduled task.
+#
+# Manual run (recommended for first-time setup):
+#   docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+#                  --profile backup run --rm backup-runner
+#
+# Scheduled run from the host (Linux cron — daily at 03:00 UTC):
+#   0 3 * * * cd /opt/neuthek && \
+#     docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+#                    --profile backup run --rm backup-runner \
+#                    >> /var/log/neuthek-backup.log 2>&1
+#
+# Restore (one-shot — mount the off-host age identity for this run):
+#   docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+#                  --profile backup run --rm \
+#                  -v /path/to/age-identity.txt:/key:ro \
+#                  -e BACKUP_AGE_IDENTITY=/key \
+#                  --entrypoint /sbin/tini -- backup-runner -- \
+#                  /usr/local/bin/restore-db.sh /backups/neuthek-XXXX.dump.age
+
+services:
+  backup-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    image: neuthek-backup:latest
+    container_name: neuthek-backup-runner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - backup
+    environment:
+      # libpq URL — pg_dump reads this directly. Uses the same
+      # credentials the API container uses; in prod you'd typically
+      # provision a dedicated read-only-replicating role with
+      # pg_dump-specific privileges, but for self-host we share.
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      # age public key (recipient). REQUIRED. Generate locally with
+      # `age-keygen -o ~/.config/age/neuthek.key`; the public-key line
+      # at the top of that file is what goes here.
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      # Local landing dir inside the container. Mounted from the
+      # host's ./data/backups via the volume below.
+      BACKUP_OUTPUT_DIR: /backups
+      # Optional offsite upload. Set to e.g.
+      # `s3/my-bucket/neuthek/` after running `mc alias set s3 ...`
+      # in the container (or via $MC_CONFIG_DIR mount). Empty =
+      # local-only (operator copies the file off-host manually).
+      BACKUP_DEST_URL: ${BACKUP_DEST_URL:-}
+      BACKUP_RETAIN_LOCAL: ${BACKUP_RETAIN_LOCAL:-1}
+    volumes:
+      # Backups land here. Pin to ./data/backups on the host so
+      # `ls data/backups/` shows them at a glance.
+      - ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT:-./data}}/backups:/backups
+      # Optional: persistent mc client config so the operator only
+      # `mc alias set` once per offsite destination instead of
+      # re-aliasing on every run.
+      - backup_mc_config:/root/.mc
+
+volumes:
+  backup_mc_config:
+    driver: local

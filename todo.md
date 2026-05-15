@@ -17,51 +17,45 @@ Shipped work isn't listed here; read `git log` for that.
 > security review. Consent does not override illegal storage, secret
 > leakage, or insufficient encryption.
 
-### A2. Encryption at rest + in transit 🟡
-> **Hardening landed in code; ops-side rollout still required for prod.**
+### A2. Encryption at rest + in transit ✅ SHIPPED 2026-05-16
+> Code, ops tooling, and docs all in. Per-deployment knobs live in
+> [.env.example](.env.example) and the operator checklist is in
+> [SECURITY.md](SECURITY.md). Boot-time validator in
+> [backend/security.py](backend/security.py) fails fast on any
+> drift. The `/admin/system` `encryption` block surfaces the live
+> posture (including last-backup timestamp) to the dashboard. 11
+> pytest cases in
+> [tests/test_encryption_posture.py](tests/test_encryption_posture.py).
 >
-> What's enforced in code now:
-> - `validate_production_settings` in
->   [backend/security.py](backend/security.py) fails boot when
->   `app_env=prod` AND any of: `MINIO_SECURE=false`, FE URL is HTTP,
->   `JWT_SECRET` un-rotated, `SECRET_MANAGER=env_file`,
->   `POSTGRES_AT_REST_ENCRYPTION` != `host_volume_confirmed`,
->   `MINIO_SSE_MODE=off`, `BACKUP_AGE_RECIPIENT` missing,
->   `CLOUD_ENCRYPTION_KEY` empty or malformed,
->   `MINIO_SSE_MODE=sse-kms` with missing OR identical content/biometric
->   key IDs.
-> - Every `storage.put` audited: biometric bucket writes
->   (`backend/api/people.py`, `backend/faces_pipeline.py`) carry
->   `sse_scope="biometric"`; everything else defaults to
->   `sse_scope="content"`. With `sse-kms`, those scopes map to
->   distinct KMS keys via `storage._sse`.
-> - `/admin/system` returns an `encryption` block (transit / object
->   storage / secret_box / database / backups) so operators read the
->   posture from the admin overlay instead of grepping env vars. No
->   key material in the response. 8 pytest cases in
->   [tests/test_encryption_posture.py](tests/test_encryption_posture.py)
->   cover the prod-boot rejections + the posture-endpoint shape.
+> Pieces:
+> - **TLS termination** — `docker-compose.tls.yml` + `Caddyfile`
+>   overlay with auto-Let's-Encrypt, HSTS, HTTP/3, sensor lockdown.
+>   Documented in SECURITY.md "TLS termination."
+> - **Object storage SSE** — `storage._sse` routes biometric vs.
+>   content scopes to distinct keys under `sse-kms`; every PUT
+>   audited.
+> - **Postgres at-rest** — `host_volume_confirmed` attestation
+>   knob with three documented paths (cloud-managed, LUKS, OS
+>   disk encryption) in SECURITY.md.
+> - **Encrypted backups** — `scripts/backup-db.sh` (+ `.ps1` for
+>   Windows hosts) does `pg_dump | age recipient → local + offsite`,
+>   `scripts/restore-db.sh` is the inverse. Sidecar container
+>   ([Dockerfile.backup](Dockerfile.backup) +
+>   [docker-compose.backup.yml](docker-compose.backup.yml)) bundles
+>   `age` + `postgresql-client` + `mc` so the host needs no extra
+>   binaries. The script writes a `backup.completed` audit row;
+>   `/admin/system` reads the most recent one and reports
+>   `at` / `bytes` / `upload_dest` / `age_seconds`.
+> - **Secret-box (`CLOUD_ENCRYPTION_KEY`)** — required + Fernet-valid
+>   at boot in prod, surfaced in posture as valid/invalid/unset
+>   without leaking the key. Rotation helper (zero-downtime
+>   re-encrypt) tracked under §A3.
 >
-> What's still ops-side / not in code:
-- **TLS termination** — Render handles HTTPS in front of the API and
-  marketing surfaces. For Docker self-host, the operator runs a
-  reverse proxy (Caddy / Traefik / nginx) with Let's Encrypt and
-  flips `MINIO_SECURE=true` only after pointing it at the proxy.
-  Document in `SECURITY.md` (still owed under §A6).
-- **Postgres at-rest** — `host_volume_confirmed` is an *attestation*
-  knob. The operator encrypts the volume with LUKS / cloud provider
-  KMS / managed DB encryption-at-rest and only then flips
-  `POSTGRES_AT_REST_ENCRYPTION=host_volume_confirmed` so prod boot
-  passes. `pgcrypto` extension is already enabled (migration 0001) —
-  available for any future narrow column (notes, vault recovery
-  metadata, etc.) but not used yet because every existing sensitive
-  column is also indexed (CLIP embeddings → pgvector, summary text →
-  tsvector FTS) and column-level encryption breaks those.
-- **Encrypted backups** — `BACKUP_AGE_RECIPIENT` is wired but the
-  backup script that uses it is still owed; pg_dump | age recipient
-  → S3 is the planned shape.
-- **E2E user-key encryption** — passwords vault (**E3**); needs
-  client-side Argon2id-derived key + WebCrypto AES-GCM. Untouched.
+> **Not in scope here** (separate workstreams):
+> - **E3 user-key vault** — passwords get E2E client-side Argon2id +
+>   WebCrypto AES-GCM. Untouched; lives under §E3 below.
+> - **Secret rotation worker** (§A3) — currently a key change
+>   orphans existing ciphertext until the migration tool ships.
 
 ### A3. Secret management ⏳
 - No `.env` in git; commit `.env.example` with placeholders only.
@@ -69,6 +63,12 @@ Shipped work isn't listed here; read `git log` for that.
 - Move secrets out of compose files into a secret manager (Vault,
   Docker secrets, platform-native).
 - Audit log every secret access (who read, when, from where).
+- **Secret-box rotation worker** — currently rotating
+  `CLOUD_ENCRYPTION_KEY` invalidates all existing ciphertext
+  (TOTP secrets + cloud-OAuth refresh tokens). Ship a migration
+  tool that reads with `CLOUD_ENCRYPTION_KEY`, writes with
+  `CLOUD_ENCRYPTION_KEY_NEXT`, then promotes — the rotation flow
+  documented in [SECURITY.md](SECURITY.md) "Secret-box rotation."
 
 ### A4. Access control + audit ⏳
 - RBAC on top of per-user filtering — admin/superuser/user roles.

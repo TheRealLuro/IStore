@@ -387,6 +387,7 @@ async def _resolve_user_lookup(
 @router.get("/system")
 async def admin_system(
     _: Annotated[User, Depends(current_admin_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
     """API process environment + a rolled-up health verdict.
 
@@ -427,11 +428,46 @@ async def admin_system(
         # §A2 — encryption posture rollup so the admin Storage tab can
         # show "are we encrypted?" at a glance without the operator
         # piecing together env vars from three places.
-        "encryption": _encryption_posture(),
+        "encryption": await _encryption_posture(session),
     }
 
 
-def _encryption_posture() -> dict:
+async def _last_backup_snapshot(session: AsyncSession) -> dict:
+    """Read the most recent `backup.completed` audit row.
+
+    Surfaces to /admin/system → encryption.backups so operators can
+    answer "when did the encrypted dump last run?" without grepping
+    container logs. The script in `scripts/backup-db.sh` writes the
+    row at the end of a successful run; admin overlay reads it back.
+
+    Returns a flat shape:
+      { "at": ISO8601 | None, "bytes": int | None,
+        "upload_dest": str | None, "age_seconds": int | None }
+    """
+    row = (
+        await session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "backup.completed")
+            .order_by(AuditLog.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return {"at": None, "bytes": None, "upload_dest": None, "age_seconds": None}
+    details = row.details or {}
+    age_seconds = None
+    if row.created_at is not None:
+        from datetime import datetime, timezone
+        age_seconds = int((datetime.now(timezone.utc) - row.created_at).total_seconds())
+    return {
+        "at": row.created_at.isoformat() if row.created_at else None,
+        "bytes": details.get("bytes"),
+        "upload_dest": details.get("upload_dest") or None,
+        "age_seconds": age_seconds,
+    }
+
+
+async def _encryption_posture(session: AsyncSession | None = None) -> dict:
     """Snapshot of every encryption knob the deployment exposes.
 
     Returns a flat dict the FE renders into the System tab's
@@ -491,6 +527,7 @@ def _encryption_posture() -> dict:
         },
         "backups": {
             "age_recipient_set": backups_encrypted,
+            "last": (await _last_backup_snapshot(session)) if session is not None else None,
         },
     }
 

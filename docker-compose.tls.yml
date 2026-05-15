@@ -1,0 +1,44 @@
+# Caddy reverse-proxy overlay — opt-in HTTPS termination for self-host.
+#
+# Usage (production):
+#   1. Point DNS A/AAAA at the host
+#   2. Set NEUTHEK_DOMAIN in `.env` (e.g. NEUTHEK_DOMAIN=neuthek.example.com)
+#      and DOMAIN_ACME_EMAIL=ops@example.com for Let's Encrypt notices
+#   3. Open ports 80 + 443 on the host firewall
+#   4. docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#
+# Caddy auto-acquires + renews Let's Encrypt certificates against the
+# configured domain. The backend stays on its private :8000 port —
+# only Caddy is internet-exposed.
+#
+# When this overlay is active, set in `.env`:
+#   APP_ENV=prod
+#   MINIO_SECURE=true        # MinIO is now behind Caddy via /minio/* if you proxy it
+#   FRONTEND_BASE_URL=https://${NEUTHEK_DOMAIN}
+#
+# Otherwise validate_production_settings will reject boot.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: neuthek-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3 (Caddy serves it by default)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # ACME certs + state — persistent
+      - caddy_config:/config
+    environment:
+      NEUTHEK_DOMAIN: ${NEUTHEK_DOMAIN:-localhost}
+      DOMAIN_ACME_EMAIL: ${DOMAIN_ACME_EMAIL:-}
+    depends_on:
+      - backend
+
+volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local

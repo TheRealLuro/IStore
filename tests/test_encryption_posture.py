@@ -213,3 +213,98 @@ async def test_admin_system_flags_kms_misconfig_in_posture(db_client, monkeypatc
     assert enc["object_storage"]["sse_mode"] == "sse-kms"
     assert enc["object_storage"]["kms_keys_separated"] is False
     assert enc["ok"] is False  # rollup says "not hardened"
+
+
+# ---------- Backup tracking via audit_log ----------
+
+
+async def _promote_superuser(email: str) -> None:
+    from tests.conftest import fetch_user_id
+    from backend.db import SessionLocal
+    from backend.models import User
+    from sqlalchemy import update as sa_update
+
+    uid = await fetch_user_id(email)
+    async with SessionLocal() as s:
+        await s.execute(sa_update(User).where(User.id == uid).values(is_superuser=True))
+        await s.commit()
+
+
+async def test_backup_posture_returns_null_when_no_backup_audit_row(db_client, monkeypatch):
+    """A fresh deployment with no backups should surface
+    encryption.backups.last == {at: None, ...} so the admin overlay
+    can render "no backups yet" instead of crashing."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "app_env", "dev")
+    monkeypatch.setattr(settings, "cloud_encryption_key", _valid_fernet())
+
+    email = "backup-empty@example.com"
+    _, headers = await register_and_login(db_client, email=email)
+    await _promote_superuser(email)
+
+    r = await db_client.get("/admin/system", headers=headers)
+    last = r.json()["encryption"]["backups"]["last"]
+    assert last == {"at": None, "bytes": None, "upload_dest": None, "age_seconds": None}
+
+
+async def test_backup_posture_surfaces_latest_audit_row(db_client, monkeypatch):
+    """When the backup script inserts `backup.completed` rows, the
+    posture endpoint reads the most-recent one and reports its
+    timestamp + size + offsite destination."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "app_env", "dev")
+    monkeypatch.setattr(settings, "cloud_encryption_key", _valid_fernet())
+
+    email = "backup-rows@example.com"
+    _, headers = await register_and_login(db_client, email=email)
+    await _promote_superuser(email)
+
+    from backend.db import SessionLocal
+    from backend.models import AuditLog
+
+    async with SessionLocal() as s:
+        # Two rows — older first. The endpoint should return the
+        # NEWER one (highest id).
+        s.add(AuditLog(
+            user_id=None, action="backup.completed",
+            details={"path": "/backups/old.dump.age", "bytes": 1000, "upload_dest": ""},
+        ))
+        await s.flush()
+        s.add(AuditLog(
+            user_id=None, action="backup.completed",
+            details={"path": "/backups/new.dump.age", "bytes": 5500, "upload_dest": "s3/neuthek/backups"},
+        ))
+        await s.commit()
+
+    r = await db_client.get("/admin/system", headers=headers)
+    last = r.json()["encryption"]["backups"]["last"]
+    assert last["bytes"] == 5500
+    assert last["upload_dest"] == "s3/neuthek/backups"
+    assert last["at"] is not None
+    assert last["age_seconds"] is not None
+    assert last["age_seconds"] >= 0
+
+
+async def test_backup_posture_does_not_match_unrelated_audit_actions(db_client, monkeypatch):
+    """Other audit rows (image upload, share grant, etc.) must not
+    bleed into the backup view. The query is scoped to
+    `action='backup.completed'`."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "app_env", "dev")
+    monkeypatch.setattr(settings, "cloud_encryption_key", _valid_fernet())
+
+    email = "backup-scope@example.com"
+    _, headers = await register_and_login(db_client, email=email)
+    await _promote_superuser(email)
+
+    from backend.db import SessionLocal
+    from backend.models import AuditLog
+
+    async with SessionLocal() as s:
+        s.add(AuditLog(user_id=None, action="upload.quarantined", details={"bytes": 999}))
+        s.add(AuditLog(user_id=None, action="share.created",      details={"bytes": 888}))
+        await s.commit()
+
+    r = await db_client.get("/admin/system", headers=headers)
+    last = r.json()["encryption"]["backups"]["last"]
+    assert last["bytes"] is None  # no backup.completed row exists

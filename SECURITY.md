@@ -1,43 +1,227 @@
 # Security Policy
 
-## Supported Versions
+## Reporting a vulnerability
 
-Only the current mainline deployment is supported for security fixes.
+Email the operator at **security@neuthek.app** (or whichever address
+is listed on the public site at the time of disclosure) before
+opening a public issue. Include:
 
-## Reporting
+- Reproduction steps + the affected route or feature
+- Whether user content, credentials, biometric data, or audit
+  integrity is involved
+- The branch / commit / tag you tested against
 
-Report vulnerabilities privately to the project operator before public
-disclosure. Include reproduction steps, affected endpoints, and whether the
-issue involves user content, credentials, biometric data, or audit integrity.
+We acknowledge within 72 hours. Coordinated disclosure preferred —
+we publish a CVE-style note in `SECURITY_REVIEW.md` once a fix lands.
 
-## Production Baseline
+## Supported versions
 
-Public deployments must use the Compose+Caddy production baseline or an
-equivalent platform:
+Only the current `main` deployment is supported for security fixes.
+Self-hosters running an older commit should pin to a tagged
+release once the project starts cutting them; for now, track `main`.
 
-- HTTPS at the public entrypoint.
-- `APP_ENV=prod`.
-- Redis reachable through `REDIS_URL`; production startup fails without it.
-- `SECRET_MANAGER=docker_secrets` or a platform secret manager.
-- Sensitive settings provided through `_FILE` paths or platform secrets, not a
-  production `.env`.
-- `MINIO_SECURE=true`.
-- `MINIO_SSE_MODE=sse-s3` or `sse-kms`.
-- Distinct KMS key IDs for content and biometric scopes when KMS is used.
-- `POSTGRES_AT_REST_ENCRYPTION=host_volume_confirmed`.
-- `BACKUP_AGE_RECIPIENT` set and backups encrypted before leaving the host.
-- `REQUIRE_SIGNED_DOWNLOADS=true` and `VITE_REQUIRE_SIGNED_DOWNLOADS=true`.
+---
 
-## Backup Retention
+## Production checklist (the §A2 attestation set)
 
-Use `scripts/backup_encrypted.ps1` from a host with encrypted storage. The script
-creates a Postgres dump plus MinIO data archive and encrypts the result with
-`age`. Store the private age identity outside the application host. Deleted
-content can remain in old backups until the backup retention window expires.
+Every public deployment must satisfy this list. The boot-time
+validator in [backend/security.py](backend/security.py)
+`validate_production_settings` enforces them and refuses to start
+when `APP_ENV=prod` is set with any item missing.
 
-## Secret Scanning
+| Knob | Required value | Why |
+|------|----------------|-----|
+| `APP_ENV` | `prod` | Locks behavior changes — disables dev shortcuts, enforces the rest of this table |
+| `MINIO_SECURE` | `true` | MinIO talks TLS to the API |
+| `FRONTEND_BASE_URL` | `https://…` | Auth tokens never traverse plaintext |
+| `JWT_SECRET` | Rotated from `dev-only-jwt-secret-CHANGE-IN-PROD` | Boot rejects the literal dev string |
+| `SECRET_MANAGER` | `docker_secrets` or a platform secret manager | Forces secrets out of `.env`, into `*_FILE` mounts / Vault / Render env-secrets |
+| `MINIO_SSE_MODE` | `sse-s3` or `sse-kms` | Object storage encrypts every PUT at rest |
+| `MINIO_SSE_KMS_KEY_ID_CONTENT` | Set when `sse-kms` | Required key ID for content buckets |
+| `MINIO_SSE_KMS_KEY_ID_BIOMETRIC` | Set when `sse-kms`, distinct from content | §A2 mandates separate keys for biometric vs. content |
+| `POSTGRES_AT_REST_ENCRYPTION` | `host_volume_confirmed` | Operator attests the DB volume is encrypted (see below) |
+| `BACKUP_AGE_RECIPIENT` | `age1…` public key | Encrypted backups (see below) |
+| `CLOUD_ENCRYPTION_KEY` | Valid Fernet key | Encrypts TOTP secrets + OAuth refresh tokens; auto-bootstrap is a dev-only convenience |
+| `REQUIRE_SIGNED_DOWNLOADS` | `true` | Forces every image/share download through HMAC-signed URLs |
 
-CI runs Gitleaks. Run `gitleaks detect --source . --redact --verbose` before
-publishing or rewriting history. If real credentials or user data are found in
-history, rotate the credential and remove the history with a dedicated
-repository-rewrite procedure.
+The admin overlay's System tab surfaces the live posture via
+`GET /admin/system` → `encryption` block, with a green/amber/red
+rollup so operators can verify at a glance.
+
+---
+
+## TLS termination
+
+For Docker self-host:
+
+1. Set `NEUTHEK_DOMAIN` + `DOMAIN_ACME_EMAIL` in `.env`.
+2. Open the firewall on TCP 80 + 443 (and UDP 443 for HTTP/3).
+3. Bring up the stack with the TLS overlay:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+   ```
+
+Caddy ([Caddyfile](Caddyfile)) auto-acquires + renews Let's Encrypt
+certificates against the configured domain. The backend stays on its
+private `:8000` — only Caddy is internet-exposed. The Caddyfile sets
+HSTS (1 year, preload-ready), strips the `Server` header, and
+disables sensors via `Permissions-Policy`.
+
+For Render / Fly / Vercel / Railway-hosted deployments the platform
+terminates TLS upstream; you only set `FRONTEND_BASE_URL` to the
+HTTPS endpoint and `MINIO_SECURE` per the table above.
+
+---
+
+## Postgres encryption at rest
+
+The `POSTGRES_AT_REST_ENCRYPTION=host_volume_confirmed` knob is an
+**attestation** — the application can't introspect host disk
+encryption, so it relies on the operator to confirm one of:
+
+1. **Cloud managed** — AWS RDS / GCP Cloud SQL / Render Postgres /
+   Fly Postgres encrypt every volume by default. Nothing to do
+   except set the env var.
+2. **LUKS / dm-crypt** (Linux self-host) — encrypt the volume
+   holding `data/postgres` with `cryptsetup luksFormat`, mount via
+   `/etc/crypttab`, then point the compose `pg_data` bind-mount at
+   the mounted path.
+3. **BitLocker / FileVault / VeraCrypt** (Windows/macOS dev hosts) —
+   encrypt the partition holding the project directory. Acceptable
+   for single-user dev / personal deployments; not the recommended
+   path for production.
+
+Column-level encryption via `pgcrypto` (extension already enabled in
+migration 0001) is available for **narrow** fields that aren't
+indexed for search. Don't apply it to CLIP embeddings (pgvector) or
+summary text (tsvector FTS) — column-level encryption breaks both.
+
+---
+
+## Encrypted backups
+
+`scripts/backup-db.sh` runs `pg_dump` + `age` and writes the
+encrypted dump locally; if `BACKUP_DEST_URL` is set it uploads to
+that offsite destination via `mc cp`. The script lives in a small
+alpine sidecar with `age` + `postgresql-client` + `minio-client`
+preinstalled, so the host doesn't need any of those.
+
+### One-time setup
+
+1. Generate an age key pair locally (the `age` CLI is small —
+   `brew install age` / `apt install age` / WinGet / scoop):
+
+   ```bash
+   age-keygen -o ~/.config/age/neuthek.key
+   # Public key gets printed:
+   # public key: age1u5cy7tdtmnff3y9...
+   ```
+
+2. **Move the private key off the application host.** A USB key in a
+   safe, a password manager attachment, a teammate's laptop —
+   anywhere that survives the host being wiped or compromised. The
+   whole point of recipient-mode age is that the host can produce
+   backups it can't itself decrypt.
+
+3. Set the recipient (the **public** key) in `.env`:
+
+   ```
+   BACKUP_AGE_RECIPIENT=age1u5cy7tdtmnff3y9...
+   ```
+
+4. (Optional) Set an offsite destination. Common shapes:
+
+   ```
+   # Backblaze B2 via mc-alias (run once inside the sidecar to
+   # persist the alias to the backup_mc_config volume):
+   #   mc alias set b2 https://s3.us-west-002.backblazeb2.com KEY SECRET
+   BACKUP_DEST_URL=b2/neuthek-backups
+   ```
+
+### Running a backup
+
+```bash
+# Manual / first-time:
+docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+               --profile backup run --rm backup-runner
+```
+
+The encrypted dump lands in `data/backups/neuthek-YYYYMMDD-HHMMSS.dump.age`
+and, if `BACKUP_DEST_URL` is set, in the offsite store. The script
+writes a `backup.completed` row to `audit_log` on success, which the
+admin overlay reads via `GET /admin/system` → `encryption.backups.last`
+so operators can answer "when did the last backup run?" without
+grepping logs.
+
+### Scheduling
+
+Cron on a Linux host:
+
+```cron
+0 3 * * * cd /opt/neuthek && \
+  docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+                 --profile backup run --rm backup-runner \
+                 >> /var/log/neuthek-backup.log 2>&1
+```
+
+Windows Task Scheduler: run `pwsh.exe -File scripts\backup_encrypted.ps1`
+nightly (the PowerShell variant predates the sidecar; use the
+sidecar where possible for parity).
+
+### Restoring
+
+```bash
+# Mount the OFF-HOST age private key for the duration of the restore:
+docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+               --profile backup run --rm \
+               -v "$HOME/.config/age/neuthek.key:/key:ro" \
+               -e BACKUP_AGE_IDENTITY=/key \
+               --entrypoint /sbin/tini -- backup-runner -- \
+               /usr/local/bin/restore-db.sh /backups/neuthek-20260516-030000.dump.age
+```
+
+Verify by hitting `GET /health/db` and spot-checking a recent share.
+
+---
+
+## Secret-box rotation
+
+`CLOUD_ENCRYPTION_KEY` is a Fernet key that encrypts:
+
+- TOTP secrets in the `users` table
+- Cloud-OAuth refresh tokens in `cloud_links`
+
+To rotate without orphaning ciphertext:
+
+1. Generate the new key locally:
+
+   ```bash
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+
+2. Add it to the env as `CLOUD_ENCRYPTION_KEY_NEXT` alongside the
+   existing `CLOUD_ENCRYPTION_KEY` (rotation helper landing under
+   §A3 — see todo.md).
+3. Run the rotation worker (also under §A3 — re-encrypts every
+   ciphertext column with `_NEXT`, then promotes it).
+4. Remove the old key.
+
+Until the rotation helper ships, key changes invalidate every
+ciphertext column — affected users must re-set TOTP + re-connect
+any cloud accounts.
+
+---
+
+## Secret scanning
+
+CI runs Gitleaks (`H4` workstream). Run locally before publishing:
+
+```bash
+gitleaks detect --source . --redact --verbose
+```
+
+If real credentials surface in history, rotate the credential
+immediately and remove the history via `git filter-repo`. Don't
+push a force-overwrite of `main` without coordinating with anyone
+who has a checkout — they need to re-clone.

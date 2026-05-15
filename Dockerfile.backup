@@ -1,0 +1,21 @@
+# Tiny image that bundles age, pg_dump/pg_restore, and the MinIO
+# client so the backup + restore scripts run without polluting the
+# host with binaries. Alpine because everything we need is in apk.
+
+FROM alpine:3.20
+
+RUN apk add --no-cache \
+      postgresql16-client \
+      age \
+      minio-client \
+      bash \
+      tini
+
+COPY scripts/backup-db.sh /usr/local/bin/backup-db.sh
+COPY scripts/restore-db.sh /usr/local/bin/restore-db.sh
+RUN chmod +x /usr/local/bin/backup-db.sh /usr/local/bin/restore-db.sh
+
+# Use tini as PID 1 so `docker compose run` cleans up child processes
+# when the script exits.
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["/usr/local/bin/backup-db.sh"]
