@@ -74,7 +74,7 @@ export default function Home() {
       <section className="section section--ink">
         <div className="container split">
           <div>
-            <span className="eyebrow" style={{ color: "rgba(255,255,255,0.5)" }}>
+            <span className="eyebrow">
               Why we're building it
             </span>
             <h2>The big-cloud trade is bad.</h2>
@@ -91,7 +91,7 @@ export default function Home() {
             </p>
           </div>
           <div>
-            <dl className="kv" style={{ color: "rgba(255,255,255,0.78)" }}>
+            <dl className="kv">
               <dt>Auth</dt><dd>JWT with TOTP 2FA</dd>
               <dt>Storage</dt><dd>S3-compatible object storage</dd>
               <dt>Database</dt><dd>PostgreSQL + pgvector</dd>

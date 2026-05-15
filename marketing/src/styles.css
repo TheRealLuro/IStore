@@ -905,6 +905,28 @@ p {
 .footer__bottom { color: var(--ink-2); }
 .card p { color: var(--ink-2); }
 
+/* Dark section overrides — the base .kv styles set dt/dd to var(--ink-3)
+   / var(--ink), which on .section--ink (background: var(--ink)) renders
+   gray-on-near-black and black-on-near-black respectively. Without
+   these overrides the right-rail descriptor list on the home page is
+   effectively invisible against the inverted band. */
+.section--ink .eyebrow { color: rgba(255,255,255,0.7); }
+.section--ink .kv dt   { color: rgba(255,255,255,0.65); }
+.section--ink .kv dd   { color: var(--surface); }
+.section--ink h3, .section--ink h4 { color: var(--surface); }
+.section--ink strong   { color: var(--surface); }
+.section--ink .lead    { color: rgba(255,255,255,0.88); }
+/* Buttons inside a dark band: ghost-style needs a white-tinted border
+   to register against the black background. */
+.section--ink .btn--ghost {
+  border-color: rgba(255,255,255,0.3);
+  color: var(--surface);
+}
+.section--ink .btn--ghost:hover {
+  border-color: rgba(255,255,255,0.6);
+  color: var(--surface);
+}
+
 /* Focus states — visible on every interactive element so keyboard
    users on mobile (Bluetooth keyboards on iPad / Android) can see
    what's selected. Default browser outline is the right idea but
