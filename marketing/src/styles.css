@@ -754,6 +754,8 @@ p {
    bars are pure CSS so the markup stays minimal.
    ============================================================ */
 
+/* Burger button — hidden by default; flips to inline-flex below the
+   720px breakpoint where the desktop links + CTA are suppressed. */
 .nav__burger {
   display: none;
   width: 40px; height: 40px;
@@ -761,7 +763,6 @@ p {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  margin-left: 4px;
   border-radius: 10px;
   border: 1px solid var(--line);
   background: var(--surface);
@@ -787,56 +788,85 @@ p {
 .nav__burger-bar.is-x3 { transform: translateY(-7px) rotate(-45deg); }
 
 @media (max-width: 720px) {
-  .nav__burger { display: inline-flex; }
-  /* Suppress the desktop CTA at this width — the drawer carries it,
-     so the bar can stay tight at small widths instead of wrapping. */
+  .nav__burger {
+    display: inline-flex;
+    /* `.nav__links` carried `margin-left: auto` on desktop, which
+       pushed itself + the CTA + the burger to the right. With
+       links hidden on mobile and the CTA also suppressed, the
+       burger needs its own auto-margin or it sits next to the
+       wordmark instead of pinning to the right edge. */
+    margin-left: auto;
+  }
+  /* Suppress the desktop CTA at this width — the drawer carries it. */
   .nav__cta { display: none; }
 }
 
+/* Drawer — an anchored dropdown below the nav, sized to its content
+   and never scrolling. The previous fullscreen takeover felt heavy
+   on phones (96px of top padding + huge link rows + scrolling on
+   small viewports). This shape stays calm and never hides the page
+   underneath behind a black rectangle. */
 .nav__drawer {
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
   background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  box-shadow: var(--shadow-2);
   z-index: 39;
-  padding: 96px 24px 40px;
-  overflow-y: auto;
-  animation: nav-drawer-in 200ms var(--ease);
+  animation: nav-drawer-in 180ms var(--ease);
 }
 @keyframes nav-drawer-in {
-  from { opacity: 0; transform: translateY(-6px); }
+  from { opacity: 0; transform: translateY(-4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .nav__drawer-links {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-width: 480px;
-  margin: 0 auto;
+  padding: 8px 18px 18px;
+  gap: 2px;
 }
 .nav__drawer-link {
-  display: block;
-  padding: 18px 4px;
-  font-size: 20px;
+  display: flex;
+  align-items: center;
+  padding: 12px 6px;
+  font-size: 16px;
   font-weight: 500;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.01em;
   color: var(--ink);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-2);
 }
-.nav__drawer-link:hover,
-.nav__drawer-link--active { color: var(--ink); }
+.nav__drawer-link:last-of-type { border-bottom: 0; }
+.nav__drawer-link:hover { color: var(--ink); }
+.nav__drawer-link--active {
+  color: var(--ink);
+  font-weight: 600;
+}
 .nav__drawer-link--active::before {
-  content: "→ ";
-  color: var(--ink-3);
-  margin-right: 6px;
+  content: "";
+  display: inline-block;
+  width: 3px; height: 16px;
+  background: var(--ink);
+  border-radius: 2px;
+  margin-right: 10px;
+}
+.nav__drawer-link:not(.nav__drawer-link--active)::before {
+  content: "";
+  display: inline-block;
+  width: 3px; height: 16px;
+  margin-right: 10px;
 }
 .nav__drawer-cta {
-  margin-top: 28px;
-  padding: 16px 20px;
+  display: block;
+  margin: 8px 0 0;
+  padding: 12px 16px;
   text-align: center;
   background: var(--ink);
   color: var(--surface);
   border-radius: 999px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
 }
 .nav__drawer-cta:hover { color: var(--surface); }

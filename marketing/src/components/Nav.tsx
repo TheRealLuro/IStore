@@ -15,15 +15,27 @@ export default function Nav() {
 
   // Close the menu on viewport changes — the desktop nav becomes
   // visible at the breakpoint and an open mobile drawer would shadow
-  // it. Cheap to wire; saves a janky redraw.
+  // it. Also close on outside-click + Escape so the dropdown behaves
+  // like every other lightweight menu the user has used.
   useEffect(() => {
     if (!open) return;
     const close = () => setOpen(false);
+    const onClickOutside = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t) return;
+      if (t.closest(".nav__drawer") || t.closest(".nav__burger")) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     window.addEventListener("resize", close);
-    document.body.style.overflow = "hidden";
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("resize", close);
-      document.body.style.overflow = "";
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onKey);
     };
   }, [open]);
 
