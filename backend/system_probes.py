@@ -463,6 +463,248 @@ def _try_lspci_linux() -> list[dict[str, Any]]:
     return rows
 
 
+def _try_openvino() -> dict[str, Any] | None:
+    """OpenVINO Core enumerates every accelerator the Intel runtime
+    can target — CPU, GPU (Intel Arc / iGPU), NPU. Only available when
+    the `openvino` package is installed. Returns a uniform device list
+    so the dashboard can show iGPUs + NPUs alongside CUDA cards."""
+    try:
+        from openvino import Core  # type: ignore
+    except Exception:
+        return None
+    try:
+        core = Core()
+        names = list(core.available_devices)
+    except Exception:
+        return None
+    if not names:
+        return None
+    devices: list[dict[str, Any]] = []
+    for n in names:
+        # Device names are 'CPU' | 'GPU' | 'GPU.0' | 'NPU' | etc.
+        try:
+            full = core.get_property(n, "FULL_DEVICE_NAME")
+        except Exception:
+            full = n
+        vendor = (
+            "Intel" if "intel" in str(full).lower() or n in ("GPU", "NPU") else
+            "AMD" if "amd" in str(full).lower() else
+            "NVIDIA" if "nvidia" in str(full).lower() else
+            "Unknown"
+        )
+        kind = (
+            "NPU" if n.startswith("NPU") else
+            "iGPU/Arc" if n.startswith("GPU") else
+            "CPU"
+        )
+        devices.append({
+            "name": str(full),
+            "vendor": vendor,
+            "kind": kind,
+            "openvino_device": n,
+        })
+    return {"backend": "openvino", "devices": devices}
+
+
+def _try_torch_xpu() -> dict[str, Any] | None:
+    """Intel Extension for PyTorch (IPEX-XPU) exposes the Intel iGPU /
+    Arc as a torch device named 'xpu'. Only available with IPEX installed
+    AND a supported Intel GPU."""
+    try:
+        import torch
+    except ImportError:
+        return None
+    if not hasattr(torch, "xpu"):
+        return None
+    try:
+        if not torch.xpu.is_available():
+            return None
+        count = torch.xpu.device_count()
+    except Exception:
+        return None
+    if count == 0:
+        return None
+    devices: list[dict[str, Any]] = []
+    for i in range(count):
+        try:
+            name = torch.xpu.get_device_name(i)
+        except Exception:
+            name = f"xpu:{i}"
+        devices.append({"index": i, "name": name, "vendor": "Intel", "kind": "iGPU/Arc"})
+    return {"backend": "torch.xpu", "devices": devices}
+
+
+def _try_pnp_npu_windows() -> list[dict[str, Any]]:
+    """Intel NPU (Meteor Lake / Ultra-series) registers as a PnP device
+    with caption containing "AI Boost". Check Win32_PnPEntity. Returns
+    [] when not on Windows or no NPU present."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction SilentlyContinue | "
+             "Where-Object { $_.Caption -match 'AI Boost|Neural|NPU' } | "
+             "Select-Object -Property Caption,DeviceID,Manufacturer | "
+             "ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=6,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if out.returncode != 0 or not out.stdout.strip():
+        return []
+    import json as _json
+    try:
+        data = _json.loads(out.stdout)
+    except _json.JSONDecodeError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    rows: list[dict[str, Any]] = []
+    for d in data:
+        cap = d.get("Caption") or "?"
+        rows.append({
+            "name": cap,
+            "vendor": d.get("Manufacturer") or "Intel",
+            "kind": "NPU",
+            "device_id": d.get("DeviceID"),
+        })
+    return rows
+
+
+def probe_accelerators_full() -> dict[str, Any]:
+    """One-shot full accelerator enumeration. Designed to run inside the
+    ML worker at startup — captures everything torch.cuda, IPEX-XPU,
+    OpenVINO, and host-OS tools can see, packages it into a single dict
+    the worker pings in its heartbeat metadata. The API container reads
+    this dict to surface a real GPU + NPU view on the Hardware tab even
+    when it can't probe locally."""
+    notes: list[str] = []
+    devices: list[dict[str, Any]] = []
+
+    # Primary path: torch.cuda inside the worker.
+    cuda = _try_torch_cuda()
+    if cuda:
+        for d in cuda.get("devices", []):
+            devices.append({**d, "kind": "CUDA"})
+        primary_backend = "torch.cuda"
+    else:
+        primary_backend = None
+        smi = _try_nvidia_smi()
+        if smi:
+            for d in smi.get("devices", []):
+                devices.append({**d, "kind": "CUDA"})
+            primary_backend = "nvidia-smi"
+
+    # Add IPEX-XPU devices (Intel Arc / iGPU exposed to torch)
+    xpu = _try_torch_xpu()
+    if xpu:
+        for d in xpu.get("devices", []):
+            devices.append({**d, "inaccessible": False})
+        if primary_backend is None:
+            primary_backend = "torch.xpu"
+
+    # Add OpenVINO-visible devices (NPU + Intel iGPU regardless of IPEX)
+    ov = _try_openvino()
+    if ov:
+        existing_names = {d.get("name", "") for d in devices}
+        for d in ov.get("devices", []):
+            if d.get("openvino_device") == "CPU":
+                continue  # CPU is not interesting on the GPU tab
+            if d.get("name") in existing_names:
+                continue
+            devices.append(d)
+        if primary_backend is None:
+            primary_backend = "openvino"
+
+    # WMI + PnP fallbacks (Windows host) for adapters none of the above caught
+    if os.name == "nt":
+        wmi_rows = _try_wmi_windows()
+        npu_rows = _try_pnp_npu_windows()
+        seen = {d.get("name", "") for d in devices}
+        for row in wmi_rows + npu_rows:
+            if row.get("name") in seen:
+                continue
+            devices.append({**row, "inaccessible": True})
+            seen.add(row.get("name", ""))
+
+    # Linux fallback for cases the above missed (e.g. AMD ROCm)
+    if os.name == "posix":
+        for row in _try_lspci_linux():
+            if any(d.get("name") == row["name"] for d in devices):
+                continue
+            devices.append({**row, "inaccessible": True})
+
+    if not devices:
+        return {"available": False, "backend": None, "devices": [], "notes": notes}
+
+    if primary_backend is None:
+        primary_backend = "wmi" if os.name == "nt" else "lspci"
+
+    return {
+        "available": True,
+        "backend": primary_backend,
+        "devices": devices,
+        "notes": notes,
+    }
+
+
+async def _try_from_worker_heartbeats() -> dict[str, Any] | None:
+    """Read the latest ml-worker heartbeat and return its GPU enumeration.
+    Lets the API container surface CUDA / NPU / Arc info even when the
+    API process can't probe directly (no torch, no nvidia-smi, no GPU
+    passthrough). The worker writes this every 30 s; we look back at
+    most ~2 minutes."""
+    try:
+        from datetime import timedelta
+        from backend.db import SessionLocal
+        from backend.models import WorkerHeartbeat
+        from sqlalchemy import select
+    except Exception:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=120)
+    try:
+        async with SessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(WorkerHeartbeat)
+                    .where(WorkerHeartbeat.last_seen > cutoff)
+                    .order_by(WorkerHeartbeat.last_seen.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    except Exception:
+        return None
+    if row is None or not row.extra_metadata:
+        return None
+    gpu = row.extra_metadata.get("gpu")
+    if not isinstance(gpu, dict) or not gpu.get("devices"):
+        return None
+    # Mark provenance so the dashboard can show "(via ml-worker)".
+    gpu = dict(gpu)
+    gpu["source"] = f"ml-worker ({row.worker_id.split('/')[0]})"
+    return gpu
+
+
+async def sample_gpu_async() -> dict[str, Any]:
+    """Async sample_gpu that reads worker_heartbeats first.
+
+    Order:
+      1. worker_heartbeats — most authoritative; the worker actually
+         loads the models, so its torch.cuda view IS the source of truth.
+      2. Local torch.cuda — when API ↔ worker live in the same process.
+      3. nvidia-smi, OpenVINO, WMI / lspci — vendor fallbacks.
+
+    Anything found via 2-4 is merged after 1 with deduplication by name.
+    """
+    notes: list[str] = []
+    primary = await _try_from_worker_heartbeats()
+    if primary:
+        return primary  # the worker's view is complete; don't muddle it
+    # Fall back to the synchronous local-only probe.
+    return sample_gpu()
+
+
 def sample_gpu() -> dict[str, Any]:
     """Combine probes so the dashboard surfaces every GPU the host has,
     even when this process can't use it.
@@ -474,6 +716,7 @@ def sample_gpu() -> dict[str, Any]:
          torch is CPU-only.
       3. WMI (Windows) / lspci (Linux) — vendor + name for every video
          adapter, so iGPUs and non-NVIDIA discrete GPUs also show up.
+      4. OpenVINO + WMI PnP — Intel Arc + NPU.
 
     A `notes` array carries human-readable hints when the configured
     state is suboptimal (e.g. "GPU detected but PyTorch is CPU-only —
@@ -506,22 +749,46 @@ def sample_gpu() -> dict[str, Any]:
     # Probe 3: WMI / lspci (every video adapter regardless of vendor).
     fallback_rows = _try_wmi_windows() or _try_lspci_linux()
 
+    # Probe 4: OpenVINO devices (Intel iGPU / Arc / NPU) + NPU PnP.
+    ov = _try_openvino()
+    npu_rows = _try_pnp_npu_windows()
+
     # Compose. Prefer nvidia-smi rows when available (they carry memory
-    # numbers); fall back to WMI/lspci rows for non-NVIDIA adapters.
+    # numbers); fall back to WMI/lspci rows for non-NVIDIA adapters,
+    # and surface OpenVINO + NPU as their own entries when present.
     devices: list[dict[str, Any]] = []
     seen_names: set[str] = set()
     if smi_result:
         for d in smi_result["devices"]:
-            devices.append(d)
+            devices.append({**d, "kind": "CUDA"})
             seen_names.add(d["name"])
     for row in fallback_rows:
         if row["name"] in seen_names:
             continue
         devices.append({
             "index": len(devices),
-            "inaccessible": True,  # not exposed to this process
+            "inaccessible": True,
+            "kind": "GPU",
             **row,
         })
+        seen_names.add(row["name"])
+    if ov:
+        for d in ov["devices"]:
+            if d.get("openvino_device") == "CPU":
+                continue
+            if d.get("name") in seen_names:
+                # Annotate the existing row: OpenVINO can target it.
+                for existing in devices:
+                    if existing.get("name") == d.get("name"):
+                        existing["openvino_device"] = d.get("openvino_device")
+                continue
+            devices.append({**d, "inaccessible": False})
+            seen_names.add(d["name"])
+    for row in npu_rows:
+        if row["name"] in seen_names:
+            continue
+        devices.append({**row, "inaccessible": False})
+        seen_names.add(row["name"])
 
     if not devices:
         return {

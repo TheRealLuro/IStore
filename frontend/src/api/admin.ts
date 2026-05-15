@@ -169,19 +169,23 @@ export interface HardwareSnapshot {
     available: boolean;
     backend: string | null;
     devices: {
-      index: number;
+      index?: number;
       name: string;
       vendor?: string;
+      // 'CUDA' | 'iGPU/Arc' | 'NPU' | 'GPU' — informational, not enum-checked
+      kind?: string;
       total_memory_bytes?: number | null;
       allocated_memory_bytes?: number | null;
       used_memory_bytes?: number;
       utilization_percent?: number;
       driver_version?: string | null;
       video_processor?: string | null;
+      openvino_device?: string;
       inaccessible?: boolean;
     }[];
     notes?: string[];
     driver_version?: string;
+    source?: string;
   };
   thermals: {
     temps: { source: string; label: string; current_c: number | null;

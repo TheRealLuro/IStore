@@ -547,40 +547,58 @@ function RealUsersTab({ open }) {
 
 // ---------- Audit ----------
 
+// Buckets the action prefixes into operator-meaningful groups so the
+// Audit and Logs tabs both get a one-click filter row instead of
+// requiring the user to know exact prefix strings.
+const ACTION_FILTERS = [
+  { id: "all",     label: "All",      prefix: "",         color: "var(--ink-2)" },
+  { id: "auth",    label: "Auth",     prefix: "auth.",    color: "#4a6bf5" },
+  { id: "share",   label: "Sharing",  prefix: "share.",   color: "#2c7a4b" },
+  { id: "image",   label: "Files",    prefix: "image.",   color: "#b4690e" },
+  { id: "consent", label: "Consent",  prefix: "consent.", color: "#7b3fc2" },
+  { id: "admin",   label: "Admin",    prefix: "admin.",   color: "#c0392b" },
+  { id: "account", label: "Account",  prefix: "account.", color: "#0e7a98" },
+];
+
 function RealAuditTab({ open }) {
-  const [actionPrefix, setActionPrefix] = useStateAd("");
+  const [filter, setFilter] = useStateAd("all");
+  const prefix = ACTION_FILTERS.find(f => f.id === filter)?.prefix || "";
   const { data, isLoading } = useQuery({
-    queryKey: ["admin-audit", actionPrefix],
-    queryFn: () => listAdminAudit({ limit: 200, actionPrefix: actionPrefix || null }),
+    queryKey: ["admin-audit", prefix],
+    queryFn: () => listAdminAudit({ limit: 200, actionPrefix: prefix || null }),
     enabled: open,
     staleTime: 10_000,
   });
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-        <input
-          className="input"
-          placeholder="Filter by action prefix (e.g. consent.)"
-          value={actionPrefix}
-          onChange={(e) => setActionPrefix(e.target.value)}
-          style={{ maxWidth: 320 }}
-        />
-        <span style={{ color: "var(--ink-3)", fontSize: 12 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+        {ACTION_FILTERS.map(f => (
+          <button
+            key={f.id}
+            className="btn btn--ghost btn--sm"
+            onClick={() => setFilter(f.id)}
+            style={{
+              borderColor: filter === f.id ? f.color : undefined,
+              color: filter === f.id ? f.color : undefined,
+              fontWeight: filter === f.id ? 600 : undefined,
+              fontSize: 11.5,
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+        <span style={{ color: "var(--ink-3)", fontSize: 12, marginLeft: "auto" }}>
           {data ? `${data.length} entries` : ""}
         </span>
       </div>
       {isLoading ? (
         <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>
+      ) : (data || []).length === 0 ? (
+        <div style={{ color: "var(--ink-3)", padding: 14 }}>No entries match this filter.</div>
       ) : (
-        <pre className="admin-logs">
-          {(data || []).map((e) => (
-            <div key={e.id}>
-              [{new Date(e.created_at).toISOString().slice(0, 19).replace("T", " ")}] {e.action}
-              {e.user_id ? ` user=${e.user_id.slice(0, 8)}` : ""}
-              {e.details ? ` ${JSON.stringify(e.details).slice(0, 240)}` : ""}
-            </div>
-          ))}
-        </pre>
+        <div>
+          {(data || []).map((e) => <AuditLineRow key={e.id} entry={e}/>)}
+        </div>
       )}
     </div>
   );
@@ -771,24 +789,53 @@ function AuditLineRow({ entry }) {
 // ---------- Logs ----------
 
 function RealLogsTab({ open }) {
+  const [filter, setFilter] = useStateAd("all");
   const { data, isLoading } = useQuery({
     queryKey: ["admin-logs"],
-    queryFn: () => getAdminLogs(200),
+    queryFn: () => getAdminLogs(500),
     enabled: open,
     staleTime: 5_000,
     refetchInterval: open ? 5_000 : false,
   });
+  const filtered = useMemoAd(() => {
+    if (!data) return [];
+    const prefix = ACTION_FILTERS.find(f => f.id === filter)?.prefix || "";
+    if (!prefix) return data.lines;
+    return data.lines.filter((e) => (e.action || "").startsWith(prefix));
+  }, [data, filter]);
   if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
   if (!data) return null;
   return (
-    <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
-      {data.lines.length === 0 ? (
-        <div style={{ color: "var(--ink-3)", padding: 14 }}>
-          No log lines yet — every audit event appears here as it happens.
-        </div>
-      ) : data.lines.map((e) => (
-        <AuditLineRow key={e.id} entry={e}/>
-      ))}
+    <div>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+        {ACTION_FILTERS.map(f => (
+          <button
+            key={f.id}
+            className="btn btn--ghost btn--sm"
+            onClick={() => setFilter(f.id)}
+            style={{
+              borderColor: filter === f.id ? f.color : undefined,
+              color: filter === f.id ? f.color : undefined,
+              fontWeight: filter === f.id ? 600 : undefined,
+              fontSize: 11.5,
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+        <span style={{ color: "var(--ink-3)", fontSize: 12, marginLeft: "auto" }}>
+          {filtered.length} of {data.lines.length} · live
+        </span>
+      </div>
+      <div style={{ maxHeight: "60vh", overflowY: "auto", borderRadius: 8, border: "1px solid var(--line, rgba(0,0,0,0.06))" }}>
+        {filtered.length === 0 ? (
+          <div style={{ color: "var(--ink-3)", padding: 14 }}>
+            No log lines for this filter. The stream auto-refreshes every 5 s.
+          </div>
+        ) : filtered.map((e) => (
+          <AuditLineRow key={e.id} entry={e}/>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1002,42 +1049,73 @@ function RealHardwareTab({ open }) {
           </strong>
         </div>
         <div className="admin-hw__row">
-          <span>GPU</span>
+          <span>Accelerators</span>
           <strong className="mono" style={{ color: data.gpu.available ? "var(--success, #2c7a4b)" : "var(--ink-3)" }}>
             {data.gpu.available
-              ? `${data.gpu.devices.length} device${data.gpu.devices.length === 1 ? "" : "s"} · ${data.gpu.backend}`
-              : "no GPU detected"}
+              ? `${data.gpu.devices.length} device${data.gpu.devices.length === 1 ? "" : "s"} · ${data.gpu.backend}${data.gpu.source ? ` (${data.gpu.source})` : ""}`
+              : "no accelerator detected"}
           </strong>
         </div>
-        {data.gpu.devices.map((g) => (
-          <div className="admin-hw__row" key={g.index} style={{ paddingLeft: 16 }}>
-            <span>
-              ↳ {g.name}
-              {g.vendor && (
-                <span style={{ marginLeft: 6, fontSize: 10, color: "var(--ink-3)" }}>
-                  {g.vendor}
-                </span>
-              )}
-              {g.inaccessible && (
-                <span
-                  style={{
-                    marginLeft: 6, fontSize: 10, padding: "1px 5px", borderRadius: 4,
-                    background: "var(--warn-bg, #fff7e6)", color: "var(--warn, #b4690e)",
-                  }}
-                  title="Visible to the host OS but not usable from this process"
-                >
-                  inaccessible
-                </span>
-              )}
-            </span>
-            <strong className="mono">
-              {g.total_memory_bytes ? admBytes(g.total_memory_bytes) : "—"}
-              {g.utilization_percent != null ? ` · ${g.utilization_percent}% util` : ""}
-              {g.allocated_memory_bytes != null ? ` · ${admBytes(g.allocated_memory_bytes)} in use` : ""}
-              {g.driver_version ? ` · drv ${g.driver_version}` : ""}
-            </strong>
-          </div>
-        ))}
+        {data.gpu.devices.map((g, i) => {
+          const kindColor =
+            g.kind === "CUDA" ? "#2c7a4b" :
+            g.kind === "NPU" ? "#7b3fc2" :
+            (g.kind || "").startsWith("iGPU") ? "#0e7a98" :
+            "var(--ink-3)";
+          return (
+            <div className="admin-hw__row" key={g.index ?? i} style={{ paddingLeft: 16 }}>
+              <span>
+                {g.kind && (
+                  <span
+                    style={{
+                      marginRight: 6, padding: "1px 6px", borderRadius: 4,
+                      fontSize: 9.5, fontWeight: 600, letterSpacing: "0.04em",
+                      textTransform: "uppercase",
+                      background: kindColor === "var(--ink-3)" ? "rgba(0,0,0,0.05)" : `${kindColor}22`,
+                      color: kindColor,
+                    }}
+                  >
+                    {g.kind}
+                  </span>
+                )}
+                {g.name}
+                {g.vendor && (
+                  <span style={{ marginLeft: 6, fontSize: 10, color: "var(--ink-3)" }}>
+                    {g.vendor}
+                  </span>
+                )}
+                {g.inaccessible && (
+                  <span
+                    style={{
+                      marginLeft: 6, fontSize: 10, padding: "1px 5px", borderRadius: 4,
+                      background: "var(--warn-bg, #fff7e6)", color: "var(--warn, #b4690e)",
+                    }}
+                    title="Visible to the host OS but not usable from this process"
+                  >
+                    inaccessible
+                  </span>
+                )}
+                {g.openvino_device && (
+                  <span
+                    style={{
+                      marginLeft: 6, fontSize: 10, padding: "1px 5px", borderRadius: 4,
+                      background: "rgba(14, 122, 152, 0.12)", color: "#0e7a98",
+                    }}
+                    title="Targetable from OpenVINO"
+                  >
+                    openvino: {g.openvino_device}
+                  </span>
+                )}
+              </span>
+              <strong className="mono">
+                {g.total_memory_bytes ? admBytes(g.total_memory_bytes) : "—"}
+                {g.utilization_percent != null ? ` · ${g.utilization_percent}% util` : ""}
+                {g.allocated_memory_bytes != null ? ` · ${admBytes(g.allocated_memory_bytes)} in use` : ""}
+                {g.driver_version ? ` · drv ${g.driver_version}` : ""}
+              </strong>
+            </div>
+          );
+        })}
         {Array.isArray(data.gpu.notes) && data.gpu.notes.length > 0 && (
           <div
             style={{

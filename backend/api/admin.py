@@ -432,12 +432,18 @@ async def admin_hardware(
     _: Annotated[User, Depends(current_admin_user)],
 ) -> dict:
     """CPU / memory / disk / GPU + thermals + NICs. Cross-platform via
-    psutil; vendor-specific paths (WMI thermal zones, nvidia-smi)
-    fill in where the cross-platform path doesn't reach (todo §F1)."""
+    psutil; vendor-specific paths (WMI thermal zones, nvidia-smi, IPEX,
+    OpenVINO) fill in where the cross-platform path doesn't reach.
+
+    GPU info preferentially comes from the latest ml-worker heartbeat
+    metadata when present — that's the only process in a split-container
+    deploy with first-hand torch.cuda access. The API container falls
+    back to its own probes (often empty in a slim image) only when no
+    heartbeat is available."""
     from backend.system_probes import (
         sample_cpu,
         sample_disks,
-        sample_gpu,
+        sample_gpu_async,
         sample_memory,
         sample_network,
         sample_thermals,
@@ -446,7 +452,7 @@ async def admin_hardware(
         "cpu": sample_cpu(),
         "memory": sample_memory(),
         "disks": sample_disks(),
-        "gpu": sample_gpu(),
+        "gpu": await sample_gpu_async(),
         "thermals": sample_thermals(),
         "network": sample_network(),
     }

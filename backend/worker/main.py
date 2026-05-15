@@ -145,11 +145,23 @@ async def main() -> None:
 
     # C8.2 — emit heartbeats every 30 s so /admin/processes can see us
     # even though we live in a sibling container outside the API's
-    # psutil reach. The metadata_provider closure captures queue depth
-    # live so the admin overlay can render real backlog numbers.
+    # psutil reach. Metadata carries live queue depth AND a one-shot
+    # GPU enumeration so the dashboard's Hardware tab can render the
+    # accelerators this worker actually has access to (torch.cuda /
+    # IPEX-XPU / OpenVINO / NPU). The GPU probe runs once at startup —
+    # querying every tick would hammer torch/openvino unnecessarily.
     from backend.heartbeats import heartbeat_loop
+    from backend.system_probes import probe_accelerators_full
+    gpu_snapshot = probe_accelerators_full()
+    logger.info(
+        "worker: accelerator snapshot — %d device(s) on %s",
+        len(gpu_snapshot.get("devices", [])), gpu_snapshot.get("backend"),
+    )
     async def _meta() -> dict:
-        return {"queue_depth": await _queue_depth_safe(redis_client)}
+        return {
+            "queue_depth": await _queue_depth_safe(redis_client),
+            "gpu": gpu_snapshot,
+        }
     heartbeat_task = asyncio.create_task(
         heartbeat_loop(
             kind="ml-worker",
