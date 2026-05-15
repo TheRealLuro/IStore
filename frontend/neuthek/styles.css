@@ -93,14 +93,17 @@ input, textarea { font-family: inherit; }
 .app {
   display: grid;
   grid-template-columns: 252px minmax(0, 1fr);
-  /* Plain `100vh` so the shell pins to the actual viewport — same
-   * behaviour every other native-feeling website has. Earlier we
-   * tried `100dvh` to compensate for browser zoom; it ended up
-   * shrinking the page so the bottom never reached the viewport
-   * edge. Native `vh` + `minmax(0, 1fr)` on the second column lets
-   * the main area always stretch full-height without expanding past
-   * the viewport because of inner content min-widths. */
-  height: 100vh;
+  /* Page ships with `html { zoom: 0.8 }` (see styles/index.css) for
+   * compact UI density. CSS `zoom` scales boxes but `100vh` keeps
+   * reporting the un-scaled viewport — so a plain `height: 100vh`
+   * would render at 0.8 × viewport and leave a band of body bg at
+   * the bottom. `calc(100vh / 0.8)` = 125vh; after the html zoom
+   * scales it back down (× 0.8), it lands at exactly 100vh visible.
+   * Min-height: 100vh is a safety net for browsers that don't
+   * support `zoom` (older Firefox) — the page renders at native
+   * 100% there and still fills the viewport. */
+  height: calc(100vh / 0.8);
+  min-height: 100vh;
   background: var(--surface-2);
 }
 
@@ -1210,16 +1213,11 @@ mark {
    ============================================================ */
 .auth {
   display: grid; grid-template-columns: 1fr 1fr;
-  /* `height: 100vh` (not min-height) so the auth screen always
-   * pins to the viewport — the right-side form column fills its
-   * full track instead of collapsing to content height and leaving
-   * a band of body bg below. Both columns get `align-items: stretch`
-   * by default, so the brand panel + form panel always reach the
-   * bottom of the page. */
-  height: 100vh;
-  /* When the auth content (long form, small viewport) overflows, let
-   * the page scroll naturally — `overflow-y: auto` here keeps the
-   * column structure intact instead of clipping fields. */
+  /* See `.app` above for the zoom-compensated height math. Same
+   * pattern: render at 125vh inside the html-level 0.8 zoom so the
+   * box lands at exactly viewport-tall after scaling. */
+  height: calc(100vh / 0.8);
+  min-height: 100vh;
   overflow-y: auto;
 }
 .auth__brand {

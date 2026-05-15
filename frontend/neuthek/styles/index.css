@@ -22,11 +22,23 @@
   font-family: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-/* No global `zoom` baseline — the page renders at native 100% so the
- * viewport math (`100vh`, `getBoundingClientRect`, `clientHeight`)
- * stays consistent and the layout actually reaches the bottom of the
- * window. Earlier this file shipped `body { zoom: 0.8 }` to compress
- * the design for 1080p displays; that's exactly the "80% zoom thing"
- * the user wants gone. Density refinements should land per-component
- * (smaller card max, tighter padding) rather than as a global scale.
+/* Default the page to 80% zoom so the design renders at the density
+ * it was authored at without forcing the user to Ctrl/-each time.
+ *
+ * `zoom` on `<html>` (not `<body>`) is the right knob in Chromium-
+ * based browsers: it composes with the user's own browser-zoom
+ * accelerator, AND it scales the viewport-unit math (`100vh`,
+ * `getBoundingClientRect`, `clientHeight`) to compensate, so
+ * `.app { height: 100vh }` still fills the visible window
+ * exactly. Body-level zoom did the visual scale but left
+ * `100vh = full unscaled viewport`, which created a 216px
+ * empty band at the bottom. Putting it on `<html>` fixes that.
+ *
+ * Cross-browser support: Chromium / Edge / Opera / Safari handle
+ * this natively. Firefox 126+ added `zoom`. Older Firefox falls
+ * through to native 100% rendering — acceptable degradation.
+ *
+ * The user can still override via the browser's own zoom shortcuts;
+ * those compose multiplicatively on top of this baseline.
  */
+html { zoom: 0.8; }
