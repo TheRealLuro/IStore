@@ -19,7 +19,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, INET, JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db import Base
@@ -596,6 +596,92 @@ class RecoveryCode(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ShareGrant(Base):
+    """Per-image share grant (todo §1.1 / G1).
+
+    A row represents one (image, recipient_email) pairing. The plaintext
+    share token is shown to the sharer exactly once (at create time) and
+    stored as an argon2 hash; the token URL the sharer copies takes the
+    form `{frontend_base_url}/share/{plaintext_token}`.
+
+    The recipient is identified by **email** rather than by user id so
+    sharing works before the recipient has signed up. On first successful
+    claim:
+      - `recipient_user_id` is bound to the claiming user.
+      - `expires_at` is set: for an existing-user recipient that's
+        already done at create time using the sharer-chosen duration;
+        for a brand-new recipient it's `now() + 1 day` regardless of
+        what the sharer requested (deliberate cap so an unverified
+        identity never gets long-lived access).
+
+    `revoked_at` is the soft-delete column — rows are never DELETEd in
+    normal operation so the audit trail (`AuditLog` rows referencing
+    `share_id` in `details`) stays meaningful.
+    """
+
+    __tablename__ = "share_grants"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sharer_user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    recipient_email: Mapped[str] = mapped_column(CITEXT, nullable=False)
+    recipient_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    permission: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="view_download"
+    )
+    token_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    sharer_duration_seconds: Mapped[int] = mapped_column(nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "share_grants_recipient_user_active_idx",
+            "recipient_user_id",
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index(
+            "share_grants_pending_email_idx",
+            "recipient_email",
+            postgresql_where=text("recipient_user_id IS NULL"),
+        ),
+        Index("share_grants_image_idx", "image_id", "revoked_at"),
+        Index(
+            "share_grants_image_recipient_uq",
+            "image_id",
+            "recipient_email",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
     )
 
 

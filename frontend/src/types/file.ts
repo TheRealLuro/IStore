@@ -76,3 +76,49 @@ export interface User {
   role: "user" | "admin" | "superuser";
   age_confirmed: boolean;
 }
+
+// Sharing (todo §1.1 / G1). Backend: backend/api/shares.py.
+export type SharePermission = "view" | "view_download";
+
+export interface ShareGrant {
+  id: string;
+  image_id: string;
+  recipient_email: string;
+  recipient_user_id: string | null;
+  recipient_display_name: string | null;
+  permission: SharePermission;
+  sharer_duration_seconds: number;
+  // For an existing-user recipient this is the absolute expiry set at
+  // create time. For a pending grant (recipient_user_id === null) it
+  // stays null until the recipient signs up + claims — at which point
+  // the backend sets it to claimed_at + 1 day regardless of the
+  // sharer's duration. See SHARE_NEW_USER_WINDOW_SECONDS server-side.
+  expires_at: string | null;
+  claimed_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  // Only populated on the create response (POST /images/{id}/shares).
+  // Never returned by the list endpoint — the plaintext token is
+  // discarded after argon2 hashing, so a leaky owner list can't hand
+  // a usable token to a co-located XSS.
+  share_url?: string;
+}
+
+export interface IncomingShare {
+  share_id: string;
+  image_id: string;
+  image_filename: string | null;
+  image_category: string;
+  sharer_display_name: string | null;
+  sharer_email: string;
+  permission: SharePermission;
+  expires_at: string | null;
+  claimed_at: string | null;
+}
+
+export interface SharePreview {
+  sharer_display_name: string | null;
+  image_filename: string | null;
+  image_category: string;
+  requires_signup: boolean;
+}

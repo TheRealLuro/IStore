@@ -7,7 +7,9 @@ import { AuthedThumb, AuthedImg, useAuthedBlobUrl } from "./auth-image.jsx";
 import { getImagePeople, faceCropUrl, redetectFaces } from "@/api/people";
 import { EditableName } from "./nameable-chip.jsx";
 import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
+import { listShares } from "@/api/shares";
 import { PdfPageStack } from "./pdf-stack.jsx";
+import { ShareModal } from "./share-modal.jsx";
 
 function fmtBytes(n) {
   if (n == null) return "—";
@@ -29,6 +31,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   const [showSuggest, setShowSuggest] = useStateP2(false);
   const [lightbox, setLightbox] = useStateP2(false);
   const [starred, setStarred] = useStateP2(false);
+  const [shareModalOpen, setShareModalOpen] = useStateP2(false);
 
   // Esc closes lightbox first, then preview
   useEffectP2(() => {
@@ -61,6 +64,16 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     queryFn: () => getImagePeople(file.id),
     enabled: !!file && isImageFile,
     staleTime: 30_000,
+  });
+
+  // Live share grants on this file (todo §1.1 / G1). Only the owner
+  // can list them — backend filters by user_id at the route level, so
+  // this returns 4xx for non-owners; we just show nothing in that case.
+  const { data: shareGrants = [] } = useQuery({
+    queryKey: ["image-shares", file?.id],
+    queryFn: () => listShares(file.id),
+    enabled: !!file?.id,
+    staleTime: 15_000,
   });
 
   // D8 — user-signal re-detect cascade. Tracks busy/result so the UI
@@ -477,22 +490,46 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             </div>
           </div>
 
-          {Array.isArray(file.sharedWith) && file.sharedWith.length > 0 && (
-            <div className="sharedwith-block" style={{ marginTop: 10 }}>
-              <div className="sharedwith-block__head">Shared with</div>
-              {file.sharedWith.map((p, i) => (
-                <div key={i} className="sharedwith-block__row">
+          {/* Shared with — live data from /images/{id}/shares (todo §1.1 / G1).
+              Only renders for files the caller owns; non-owners get a 4xx
+              from the backend and `shareGrants` stays []. The "+ Share"
+              button is always shown so the owner has a single affordance
+              for "share this with someone". */}
+          <div className="sharedwith-block" style={{ marginTop: 10 }}>
+            <div className="sharedwith-block__head" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Shared with</span>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => setShareModalOpen(true)}
+                style={{ padding: "2px 8px", fontSize: 11 }}
+              >
+                <Icon name="plus" size={10}/> Share
+              </button>
+            </div>
+            {shareGrants.length === 0 ? (
+              <div style={{ fontSize: 11.5, color: "var(--ink-3)", padding: "6px 0" }}>
+                Not shared with anyone.
+              </div>
+            ) : shareGrants.map((g) => {
+              const label = g.recipient_display_name || g.recipient_email;
+              const initials = label.split(/[\s@]+/).map(s => s[0]).filter(Boolean).slice(0,2).join("").toUpperCase();
+              const when = g.recipient_user_id
+                ? (g.expires_at ? `expires ${new Date(g.expires_at).toLocaleDateString()}` : "")
+                : "pending signup";
+              return (
+                <div key={g.id} className="sharedwith-block__row">
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span className="sharedwith__avatar" style={{ width: 22, height: 22, fontSize: 10 }}>
-                      {p.name.split(" ").map(s => s[0]).slice(0,2).join("")}
+                      {initials || "?"}
                     </span>
-                    <strong>{p.name}</strong>
+                    <strong>{label}</strong>
                   </div>
-                  <span>{p.when}</span>
+                  <span>{when}</span>
                 </div>
-              ))}
-            </div>
-          )}
+              );
+            })}
+          </div>
         </div>
 
         <div className="preview__section">
@@ -590,6 +627,13 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         </button>
       </div>
     </aside>
+    {shareModalOpen && file && (
+      <ShareModal
+        imageId={file.id}
+        imageName={file.name || file.original_filename}
+        onClose={() => setShareModalOpen(false)}
+      />
+    )}
     </React.Fragment>
   );
 }

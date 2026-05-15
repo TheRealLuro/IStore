@@ -52,3 +52,55 @@ def verify_download(
         return False
     expected = sign_download(image_id, user_id, variant, expires)
     return hmac.compare_digest(expected, sig)
+
+
+# ---------- Share grants (todo §1.1 / G1) ----------
+#
+# Recipients of a share grant aren't the owner of the image, so the
+# user-keyed signature above can't authorize them. We sign against the
+# `share_id` instead — verification re-checks the grant row's
+# revoked/expired/recipient state at serve time on top of the HMAC
+# match, so a stolen URL can't outlive the grant it came from.
+
+
+def _share_payload(share_id: UUID, variant: str, expires: int) -> bytes:
+    return f"share:{share_id}:{variant}:{expires}".encode("utf-8")
+
+
+def sign_share_download(share_id: UUID, variant: str, expires: int) -> str:
+    return hmac.new(
+        settings.jwt_secret.encode("utf-8"),
+        _share_payload(share_id, variant, expires),
+        sha256,
+    ).hexdigest()
+
+
+def make_signed_share_download(
+    *,
+    base_url: str,
+    share_id: UUID,
+    variant: str,
+) -> dict[str, str]:
+    ttl = min(settings.download_url_ttl_seconds, 300)
+    expires = int(time.time()) + ttl
+    sig = sign_share_download(share_id, variant, expires)
+    root = base_url.rstrip("/")
+    return {
+        "url": f"{root}/shares/{share_id}/signed/{variant}?expires={expires}&sig={sig}",
+        "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+    }
+
+
+def verify_share_download(
+    *,
+    share_id: UUID,
+    variant: str,
+    expires: int,
+    sig: str,
+) -> bool:
+    if variant not in {"original", "served"}:
+        return False
+    if expires < int(time.time()):
+        return False
+    expected = sign_share_download(share_id, variant, expires)
+    return hmac.compare_digest(expected, sig)

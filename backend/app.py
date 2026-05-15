@@ -14,6 +14,7 @@ from backend.api.folders import router as folders_router
 from backend.api.images import router as images_router
 from backend.api.people import router as people_router
 from backend.api.search import router as search_router
+from backend.api.shares import router as shares_router
 from backend.api.storage import router as storage_router
 from backend.auth.users import auth_backend, fastapi_users
 from backend.consent import router as consent_router
@@ -44,6 +45,8 @@ def create_app() -> FastAPI:
         allow_origins=[
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
             "http://localhost:4173",
             "http://127.0.0.1:4173",
             "tauri://localhost",
@@ -103,6 +106,7 @@ def create_app() -> FastAPI:
         tags=["users"],
     )
     app.include_router(images_router)
+    app.include_router(shares_router)
     app.include_router(folders_router)
     app.include_router(search_router)
     app.include_router(storage_router)

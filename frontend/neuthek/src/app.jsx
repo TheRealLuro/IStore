@@ -44,6 +44,7 @@ import {
   getSummarizeProgress, searchSemantic, getFacets,
   bulkDelete, bulkMove, createFolderWithImages,
 } from "@/api/files";
+import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
 import { listFolders } from "@/api/folders";
 import { listPeople, faceCropUrl } from "@/api/people";
 import { AuthedThumb } from "./auth-image.jsx";
@@ -235,8 +236,12 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
   const qc = useQueryClient();
   const moveDdRef = useRefApp(null);
   const newFolderDdRef = useRefApp(null);
+  const shareDdRef = useRefApp(null);
   const [newFolderName, setNewFolderName] = useStateApp("");
-  const [busy, setBusy] = useStateApp(null); // "move" | "new" | "delete"
+  const [busy, setBusy] = useStateApp(null); // "move" | "new" | "delete" | "share"
+  const [shareEmail, setShareEmail] = useStateApp("");
+  const [shareDuration, setShareDuration] = useStateApp(86400);
+  const [issuedLinks, setIssuedLinks] = useStateApp([]); // [{filename?, url}]
 
   const { data: folders = [] } = useQuery({
     queryKey: ["folders", null],
@@ -301,6 +306,41 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
       onClear();
     } catch (e) {
       toast.error(e?.detail || "Delete failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Bulk share — V1 ships per-image grants (todo §1.1 / G1 picked
+  // single-image granularity), so a multi-select share fires N
+  // independent createShare calls and returns N URLs the sharer can
+  // copy individually. Multi-image-single-link is a future feature.
+  const doBulkShare = async (e) => {
+    e?.preventDefault?.();
+    const trimmed = shareEmail.trim();
+    if (!trimmed || busy) return;
+    setBusy("share");
+    setIssuedLinks([]);
+    const links = [];
+    try {
+      for (const id of selectedIds) {
+        const grant = await createShare(id, {
+          recipientEmail: trimmed,
+          durationSeconds: shareDuration,
+        });
+        if (grant.share_url) {
+          links.push({
+            id,
+            url: buildShareUrlWithEmail(grant.share_url, trimmed),
+          });
+        }
+      }
+      setIssuedLinks(links);
+      qc.invalidateQueries({ queryKey: ["image-shares"] });
+      qc.invalidateQueries({ queryKey: ["incoming-shares"] });
+      toast.success(`Created ${links.length} share link${links.length === 1 ? "" : "s"} for ${trimmed}`);
+    } catch (err) {
+      toast.error(err?.detail || "Share failed");
     } finally {
       setBusy(null);
     }
@@ -398,6 +438,98 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
           <Icon name="wand" size={12}/> Pick best of
         </button>
       )}
+
+      {/* Bulk share — creates one grant per selected file and returns
+          a copy-able link for each. New-recipient 1-day cap is enforced
+          server-side per grant (see backend/api/shares.py). */}
+      <details className="sort-dd" ref={shareDdRef}>
+        <summary className="btn btn--ghost btn--sm sort-dd__btn" title="Share selection">
+          <Icon name="share" size={12}/> Share
+          <Icon name="chevronDown" size={11} style={{ marginLeft: 2, opacity: 0.7 }}/>
+        </summary>
+        <div className="sort-dd__panel" style={{ minWidth: 300, padding: 12 }}>
+          <form onSubmit={doBulkShare} style={{ display: "grid", gap: 8 }}>
+            <label style={{ fontSize: 11, color: "var(--ink-3)", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+              Share {selectedIds.length} file{selectedIds.length === 1 ? "" : "s"} with
+            </label>
+            <input
+              type="email"
+              required
+              autoFocus
+              value={shareEmail}
+              onChange={(e) => setShareEmail(e.target.value)}
+              placeholder="them@example.com"
+              style={{
+                padding: "6px 10px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                borderRadius: 7,
+                color: "var(--ink)",
+                fontSize: 13,
+                outline: "none",
+              }}
+            />
+            <select
+              value={shareDuration}
+              onChange={(e) => setShareDuration(Number(e.target.value))}
+              style={{
+                padding: "6px 10px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                borderRadius: 7,
+                color: "var(--ink)",
+                fontSize: 13,
+                outline: "none",
+              }}
+            >
+              <option value={3600}>1 hour</option>
+              <option value={86400}>1 day</option>
+              <option value={7 * 86400}>7 days</option>
+              <option value={30 * 86400}>30 days</option>
+            </select>
+            <button
+              type="submit"
+              className="btn btn--primary btn--sm"
+              disabled={!shareEmail.trim() || busy === "share"}
+            >
+              {busy === "share" ? "Creating links…" : "Create links"}
+            </button>
+          </form>
+          {issuedLinks.length > 0 && (
+            <div style={{ marginTop: 10, display: "grid", gap: 6, maxHeight: 200, overflowY: "auto" }}>
+              <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                Copy each link and send it to the recipient.
+              </div>
+              {issuedLinks.map((link) => (
+                <div key={link.id} style={{ display: "flex", gap: 6 }}>
+                  <input
+                    readOnly
+                    value={link.url}
+                    onFocus={(e) => e.currentTarget.select()}
+                    style={{
+                      flex: 1, padding: "5px 8px", borderRadius: 6,
+                      border: "1px solid var(--line)", background: "var(--surface)",
+                      color: "var(--ink)", fontSize: 11, fontFamily: "monospace",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(link.url).then(
+                        () => toast.success("Copied"),
+                        () => toast.error("Copy failed — select manually"),
+                      );
+                    }}
+                  >
+                    Copy
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </details>
 
       <button
         type="button"
@@ -1198,13 +1330,24 @@ export function App() {
     staleTime: 60_000,
   });
 
+  // Incoming shares — files other users have shared with me (todo §1.1 /
+  // G1). Drives the "Shared" sidebar badge so a recipient sees a count
+  // light up without having to navigate. Same cache key the future
+  // Shared view will read, so a single fetch covers both.
+  const { data: incomingShares = [] } = useQuery({
+    queryKey: ["incoming-shares"],
+    queryFn: listIncomingShares,
+    enabled: signedIn,
+    staleTime: 30_000,
+  });
+
   // Sidebar counts — derived from the real file list. The "geo" count is
   // sourced from the global geo response (not the current folder scope) so
   // the Map count in the sidebar matches what the map will actually show.
   // `starred` is library-wide once we've fetched the starred view; before
-  // that we fall back to baseFiles for an approximation. Shared has no
-  // backend yet (todo.md G1) so it stays at 0 instead of a mock value.
-  // Trash is similarly 0 until the trash-view endpoint surfaces a count.
+  // that we fall back to baseFiles for an approximation. Shared comes
+  // from /shares/incoming (todo §1.1 / G1). Trash is 0 until the
+  // trash-view endpoint surfaces a count.
   const sideCounts = useMemoApp(() => {
     const c = { all: baseFiles.length, image: 0, video: 0, document: 0, geo: 0, starred: 0, people: 0, shared: 0, trash: 0 };
     for (const f of baseFiles) {
@@ -1220,8 +1363,9 @@ export function App() {
       (peopleResp?.persons || []).length
       + (peopleResp?.unlabeled_clusters || []).length;
     c.trash = trashSummary?.count ?? 0;
+    c.shared = incomingShares.length;
     return c;
-  }, [baseFiles, geoResp, isStarredView, starredRaw, peopleResp, trashSummary]);
+  }, [baseFiles, geoResp, isStarredView, starredRaw, peopleResp, trashSummary, incomingShares]);
 
   const filesByView = useMemoApp(() => ({
     gallery: baseFiles,

@@ -42,11 +42,42 @@ const BRAND_FEATURES = [
   { icon: "users",      label: "Faces stay private",  sub: "Templates live only on your box. Optional" },
 ];
 
+// Read post-auth redirect target + initial mode from the URL. When
+// shared-view.jsx routes a recipient through the auth screen it sets
+// `?next=/share/{token}#email=…` (decoded shape) so we can bounce
+// them back to claim the grant once they've authenticated. The
+// `#auth=signup|signin` outer hash picks the initial form mode.
+function readAuthHandoff() {
+  if (typeof window === "undefined") return { next: "", initialMode: "signup" };
+  const params = new URLSearchParams(window.location.search);
+  const next = params.get("next") || "";
+  // Only allow same-origin paths to defend against open-redirect.
+  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "";
+  let initialMode = "signup";
+  const hash = window.location.hash || "";
+  if (hash.includes("auth=signin")) initialMode = "signin";
+  else if (hash.includes("auth=signup")) initialMode = "signup";
+  return { next: safeNext, initialMode };
+}
+
 export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme }) {
   const setUser = useAuthStore((s) => s.setUser);
   const [submitting, setSubmitting] = useStateA(false);
   const [authError, setAuthError] = useStateA(null);
-  const [mode, setMode] = useStateA("signup"); // "signin" | "signup"
+  const handoff = readAuthHandoff();
+  const [mode, setMode] = useStateA(handoff.initialMode); // "signin" | "signup"
+  const nextUrl = handoff.next;
+  // After successful sign-in/up, if a `next` URL was passed (typically
+  // `/share/{token}` from the share-link landing) we hard-navigate so
+  // main.tsx re-routes through SharedView. Returns true when a redirect
+  // fired so callers can skip the usual onSignedIn callback.
+  const redirectIfNext = () => {
+    if (nextUrl) {
+      window.location.href = nextUrl;
+      return true;
+    }
+    return false;
+  };
   const [email, setEmail] = useStateA("");
   const [pwd, setPwd] = useStateA("");
   const [name, setName] = useStateA("");
@@ -95,6 +126,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
         setSubmitting(true);
         const u = await login(email, pwd);
         setUser(u);
+        if (redirectIfNext()) return;
         onSignedIn?.({
           name: u.display_name || u.email.split("@")[0],
           email: u.email,
@@ -146,6 +178,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       // Persist after login so the bearer token is in place. Don't gate the
       // signed-in state on it — auth is the priority.
       persistConsents(payload).catch(() => {});
+      if (redirectIfNext()) return;
       onSignedIn?.({ name: name.trim() || "You", email });
     } catch (e) {
       const msg = e instanceof ApiError

@@ -156,7 +156,7 @@ async def db_client(_test_db, monkeypatch) -> AsyncClient:
                 """
                 TRUNCATE TABLE
                     audit_log, cloud_files, cloud_links, feedback_events,
-                    bandit_state, recovery_codes, image_geo,
+                    bandit_state, recovery_codes, image_geo, share_grants,
                     face_detections, faces, persons, consent_records,
                     image_tags, folders, images, users
                 RESTART IDENTITY CASCADE

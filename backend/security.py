@@ -224,18 +224,33 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
         "/auth/reset-password",
         "/auth/request-verify-token",
         "/account/recovery-codes/login",
+        # todo §1.1 / G1 — share-claim is the same threat shape as
+        # recovery-codes-login (POST + secret token + identity binding),
+        # so it gets the same per-IP burst + 24h failure-lockout policy.
+        "/shares/claim",
     }
+    # Auth-style protection on GET endpoints that take a secret in the
+    # URL. Keyed by prefix because the path includes the share token.
+    # Per-IP rate limiting still applies via the route-level
+    # `enforce_rate_limit` call inside `preview_share`; this entry only
+    # extends the lockout machinery (which is identity-based).
+    _AUTH_PATH_PREFIXES = ("/shares/preview/",)
 
     async def dispatch(
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        path = request.url.path
+        is_post_auth = request.method == "POST" and path in self._AUTH_PATHS
+        is_get_share_preview = (
+            request.method == "GET"
+            and any(path.startswith(p) for p in self._AUTH_PATH_PREFIXES)
+        )
         if (
             not settings.security_rate_limits_enabled
             or settings.app_env.lower() == "test"
-            or request.method != "POST"
-            or request.url.path not in self._AUTH_PATHS
+            or not (is_post_auth or is_get_share_preview)
         ):
             return await call_next(request)
 
@@ -285,7 +300,15 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
             )
 
         response = await call_next(request)
-        if request.url.path.endswith("/login") and response.status_code >= 400:
+        # Treat any failed attempt against an "auth-shaped" endpoint as
+        # a credential-guess that should count toward lockout, not just
+        # /login. Share-claim and share-preview both take a secret in
+        # the request and need the same brute-force pressure relief.
+        is_credential_attempt = (
+            request.url.path.endswith("/login") or is_get_share_preview or
+            request.url.path == "/shares/claim"
+        )
+        if is_credential_attempt and response.status_code >= 400:
             await _audit_auth_event(
                 action="auth.login.failed",
                 path=request.url.path,

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from fastapi_users import schemas
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -153,3 +153,96 @@ class StorageUsage(BaseModel):
 
 class ImageSearchHit(ImageRead):
     score: float
+
+
+# ---------- Sharing (todo §1.1 / G1) ----------
+
+# Server-side cap on how long an existing-user share can live. The UI
+# only offers 1h / 1d / 7d / 30d so this is a defense-in-depth bound,
+# not the primary limit.
+SHARE_MAX_DURATION_SECONDS = 30 * 86400
+# Hard window applied at claim time when the recipient was new (had no
+# account at create). Sharer's `duration_seconds` is ignored for this
+# path — see `claim_share` in backend/api/shares.py.
+SHARE_NEW_USER_WINDOW_SECONDS = 86400
+
+
+class ShareGrantCreate(BaseModel):
+    """Body for `POST /images/{image_id}/shares`. The sharer chooses a
+    recipient email and a duration (in seconds). Duration is the
+    requested window for an *existing-user* recipient; new users get
+    SHARE_NEW_USER_WINDOW_SECONDS regardless."""
+
+    recipient_email: EmailStr
+    duration_seconds: int = Field(
+        ..., ge=60, le=SHARE_MAX_DURATION_SECONDS,
+        description="Requested window in seconds; capped at 30 days. "
+        "Ignored for new-user recipients (always 1 day at claim).",
+    )
+    permission: str = Field(default="view_download", pattern="^view(_download)?$")
+
+
+class ShareGrantRead(BaseModel):
+    """Owner-side view of a grant. `share_url` is only populated on
+    create — `GET /images/{id}/shares` omits it because the plaintext
+    token isn't stored. Recipient sees `IncomingShareRead` instead."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    image_id: uuid.UUID
+    recipient_email: str
+    recipient_user_id: uuid.UUID | None = None
+    recipient_display_name: str | None = None
+    permission: str
+    sharer_duration_seconds: int
+    expires_at: datetime | None = None
+    claimed_at: datetime | None = None
+    revoked_at: datetime | None = None
+    created_at: datetime
+    share_url: str | None = None
+
+
+class IncomingShareRead(BaseModel):
+    """Recipient-side card for the "Shared" sidebar."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    share_id: uuid.UUID
+    image_id: uuid.UUID
+    image_filename: str | None
+    image_category: str
+    sharer_display_name: str | None
+    sharer_email: str
+    permission: str
+    expires_at: datetime | None
+    claimed_at: datetime | None
+
+
+class ShareClaimBody(BaseModel):
+    token: str = Field(..., min_length=16, max_length=128)
+
+
+class ShareClaimResult(BaseModel):
+    share_id: uuid.UUID
+    image_id: uuid.UUID
+    expires_at: datetime | None
+    was_pending: bool
+
+
+class SharePreviewResult(BaseModel):
+    """Unauthenticated minimal preview for the public landing page.
+
+    Carries the absolute minimum so the FE can render
+    "Bob shared 'sunset.jpg' with you". No bytes, no thumbnails,
+    no EXIF, no GPS — those require an authenticated claim."""
+
+    sharer_display_name: str | None
+    image_filename: str | None
+    image_category: str
+    requires_signup: bool
+
+
+class ShareSignedUrl(BaseModel):
+    url: str
+    expires_at: str
