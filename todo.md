@@ -297,25 +297,23 @@ Tokens close to Apple HIG, shadows strictly small
 (`tracking-[-0.01em]`).
 
 ### C8. Dev / Admin dashboard
-- 🟡 **C8.1 Visual / UX overhaul** — partial: empty/loading/error states
-  on every tab, health rollup banner, human-readable audit/log lines,
-  filter chips on Audit + Logs all shipped 2026-05-15. Still open:
-  1. Replace modal `AdminPanel` with a routed `/admin` page with its
-     own layout (sidebar tabs, breadcrumbs).
-  2. Global search box that filters across users, audit events, images.
-  3. Admin-side bulk actions (bulk quota, bulk delete, bulk consent
-     revocation).
-- 🟡 **C8.2 Model + worker visibility** — first slice shipped
-  2026-05-15: `worker_heartbeats` + `model_runs` tables
-  (migration 0023), `backend/heartbeats.py` emitter, the ml-worker
-  ships a one-shot accelerator snapshot in heartbeat metadata, the
-  Models tab shows live device + GPU memory + last-used. Still open:
-  - Training-run telemetry — current step / loss curve / ETA. Today
-    we capture *inference* model state, not training. Once we run
-    fine-tunes (D6) we extend `model_runs` to include training
-    columns (`started_at`, `finished_at`, `val_loss`, `artifact_key`).
-  - Saving checkpoints to a `models/` MinIO bucket as
-    `.pkl` / `safetensors` with metadata pointers.
+- ✅ **C8.1 Visual / UX overhaul** SHIPPED 2026-05-15. Empty / loading /
+  error states on every tab, health rollup banner, human-readable
+  audit/log lines, filter chips on Audit + Logs, **routed `/admin`
+  page** alongside the modal (with an "open as page →" link),
+  **global search** across users / audit / images via
+  `GET /admin/search`, **bulk Users actions** (bulk quota, bulk
+  delete superuser-only, bulk revoke-consent) wired via
+  `POST /admin/users/{bulk-quota, bulk-delete, bulk-revoke-consent}`.
+- 🟡 **C8.2 Model + worker visibility** — operator-side bits shipped.
+  `worker_heartbeats` + `model_runs` tables (migration 0023),
+  `backend/heartbeats.py` emitter, the ml-worker ships a one-shot
+  accelerator snapshot in heartbeat metadata, the Models tab shows
+  live device + GPU memory + last-used, MinIO `istore-models`
+  checkpoint bucket auto-created at boot. Still open:
+  - Training-run telemetry (current step / loss curve / ETA) lands
+    when D6 fine-tuning lands — extend `model_runs` with
+    `started_at` / `finished_at` / `val_loss` / `artifact_key` then.
 - ⏳ **C8.3 Quick-action runners**: from the dev view, trigger a
   re-summarize, re-embed, or re-detect-faces for a user / folder /
   date range without leaving the UI.
@@ -483,28 +481,29 @@ device timeline + simple chart. Retention is per-device with a hard cap.
 > CPU-only — without manual model-format wrangling.
 
 ### F1. Backend runs on all major GPU/CPU vendors 🟡
-**Detection** shipped 2026-05-15 — the ml-worker probes every
-accelerator at startup via `backend.system_probes.probe_accelerators_full`
-(torch.cuda → torch.xpu/IPEX → OpenVINO `available_devices` → WMI
-Win32_PnPEntity for "AI Boost"/NPU → lspci) and ships the snapshot in
-heartbeat metadata. The admin Hardware tab renders every accelerator
-with `CUDA / iGPU / NPU` kind badges + OpenVINO targetability + an
-"inaccessible" flag when the host OS sees it but the container can't.
-Plus GPU passthrough wired into docker-compose for NVIDIA.
+**Detection + dispatch** shipped 2026-05-15. `backend.vision.runtime`
+chains torch.cuda → torch.backends.mps → torch.xpu (IPEX) → CPU and
+writes the choice to `runtime.toml` at first probe so model loads
+don't re-detect every time. The worker's accelerator probe lists
+everything torch.cuda, IPEX-XPU, OpenVINO `available_devices`, WMI
+Win32_PnPEntity ("AI Boost"/NPU) and lspci can see, and ships the
+snapshot in heartbeat metadata so the API container's Hardware tab
+renders the GPU/NPU/iGPU view with CUDA / iGPU / NPU kind badges
+even when the API process has no first-hand access. NVIDIA GPU
+passthrough is wired into the default `docker-compose.yml`; Intel
+iGPU + NPU passthrough is gated behind the opt-in
+`docker-compose.intel.yml` overlay (needs Intel WSL graphics + NPU
+drivers on the host).
 
-**Dispatch** still open — the worker today only uses CUDA when
-available; we don't yet fall back to MPS / OpenVINO EP / ROCm for the
-actual model loading:
-- AMD ROCm (Linux) → torch + onnxruntime-rocm.
-- Apple Silicon → torch + MPS / CoreML for vision models.
-- Intel ARC / iGPU → onnxruntime + OpenVINO EP (Florence-2 + Qwen
-  via OpenVINO IR; CLIP via onnxruntime).
-- Intel NPU → OpenVINO with `device='NPU'`. Container needs
-  `/dev/accel` passthrough + the Intel NPU driver mounted.
-- CPU fallback → onnxruntime CPU + ggml/llama.cpp for the rewriter.
-
-Runtime should probe the device once at boot and write the chosen
-backend to a `runtime.toml` so we don't re-probe on every inference.
+**Still open**:
+- AMD ROCm (Linux) — needs `torch + onnxruntime-rocm` wheels + a
+  ROCm CI image. The torch dispatcher will pick it up automatically
+  when present.
+- OpenVINO-as-inference-path for Intel iGPU + NPU. Torch doesn't
+  target the NPU directly; using it requires converting Florence-2 /
+  Qwen / CLIP to OpenVINO IR and routing inference through
+  `Core.compile_model(device='NPU')`. Detection-only today.
+- AMD/Intel quantization variants (covered by F2).
 
 ### F2. Model quantization ⏳
 - Florence-2-large → 8-bit GPTQ for ≥ 8 GB GPUs, 4-bit for smaller;
@@ -687,10 +686,10 @@ B+ patch.
 
 ### Sprint G — hardware + collab + hygiene (longest tail)
 
-26. 🟡 **F1** hardware dispatch — detection slice shipped 2026-05-15
-    (multi-vendor probe + heartbeat propagation + dashboard render).
-    Still owing: actual model-load fallback (MPS / ROCm / OpenVINO EP
-    / IPEX-XPU) when CUDA isn't present; `runtime.toml` caching.
+26. 🟡 **F1** hardware dispatch — detection + torch dispatch
+    (CUDA→MPS→XPU→CPU) + `runtime.toml` shipped 2026-05-15. Still
+    owing: ROCm wheels, OpenVINO inference path (model conversion to
+    IR for NPU), AMD quantization variants.
 27. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
     CLIP / RetinaFace INT8).
 28. **F3** Lite profile.
