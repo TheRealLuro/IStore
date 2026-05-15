@@ -1,0 +1,17 @@
+{
+  "name": "neuthek",
+  "short_name": "neuthek",
+  "description": "The next best cloud storage solution — open-source, AI-aware, self-hostable.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -6,15 +6,16 @@ export default function Home() {
     <>
       <section className="hero">
         <div className="container fade-in">
-          <span className="eyebrow">Open-source AI storage</span>
+          <span className="eyebrow">The next best cloud storage solution</span>
           <h1 className="hero__title">
             Storage that <em>thinks for you.</em>
           </h1>
           <p className="lead hero__sub">
-            neuthek is a self-hostable backend that stores your photos, runs
-            content-aware compression, and lets you search by what you remember
-            — not by filename. The managed hosted version is in development;
-            the source code is available today.
+            neuthek is the open-source, AI-aware cloud storage stack
+            you can run yourself — semantic image search by what you
+            remember, content-aware compression, privacy by design.
+            The managed hosted version is on the way; the source code
+            is available today.
           </p>
           <div className="hero__ctas">
             <Link to="/developers" className="btn btn--primary btn--lg">

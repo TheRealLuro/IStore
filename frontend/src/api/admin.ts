@@ -353,3 +353,22 @@ export const bulkRevokeConsent = (userIds: string[], kind: string | null = null)
   api.post<BulkUserResult>("/admin/users/bulk-revoke-consent", {
     user_ids: userIds, kind,
   });
+
+// Marketing-site waitlist viewer.
+export interface WaitlistEntry {
+  id: number;
+  email: string;
+  use_case: string;
+  source: string;
+  ip: string | null;
+  user_agent: string | null;
+  notified: boolean;
+  notified_at: string | null;
+  created_at: string;
+}
+
+export const listWaitlist = (limit = 500) =>
+  api.get<WaitlistEntry[]>(`/admin/waitlist?limit=${limit}`);
+
+export const markWaitlistNotified = (entryId: number) =>
+  api.patch<WaitlistEntry>(`/admin/waitlist/${entryId}/notified`, {});

@@ -18,6 +18,7 @@ from backend.api.shares import router as shares_router
 from backend.api.storage import router as storage_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
+from backend.api.waitlist import router as waitlist_router
 from backend.auth.users import auth_backend, fastapi_users
 from backend.consent import router as consent_router
 from backend.context import reset_current_user_id, set_current_user_id
@@ -49,8 +50,12 @@ def create_app() -> FastAPI:
             "http://127.0.0.1:5173",
             "http://localhost:5174",
             "http://127.0.0.1:5174",
+            "http://localhost:5180",
+            "http://127.0.0.1:5180",
             "http://localhost:4173",
             "http://127.0.0.1:4173",
+            "http://localhost:4180",
+            "http://127.0.0.1:4180",
             "tauri://localhost",
         ],
         allow_credentials=True,
@@ -122,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_dashboard_router)
     app.include_router(cloud_router)
     app.include_router(feedback_router)
+    app.include_router(waitlist_router)
 
     return app
 
