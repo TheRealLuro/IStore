@@ -96,20 +96,28 @@ export default function Developers() {
               differ once the release passes design review.
             </p>
           </div>
-          <div className="code">{`POST   /auth/jwt/login           # JWT login
-POST   /auth/register            # account create
-GET    /users/me                 # current user
+          <div className="code-card">
+            <div className="code-card__chrome">
+              <span className="code-card__dots"><span/><span/><span/></span>
+              <span className="code-card__title">routes — planned API surface</span>
+              <span className="code-card__lang">http</span>
+            </div>
+            <pre className="code"><span className="tok-k">POST</span>   /auth/jwt/login           <span className="tok-c"># JWT login</span>{`
+`}<span className="tok-k">POST</span>   /auth/register            <span className="tok-c"># account create</span>{`
+`}<span className="tok-k">GET</span>    /users/me                 <span className="tok-c"># current user</span>{`
 
-POST   /images/                  # upload
-GET    /images/                  # list (filters: scene,
-                                 #   content_type, tag, indoor_outdoor)
-GET    /images/{id}              # metadata
-GET    /images/{id}/original     # original bytes
-GET    /images/{id}/served       # compressed served bytes
-DELETE /images/{id}              # soft delete
+`}<span className="tok-k">POST</span>   /images/                  <span className="tok-c"># upload</span>{`
+`}<span className="tok-k">GET</span>    /images/                  <span className="tok-c"># list (filters: scene,</span>{`
+                                 `}<span className="tok-c">#   content_type, tag, indoor_outdoor)</span>{`
+`}<span className="tok-k">GET</span>    /images/{`{id}`}              <span className="tok-c"># metadata</span>{`
+`}<span className="tok-k">GET</span>    /images/{`{id}`}/original     <span className="tok-c"># original bytes</span>{`
+`}<span className="tok-k">GET</span>    /images/{`{id}`}/served       <span className="tok-c"># compressed served bytes</span>{`
+`}<span className="tok-k">DELETE</span> /images/{`{id}`}              <span className="tok-c"># soft delete</span>{`
 
-GET    /search/?q=<text>         # semantic search
-                                 # (requires [ml] extras)`}</div>
+`}<span className="tok-k">GET</span>    /search/?q=<span className="tok-s">&lt;text&gt;</span>         <span className="tok-c"># semantic search</span>{`
+                                 `}<span className="tok-c"># (requires [ml] extras)</span>
+            </pre>
+          </div>
         </div>
       </section>
 

@@ -1,259 +1,328 @@
 /* B&W tech logos for the carousel.
  *
  * Each is an inline SVG rendered in `currentColor` so the carousel's
- * `--ink-2` text color flows through and we get a uniform monochrome
- * treatment across every brand. Where the project has a distinctive
- * official logo (React, TypeScript, Docker, etc.) we authentically
- * render it monochrome; where it doesn't (pgvector, OpenCLIP) we use
- * a clean geometric icon representing what the tool does.
+ * text color flows through and we get a uniform monochrome treatment
+ * across every brand. We render approximate shapes of each project's
+ * official mark — distinct enough to recognize at a glance, simplified
+ * enough to read at 26px and look intentional in monochrome.
  *
- * Use is nominative: these marks identify the technologies neuthek is
- * built on, not partnerships or endorsements. Brand names and marks
- * belong to their respective owners — see /terms. */
+ * The marks belong to their respective owners. They appear here
+ * nominatively as a credit to the open-source projects neuthek is
+ * being built on — see the link on each carousel item which jumps
+ * straight to that project's documentation. */
 
 import type { CSSProperties } from "react";
 
 type IconProps = { size?: number; style?: CSSProperties };
 
 const COMMON = (size: number): CSSProperties => ({
-  width: size, height: size, display: "block", fill: "currentColor",
+  width: size, height: size, display: "block",
 });
 
-// ----- React (atomic orbit) -----
-export function ReactLogo({ size = 24, style }: IconProps) {
+// ====== React (atomic orbit) ======
+export function ReactLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="-12 -12 24 24" style={{ ...COMMON(size), ...style }}
          aria-hidden="true" role="img">
-      <circle cx="0" cy="0" r="1.6" />
+      <circle cx="0" cy="0" r="2.1" fill="currentColor" />
       <g fill="none" stroke="currentColor" strokeWidth="1">
-        <ellipse rx="10" ry="4.2" />
-        <ellipse rx="10" ry="4.2" transform="rotate(60)" />
-        <ellipse rx="10" ry="4.2" transform="rotate(120)" />
+        <ellipse rx="10.5" ry="4.3" />
+        <ellipse rx="10.5" ry="4.3" transform="rotate(60)" />
+        <ellipse rx="10.5" ry="4.3" transform="rotate(120)" />
       </g>
     </svg>
   );
 }
 
-// ----- TypeScript (TS square wordmark) -----
-export function TypeScriptLogo({ size = 24, style }: IconProps) {
+// ====== TypeScript (TS square — letters drawn as paths) ======
+export function TypeScriptLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
          aria-hidden="true" role="img">
-      <rect x="0" y="0" width="24" height="24" rx="2.4" fill="currentColor"/>
-      <text x="12" y="17" textAnchor="middle"
-            fontFamily="Geist, system-ui, sans-serif"
-            fontWeight="700" fontSize="11"
-            fill="var(--surface)">TS</text>
+      <rect x="0" y="0" width="24" height="24" rx="2.8" fill="currentColor"/>
+      {/* "T" — horizontal bar + vertical bar */}
+      <rect x="3.5"  y="13"   width="6.5" height="1.6" fill="#ffffff"/>
+      <rect x="5.95" y="13"   width="1.6" height="7.5" fill="#ffffff"/>
+      {/* "S" — drawn as a stylized path */}
+      <path d="M11.4 19.4
+               C 11.4 20.7, 12.6 21.3, 14.2 21.3
+               C 16   21.3, 17.5 20.4, 17.5 18.8
+               C 17.5 17.4, 16.6 16.9, 14.6 16.4
+               C 13.4 16.1, 13   15.9, 13   15.4
+               C 13   14.9, 13.5 14.7, 14.2 14.7
+               C 15.1 14.7, 15.6 15, 15.9 15.6
+               L 17.3 14.8
+               C 16.9 13.8, 15.9 13.3, 14.4 13.3
+               C 12.7 13.3, 11.5 14.2, 11.5 15.6
+               C 11.5 17.1, 12.6 17.5, 14.2 17.9
+               C 15.3 18.2, 15.9 18.3, 15.9 18.9
+               C 15.9 19.5, 15.3 19.8, 14.4 19.8
+               C 13.4 19.8, 12.8 19.4, 12.5 18.7
+               Z" fill="#ffffff"/>
     </svg>
   );
 }
 
-// ----- Vite (lightning bolt) -----
-export function ViteLogo({ size = 24, style }: IconProps) {
+// ====== Vite (lightning V) ======
+export function ViteLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
          aria-hidden="true" role="img">
-      <path d="M14.5 2 L7 13 L11 13 L9 22 L17 9 L13 9 Z" />
+      {/* V-shape lightning bolt: outer V + inner flame stripe */}
+      <path d="M2 4
+               L 12 22
+               L 22 4
+               L 17.5 4
+               L 12 14
+               L 6.5 4 Z" fill="currentColor"/>
+      <path d="M9.8 6
+               L 14.2 6
+               L 12.5 11.5
+               L 14 11.5
+               L 11 17
+               L 11.7 13
+               L 10.2 13 Z" fill="#ffffff"/>
     </svg>
   );
 }
 
-// ----- PostgreSQL (Slonik silhouette) -----
-export function PostgresLogo({ size = 24, style }: IconProps) {
+// ====== PostgreSQL (Slonik silhouette — refined) ======
+export function PostgresLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
-         aria-hidden="true" role="img">
-      {/* Simplified elephant head: dome + trunk + ear */}
-      <path d="M5 11
-               C 5 6.5, 9 4, 12 4
-               C 16 4, 19 6.5, 19 11
-               L 19 14
-               C 19 16, 18 17, 17 17
-               L 17 19 L 15.5 19 L 15.5 17.6
-               C 14.5 17.9, 13.5 18, 12.5 18
-               L 12.5 19 L 11 19 L 11 17.8
-               C 10 17.4, 9.2 16.8, 9 16
-               L 9 19 L 7.5 19 L 7.5 14
-               C 6 13.5, 5 12.5, 5 11 Z" />
+         aria-hidden="true" role="img" fill="currentColor">
+      {/* Head + ear + back + legs */}
+      <path d="M6.2 9.5
+               C 6.2 6.2, 9.2 4.1, 12.2 4.1
+               C 14   4.1, 15.6 4.8, 16.6 6.0
+               C 17.5 5.8, 18.4 6.0, 18.9 6.5
+               C 19.5 7.2, 19.4 8.4, 19.1 9.3
+               L 19.0 13.3
+               C 19.0 14.5, 18.4 15.4, 17.5 15.7
+               L 17.5 18.7 L 16 18.7 L 16 16
+               C 15.1 16.3, 14.1 16.4, 13.1 16.3
+               L 13.1 18.7 L 11.6 18.7 L 11.6 16.0
+               C 10.7 15.6, 9.95 14.9, 9.7 14.0
+               L 9.7 18.7 L 8.2 18.7 L 8.2 12.7
+               C 6.95 12.0, 6.2 10.8, 6.2 9.5 Z" />
+      {/* Trunk reaching down */}
+      <path d="M9.5 11
+               C 10 12.5, 11 13.5, 12.3 13.7
+               L 12.6 15.6
+               C 12.7 16.2, 12.4 16.7, 11.8 16.8
+               C 11.2 16.9, 10.8 16.7, 10.7 16.1
+               L 10.5 14.8
+               C 10 14.5, 9.6 14, 9.4 13.4 Z"
+            fill="#ffffff"/>
       {/* Eye */}
-      <circle cx="14" cy="10" r="0.7" fill="var(--surface)"/>
+      <circle cx="14.5" cy="8.8" r="0.85" fill="#ffffff"/>
+      <circle cx="14.5" cy="8.8" r="0.4" fill="currentColor"/>
     </svg>
   );
 }
 
-// ----- pgvector (3 vectors radiating from a point) -----
-export function PgvectorLogo({ size = 24, style }: IconProps) {
+// ====== pgvector (vector field — origin + three arrows) ======
+export function PgvectorLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
-         aria-hidden="true" role="img" stroke="currentColor"
-         strokeWidth="1.6" strokeLinecap="round" fill="none">
-      {/* Origin point */}
-      <circle cx="6" cy="18" r="1.4" fill="currentColor" stroke="none" />
-      {/* Three vector arrows */}
-      <line x1="6" y1="18" x2="20" y2="18" />
-      <line x1="6" y1="18" x2="18" y2="8" />
-      <line x1="6" y1="18" x2="9" y2="4" />
-      {/* Arrowheads */}
-      <path d="M20 18 L17 16 M20 18 L17 20"  />
-      <path d="M18 8 L14.5 8 M18 8 L17 11.5" />
-      <path d="M9 4 L7 6 M9 4 L11 5.5"       />
+         aria-hidden="true" role="img"
+         stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"
+         strokeLinejoin="round" fill="none">
+      <circle cx="5.5" cy="18.5" r="1.4" fill="currentColor" stroke="none"/>
+      {/* Three vectors at different angles, each with arrowhead */}
+      <path d="M5.5 18.5 L 21 18.5
+               M 19 16.5 L 21 18.5 L 19 20.5"/>
+      <path d="M5.5 18.5 L 17.5 7.5
+               M 14.8 7.7 L 17.5 7.5 L 17.3 10.2"/>
+      <path d="M5.5 18.5 L 9 3.5
+               M 7 5 L 9 3.5 L 10.7 5"/>
     </svg>
   );
 }
 
-// ----- MinIO (stylized M formed by upward strokes) -----
-export function MinioLogo({ size = 24, style }: IconProps) {
+// ====== MinIO (5 upward strokes — flame-M) ======
+export function MinioLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
-         aria-hidden="true" role="img" stroke="currentColor"
-         strokeWidth="2" strokeLinecap="round" fill="none">
-      {/* Five upward strokes forming an M */}
-      <path d="M3 19 L 6 5" />
-      <path d="M9 19 L 9 9" />
-      <path d="M12 19 L 12 5" />
-      <path d="M15 19 L 15 9" />
-      <path d="M18 19 L 21 5" />
+         aria-hidden="true" role="img"
+         stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"
+         fill="none">
+      {/* Five upward strokes of varying height forming an M */}
+      <path d="M3.5 19  L 5 7.5" />
+      <path d="M8   19  L 8  10.5" />
+      <path d="M12  19  L 12 5" />
+      <path d="M16  19  L 16 10.5" />
+      <path d="M20.5 19 L 19 7.5" />
     </svg>
   );
 }
 
-// ----- Redis (isometric cube) -----
-export function RedisLogo({ size = 24, style }: IconProps) {
+// ====== Redis (isometric stack — three layers) ======
+export function RedisLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
          aria-hidden="true" role="img" fill="none"
          stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
-      {/* Isometric cube */}
-      <path d="M12 3 L21 7.5 L12 12 L3 7.5 Z" fill="currentColor"
-            fillOpacity="0.15" />
-      <path d="M3 7.5 L3 16.5 L12 21 L12 12 Z" />
-      <path d="M21 7.5 L21 16.5 L12 21 L12 12 Z" />
-      {/* Two highlight bands */}
-      <path d="M3 11 L12 15.5 L21 11" />
-      <path d="M3 14 L12 18.5 L21 14" />
+      {/* Three stacked isometric layers */}
+      {/* Top */}
+      <path d="M12 2.5 L 21 6.5 L 12 10.5 L 3 6.5 Z" />
+      {/* Middle layer connecting lines */}
+      <path d="M3 10  L 12 14   L 21 10" />
+      {/* Bottom layer + sides */}
+      <path d="M3 13.5 L 12 17.5 L 21 13.5" />
+      <path d="M3 6.5 L 3 17 L 12 21 L 21 17 L 21 6.5" />
+      {/* Eye/face marks on the front */}
+      <circle cx="8" cy="9" r="0.7" fill="currentColor" stroke="none"/>
     </svg>
   );
 }
 
-// ----- Docker (whale carrying containers) -----
-export function DockerLogo({ size = 24, style }: IconProps) {
+// ====== Docker (whale + containers) ======
+export function DockerLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
-         aria-hidden="true" role="img">
-      {/* Container grid on top: 6 small rects */}
-      <rect x="3"  y="8"  width="2.4" height="2.4" />
-      <rect x="6"  y="8"  width="2.4" height="2.4" />
-      <rect x="9"  y="8"  width="2.4" height="2.4" />
-      <rect x="6"  y="5"  width="2.4" height="2.4" />
-      <rect x="9"  y="5"  width="2.4" height="2.4" />
-      <rect x="12" y="8"  width="2.4" height="2.4" />
-      {/* Whale body (rounded shape underneath) */}
-      <path d="M2 12
-               C 2 11.5, 2.3 11.2, 2.8 11.2
-               L 16.5 11.2
-               C 18.5 11.2, 20.5 11.8, 21.5 13
-               C 22 13.5, 22 14.2, 21.5 14.5
-               C 20 15.5, 18 16, 15 16
-               L 6 16
-               C 4 16, 2.5 15, 2 13.5
-               C 1.8 13, 2 12.5, 2 12 Z" />
-      {/* Whale spout */}
-      <path d="M17 9.5 C 17.5 8, 19 7.5, 19.5 9" fill="none"
-            stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+         aria-hidden="true" role="img" fill="currentColor">
+      {/* Container grid (3 wide × 2 tall + 1 extra on top-left) */}
+      <rect x="2.5"  y="9.5" width="2.2" height="2.2" />
+      <rect x="5.2"  y="9.5" width="2.2" height="2.2" />
+      <rect x="7.9"  y="9.5" width="2.2" height="2.2" />
+      <rect x="10.6" y="9.5" width="2.2" height="2.2" />
+      <rect x="5.2"  y="6.8" width="2.2" height="2.2" />
+      <rect x="7.9"  y="6.8" width="2.2" height="2.2" />
+      <rect x="10.6" y="6.8" width="2.2" height="2.2" />
+      <rect x="7.9"  y="4.1" width="2.2" height="2.2" />
+      {/* Whale body — broad rounded shape underneath */}
+      <path d="M1.5 13
+               L 13.5 13
+               C 16.5 13, 19 13.6, 20.5 14.6
+               C 21.5 15.3, 22.4 15.2, 22.8 14.4
+               C 22.9 14.2, 22.7 14, 22.4 14
+               L 21.6 14
+               C 21.6 14, 21 14.4, 20.3 14.2
+               C 19.4 13, 17 12, 13.5 12
+               L 1.5 12 Z" />
+      {/* Tail */}
+      <path d="M19 12.5
+               C 19.5 11, 21 10.5, 22 11
+               C 22 12, 21 13, 20 13
+               L 19 13 Z" fill="none" stroke="currentColor"
+            strokeWidth="1" strokeLinejoin="round"/>
+      {/* Whale "spray" suggestion line */}
+      <path d="M1.5 16 L 22.5 16" stroke="currentColor"
+            strokeWidth="0.8" strokeDasharray="2 2"/>
     </svg>
   );
 }
 
-// ----- FastAPI (hexagonal frame + lightning bolt) -----
-export function FastApiLogo({ size = 24, style }: IconProps) {
+// ====== FastAPI (hexagon + lightning bolt) ======
+export function FastApiLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
          aria-hidden="true" role="img">
-      {/* Hexagon frame */}
-      <path d="M12 2 L20.5 6.5 L20.5 17.5 L12 22 L3.5 17.5 L3.5 6.5 Z"
-            fill="none" stroke="currentColor" strokeWidth="1.5"
-            strokeLinejoin="round" />
+      {/* Hexagon outline */}
+      <path d="M12 1.8 L 21.2 6.5 L 21.2 17.5 L 12 22.2 L 2.8 17.5 L 2.8 6.5 Z"
+            fill="none" stroke="currentColor" strokeWidth="1.7"
+            strokeLinejoin="round"/>
       {/* Lightning bolt inside */}
-      <path d="M13 6 L8 13 L11 13 L10 18 L15 11 L12.5 11 Z" />
+      <path d="M13.6 5.5
+               L 8 13.4
+               L 11.2 13.4
+               L 10.4 18.5
+               L 16 10.6
+               L 12.8 10.6 Z"
+            fill="currentColor"/>
     </svg>
   );
 }
 
-// ----- PyTorch (flame) -----
-export function PyTorchLogo({ size = 24, style }: IconProps) {
+// ====== PyTorch (refined flame) ======
+export function PyTorchLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
-         aria-hidden="true" role="img">
-      {/* Flame outline */}
-      <path d="M12 2
-               C 12 2, 7 6.5, 6 11
-               C 5 15, 7.5 21, 12 21
-               C 16.5 21, 19 15, 18 11
-               C 17.4 8.5, 15.5 6.2, 14 4.5
-               C 14 6.5, 13.2 8, 12 9.5
-               C 11 8, 11 5.5, 12 2 Z"
-            fill="none" stroke="currentColor" strokeWidth="1.6"
-            strokeLinejoin="round" />
-      {/* Center dot */}
-      <circle cx="12" cy="6" r="1.2" />
+         aria-hidden="true" role="img" fill="none"
+         stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"
+         strokeLinecap="round">
+      {/* Flame outline — top point curls slightly right */}
+      <path d="M14.5 2.8
+               C 14.5 2.8, 18 6.5, 19 9.5
+               C 20.3 13.5, 18.3 18.5, 14 20.5
+               C 9.7  22.5, 5.5 20.5, 4.5 16.5
+               C 3.6 12.9, 6 9.5, 8.5 7
+               C 9.6 5.9, 10.5 4.8, 11   3.5
+               C 11.2 5, 11.5 6.5, 12.5 7.5
+               C 13.5 8.5, 14.5 6.5, 14.5 2.8 Z" />
+      {/* Center dot (the "eye" of the flame) */}
+      <circle cx="14.5" cy="6.5" r="1.3" fill="currentColor" stroke="none"/>
     </svg>
   );
 }
 
-// ----- OpenCLIP (paperclip + lens) -----
-export function OpenClipLogo({ size = 24, style }: IconProps) {
+// ====== OpenCLIP (stylized paperclip) ======
+export function OpenClipLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
          aria-hidden="true" role="img"
-         stroke="currentColor" strokeWidth="1.6" fill="none"
+         stroke="currentColor" strokeWidth="1.7" fill="none"
          strokeLinecap="round" strokeLinejoin="round">
-      {/* Stylized paperclip */}
-      <path d="M9 4
-               L 9 16
-               C 9 17.7, 10.3 19, 12 19
-               C 13.7 19, 15 17.7, 15 16
-               L 15 7
-               C 15 5.9, 14.1 5, 13 5
-               C 11.9 5, 11 5.9, 11 7
-               L 11 15" />
+      {/* Classic paperclip shape */}
+      <path d="M16 7
+               L 16 17
+               C 16 19.5, 14 21, 12 21
+               C 10 21, 8 19.5, 8 17
+               L 8 6
+               C 8 4.3, 9.3 3, 11 3
+               C 12.7 3, 14 4.3, 14 6
+               L 14 16
+               C 14 16.8, 13.3 17.5, 12.5 17.5
+               C 11.7 17.5, 11 16.8, 11 16
+               L 11 8" />
     </svg>
   );
 }
 
-// ----- Pillow (the PIL pillow) -----
-export function PillowLogo({ size = 24, style }: IconProps) {
+// ====== Pillow (cushioned pillow with corner buttons) ======
+export function PillowLogo({ size = 26, style }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
-         aria-hidden="true" role="img">
-      {/* Pillow shape — soft square with corner tufts */}
-      <path d="M5 6
-               C 6 4.5, 18 4.5, 19 6
-               C 20.5 7, 20.5 17, 19 18
-               C 18 19.5, 6 19.5, 5 18
-               C 3.5 17, 3.5 7, 5 6 Z"
-            fill="none" stroke="currentColor" strokeWidth="1.6"
-            strokeLinejoin="round" />
-      {/* Corner tufts (the four buttons) */}
-      <circle cx="7"  cy="8"  r="0.8" />
-      <circle cx="17" cy="8"  r="0.8" />
-      <circle cx="7"  cy="16" r="0.8" />
-      <circle cx="17" cy="16" r="0.8" />
+         aria-hidden="true" role="img" fill="none"
+         stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
+      {/* Pillow shape with concave sides */}
+      <path d="M5 5.5
+               C 9 4.5, 15 4.5, 19 5.5
+               C 20 9, 20 15, 19 18.5
+               C 15 19.5, 9 19.5, 5 18.5
+               C 4 15, 4 9, 5 5.5 Z" />
+      {/* Corner tufts */}
+      <circle cx="7.5"  cy="8"  r="0.9" fill="currentColor" stroke="none"/>
+      <circle cx="16.5" cy="8"  r="0.9" fill="currentColor" stroke="none"/>
+      <circle cx="7.5"  cy="16" r="0.9" fill="currentColor" stroke="none"/>
+      <circle cx="16.5" cy="16" r="0.9" fill="currentColor" stroke="none"/>
     </svg>
   );
 }
 
-// ----- The carousel ordering -----
-export const TECH_STACK: { name: string; Icon: React.FC<IconProps> }[] = [
-  { name: "FastAPI",        Icon: FastApiLogo    },
-  { name: "PostgreSQL",     Icon: PostgresLogo   },
-  { name: "pgvector",       Icon: PgvectorLogo   },
-  { name: "MinIO",          Icon: MinioLogo      },
-  { name: "Redis",          Icon: RedisLogo      },
-  { name: "OpenCLIP",       Icon: OpenClipLogo   },
-  { name: "PyTorch",        Icon: PyTorchLogo    },
-  { name: "Pillow",         Icon: PillowLogo     },
-  { name: "Docker",         Icon: DockerLogo     },
-  { name: "Vite",           Icon: ViteLogo       },
-  { name: "React",          Icon: ReactLogo      },
-  { name: "TypeScript",     Icon: TypeScriptLogo },
+// ====== Stack registry: name + icon + URL to that project's docs ======
+//
+// URLs are the canonical docs/home for each project. Carousel items
+// open these in a new tab as a credit + a useful jump-off for visitors
+// who want to learn more.
+export type TechEntry = {
+  name: string;
+  Icon: React.FC<IconProps>;
+  href: string;
+};
+
+export const TECH_STACK: TechEntry[] = [
+  { name: "FastAPI",    Icon: FastApiLogo,    href: "https://fastapi.tiangolo.com" },
+  { name: "PostgreSQL", Icon: PostgresLogo,   href: "https://www.postgresql.org/docs/" },
+  { name: "pgvector",   Icon: PgvectorLogo,   href: "https://github.com/pgvector/pgvector" },
+  { name: "MinIO",      Icon: MinioLogo,      href: "https://min.io/docs/minio/linux/index.html" },
+  { name: "Redis",      Icon: RedisLogo,      href: "https://redis.io/docs/latest/" },
+  { name: "OpenCLIP",   Icon: OpenClipLogo,   href: "https://github.com/mlfoundations/open_clip" },
+  { name: "PyTorch",    Icon: PyTorchLogo,    href: "https://pytorch.org/docs/" },
+  { name: "Pillow",     Icon: PillowLogo,     href: "https://pillow.readthedocs.io" },
+  { name: "Docker",     Icon: DockerLogo,     href: "https://docs.docker.com" },
+  { name: "Vite",       Icon: ViteLogo,       href: "https://vitejs.dev/guide/" },
+  { name: "React",      Icon: ReactLogo,      href: "https://react.dev" },
+  { name: "TypeScript", Icon: TypeScriptLogo, href: "https://www.typescriptlang.org/docs/" },
 ];

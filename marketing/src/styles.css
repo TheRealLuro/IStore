@@ -350,24 +350,54 @@ p {
   display: inline-flex;
   align-items: center;
   gap: 12px;
+  padding: 6px 4px;
   font-family: "Geist", system-ui, sans-serif;
   font-size: 15px;
   font-weight: 500;
   color: var(--ink-3);
   white-space: nowrap;
-  transition: color 200ms var(--ease);
+  text-decoration: none;
+  transition: color 200ms var(--ease), transform 200ms var(--ease);
+  border-radius: 8px;
+  cursor: pointer;
 }
 .carousel__logo {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--ink-3);
-  transition: color 200ms var(--ease);
+  transition: color 200ms var(--ease), transform 200ms var(--ease);
 }
-.carousel__item:hover { color: var(--ink); }
-.carousel__item:hover .carousel__logo { color: var(--ink); }
+.carousel__item:hover {
+  color: var(--ink);
+  transform: translateY(-1px);
+}
+.carousel__item:hover .carousel__logo {
+  color: var(--ink);
+  transform: scale(1.06);
+}
+.carousel__item:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
 .carousel__name { letter-spacing: -0.01em; }
 .carousel:hover .carousel__track { animation-play-state: paused; }
+
+/* Compare-page section group headings */
+.compare-group__head {
+  display: flex; align-items: baseline; gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.compare-group__title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.compare-group__sub {
+  font-size: 14px;
+  color: var(--ink-3);
+}
 
 @keyframes scroll-x {
   from { transform: translateX(0); }
@@ -530,18 +560,78 @@ p {
 .kv dt { color: var(--ink-3); font-weight: 500; }
 .kv dd { margin: 0; color: var(--ink); }
 
-.code {
-  font-family: "Geist Mono", monospace;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
+/* ---------- Code block ----------
+   The .code element is a self-contained "terminal/editor card."
+   Optionally precede it with a .code__chrome row (3 dots + label)
+   for a small header band. Inside the code, wrap comments in
+   .tok-c (faint gray + italic), prompts in .tok-p (muted), and
+   strings/identifiers in .tok-s (light) so the snippet reads
+   even though we stay strictly monochrome. */
+
+.code-card {
+  border: 1px solid #1a1a1a;
   border-radius: var(--radius-2);
-  padding: 16px 18px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--ink);
+  overflow: hidden;
+  background: #0a0a0a;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.10);
+}
+.code-card__chrome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #141414;
+  border-bottom: 1px solid #1f1f1f;
+  font-family: "Geist Mono", monospace;
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+  letter-spacing: 0.04em;
+}
+.code-card__dots {
+  display: inline-flex;
+  gap: 6px;
+}
+.code-card__dots span {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #2a2a2a;
+}
+.code-card__title { margin-left: 6px; }
+.code-card__lang  { margin-left: auto; text-transform: uppercase; }
+
+.code {
+  font-family: "Geist Mono", "SF Mono", Menlo, monospace;
+  background: #0a0a0a;
+  color: #e6e6e6;
+  padding: 18px 20px;
+  font-size: 12.5px;
+  line-height: 1.75;
   white-space: pre;
   overflow-x: auto;
+  margin: 0;
+  letter-spacing: 0;
+  font-feature-settings: "calt", "liga";
 }
+.code-card .code { border: 0; border-radius: 0; }
+
+/* When a .code is used standalone (no chrome), still give it a
+   subtle "card" look that matches the chromed version. */
+:not(.code-card) > .code {
+  border: 1px solid #1a1a1a;
+  border-radius: var(--radius-2);
+  background: #0a0a0a;
+  color: #e6e6e6;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 12px 32px rgba(0,0,0,0.10);
+}
+
+/* Token styling — strictly monochrome, conveyed by weight + opacity. */
+.code .tok-c { color: rgba(255,255,255,0.42); font-style: italic; }
+.code .tok-p { color: rgba(255,255,255,0.55); font-weight: 500; }
+.code .tok-k { color: #ffffff; font-weight: 600; }
+.code .tok-s { color: #ffffff; }
+.code .tok-n { color: rgba(255,255,255,0.78); }
+.code .tok-a { color: rgba(255,255,255,0.55); }
+.code .tok-r { color: rgba(255,255,255,0.85); }
 
 .callout {
   margin: 28px 0;

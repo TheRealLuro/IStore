@@ -32,30 +32,46 @@ export default function Features() {
               red bridge" is enough.
             </p>
           </div>
-          <div className="code">{`# How search will work (engine-level)
-client> "snowy roof at sunset"
-        ↓ OpenCLIP text encoder
-        ↓ 768-dim vector
-server> pgvector  <=>  image embeddings
-        ↓ cosine similarity
-        ↓ top-N owned by current user
-client> renders gallery sorted by relevance`}</div>
+          <div className="code-card">
+            <div className="code-card__chrome">
+              <span className="code-card__dots"><span/><span/><span/></span>
+              <span className="code-card__title">search.flow</span>
+              <span className="code-card__lang">flow</span>
+            </div>
+            <pre className="code"><span className="tok-c"># How search will work (engine-level)</span>{`
+`}<span className="tok-p">client&gt;</span> <span className="tok-s">"snowy roof at sunset"</span>{`
+        ↓ `}<span className="tok-n">OpenCLIP text encoder</span>{`
+        ↓ `}<span className="tok-n">768-dim vector</span>{`
+`}<span className="tok-p">server&gt;</span> <span className="tok-k">pgvector</span>{`  <=>  `}<span className="tok-n">image embeddings</span>{`
+        ↓ `}<span className="tok-n">cosine similarity</span>{`
+        ↓ `}<span className="tok-n">top-N owned by current user</span>{`
+`}<span className="tok-p">client&gt;</span> renders gallery sorted by relevance
+            </pre>
+          </div>
         </div>
       </section>
 
       <section className="section">
         <div className="container split">
-          <div className="code">{`# Compression policy (deterministic)
-photo            -> WebP q=82, max 4096px
-screenshot       -> WebP lossless
-document         -> WebP lossless
-illustration     -> WebP lossless
-icon             -> WebP lossless
-low-confidence   -> WebP q=82 (fallback)
+          <div className="code-card">
+            <div className="code-card__chrome">
+              <span className="code-card__dots"><span/><span/><span/></span>
+              <span className="code-card__title">policy.compression</span>
+              <span className="code-card__lang">rules</span>
+            </div>
+            <pre className="code"><span className="tok-c"># Compression policy (deterministic)</span>{`
+`}<span className="tok-k">photo</span>            <span className="tok-p">-&gt;</span> WebP <span className="tok-n">q=82</span>, max <span className="tok-n">4096px</span>{`
+`}<span className="tok-k">screenshot</span>       <span className="tok-p">-&gt;</span> WebP lossless{`
+`}<span className="tok-k">document</span>         <span className="tok-p">-&gt;</span> WebP lossless{`
+`}<span className="tok-k">illustration</span>     <span className="tok-p">-&gt;</span> WebP lossless{`
+`}<span className="tok-k">icon</span>             <span className="tok-p">-&gt;</span> WebP lossless{`
+`}<span className="tok-k">low-confidence</span>   <span className="tok-p">-&gt;</span> WebP <span className="tok-n">q=82</span> (fallback){`
 
-# Optional codecs picked up automatically
-# when the host has them installed:
-AVIF (pillow-heif), JPEG XL (imagecodecs)`}</div>
+`}<span className="tok-c"># Optional codecs picked up automatically</span>{`
+`}<span className="tok-c"># when the host has them installed:</span>{`
+`}<span className="tok-s">AVIF</span> (pillow-heif), <span className="tok-s">JPEG XL</span> (imagecodecs)
+            </pre>
+          </div>
           <div>
             <span className="eyebrow">Compression</span>
             <h2>Smart by default. Lossless when it matters.</h2>
