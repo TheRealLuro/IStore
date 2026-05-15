@@ -222,6 +222,12 @@ export default function Compare() {
             </div>
             <div className="compare-wrap">
               <table className="compare">
+                <colgroup>
+                  <col className="compare__cap" />
+                  {HEADERS.map((h) => (
+                    <col className="compare__provider" key={h} />
+                  ))}
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Capability</th>
@@ -233,7 +239,7 @@ export default function Compare() {
                     <tr key={r.feature}>
                       <td>{r.feature}</td>
                       {r.cells.map((c, i) => (
-                        <td key={i}>
+                        <td key={i} data-provider={HEADERS[i]}>
                           <span className={`pill${c.tone ? " pill--" + c.tone : ""}`}>
                             {c.label}
                           </span>
