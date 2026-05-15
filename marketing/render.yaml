@@ -1,0 +1,37 @@
+# Render blueprint for the neuthek marketing site.
+#
+# Deploy by pointing Render at this repo and selecting this blueprint
+# from the marketing/ subdirectory, or by running:
+#   render blueprint deploy --root marketing
+#
+# The site is fully static — no backend, no env secrets, no DB.
+
+services:
+  - type: web
+    name: neuthek-marketing
+    runtime: static
+    rootDir: marketing
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    pullRequestPreviewsEnabled: true
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      # The app uses HashRouter, so a single index.html serves every route.
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -1,0 +1,4 @@
+# Static-host catch-all so direct loads of /features, /pricing, etc.
+# resolve to the SPA shell. HashRouter then takes over and renders
+# the right page from the URL fragment.
+/*    /index.html   200

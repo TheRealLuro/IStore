@@ -86,4 +86,6 @@ frontend/.vite/
 # tsc-generated outputs from .ts configs (we author the .ts; .js/.d.ts are derived)
 frontend/vite.config.js
 frontend/vite.config.d.ts
+marketing/vite.config.js
+marketing/vite.config.d.ts
 *.tsbuildinfo
