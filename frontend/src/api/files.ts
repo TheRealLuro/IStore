@@ -14,9 +14,33 @@ export interface ListFilters {
   starred?: boolean;
   /** Cross-folder soft-deleted view (overrides folderId server-side). */
   trashed?: boolean;
+  /** CLIP-classified scene label (e.g. "office", "portrait", "whiteboard"). */
+  scene?: string | null;
+  /** "photo" | "screenshot" | "document" | etc. — CLIP content_type column. */
+  contentType?: string | null;
+  /** "indoor" | "outdoor". */
+  indoorOutdoor?: string | null;
+  /** Restrict to images whose face_detections row count > 0. */
+  hasFaces?: boolean | null;
+  /** Restrict to images that have GPS coordinates persisted. */
+  hasGps?: boolean | null;
   limit?: number;
   offset?: number;
 }
+
+export interface FacetsResponse {
+  total: number;
+  scenes: { value: string; count: number }[];
+  content_types: { value: string; count: number }[];
+  indoor_outdoor: { value: string; count: number }[];
+  with_gps: number;
+  with_faces: number;
+}
+
+/** Available filter axes + counts for the gallery filter chips. The
+ *  frontend uses this to render only chips that would return results. */
+export const getFacets = (): Promise<FacetsResponse> =>
+  api.get<FacetsResponse>("/images/facets");
 
 export async function listFiles(filters: ListFilters = {}): Promise<FileItem[]> {
   const params = new URLSearchParams();
@@ -39,6 +63,11 @@ export async function listFiles(filters: ListFilters = {}): Promise<FileItem[]> 
   } else if (filters.folderId) {
     params.set("folder_id", filters.folderId);
   }
+  if (filters.scene) params.set("scene", filters.scene);
+  if (filters.contentType) params.set("content_type", filters.contentType);
+  if (filters.indoorOutdoor) params.set("indoor_outdoor", filters.indoorOutdoor);
+  if (filters.hasFaces != null) params.set("has_faces", String(filters.hasFaces));
+  if (filters.hasGps != null) params.set("has_gps", String(filters.hasGps));
   // Default behavior (no folderId / no starred) returns root images only —
   // same as passing folder_id=null on the backend.
   if (filters.limit) params.set("limit", String(filters.limit));

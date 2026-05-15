@@ -431,12 +431,88 @@ input, textarea { font-family: inherit; }
   /* `auto-fill` (vs `auto-fit`) keeps tiles at a sensible width when
    * the user has only a few files — `auto-fit` would stretch each
    * card across the full row width, which reads as comically large
-   * empty cards above a big empty band. Capping the column at 230px
-   * means a sparsely populated library still shows multiple tiles
-   * per row instead of one giant card. */
-  grid-template-columns: repeat(auto-fill, minmax(180px, 230px));
+   * empty cards above a big empty band. Cap at 260px keeps tiles
+   * glanceable while letting more pack per row on wide viewports. */
+  grid-template-columns: repeat(auto-fill, minmax(200px, 260px));
   gap: 14px;
   justify-content: start;
+}
+
+/* ---- filter chip — toggle row below the topbar ---- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+.chip:hover {
+  border-color: var(--ink-4);
+  background: var(--surface-3);
+}
+.chip[data-active="true"] {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+.chip[data-active="true"] span { color: var(--surface) !important; opacity: 0.7; }
+
+/* ---- gallery tips footer ---- *
+ * Shows below the file grid when the user has SOME files but the
+ * library hasn't filled the viewport. Without this, the bottom of
+ * the page reads as a massive empty black band — especially on
+ * wide screens where the grid only takes 1-2 rows. The footer
+ * surfaces the same "what's next" prompts the empty-state shows so
+ * the user always has a useful next action visible. Hidden via
+ * media query on tall content (gallery__grid scrollHeight already
+ * close to viewport — see `.gallery--full > .gallery__tips`). */
+.gallery__tips {
+  margin-top: 28px;
+  padding: 22px 24px 26px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+.gallery__tip {
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  transition: border-color 160ms var(--ease), background 160ms var(--ease);
+}
+.gallery__tip:hover {
+  background: var(--surface-3);
+  border-color: var(--line);
+}
+.gallery__tip-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; color: var(--ink);
+}
+.gallery__tip-icon {
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  border-radius: 7px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+.gallery__tip-body {
+  font-size: 12px; color: var(--ink-3); line-height: 1.4;
 }
 
 /* ---- list (bar) view — compact rows ---- *
@@ -1098,6 +1174,25 @@ mark {
 .upload-row__meta { font-size: 11px; color: var(--ink-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .upload-row__bar { height: 3px; background: var(--surface-3); border-radius: 999px; overflow: hidden; margin-top: 6px; }
 .upload-row__bar-fill { height: 100%; background: var(--ink); transition: width 240ms var(--ease); }
+/* Indeterminate stripe — used while bytes are fully uploaded but the
+ * server is still running validate/vision before responding. Without
+ * this, the bar would freeze at 100% during a 30s Florence call and
+ * read as "stuck." The slow gradient sweep matches the bar height. */
+.upload-row__bar-fill--indeterminate {
+  background: linear-gradient(
+    90deg,
+    var(--ink-3) 0%,
+    var(--ink) 35%,
+    var(--ink) 65%,
+    var(--ink-3) 100%
+  );
+  background-size: 200% 100%;
+  animation: upload-bar-sweep 1.4s ease-in-out infinite;
+}
+@keyframes upload-bar-sweep {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
 .upload-row__status { font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .upload-row__status--done { color: var(--success); }
 

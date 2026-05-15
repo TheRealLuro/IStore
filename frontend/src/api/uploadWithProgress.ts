@@ -6,29 +6,67 @@ export interface UploadHandles {
   xhr: XMLHttpRequest;
 }
 
+export type UploadPhase =
+  | "uploading"   // bytes flowing
+  | "processing"  // bytes done, server still running validate / vision / DB write
+  | "done"
+  | "error";
+
+export interface UploadProgress {
+  /** Bytes actually transferred from the client. */
+  uploadedBytes: number;
+  /** Total bytes the client is sending (file size). */
+  totalBytes: number;
+  /** Current phase — let the UI show "uploading" vs "processing" vs "done". */
+  phase: UploadPhase;
+}
+
 /**
- * Upload a single file via XMLHttpRequest so we get progress events.
- * Returns both the promise and the XHR (so callers can abort).
+ * Upload a single file via XMLHttpRequest so we get true progress events.
+ * Reports phase transitions (uploading → processing → done) so the UI can
+ * distinguish "bytes still going up the wire" from "server is doing
+ * Florence/vision work before responding." Returns both the promise and
+ * the XHR so callers can abort mid-upload.
  */
 export function uploadFileWithProgress(
   file: File,
-  onProgress: (uploadedBytes: number) => void,
+  onProgress: (p: UploadProgress) => void,
 ): UploadHandles {
   const xhr = new XMLHttpRequest();
   xhr.open("POST", `${API_BASE_URL}/images/`);
   const token = tokens.get();
   if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
+  const total = file.size || 1;
+  let uploaded = 0;
+
   const promise = new Promise<FileItem>((resolve, reject) => {
     xhr.upload.addEventListener("progress", (e) => {
-      if (e.lengthComputable) onProgress(e.loaded);
+      if (e.lengthComputable) {
+        uploaded = e.loaded;
+        onProgress({
+          uploadedBytes: uploaded,
+          totalBytes: total,
+          phase: uploaded >= total ? "processing" : "uploading",
+        });
+      }
+    });
+    // The browser fires `loadend` on the upload object once the body is
+    // fully transmitted, even before the server responds. That's our
+    // signal to flip to "processing" — the byte progress is at 100%
+    // but the server still hasn't returned an ImageRead row.
+    xhr.upload.addEventListener("loadend", () => {
+      onProgress({ uploadedBytes: total, totalBytes: total, phase: "processing" });
     });
 
     xhr.addEventListener("load", () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
-          resolve(JSON.parse(xhr.responseText) as FileItem);
+          const item = JSON.parse(xhr.responseText) as FileItem;
+          onProgress({ uploadedBytes: total, totalBytes: total, phase: "done" });
+          resolve(item);
         } catch {
+          onProgress({ uploadedBytes: uploaded, totalBytes: total, phase: "error" });
           reject(new Error("Invalid response from server"));
         }
       } else {
@@ -39,11 +77,18 @@ export function uploadFileWithProgress(
         } catch {
           /* ignore */
         }
+        onProgress({ uploadedBytes: uploaded, totalBytes: total, phase: "error" });
         reject(new Error(detail));
       }
     });
-    xhr.addEventListener("error", () => reject(new Error("Network error")));
-    xhr.addEventListener("abort", () => reject(new Error("Upload cancelled")));
+    xhr.addEventListener("error", () => {
+      onProgress({ uploadedBytes: uploaded, totalBytes: total, phase: "error" });
+      reject(new Error("Network error"));
+    });
+    xhr.addEventListener("abort", () => {
+      onProgress({ uploadedBytes: uploaded, totalBytes: total, phase: "error" });
+      reject(new Error("Upload cancelled"));
+    });
   });
 
   const fd = new FormData();

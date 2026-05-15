@@ -292,6 +292,17 @@ async def list_images(
     # Trash page in the gallery so the user can see what's actually in
     # the bin instead of an opaque "X items in trash" counter.
     trashed: Annotated[bool, Query()] = False,
+    # Richer-filter axes — the frontend filter chips drive these.
+    # `has_faces=true` keeps only images where at least one face was
+    # detected (face_likelihood is the cheap CLIP gate, but join to
+    # face_detections is the source of truth for "actually has a face
+    # row in the DB"). `has_gps=true` keeps images with an image_geo
+    # row. `min_face_likelihood` is a 0-1 cosine threshold on the
+    # CLIP face-likelihood column, used to surface "definitely-people"
+    # photos even when face detection hasn't run yet.
+    has_faces: Annotated[bool | None, Query()] = None,
+    has_gps: Annotated[bool | None, Query()] = None,
+    min_face_likelihood: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
 ) -> list[Image]:
     stmt = select(Image).where(Image.user_id == user.id)
     if trashed:
@@ -331,6 +342,36 @@ async def list_images(
                 Person.user_id == user.id, Person.display_name == person
             )
         stmt = stmt.distinct()
+    if has_faces is True:
+        # EXISTS subquery — cheaper than a join + DISTINCT and still
+        # composes with all the other filters above.
+        stmt = stmt.where(
+            select(FaceDetection.id)
+            .where(
+                FaceDetection.image_id == Image.id,
+                FaceDetection.user_id == user.id,
+            )
+            .exists()
+        )
+    elif has_faces is False:
+        stmt = stmt.where(
+            ~select(FaceDetection.id)
+            .where(
+                FaceDetection.image_id == Image.id,
+                FaceDetection.user_id == user.id,
+            )
+            .exists()
+        )
+    if has_gps is True:
+        stmt = stmt.where(
+            select(ImageGeo.image_id).where(ImageGeo.image_id == Image.id).exists()
+        )
+    elif has_gps is False:
+        stmt = stmt.where(
+            ~select(ImageGeo.image_id).where(ImageGeo.image_id == Image.id).exists()
+        )
+    if min_face_likelihood is not None:
+        stmt = stmt.where(Image.face_likelihood >= min_face_likelihood)
     # Starred view sorts by when the user starred each row (newest stars
     # first); trashed view by when the file hit the bin (newest first);
     # everything else sorts by upload recency.
@@ -344,6 +385,70 @@ async def list_images(
 
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+@router.get("/facets")
+async def list_facets(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Available filter axes + counts for the gallery filter chips.
+
+    Returns the set of `scene_label`, `content_type`, and
+    `indoor_outdoor` values present in the user's library, each with
+    a count, so the frontend can render only the chips that would
+    actually return results. Also includes `with_gps`, `with_faces`,
+    and an overall total so the chips can show context like
+    "Indoor (12)" without a per-chip query.
+    """
+    base = (
+        Image.user_id == user.id,
+        Image.deleted_at.is_(None),
+    )
+
+    async def _agg(col):
+        rows = (
+            await session.execute(
+                select(col, func.count(Image.id))
+                .where(*base, col.is_not(None))
+                .group_by(col)
+                .order_by(func.count(Image.id).desc())
+            )
+        ).all()
+        return [{"value": v, "count": int(c)} for v, c in rows]
+
+    scenes = await _agg(Image.scene_label)
+    content_types = await _agg(Image.content_type)
+    indoor_outdoor = await _agg(Image.indoor_outdoor)
+
+    total = (
+        await session.execute(select(func.count(Image.id)).where(*base))
+    ).scalar_one()
+    with_gps = (
+        await session.execute(
+            select(func.count(Image.id))
+            .select_from(Image)
+            .join(ImageGeo, ImageGeo.image_id == Image.id)
+            .where(*base)
+        )
+    ).scalar_one()
+    with_faces = (
+        await session.execute(
+            select(func.count(func.distinct(Image.id)))
+            .select_from(Image)
+            .join(FaceDetection, FaceDetection.image_id == Image.id)
+            .where(*base, FaceDetection.user_id == user.id)
+        )
+    ).scalar_one()
+
+    return {
+        "total": int(total or 0),
+        "scenes": scenes,
+        "content_types": content_types,
+        "indoor_outdoor": indoor_outdoor,
+        "with_gps": int(with_gps or 0),
+        "with_faces": int(with_faces or 0),
+    }
 
 
 # IMPORTANT: register `/geo` *before* `/{image_id}` so FastAPI matches

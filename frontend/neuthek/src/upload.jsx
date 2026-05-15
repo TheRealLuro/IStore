@@ -45,35 +45,46 @@ export function UploadModal({ open, onClose }) {
       id: "u" + Date.now() + i,
       name: f.name,
       size: fmtBytes(f.size),
+      bytes: f.size,
       ext: extOf(f.name),
-      progress: 0,
+      progress: 0,           // 0-100, true byte progress
+      phase: "uploading",    // "uploading" | "processing" | "done" | "error"
       done: false,
       error: null,
+      uploadedBytes: 0,
       _file: f,
     }));
     setQueue((q) => [...q, ...rows]);
     rows.forEach((row) => {
-      const total = row._file.size || 1;
-      const { promise } = uploadFileWithProgress(row._file, (uploaded) => {
-        const pct = Math.min(99, Math.round((uploaded / total) * 100));
+      const { promise } = uploadFileWithProgress(row._file, (p) => {
+        const pct = Math.round((p.uploadedBytes / Math.max(1, p.totalBytes)) * 100);
         setQueue((q) =>
-          q.map((it) => (it.id === row.id ? { ...it, progress: pct } : it)),
+          q.map((it) =>
+            it.id === row.id
+              ? { ...it, progress: pct, phase: p.phase, uploadedBytes: p.uploadedBytes }
+              : it,
+          ),
         );
       });
       promise
         .then(() => {
           setQueue((q) =>
             q.map((it) =>
-              it.id === row.id ? { ...it, progress: 100, done: true } : it,
+              it.id === row.id
+                ? { ...it, progress: 100, phase: "done", done: true }
+                : it,
             ),
           );
           qc.invalidateQueries({ queryKey: ["files"] });
           qc.invalidateQueries({ queryKey: ["storage"] });
+          qc.invalidateQueries({ queryKey: ["facets"] });
         })
         .catch((err) => {
           setQueue((q) =>
             q.map((it) =>
-              it.id === row.id ? { ...it, error: err.message || "Upload failed" } : it,
+              it.id === row.id
+                ? { ...it, phase: "error", error: err.message || "Upload failed" }
+                : it,
             ),
           );
           toast.error(`${row.name}: ${err.message || "upload failed"}`);
@@ -116,23 +127,45 @@ export function UploadModal({ open, onClose }) {
 
         {queue.length > 0 && (
           <div className="upload-list">
-            {queue.map(it => (
-              <div className="upload-row" key={it.id}>
-                <div className="upload-row__icon">{it.ext}</div>
-                <div className="upload-row__body">
-                  <div className="upload-row__name">{it.name}</div>
-                  <div className="upload-row__bar">
-                    <div className="upload-row__bar-fill" style={{ width: it.progress + "%" }}/>
+            {queue.map(it => {
+              // Bar fill: while uploading, follow real byte progress.
+              // While processing (bytes done, server still working),
+              // animate an indeterminate stripe so the user sees motion
+              // instead of a static 99/100% — reads as "still going."
+              const barClass = "upload-row__bar-fill"
+                + (it.phase === "processing" ? " upload-row__bar-fill--indeterminate" : "");
+              const phaseLabel = it.error
+                ? `error — ${it.error}`
+                : it.phase === "done"
+                  ? "done"
+                  : it.phase === "processing"
+                    ? "processing on server…"
+                    : `${Math.round(it.progress)}% · ${fmtBytes(it.uploadedBytes)} / ${it.size}`;
+              return (
+                <div className="upload-row" key={it.id}>
+                  <div className="upload-row__icon">{it.ext}</div>
+                  <div className="upload-row__body">
+                    <div className="upload-row__name">{it.name}</div>
+                    <div className="upload-row__bar" data-phase={it.phase}>
+                      <div className={barClass}
+                           style={it.phase === "processing"
+                             ? { width: "100%" }
+                             : { width: it.progress + "%" }}/>
+                    </div>
+                    <div className="upload-row__meta">{phaseLabel}</div>
                   </div>
-                  <div className="upload-row__meta">
-                    {it.size} · {it.error ? `error — ${it.error}` : `${Math.round(it.progress)}% ${it.done ? "· done" : "· uploading"}`}
+                  <div className={"upload-row__status" + (it.phase === "done" ? " upload-row__status--done" : "")}>
+                    {it.error
+                      ? <Icon name="alert" size={14}/>
+                      : it.phase === "done"
+                        ? <Icon name="check" size={14} strokeWidth={2.6}/>
+                        : it.phase === "processing"
+                          ? "…"
+                          : Math.round(it.progress) + "%"}
                   </div>
                 </div>
-                <div className={"upload-row__status" + (it.done ? " upload-row__status--done" : "")}>
-                  {it.error ? <Icon name="alert" size={14}/> : it.done ? <Icon name="check" size={14} strokeWidth={2.6}/> : Math.round(it.progress) + "%"}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

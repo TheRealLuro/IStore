@@ -39,7 +39,7 @@ const AdminOverlay = React.lazy(() =>
 );
 import { NewFolderModal } from "./folder-modals.jsx";
 import { useAuthStore } from "@/stores/authStore";
-import { listFiles, getImageGeo, servedUrl, renameImage, getSummarizeProgress, searchSemantic } from "@/api/files";
+import { listFiles, getImageGeo, servedUrl, renameImage, getSummarizeProgress, searchSemantic, getFacets } from "@/api/files";
 import { listPeople, faceCropUrl } from "@/api/people";
 import { AuthedThumb } from "./auth-image.jsx";
 import { EditableName } from "./nameable-chip.jsx";
@@ -393,6 +393,25 @@ export function App() {
   const [empty, setEmpty] = useStateApp(false);
   const [query, setQuery] = useStateApp("");
   const [sort, setSort] = useStateApp("recent");
+  // Richer filter axes — driven by the chip row below the type pills.
+  // Each is independent and AND-composed on the server. `null` =
+  // "don't filter on this axis." Reset together via the "Clear" chip.
+  const [filterScene, setFilterScene] = useStateApp(null);
+  const [filterContentType, setFilterContentType] = useStateApp(null);
+  const [filterIndoorOutdoor, setFilterIndoorOutdoor] = useStateApp(null);
+  const [filterHasFaces, setFilterHasFaces] = useStateApp(null);
+  const [filterHasGps, setFilterHasGps] = useStateApp(null);
+  const clearAllFilters = () => {
+    setFilterScene(null);
+    setFilterContentType(null);
+    setFilterIndoorOutdoor(null);
+    setFilterHasFaces(null);
+    setFilterHasGps(null);
+  };
+  const anyFilterActive =
+    filterScene != null || filterContentType != null ||
+    filterIndoorOutdoor != null || filterHasFaces != null ||
+    filterHasGps != null;
   // Toggleable per-tab sort direction. Recent defaults to desc (newest
   // first), Name and Size to asc — matches what users expect from
   // every other file browser. Stored as a single value for the
@@ -514,11 +533,33 @@ export function App() {
   const trimmedQuery = query.trim();
   const useGlobalScope = trimmedQuery.length > 0;
   const filesScope = useGlobalScope ? "ALL" : folderId;
+  // Fold the filter chip state into the listFiles query so server-side
+  // filtering does the heavy lifting (the gallery only paints what
+  // matches). Cache key includes every axis so toggling a chip shows
+  // a separate cached page rather than mutating the current one in place.
+  const filesQueryFilters = useMemoApp(() => ({
+    folderId: filesScope,
+    scene: filterScene,
+    contentType: filterContentType,
+    indoorOutdoor: filterIndoorOutdoor,
+    hasFaces: filterHasFaces,
+    hasGps: filterHasGps,
+  }), [filesScope, filterScene, filterContentType, filterIndoorOutdoor, filterHasFaces, filterHasGps]);
   const { data: rawFiles = [] } = useQuery({
-    queryKey: ["files", filesScope],
-    queryFn: () => listFiles({ folderId: filesScope }),
+    queryKey: ["files", filesQueryFilters],
+    queryFn: () => listFiles(filesQueryFilters),
     enabled: signedIn,
     staleTime: 10_000,
+  });
+
+  // Facets — drives the chip choices below the type pills. Refetches
+  // infrequently because the set of available scenes/content types
+  // only changes when files are added/deleted.
+  const { data: facets } = useQuery({
+    queryKey: ["facets"],
+    queryFn: getFacets,
+    enabled: signedIn,
+    staleTime: 60_000,
   });
 
   // Semantic search via /search?q=... — CLIP cosine + FTS hybrid scored
@@ -957,6 +998,73 @@ export function App() {
             >
               <Icon name={layoutMode === "grid" ? "list" : "grid"} size={15}/>
             </button>
+          </div>
+        )}
+
+        {/* Filter chips — drives the new server-side scene/face/gps
+            filter axes. Hidden on the Map / Trash views (they have
+            their own scope) and when no facets exist (empty library). */}
+        {!isMap && view !== "trash" && facets && (
+          <div style={{
+            padding: "4px 28px 6px",
+            display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+            fontSize: 11.5,
+          }}>
+            {[
+              { val: filterIndoorOutdoor === "indoor",
+                label: "Indoor", count: facets.indoor_outdoor.find(f => f.value === "indoor")?.count,
+                onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "indoor" ? null : "indoor") },
+              { val: filterIndoorOutdoor === "outdoor",
+                label: "Outdoor", count: facets.indoor_outdoor.find(f => f.value === "outdoor")?.count,
+                onClick: () => setFilterIndoorOutdoor(filterIndoorOutdoor === "outdoor" ? null : "outdoor") },
+              { val: filterHasFaces === true,
+                label: "Has people", count: facets.with_faces,
+                onClick: () => setFilterHasFaces(filterHasFaces === true ? null : true) },
+              { val: filterHasGps === true,
+                label: "Has location", count: facets.with_gps,
+                onClick: () => setFilterHasGps(filterHasGps === true ? null : true) },
+              ...(facets.scenes || []).slice(0, 6).map(s => ({
+                val: filterScene === s.value,
+                label: s.value.replace(/_/g, " "),
+                count: s.count,
+                onClick: () => setFilterScene(filterScene === s.value ? null : s.value),
+              })),
+              ...(facets.content_types || [])
+                .filter(c => c.value && c.value !== "photo")
+                .slice(0, 4)
+                .map(c => ({
+                  val: filterContentType === c.value,
+                  label: c.value,
+                  count: c.count,
+                  onClick: () => setFilterContentType(filterContentType === c.value ? null : c.value),
+                })),
+            ]
+              .filter(c => c.count != null && c.count > 0)
+              .map((c) => (
+                <button
+                  key={c.label}
+                  type="button"
+                  onClick={c.onClick}
+                  className="chip"
+                  data-active={c.val}
+                >
+                  {c.label}
+                  {c.count != null && (
+                    <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
+                  )}
+                </button>
+              ))}
+            {anyFilterActive && (
+              <button
+                type="button"
+                onClick={clearAllFilters}
+                className="chip"
+                style={{ color: "var(--ink-3)" }}
+                title="Clear all filters"
+              >
+                <Icon name="x" size={10}/> Clear
+              </button>
+            )}
           </div>
         )}
 

@@ -785,31 +785,68 @@ export function GalleryView({
           <div className="empty__body">Try a broader term, or search by topic — "sunset", "portrait", "lake".</div>
         </div>
       ) : (
-        <div className={layoutMode === "list" ? "gallery__list" : "gallery__grid"}>
-          {layoutMode === "list" ? filtered.map(f => (
-            <FileRow
-              key={f.id}
-              f={f}
-              selected={selected === f.id}
-              multiSelected={!!multiSelected?.has?.(f.id)}
-              onClick={() => onSelect(f)}
-              onMultiSelectToggle={onMultiSelectToggle}
-              onRename={onRename}
-            />
-          )) : filtered.map(f => (
-            <FileCard
-              key={f.id}
-              f={f}
-              query={query}
-              selected={selected === f.id}
-              multiSelected={!!multiSelected?.has?.(f.id)}
-              onClick={() => onSelect(f)}
-              onMultiSelectToggle={onMultiSelectToggle}
-              onRename={onRename}
-            />
-          ))}
-        </div>
+        <>
+          <div className={layoutMode === "list" ? "gallery__list" : "gallery__grid"}>
+            {layoutMode === "list" ? filtered.map(f => (
+              <FileRow
+                key={f.id}
+                f={f}
+                selected={selected === f.id}
+                multiSelected={!!multiSelected?.has?.(f.id)}
+                onClick={() => onSelect(f)}
+                onMultiSelectToggle={onMultiSelectToggle}
+                onRename={onRename}
+              />
+            )) : filtered.map(f => (
+              <FileCard
+                key={f.id}
+                f={f}
+                query={query}
+                selected={selected === f.id}
+                multiSelected={!!multiSelected?.has?.(f.id)}
+                onClick={() => onSelect(f)}
+                onMultiSelectToggle={onMultiSelectToggle}
+                onRename={onRename}
+              />
+            ))}
+          </div>
+          {/* Tips footer — fills the empty band that appears below the
+              file grid on wide viewports / sparse libraries. Hidden
+              when the user is searching (the search results page is
+              its own context) and when the library is large enough
+              to fill the screen on its own (>= 30 files). */}
+          {!query && filtered.length < 30 && layoutMode !== "list" && (
+            <GalleryTips />
+          )}
+        </>
       )}
+    </div>
+  );
+}
+
+// Quick-action footer rendered beneath the file grid when the gallery
+// is sparse enough that the bottom of the viewport would otherwise be
+// empty. Hidden on dense libraries (≥30 files) where the cards already
+// fill the screen, on the list/bar layout (it's its own dense view),
+// and on search results (the search context replaces it).
+function GalleryTips() {
+  const tips = [
+    { icon: "upload",     title: "Upload more",      body: "Drag photos, videos, or docs onto this page." },
+    { icon: "folderPlus", title: "Make a folder",    body: "Group related files for faster searching." },
+    { icon: "users",      title: "Tag people",       body: "Click a face in any photo to label it." },
+    { icon: "sparkles",   title: "Try AI search",    body: "Type “whiteboard math” or “sunset.”" },
+  ];
+  return (
+    <div className="gallery__tips">
+      {tips.map(t => (
+        <div key={t.title} className="gallery__tip">
+          <div className="gallery__tip-head">
+            <span className="gallery__tip-icon"><Icon name={t.icon} size={13}/></span>
+            {t.title}
+          </div>
+          <div className="gallery__tip-body">{t.body}</div>
+        </div>
+      ))}
     </div>
   );
 }
