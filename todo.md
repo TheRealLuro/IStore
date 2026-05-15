@@ -69,18 +69,52 @@ All four sub-items closed:
 > security review. Consent does not override illegal storage, secret
 > leakage, or insufficient encryption.
 
-### A1. Upload validation hardening ⏳
-- MIME type *and* magic bytes (don't trust `Content-Type`).
-- Re-decode every image through Pillow before storage; reject decode
-  failures (catches polyglot uploads).
-- Strip dangerous metadata (XML payloads in SVG, embedded scripts).
-- Per-user upload size + count rate limits.
-- Reject zip bombs / oversized archive contents (after **C1.5** lands).
-- Quarantine bucket for files awaiting validation; only promote to
-  `originals` after all checks pass.
-- Generalize beyond images: when **E** lands (contacts, passwords,
-  saves, IoT) each new data type needs its own validator + quarantine
-  rule. Single dispatch table keyed by `data_kind`.
+### A1. Upload validation hardening ✅ SHIPPED 2026-05-15
+Every bullet that doesn't depend on the C1.5 archive uploader is in:
+
+- **MIME + magic bytes** — `detect_magic` in
+  [backend/upload_validation.py](backend/upload_validation.py) sniffs
+  the first 512 bytes (JPEG / PNG / GIF / WebP / TIFF / PDF / OOXML
+  ZIP / text) and ignores the client `Content-Type` for routing,
+  using it only to reject obvious mismatches via `_client_mime_ok`.
+- **Pillow re-decode + re-encode** — `_sanitize_image` calls
+  `verify()` then `load()`, rejects decode failures with 415, and
+  re-encodes JPEG/PNG/WebP/GIF/TIFF. The originals bucket only ever
+  sees the sanitized output, so trailing-data polyglots
+  (valid JPEG + appended `<script>`) lose the appended bytes at the
+  encoder boundary. Verified by
+  `test_image_polyglot_trailer_is_stripped_from_originals`.
+- **Strip dangerous metadata** — SVG and HTML/script uploads are
+  rejected outright; `_reject_scriptable_text` blocks `<script>`,
+  `<iframe>`, `javascript:` etc. in any text-shaped document.
+- **Per-user upload size + count rate limits** — `enforce_upload_limits`
+  in [backend/security.py](backend/security.py) keys per
+  `(user_id, ip)` for count and per-`user_id` for daily bytes; Redis
+  in prod, in-memory fallback in dev.
+- **Quarantine bucket** — every upload is mirrored to
+  `bucket_quarantine` in parallel with validation. On success the
+  quarantine blob is deleted (it was scratch). On failure it's
+  **kept** and an `upload.quarantined` audit row records the
+  quarantine key, byte count, client MIME, reason, and status code
+  — operators can inspect rejected payloads without those bytes
+  ever touching `originals`. Verified by
+  `test_quarantine_keeps_blob_on_rejection_and_audits` +
+  `test_quarantine_blob_is_deleted_on_success`.
+- **Single dispatch table keyed by `data_kind`** — `_VALIDATORS`
+  registry maps `image / document / video / other` to
+  per-kind handlers. New §E data types (contact / password / save /
+  iot_event) register via `register_validator(kind, fn)` without
+  touching the dispatch path. Verified by
+  `test_validator_dispatch_table_accepts_registration`.
+
+Still owing (not blocking §A1 closure):
+- **Reject zip bombs / oversized archive contents** — handled for
+  OOXML (`_inspect_ooxml`: entry count, ratio, depth, path
+  traversal, symlinks). The general archive uploader is **C1.5**;
+  when that lands its handler reuses `_inspect_ooxml`'s checks
+  with the same constants.
+- A retention sweeper for the quarantine bucket itself lives in
+  **§B4** — quarantined blobs persist indefinitely until then.
 
 ### A2. Encryption at rest + in transit 🟡
 - TLS everywhere — API, MinIO, frontend, admin tools. No plaintext
