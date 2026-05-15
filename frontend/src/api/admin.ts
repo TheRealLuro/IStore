@@ -27,6 +27,7 @@ export interface AdminUserRead {
   quota_bytes: number;
   used_bytes: number;
   image_count: number;
+  last_seen_at: string | null;
 }
 
 export interface AuditEntry {
@@ -77,6 +78,14 @@ export const listAdminAudit = (params: {
 // shape. The FE renders "—" when a field comes back null so the
 // dashboard stays usable on any platform.
 
+export type HealthState = "ok" | "warn" | "error";
+
+export interface HealthCheck {
+  name: string;
+  state: HealthState;
+  detail: string;
+}
+
 export interface SystemSnapshot {
   version: string;
   env: string;
@@ -117,6 +126,15 @@ export interface SystemSnapshot {
       error?: string;
     }[];
     error?: string;
+  };
+  health: {
+    overall: HealthState;
+    checks: HealthCheck[];
+  };
+  user_activity: {
+    total_users: number;
+    active_24h: number;
+    active_7d: number;
   };
 }
 
@@ -160,13 +178,29 @@ export interface HardwareSnapshot {
       utilization_percent?: number;
       driver_version?: string | null;
       video_processor?: string | null;
-      // Set when the adapter is visible at the OS/PCIe level but
-      // not usable by this process (e.g. Docker without GPU
-      // passthrough, integrated GPU on a discrete-NVIDIA workload).
       inaccessible?: boolean;
     }[];
     notes?: string[];
     driver_version?: string;
+  };
+  thermals: {
+    temps: { source: string; label: string; current_c: number | null;
+             high_c: number | null; critical_c: number | null }[];
+    fans:  { source: string; label: string; rpm: number | null }[];
+  };
+  network: {
+    interfaces: {
+      name: string;
+      ipv4: string | null;
+      mac: string | null;
+      is_up: boolean;
+      speed_mbps: number | null;
+      bytes_sent: number;
+      bytes_recv: number;
+      packets_sent: number;
+      packets_recv: number;
+    }[];
+    totals: { bytes_sent: number; bytes_recv: number };
   };
 }
 
@@ -180,6 +214,18 @@ export interface ProcessRow {
   cmdline: string;
 }
 
+export interface WorkerRow {
+  worker_id: string;
+  kind: string;
+  hostname: string | null;
+  pid: number | null;
+  version: string | null;
+  last_seen: string;
+  alive: boolean;
+  seconds_since_seen: number;
+  metadata: Record<string, unknown> | null;
+}
+
 export interface ProcessSnapshot {
   processes: ProcessRow[];
   totals: {
@@ -187,6 +233,7 @@ export interface ProcessSnapshot {
     cpu_percent_sum: number;
     memory_rss_bytes_sum: number;
   };
+  workers: WorkerRow[];
 }
 
 export interface ModelEntry {
@@ -196,12 +243,28 @@ export interface ModelEntry {
   variant: string | null;
   role: string;
   enabled: boolean;
+  state: string; // 'configured' | 'loading' | 'loaded' | 'unloaded' | 'error'
+  device: string | null;
+  memory_allocated_bytes: number | null;
+  last_used_at: string | null;
+  worker_id: string | null;
+  load_count: number;
 }
 
 export interface ModelsSnapshot {
   models: ModelEntry[];
   inference_backend: string;
   gpu_available: boolean;
+}
+
+export interface AuditEvent {
+  id: number;
+  created_at: string;
+  action: string;
+  user_id: string | null;
+  user_email?: string | null;
+  user_display_name?: string | null;
+  details: Record<string, unknown> | null;
 }
 
 export interface TaskSnapshot {
@@ -211,23 +274,12 @@ export interface TaskSnapshot {
     reachable: boolean;
     queue_key: string | null;
   };
-  recent: {
-    id: number;
-    user_id: string | null;
-    action: string;
-    details: Record<string, unknown> | null;
-    created_at: string;
-  }[];
+  workers: WorkerRow[];
+  recent: AuditEvent[];
 }
 
 export interface LogsSnapshot {
-  lines: {
-    id: number;
-    created_at: string;
-    action: string;
-    user_id: string | null;
-    details: Record<string, unknown> | null;
-  }[];
+  lines: AuditEvent[];
 }
 
 export const getAdminSystem = () =>

@@ -1,11 +1,10 @@
-// Dev / Admin overlay — for the engineer who deployed the box.
-// Tabs: Storage · Users · Audit · Models · Tasks · Logs · System · Processes · Hardware.
+// Dev / Admin overlay.
 //
-// All nine tabs now read real backend state. Storage / Users / Audit
-// hit the same endpoints they always did; the other six were
-// previously mock JSX with hardcoded constants — todo §1.3 — and now
-// resolve through /admin/{models,tasks,logs,system,processes,hardware}
-// in backend/api/admin.py (powered by backend/system_probes.py).
+// Tabs: Storage · Users · Audit · Models · Tasks · Logs · System · Processes · Hardware.
+// Every tab reads real backend state (todo §1.3, §C8.2). A health
+// banner pinned to the header surfaces DB / Redis / MinIO / Disk /
+// Queue status so an operator can tell at a glance whether anything
+// is on fire without clicking through tabs.
 import React, {
   useState as useStateAd,
   useEffect as useEffectAd,
@@ -43,13 +42,99 @@ function admBytes(n) {
 
 function fmtDuration(seconds) {
   if (seconds == null) return "—";
-  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
   const m = Math.floor(seconds / 60);
   if (m < 60) return `${m}m ${seconds % 60}s`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ${m % 60}m`;
   const d = Math.floor(h / 24);
   return `${d}d ${h % 24}h`;
+}
+
+function fmtRelativeTime(iso) {
+  if (!iso) return "never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return "soon";
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+// Map a state to a tint that matches the existing var(--success|warn|danger)
+// tokens used elsewhere in the app.
+function healthColor(state) {
+  if (state === "ok") return "var(--success, #2c7a4b)";
+  if (state === "warn") return "var(--warn, #b4690e)";
+  return "var(--danger, #c0392b)";
+}
+function healthDot(state) {
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        width: 8, height: 8, borderRadius: "50%",
+        background: healthColor(state),
+        marginRight: 6,
+        verticalAlign: "middle",
+      }}
+    />
+  );
+}
+
+// Pretty-print an audit entry as a human sentence. Falls back to
+// "{user} did {action}" when we don't have a template for the action,
+// so an unknown event type still reads as English rather than JSON.
+function formatAuditLine(e) {
+  const who = e.user_display_name || e.user_email || "system";
+  const det = e.details || {};
+  switch (e.action) {
+    case "auth.login.succeeded":
+      return `${who} signed in${det.ip ? ` from ${det.ip}` : ""}.`;
+    case "auth.login.failed":
+      return `Failed sign-in attempt for ${det.identity || "?"}${det.ip ? ` from ${det.ip}` : ""}.`;
+    case "auth.rate_limit":
+      return `Auth rate-limit triggered for ${det.identity || det.ip || "?"}.`;
+    case "auth.lockout":
+    case "auth.login.locked":
+      return `Account temporarily locked${det.identity ? ` (${det.identity})` : ""}.`;
+    case "share.created":
+      return `${who} shared an image with ${det.recipient_email || "?"} for ${
+        det.duration_seconds ? fmtDuration(det.duration_seconds) : "?"
+      }.`;
+    case "share.claimed":
+      return `${who} accepted a share invite${det.was_pending ? " (new account)" : ""}.`;
+    case "share.revoked":
+      return `${who} revoked a share.`;
+    case "share.replaced":
+      return `${who} re-shared an image (superseded a prior link).`;
+    case "share.asset.viewed":
+      return `${who} viewed a shared image.`;
+    case "image.delete":
+      return `${who} deleted an image.`;
+    case "image.bulk_delete":
+      return `${who} deleted ${det.count ?? "?"} images.`;
+    case "image.upload":
+      return `${who} uploaded an image.`;
+    case "admin.user.quota.update":
+      return `${who} changed user ${det.target_user_id?.slice(0, 8) || "?"}'s quota to ${
+        det.quota_bytes ? admBytes(det.quota_bytes) : "default"
+      }.`;
+    case "admin.user.role.update":
+      return `${who} changed user ${det.target_user_id?.slice(0, 8) || "?"}'s role to ${det.role || "?"}.`;
+    case "consent.face_recognition.grant":
+      return `${who} granted face-recognition consent.`;
+    case "consent.face_recognition.withdraw":
+      return `${who} withdrew face-recognition consent (${det.faces_deleted ?? 0} faces purged).`;
+    case "account.recovery_codes.regenerate":
+      return `${who} regenerated recovery codes (${det.count ?? 0}).`;
+    case "account.recovery_codes.login":
+      return `${who} signed in with a recovery code.`;
+    default: {
+      const action = e.action.replace(/\./g, " · ");
+      return `${who} · ${action}`;
+    }
+  }
 }
 
 function Sparkline({ values, color = "var(--ink)", height = 28 }) {
@@ -74,32 +159,77 @@ function Sparkline({ values, color = "var(--ink)", height = 28 }) {
   );
 }
 
+// Compact health banner that sits in the modal header. Renders one
+// pill per check; the overall verdict colors the banner border so a
+// red box screams "go look" even from across the room.
+function HealthBanner({ system }) {
+  if (!system) return null;
+  const overall = system.health?.overall || "ok";
+  const checks = system.health?.checks || [];
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+        padding: "8px 12px", borderRadius: 8, marginTop: 8,
+        border: `1px solid ${healthColor(overall)}`,
+        background:
+          overall === "ok" ? "rgba(44, 122, 75, 0.07)" :
+          overall === "warn" ? "rgba(180, 105, 14, 0.08)" :
+          "rgba(192, 57, 43, 0.08)",
+      }}
+    >
+      <strong style={{ fontSize: 12, color: healthColor(overall), textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        {healthDot(overall)}
+        {overall === "ok" ? "All systems normal" :
+         overall === "warn" ? "Degraded" :
+         "Action needed"}
+      </strong>
+      {checks.map((c) => (
+        <span key={c.name} style={{ fontSize: 11.5, color: "var(--ink-2)" }} title={c.detail}>
+          {healthDot(c.state)}
+          <strong style={{ marginRight: 4 }}>{c.name}:</strong>
+          {c.detail}
+        </span>
+      ))}
+      {system.user_activity && (
+        <span style={{ fontSize: 11.5, color: "var(--ink-3)", marginLeft: "auto" }}>
+          <strong>{system.user_activity.total_users}</strong> users ·
+          {" "}<strong>{system.user_activity.active_24h}</strong> active 24h ·
+          {" "}<strong>{system.user_activity.active_7d}</strong> active 7d
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function AdminOverlay({ open, onClose }) {
   const [tab, setTab] = useStateAd("storage");
 
-  // Probe the live system snapshot once on open to drive the header
-  // line (host uptime). The same query feeds the System tab so the
-  // round-trip is shared.
+  // Single shared system snapshot drives the header (host + uptime),
+  // the health banner, and the System tab. React Query dedupes the
+  // round trip across consumers.
   const { data: systemSnap } = useQuery({
     queryKey: ["admin-system"],
     queryFn: getAdminSystem,
     enabled: open,
-    staleTime: 8_000,
-    refetchInterval: open ? 8_000 : false,
+    staleTime: 6_000,
+    refetchInterval: open ? 6_000 : false,
   });
 
-  const headerUptime = systemSnap?.uptime?.host_uptime_seconds;
-  const headerDisks = useQuery({
+  const { data: hwSnap } = useQuery({
     queryKey: ["admin-hardware-header"],
     queryFn: getAdminHardware,
     enabled: open,
     staleTime: 20_000,
-  }).data?.disks?.[0];
+  });
+
+  const headerUptime = systemSnap?.uptime?.host_uptime_seconds;
+  const headerDisk = hwSnap?.disks?.[0];
 
   return (
     <ModalAd open={open} onClose={onClose} size="xl" labelledBy="ad-title">
       <div className="modal__head admin__head">
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h2 id="ad-title">
             <span className="admin__chip">DEV</span>
             Admin console
@@ -109,14 +239,15 @@ export function AdminOverlay({ open, onClose }) {
               <>
                 Host: <span className="mono">{systemSnap.uptime.platform}</span> ·
                 uptime <span className="mono">{fmtDuration(headerUptime)}</span>
-                {headerDisks && (
-                  <> · disk <span className="mono">{headerDisks.percent}% / {admBytes(headerDisks.total_bytes)}</span></>
+                {headerDisk && (
+                  <> · disk <span className="mono">{headerDisk.percent}% / {admBytes(headerDisk.total_bytes)}</span></>
                 )}
               </>
             ) : (
               <span style={{ color: "var(--ink-3)" }}>Loading host…</span>
             )}
           </p>
+          <HealthBanner system={systemSnap}/>
         </div>
         <ModalCloseAd onClose={onClose}/>
       </div>
@@ -140,7 +271,7 @@ export function AdminOverlay({ open, onClose }) {
       </div>
 
       <div className="modal__body admin__body">
-        {tab === "storage"   && <RealStorageTab open={open}/>}
+        {tab === "storage"   && <RealStorageTab open={open} activity={systemSnap?.user_activity}/>}
         {tab === "users"     && <RealUsersTab open={open}/>}
         {tab === "audit"     && <RealAuditTab open={open}/>}
         {tab === "models"    && <RealModelsTab open={open}/>}
@@ -163,9 +294,9 @@ export function AdminOverlay({ open, onClose }) {
   );
 }
 
-// ---------- Storage (unchanged from before §1.3) ----------
+// ---------- Storage ----------
 
-function RealStorageTab({ open }) {
+function RealStorageTab({ open, activity }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["admin-storage"],
     queryFn: () => getAdminStorage(50),
@@ -175,18 +306,43 @@ function RealStorageTab({ open }) {
   if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
   if (error) return <div style={{ color: "var(--danger)", padding: 20 }}>Error: {String(error.message || error)}</div>;
   if (!data) return null;
+
+  // Only render categories with non-zero bytes so an early-stage box
+  // doesn't fill the dashboard with empty "video 0 B" cards.
+  const cats = Object.entries(data.by_category || {}).filter(([, v]) => v > 0);
+  const avgPerUser = activity && activity.total_users
+    ? data.total_bytes / activity.total_users
+    : null;
+
   return (
     <div>
       <div className="admin-system">
         <div className="admin-card">
           <div className="admin-card__label">Total stored</div>
           <div className="admin-card__num">{admBytes(data.total_bytes)}</div>
-          <div className="admin-card__sub">across {data.total_images.toLocaleString()} images</div>
+          <div className="admin-card__sub">across {data.total_images.toLocaleString()} files</div>
         </div>
-        {Object.entries(data.by_category || {}).map(([k, v]) => (
+        <div className="admin-card">
+          <div className="admin-card__label">Users</div>
+          <div className="admin-card__num">{activity?.total_users ?? "—"}</div>
+          <div className="admin-card__sub">
+            {activity ? `${activity.active_24h} active 24h · ${activity.active_7d} active 7d` : "loading…"}
+          </div>
+        </div>
+        {avgPerUser != null && (
+          <div className="admin-card">
+            <div className="admin-card__label">Avg / user</div>
+            <div className="admin-card__num">{admBytes(avgPerUser)}</div>
+            <div className="admin-card__sub">storage divided by user count</div>
+          </div>
+        )}
+        {cats.map(([k, v]) => (
           <div className="admin-card" key={k}>
             <div className="admin-card__label">{k}</div>
             <div className="admin-card__num">{admBytes(v)}</div>
+            <div className="admin-card__sub">
+              {data.total_bytes ? `${((v / data.total_bytes) * 100).toFixed(0)}% of total` : ""}
+            </div>
           </div>
         ))}
       </div>
@@ -197,29 +353,38 @@ function RealStorageTab({ open }) {
       <table className="admin-table admin-table--compact">
         <thead>
           <tr>
-            <th>Email</th><th>Display name</th>
+            <th>User</th>
             <th style={{ textAlign: "right" }}>Used</th>
             <th style={{ textAlign: "right" }}>Quota</th>
-            <th style={{ textAlign: "right" }}>Images</th>
+            <th style={{ textAlign: "right" }}>% of quota</th>
+            <th style={{ textAlign: "right" }}>Files</th>
           </tr>
         </thead>
         <tbody>
-          {data.top_users.map((u) => (
-            <tr key={u.user_id}>
-              <td className="mono">{u.email}</td>
-              <td>{u.display_name || <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
-              <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.used_bytes)}</td>
-              <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.quota_bytes)}</td>
-              <td className="mono" style={{ textAlign: "right" }}>{u.image_count.toLocaleString()}</td>
-            </tr>
-          ))}
+          {data.top_users.map((u) => {
+            const pct = u.quota_bytes ? Math.round((u.used_bytes / u.quota_bytes) * 100) : 0;
+            return (
+              <tr key={u.user_id}>
+                <td>
+                  <strong>{u.display_name || u.email.split("@")[0]}</strong>
+                  <div style={{ color: "var(--ink-3)", fontSize: 11 }}>{u.email}</div>
+                </td>
+                <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.used_bytes)}</td>
+                <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.quota_bytes)}</td>
+                <td className="mono" style={{ textAlign: "right", color: pct >= 90 ? "var(--danger)" : pct >= 70 ? "var(--warn, #b4690e)" : undefined }}>
+                  {pct}%
+                </td>
+                <td className="mono" style={{ textAlign: "right" }}>{u.image_count.toLocaleString()}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-// ---------- Users (unchanged) ----------
+// ---------- Users ----------
 
 function RoleCell({ user }) {
   const qc = useQueryClient();
@@ -347,20 +512,27 @@ function RealUsersTab({ open }) {
         <table className="admin-table admin-table--compact">
           <thead>
             <tr>
-              <th>Email</th>
+              <th>User</th>
               <th>Role</th>
               <th>Verified</th>
+              <th>Last seen</th>
               <th style={{ textAlign: "right" }}>Used</th>
-              <th style={{ textAlign: "right" }}>Quota (click to edit)</th>
-              <th style={{ textAlign: "right" }}>Images</th>
+              <th style={{ textAlign: "right" }}>Quota</th>
+              <th style={{ textAlign: "right" }}>Files</th>
             </tr>
           </thead>
           <tbody>
             {(data || []).map((u) => (
               <tr key={u.id}>
-                <td className="mono">{u.email}</td>
+                <td>
+                  <strong>{u.display_name || u.email.split("@")[0]}</strong>
+                  <div className="mono" style={{ color: "var(--ink-3)", fontSize: 11 }}>{u.email}</div>
+                </td>
                 <td><RoleCell user={u}/></td>
-                <td>{u.is_verified ? <Icon name="check" size={12}/> : <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
+                <td>{u.is_verified
+                  ? <Icon name="check" size={12}/>
+                  : <span style={{ color: "var(--ink-3)" }}>—</span>}</td>
+                <td style={{ fontSize: 11, color: "var(--ink-3)" }}>{fmtRelativeTime(u.last_seen_at)}</td>
                 <td className="mono" style={{ textAlign: "right" }}>{admBytes(u.used_bytes)}</td>
                 <td style={{ textAlign: "right" }}><QuotaCell user={u}/></td>
                 <td className="mono" style={{ textAlign: "right" }}>{u.image_count.toLocaleString()}</td>
@@ -373,7 +545,7 @@ function RealUsersTab({ open }) {
   );
 }
 
-// ---------- Audit (unchanged) ----------
+// ---------- Audit ----------
 
 function RealAuditTab({ open }) {
   const [actionPrefix, setActionPrefix] = useStateAd("");
@@ -405,7 +577,7 @@ function RealAuditTab({ open }) {
             <div key={e.id}>
               [{new Date(e.created_at).toISOString().slice(0, 19).replace("T", " ")}] {e.action}
               {e.user_id ? ` user=${e.user_id.slice(0, 8)}` : ""}
-              {e.details ? ` ${JSON.stringify(e.details)}` : ""}
+              {e.details ? ` ${JSON.stringify(e.details).slice(0, 240)}` : ""}
             </div>
           ))}
         </pre>
@@ -414,14 +586,15 @@ function RealAuditTab({ open }) {
   );
 }
 
-// ---------- §1.3 — un-mocked tabs ----------
+// ---------- Models ----------
 
 function RealModelsTab({ open }) {
   const { data, isLoading } = useQuery({
     queryKey: ["admin-models"],
     queryFn: getAdminModels,
     enabled: open,
-    staleTime: 60_000,
+    staleTime: 30_000,
+    refetchInterval: open ? 30_000 : false,
   });
   if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
   if (!data) return null;
@@ -440,7 +613,12 @@ function RealModelsTab({ open }) {
       <table className="admin-table">
         <thead>
           <tr>
-            <th>Role</th><th>Model</th><th>Variant</th><th>Enabled</th>
+            <th>Role</th>
+            <th>Model</th>
+            <th>State</th>
+            <th>Device</th>
+            <th style={{ textAlign: "right" }}>GPU mem</th>
+            <th>Last used</th>
           </tr>
         </thead>
         <tbody>
@@ -449,22 +627,58 @@ function RealModelsTab({ open }) {
               <td>
                 <strong>{m.label}</strong>
                 <div style={{ color: "var(--ink-3)", fontSize: 11 }}>{m.role}</div>
+                <div style={{ color: "var(--ink-4)", fontSize: 10, fontFamily: "monospace" }}>{m.name}</div>
               </td>
-              <td className="mono">{m.name}</td>
               <td className="mono" style={{ color: "var(--ink-3)" }}>{m.variant || "—"}</td>
               <td>
-                {m.enabled
-                  ? <span className="admin-acc">on</span>
-                  : <span style={{ color: "var(--ink-3)" }}>off</span>}
+                <span style={{
+                  fontSize: 11, padding: "2px 6px", borderRadius: 4,
+                  background: m.state === "loaded" ? "rgba(44, 122, 75, 0.12)" :
+                              m.state === "error" ? "rgba(192, 57, 43, 0.12)" :
+                              "rgba(0, 0, 0, 0.05)",
+                  color: m.state === "loaded" ? "var(--success, #2c7a4b)" :
+                         m.state === "error" ? "var(--danger, #c0392b)" :
+                         "var(--ink-3)",
+                }}>
+                  {m.state}
+                </span>
               </td>
+              <td className="mono" style={{ color: m.device ? undefined : "var(--ink-3)" }}>
+                {m.device || (m.enabled ? "—" : "disabled")}
+              </td>
+              <td className="mono" style={{ textAlign: "right" }}>
+                {m.memory_allocated_bytes ? admBytes(m.memory_allocated_bytes) : "—"}
+              </td>
+              <td style={{ fontSize: 11, color: "var(--ink-3)" }}>{fmtRelativeTime(m.last_used_at)}</td>
             </tr>
           ))}
         </tbody>
       </table>
       <div style={{ color: "var(--ink-3)", fontSize: 11, marginTop: 12 }}>
-        Per-model memory and run history will appear here once
-        C8.2 lands the model_runs table.
+        Models report load/unload via the worker_heartbeats / model_runs
+        tables (C8.2). State stays "configured" until the worker first
+        loads the model on a job — that's the truthful cold state.
       </div>
+    </div>
+  );
+}
+
+// ---------- Tasks ----------
+
+function WorkerCard({ w }) {
+  const meta = w.metadata || {};
+  return (
+    <div className="admin-card" style={{ minWidth: 220 }}>
+      <div className="admin-card__label">{w.kind}</div>
+      <div className="admin-card__num" style={{ color: w.alive ? "var(--success, #2c7a4b)" : "var(--danger, #c0392b)", fontSize: 16 }}>
+        {w.alive ? "alive" : "stale"}
+      </div>
+      <div className="admin-card__sub">
+        seen {fmtRelativeTime(w.last_seen)} · pid {w.pid ?? "?"} · {w.hostname || "?"}
+      </div>
+      {meta.queue_depth != null && (
+        <div className="admin-card__sub">queue depth (worker view): <strong>{meta.queue_depth}</strong></div>
+      )}
     </div>
   );
 }
@@ -479,50 +693,82 @@ function RealTasksTab({ open }) {
   });
   if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
   if (!data) return null;
-  const queue = data.queue;
+  const q = data.queue;
   return (
     <div>
       <div className="admin-system" style={{ marginBottom: 14 }}>
         <div className="admin-card">
           <div className="admin-card__label">Queue depth</div>
-          <div className="admin-card__num">{queue.reachable ? queue.depth : "—"}</div>
-          <div className="admin-card__sub">{queue.queue_key || "redis unreachable"}</div>
+          <div className="admin-card__num" style={{ color: q.depth > 50 ? "var(--warn, #b4690e)" : undefined }}>
+            {q.reachable ? q.depth : "—"}
+          </div>
+          <div className="admin-card__sub">{q.queue_key || "redis unreachable"}</div>
         </div>
         <div className="admin-card">
           <div className="admin-card__label">In-flight</div>
-          <div className="admin-card__num">{queue.reachable ? queue.active : "—"}</div>
+          <div className="admin-card__num">{q.reachable ? q.active : "—"}</div>
           <div className="admin-card__sub">dedupe set size</div>
         </div>
         <div className="admin-card">
-          <div className="admin-card__label">Redis</div>
-          <div className="admin-card__num" style={{ color: queue.reachable ? "var(--success, #2c7a4b)" : "var(--danger, #c0392b)" }}>
-            {queue.reachable ? "OK" : "DOWN"}
+          <div className="admin-card__label">Workers</div>
+          <div className="admin-card__num" style={{ color: data.workers.some(w => w.alive) ? "var(--success, #2c7a4b)" : "var(--danger, #c0392b)" }}>
+            {data.workers.filter(w => w.alive).length}<span>/{data.workers.length}</span>
           </div>
-          <div className="admin-card__sub">job queue backend</div>
+          <div className="admin-card__sub">alive / total tracked</div>
         </div>
+        {data.workers.map((w) => <WorkerCard key={w.worker_id} w={w}/>)}
       </div>
+
       <div className="admin-callout">
-        <div className="admin-callout__title">Recent task activity</div>
-        <p>
-          Most-recent 50 image / share / recovery-code events from the
-          audit log. True per-job progress lands with the C8.2
-          background_jobs table.
-        </p>
+        <div className="admin-callout__title">Recent activity</div>
+        <p>50 most-recent events visible to the operator. Click any line for full details.</p>
       </div>
-      <pre className="admin-logs">
+      <div style={{ display: "grid", gap: 0 }}>
         {data.recent.length === 0 ? (
-          <div style={{ color: "var(--ink-3)" }}>No recent activity.</div>
+          <div style={{ color: "var(--ink-3)", padding: 14 }}>No recent activity.</div>
         ) : data.recent.map((e) => (
-          <div key={e.id}>
-            [{new Date(e.created_at).toISOString().slice(0, 19).replace("T", " ")}] {e.action}
-            {e.user_id ? ` user=${e.user_id.slice(0, 8)}` : ""}
-            {e.details ? ` ${JSON.stringify(e.details).slice(0, 220)}` : ""}
-          </div>
+          <AuditLineRow key={e.id} entry={e}/>
         ))}
-      </pre>
+      </div>
     </div>
   );
 }
+
+function AuditLineRow({ entry }) {
+  const [expanded, setExpanded] = useStateAd(false);
+  const summary = formatAuditLine(entry);
+  return (
+    <div
+      onClick={() => setExpanded(x => !x)}
+      style={{
+        display: "grid", gridTemplateColumns: "110px 1fr", gap: 12,
+        padding: "8px 10px",
+        borderBottom: "1px solid var(--line, rgba(0,0,0,0.06))",
+        cursor: "pointer",
+        background: expanded ? "var(--surface-2, rgba(0,0,0,0.02))" : undefined,
+      }}
+    >
+      <div style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "monospace" }}>
+        {fmtRelativeTime(entry.created_at)}
+      </div>
+      <div>
+        <div style={{ fontSize: 13 }}>{summary}</div>
+        {expanded && entry.details && (
+          <pre style={{
+            fontSize: 11, color: "var(--ink-3)", marginTop: 6,
+            padding: 8, background: "var(--surface, #fff)",
+            border: "1px solid var(--line, rgba(0,0,0,0.06))",
+            borderRadius: 6, overflow: "auto",
+          }}>
+{JSON.stringify(entry.details, null, 2)}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Logs ----------
 
 function RealLogsTab({ open }) {
   const { data, isLoading } = useQuery({
@@ -535,25 +781,21 @@ function RealLogsTab({ open }) {
   if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
   if (!data) return null;
   return (
-    <pre className="admin-logs">
+    <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
       {data.lines.length === 0 ? (
-        <div style={{ color: "var(--ink-3)" }}>No log lines yet — every audit event will appear here.</div>
-      ) : data.lines.map((l) => (
-        <div key={l.id}>
-          [{new Date(l.created_at).toISOString().slice(0, 19).replace("T", " ")}] {l.action}
-          {l.user_id ? ` user=${l.user_id.slice(0, 8)}` : ""}
-          {l.details ? ` ${JSON.stringify(l.details).slice(0, 220)}` : ""}
+        <div style={{ color: "var(--ink-3)", padding: 14 }}>
+          No log lines yet — every audit event appears here as it happens.
         </div>
+      ) : data.lines.map((e) => (
+        <AuditLineRow key={e.id} entry={e}/>
       ))}
-      <div className="admin-logs__cursor">▍</div>
-    </pre>
+    </div>
   );
 }
 
+// ---------- System ----------
+
 function RealSystemTab({ open, snap }) {
-  // System cards: uptime, env, DB pool, Redis, MinIO. The host CPU /
-  // memory live on /admin/hardware; we render them here too because
-  // operators expect the System tab to show "is the box happy."
   const { data: hw } = useQuery({
     queryKey: ["admin-hardware-system"],
     queryFn: getAdminHardware,
@@ -562,8 +804,6 @@ function RealSystemTab({ open, snap }) {
     refetchInterval: open ? 5_000 : false,
   });
 
-  // Keep a small rolling history per metric so the sparkline shows
-  // motion. Sourced from real samples — no jitter.
   const historyRef = useRefAd({ cpu: [], mem: [], queue: [] });
   useEffectAd(() => {
     if (!hw || !snap) return;
@@ -644,6 +884,8 @@ function RealSystemTab({ open, snap }) {
   );
 }
 
+// ---------- Processes ----------
+
 function RealProcessesTab({ open }) {
   const [filter, setFilter] = useStateAd("all");
   const { data, isLoading } = useQuery({
@@ -658,6 +900,16 @@ function RealProcessesTab({ open }) {
   const rows = filter === "all" ? data.processes : data.processes.filter(p => p.kind === filter);
   return (
     <div>
+      {data.workers.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            Heartbeat-tracked workers
+          </div>
+          <div className="admin-system">
+            {data.workers.map((w) => <WorkerCard key={w.worker_id} w={w}/>)}
+          </div>
+        </div>
+      )}
       <div className="admin-proc__head">
         <div className="admin-proc__totals">
           <span>Top {data.processes.length} CPU <strong className="mono">{data.totals.cpu_percent_sum.toFixed(1)}%</strong></span>
@@ -704,6 +956,8 @@ function RealProcessesTab({ open }) {
     </div>
   );
 }
+
+// ---------- Hardware ----------
 
 function RealHardwareTab({ open }) {
   const { data, isLoading } = useQuery({
@@ -767,12 +1021,8 @@ function RealHardwareTab({ open }) {
               {g.inaccessible && (
                 <span
                   style={{
-                    marginLeft: 6,
-                    fontSize: 10,
-                    padding: "1px 5px",
-                    borderRadius: 4,
-                    background: "var(--warn-bg, #fff7e6)",
-                    color: "var(--warn, #b4690e)",
+                    marginLeft: 6, fontSize: 10, padding: "1px 5px", borderRadius: 4,
+                    background: "var(--warn-bg, #fff7e6)", color: "var(--warn, #b4690e)",
                   }}
                   title="Visible to the host OS but not usable from this process"
                 >
@@ -791,13 +1041,9 @@ function RealHardwareTab({ open }) {
         {Array.isArray(data.gpu.notes) && data.gpu.notes.length > 0 && (
           <div
             style={{
-              marginTop: 10,
-              padding: "8px 12px",
-              borderRadius: 6,
-              background: "var(--warn-bg, #fff7e6)",
-              color: "var(--warn-fg, #6b4a0e)",
-              fontSize: 11.5,
-              lineHeight: 1.5,
+              marginTop: 10, padding: "8px 12px", borderRadius: 6,
+              background: "var(--warn-bg, #fff7e6)", color: "var(--warn-fg, #6b4a0e)",
+              fontSize: 11.5, lineHeight: 1.5,
             }}
           >
             {data.gpu.notes.map((n, i) => (
@@ -814,17 +1060,56 @@ function RealHardwareTab({ open }) {
         ) : data.disks.map((d) => (
           <div className="admin-hw__row" key={d.mountpoint}>
             <span>{d.mountpoint}</span>
-            <strong className="mono">
+            <strong className="mono" style={{ color: d.percent >= 95 ? "var(--danger)" : d.percent >= 85 ? "var(--warn, #b4690e)" : undefined }}>
               {d.device} ({d.fstype}) · {admBytes(d.used_bytes)} / {admBytes(d.total_bytes)} · {d.percent.toFixed(0)}% used
             </strong>
           </div>
         ))}
       </div>
 
+      <div className="admin-hw__group">
+        <div className="admin-hw__group-title">Network</div>
+        {data.network.interfaces.length === 0 ? (
+          <div style={{ color: "var(--ink-3)" }}>No active NICs.</div>
+        ) : data.network.interfaces.map((n) => (
+          <div className="admin-hw__row" key={n.name}>
+            <span>{n.name}</span>
+            <strong className="mono">
+              {n.ipv4 || "(no v4)"}
+              {n.speed_mbps ? ` · ${n.speed_mbps} Mbps` : ""}
+              {" · "}↑{admBytes(n.bytes_sent)} ↓{admBytes(n.bytes_recv)}
+            </strong>
+          </div>
+        ))}
+      </div>
+
+      {(data.thermals.temps.length > 0 || data.thermals.fans.length > 0) && (
+        <div className="admin-hw__group">
+          <div className="admin-hw__group-title">Thermals</div>
+          {data.thermals.temps.map((t, i) => (
+            <div className="admin-hw__row" key={`t${i}`}>
+              <span>{t.label}</span>
+              <strong className="mono" style={{ color: (t.current_c != null && t.critical_c && t.current_c > t.critical_c * 0.9) ? "var(--danger)" : undefined }}>
+                {t.current_c != null ? `${t.current_c.toFixed(1)} °C` : "—"}
+                {t.high_c ? ` · high ${t.high_c.toFixed(0)}` : ""}
+                {t.critical_c ? ` · crit ${t.critical_c.toFixed(0)}` : ""}
+              </strong>
+            </div>
+          ))}
+          {data.thermals.fans.map((f, i) => (
+            <div className="admin-hw__row" key={`f${i}`}>
+              <span>{f.label}</span>
+              <strong className="mono">{f.rpm != null ? `${f.rpm} RPM` : "—"}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ color: "var(--ink-3)", fontSize: 11, marginTop: 12 }}>
-        SMART, fan, thermal, NIC and PSU probes need vendor-specific
-        tools (per §F1 hardware-vendor dispatch). They will surface here
-        once that pass lands.
+        Thermal sensors are platform-specific. Linux reads /sys/class/hwmon;
+        Windows queries ACPI thermal zones (requires admin) — most laptops
+        only expose a handful via WMI. SMART, PSU, and per-NIC link
+        details still need vendor adapters per todo §F1.
       </div>
     </div>
   );

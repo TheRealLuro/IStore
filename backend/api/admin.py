@@ -129,6 +129,7 @@ class AdminUserRead(BaseModel):
     quota_bytes: int
     used_bytes: int
     image_count: int
+    last_seen_at: datetime | None = None
 
 
 @router.get("/users", response_model=list[AdminUserRead])
@@ -171,6 +172,18 @@ async def admin_list_users(
     ).all()
     use_by_user = {uid: (int(b), int(n)) for uid, b, n in use_rows}
 
+    # Last-seen comes from the audit log — the most recent event with a
+    # user_id is a reasonable proxy for "active this session". We pull
+    # in one batched query indexed by user_id to keep the listing fast.
+    seen_rows = (
+        await session.execute(
+            select(AuditLog.user_id, func.max(AuditLog.created_at))
+            .where(AuditLog.user_id.in_(user_ids))
+            .group_by(AuditLog.user_id)
+        )
+    ).all()
+    last_seen_by_user = {uid: ts for uid, ts in seen_rows if uid is not None}
+
     return [
         AdminUserRead(
             id=u.id,
@@ -183,6 +196,7 @@ async def admin_list_users(
             quota_bytes=u.quota_bytes if u.quota_bytes is not None else DEFAULT_QUOTA_BYTES,
             used_bytes=use_by_user.get(u.id, (0, 0))[0],
             image_count=use_by_user.get(u.id, (0, 0))[1],
+            last_seen_at=last_seen_by_user.get(u.id),
         )
         for u in users
     ]
@@ -351,29 +365,65 @@ async def admin_audit_log(
 # remain future work that will expand these payloads.
 
 
+async def _resolve_user_lookup(
+    session: AsyncSession, user_ids: set[UUID]
+) -> dict[str, dict[str, str | None]]:
+    """Batch-fetch (email, display_name) for a set of user_ids. Used to
+    enrich audit / logs / tasks responses so the FE can render
+    "alice@... shared X with bob@..." instead of raw UUIDs."""
+    if not user_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(User.id, User.email, User.display_name).where(User.id.in_(user_ids))
+        )
+    ).all()
+    return {
+        str(uid): {"email": email, "display_name": display_name}
+        for uid, email, display_name in rows
+    }
+
+
 @router.get("/system")
 async def admin_system(
     _: Annotated[User, Depends(current_admin_user)],
 ) -> dict:
-    """Snapshot the API process's environment: uptime, DB pool stats,
-    MinIO bucket sizes, Redis health, app version. CPU / memory live
-    on /admin/hardware so a busy bucket scan doesn't keep the simpler
-    System tab from rendering."""
+    """API process environment + a rolled-up health verdict.
+
+    The verdict combines DB pool, Redis, MinIO, disk fill, and queue
+    depth into a single ok/warn/error so the admin overlay can show
+    a one-glance banner. User activity (24h / 7d / total) lives here
+    too so the overlay header has "people in the system" context."""
     from backend.system_probes import (
+        rollup_health,
         sample_db_pool,
+        sample_disks,
         sample_minio,
         sample_redis,
         sample_uptime,
+        sample_user_activity,
     )
     redis_info = await sample_redis()
     minio_info = await sample_minio()
+    disks = sample_disks()
+    db_pool = sample_db_pool()
+    health = rollup_health(
+        db_pool=db_pool,
+        redis_info=redis_info,
+        minio_info=minio_info,
+        disks=disks,
+        queue_depth=redis_info.get("queue_depth", -1) if redis_info.get("reachable") else -1,
+    )
+    activity = await sample_user_activity()
     return {
         "version": "0.1.0",
         "env": settings.app_env,
         "uptime": sample_uptime(),
-        "db_pool": sample_db_pool(),
+        "db_pool": db_pool,
         "redis": redis_info,
         "minio": minio_info,
+        "health": health,
+        "user_activity": activity,
     }
 
 
@@ -381,21 +431,24 @@ async def admin_system(
 async def admin_hardware(
     _: Annotated[User, Depends(current_admin_user)],
 ) -> dict:
-    """CPU / memory / disk / GPU snapshot. Cross-platform via psutil;
-    GPU goes through torch.cuda first, falls back to a `nvidia-smi`
-    shell. Returns generously-typed dicts so the FE can render "—"
-    for anything a given platform can't expose."""
+    """CPU / memory / disk / GPU + thermals + NICs. Cross-platform via
+    psutil; vendor-specific paths (WMI thermal zones, nvidia-smi)
+    fill in where the cross-platform path doesn't reach (todo §F1)."""
     from backend.system_probes import (
         sample_cpu,
         sample_disks,
         sample_gpu,
         sample_memory,
+        sample_network,
+        sample_thermals,
     )
     return {
         "cpu": sample_cpu(),
         "memory": sample_memory(),
         "disks": sample_disks(),
         "gpu": sample_gpu(),
+        "thermals": sample_thermals(),
+        "network": sample_network(),
     }
 
 
@@ -404,42 +457,70 @@ async def admin_processes(
     _: Annotated[User, Depends(current_admin_user)],
     top: int = Query(default=12, ge=1, le=64),
 ) -> dict:
-    """Top-N processes on the API host by CPU%. RAM is RSS.
+    """Top-N OS-level processes by CPU% PLUS heartbeat-tracked workers.
 
-    Note: the ML worker (`backend/worker/main.py`) only shows up here
-    when it runs in the same OS namespace as the API — typical in
-    bare-metal dev. In a split-container deploy, the worker lives in
-    a sibling container and isn't visible from this side. C8.2 lands
-    a worker_heartbeats table so the operator gets the worker in
-    that case too."""
-    from backend.system_probes import sample_processes
+    psutil only sees processes in the API's own OS namespace. The
+    `workers` section comes from worker_heartbeats so a ml-worker
+    sibling container (or any process emitting heartbeats) shows up
+    even when the API can't see its PID directly. Each worker carries
+    its own metadata blob (queue depth, last job kind) so the dashboard
+    has live operational signal without inferring."""
+    from backend.system_probes import list_workers, sample_processes
     rows = sample_processes(top=top)
     totals = {
         "count": len(rows),
         "cpu_percent_sum": round(sum(r["cpu_percent"] for r in rows), 1),
         "memory_rss_bytes_sum": sum(r["memory_rss_bytes"] for r in rows),
     }
-    return {"processes": rows, "totals": totals}
+    workers = await list_workers()
+    return {"processes": rows, "totals": totals, "workers": workers}
 
 
 @router.get("/models")
 async def admin_models(
     _: Annotated[User, Depends(current_admin_user)],
 ) -> dict:
-    """Configured-model registry from `settings`. Memory footprint /
-    load state of each model lives inside the ml-worker container —
-    C8.2 will hook the worker into a model_runs table and surface
-    real torch.cuda.memory_allocated() numbers here. For now the FE
-    shows configuration as a truthful proxy for "what's wired up"."""
-    from backend.system_probes import list_configured_models, sample_gpu
+    """Configured-model registry merged with model_runs (C8.2).
+
+    Each entry shows configuration (name + role + enabled) plus —
+    when a worker has reported a load via `backend.heartbeats` — the
+    current device, last-known memory footprint, last_used_at, and
+    which worker is hosting it. Models that haven't been loaded yet
+    show state='configured'; that's the truthful "wired up but cold"
+    state and matches what an operator wants to see on a fresh box."""
+    from backend.system_probes import (
+        list_configured_models,
+        list_model_runs,
+        sample_gpu,
+    )
     gpu = sample_gpu()
     backend_label = (
         "cuda" if gpu.get("available") and gpu.get("backend", "").startswith("torch") else
         "nvidia-smi (detected)" if gpu.get("available") else
         "cpu"
     )
+    runs = await list_model_runs()
+    # Index runs by model_id so the FE can show one row per configured
+    # model with its loaded state appended.
+    runs_by_id: dict[str, list[dict]] = {}
+    for r in runs:
+        runs_by_id.setdefault(r["model_id"], []).append(r)
+    models = []
+    for m in list_configured_models():
+        rs = runs_by_id.get(m["id"], [])
+        # Latest run wins (`list_model_runs` already orders desc).
+        latest = rs[0] if rs else None
+        models.append({
+            **m,
+            "state": (latest or {}).get("state", "configured"),
+            "device": (latest or {}).get("device"),
+            "memory_allocated_bytes": (latest or {}).get("memory_allocated_bytes"),
+            "last_used_at": (latest or {}).get("last_used_at"),
+            "worker_id": (latest or {}).get("worker_id"),
+            "load_count": len(rs),
+        })
     return {
-        "models": list_configured_models(),
+        "models": models,
         "inference_backend": backend_label,
         "gpu_available": bool(gpu.get("available")),
     }
@@ -451,24 +532,32 @@ async def admin_tasks(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
     """Background-job snapshot:
-      - queue: live Redis depth + active-job set size
-      - recent: last 50 audit rows whose action begins with `image.`
-        or `share.`, as a proxy for "what just happened" until the
-        C8.2 background_jobs table lands with true per-job history."""
-    from backend.system_probes import sample_redis
+      - queue: live Redis depth + active-job set size + per-worker
+        queue numbers from worker_heartbeats.metadata.
+      - workers: heartbeat-tracked workers (so admin sees "1 healthy
+        ml-worker, last seen 4 s ago" instead of guessing).
+      - recent: last 50 image/share/account audit rows enriched with
+        each user's email so the FE can render names directly."""
+    from backend.system_probes import list_workers, sample_redis
     redis_info = await sample_redis()
+    workers = await list_workers()
     recent_rows = (
         await session.execute(
             select(AuditLog)
             .where(
                 (AuditLog.action.like("image.%"))
                 | (AuditLog.action.like("share.%"))
-                | (AuditLog.action.like("account.recovery_codes.%"))
+                | (AuditLog.action.like("consent.%"))
+                | (AuditLog.action.like("auth.%"))
+                | (AuditLog.action.like("account.%"))
             )
             .order_by(AuditLog.id.desc())
             .limit(50)
         )
     ).scalars().all()
+    user_lookup = await _resolve_user_lookup(
+        session, {r.user_id for r in recent_rows if r.user_id}
+    )
     return {
         "queue": {
             "depth": redis_info.get("queue_depth", -1),
@@ -476,10 +565,17 @@ async def admin_tasks(
             "reachable": redis_info.get("reachable", False),
             "queue_key": redis_info.get("queue_key"),
         },
+        "workers": workers,
         "recent": [
             {
                 "id": r.id,
                 "user_id": str(r.user_id) if r.user_id else None,
+                "user_email": (
+                    user_lookup.get(str(r.user_id), {}).get("email") if r.user_id else None
+                ),
+                "user_display_name": (
+                    user_lookup.get(str(r.user_id), {}).get("display_name") if r.user_id else None
+                ),
                 "action": r.action,
                 "details": r.details,
                 "created_at": r.created_at,
@@ -495,21 +591,18 @@ async def admin_logs(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict:
-    """The Logs tab in admin renders the audit log as a tailed stream.
-    Same data source as `/admin/audit` — the difference is shape:
-    `/admin/audit` returns a paginated row list (used for filters),
-    `/admin/logs` returns the most-recent N rows oldest-first so the
-    FE can append-render without a reverse pass.
-
-    Real uvicorn access logs + worker stderr aggregation are tracked
-    in C8.2 and out of scope here. Audit-log lines cover the
-    user-meaningful events that an operator actually wants to see."""
+    """Audit log tail, oldest-first, enriched with each user's email
+    + display name so the FE can render "alice shared sunset.jpg with
+    bob" lines instead of raw UUIDs + JSON blobs."""
     rows = (
         await session.execute(
             select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)
         )
     ).scalars().all()
-    rows = list(reversed(rows))  # oldest-first for natural tail-style rendering
+    rows = list(reversed(rows))
+    user_lookup = await _resolve_user_lookup(
+        session, {r.user_id for r in rows if r.user_id}
+    )
     return {
         "lines": [
             {
@@ -517,6 +610,12 @@ async def admin_logs(
                 "created_at": r.created_at,
                 "action": r.action,
                 "user_id": str(r.user_id) if r.user_id else None,
+                "user_email": (
+                    user_lookup.get(str(r.user_id), {}).get("email") if r.user_id else None
+                ),
+                "user_display_name": (
+                    user_lookup.get(str(r.user_id), {}).get("display_name") if r.user_id else None
+                ),
                 "details": r.details,
             }
             for r in rows

@@ -114,6 +114,126 @@ def sample_memory() -> dict[str, Any]:
 # ---------- Disks ----------
 
 
+def sample_thermals() -> dict[str, Any]:
+    """Best-effort temperature + fan readings. psutil's sensors_*
+    family is Linux-only (reads /sys/class/hwmon); on Windows we ask
+    PowerShell for thermal zones via WMI. Returns empty lists rather
+    than None so the FE can always iterate."""
+    temps: list[dict[str, Any]] = []
+    fans: list[dict[str, Any]] = []
+
+    # Linux + macOS path (when available)
+    sensors = getattr(psutil, "sensors_temperatures", None)
+    if sensors is not None:
+        try:
+            data = sensors(fahrenheit=False) or {}
+            for chip, readings in data.items():
+                for r in readings:
+                    temps.append({
+                        "source": chip,
+                        "label": r.label or chip,
+                        "current_c": r.current,
+                        "high_c": r.high,
+                        "critical_c": r.critical,
+                    })
+        except Exception:
+            pass
+    fan_fn = getattr(psutil, "sensors_fans", None)
+    if fan_fn is not None:
+        try:
+            data = fan_fn() or {}
+            for chip, readings in data.items():
+                for r in readings:
+                    fans.append({
+                        "source": chip,
+                        "label": r.label or chip,
+                        "rpm": r.current,
+                    })
+        except Exception:
+            pass
+
+    # Windows fallback via WMI thermal zones (Kelvin → °C).
+    if os.name == "nt" and not temps:
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | "
+                 "Select-Object -Property InstanceName,CurrentTemperature | "
+                 "ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=4,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                import json as _json
+                data = _json.loads(out.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                for d in data:
+                    raw = d.get("CurrentTemperature")
+                    if raw is None:
+                        continue
+                    # WMI reports tenths of a Kelvin.
+                    celsius = (raw / 10.0) - 273.15
+                    temps.append({
+                        "source": "ACPI",
+                        "label": (d.get("InstanceName") or "thermal_zone").split("\\")[-1],
+                        "current_c": round(celsius, 1),
+                        "high_c": None,
+                        "critical_c": None,
+                    })
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+
+    return {"temps": temps, "fans": fans}
+
+
+def sample_network() -> dict[str, Any]:
+    """Active NICs + traffic counters. Filters out loopback and
+    docker/wsl/veth interfaces by default to keep the dashboard
+    readable; raw counters are returned so the FE can compute deltas
+    between polls if it wants live rates."""
+    nics: list[dict[str, Any]] = []
+    try:
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+        counters = psutil.net_io_counters(pernic=True)
+    except Exception:
+        return {"interfaces": [], "totals": {"bytes_sent": 0, "bytes_recv": 0}}
+
+    skip_prefixes = ("lo", "docker", "veth", "br-", "vEthernet", "WSL",
+                     "Loopback", "isatap.", "Teredo")
+    for name, addr_list in addrs.items():
+        if any(name.startswith(p) or p in name for p in skip_prefixes):
+            continue
+        stat = stats.get(name)
+        if stat is None or not stat.isup:
+            continue
+        ipv4 = next((a.address for a in addr_list
+                     if hasattr(a, "family") and getattr(a.family, "name", "") == "AF_INET"), None)
+        if not ipv4:
+            # fall back to first non-MAC addr
+            ipv4 = next((a.address for a in addr_list if "." in (a.address or "")), None)
+        mac = next((a.address for a in addr_list
+                    if a.address and (":" in a.address or "-" in a.address) and "." not in a.address), None)
+        c = counters.get(name)
+        nics.append({
+            "name": name,
+            "ipv4": ipv4,
+            "mac": mac,
+            "is_up": bool(stat.isup),
+            "speed_mbps": int(stat.speed) if stat.speed else None,
+            "bytes_sent": int(c.bytes_sent) if c else 0,
+            "bytes_recv": int(c.bytes_recv) if c else 0,
+            "packets_sent": int(c.packets_sent) if c else 0,
+            "packets_recv": int(c.packets_recv) if c else 0,
+        })
+    try:
+        total = psutil.net_io_counters(pernic=False)
+        totals = {"bytes_sent": int(total.bytes_sent), "bytes_recv": int(total.bytes_recv)}
+    except Exception:
+        totals = {"bytes_sent": 0, "bytes_recv": 0}
+    return {"interfaces": nics, "totals": totals}
+
+
 def sample_disks() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     try:
@@ -605,6 +725,221 @@ def sample_db_pool() -> dict[str, Any]:
 
 
 # ---------- Configured models ----------
+
+
+# ---------- Worker heartbeats ----------
+
+
+async def list_workers(stale_after_seconds: int = 120) -> list[dict[str, Any]]:
+    """Read every row from worker_heartbeats and tag the alive vs.
+    stale ones. Anything older than `stale_after_seconds` (default
+    120 s = 4× the recommended 30s heartbeat interval) is treated as
+    dead but still surfaced so an operator sees "worker X died at T"."""
+    from datetime import timedelta
+    try:
+        from backend.db import SessionLocal
+        from backend.models import WorkerHeartbeat
+        from sqlalchemy import select
+    except Exception:
+        return []
+    now = datetime.now(timezone.utc)
+    stale_at = now - timedelta(seconds=stale_after_seconds)
+    try:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(
+                    select(WorkerHeartbeat).order_by(WorkerHeartbeat.last_seen.desc())
+                )
+            ).scalars().all()
+    except Exception:
+        return []
+    return [
+        {
+            "worker_id": w.worker_id,
+            "kind": w.kind,
+            "hostname": w.hostname,
+            "pid": w.pid,
+            "version": w.version,
+            "last_seen": w.last_seen.isoformat(),
+            "alive": w.last_seen > stale_at,
+            "seconds_since_seen": max(0, int((now - w.last_seen).total_seconds())),
+            "metadata": w.extra_metadata,
+        }
+        for w in rows
+    ]
+
+
+async def list_model_runs() -> list[dict[str, Any]]:
+    """Latest model_runs row per (model_id, worker_id) — i.e. the
+    most-recent state transition. We use a window function so the
+    table can grow without an explicit cleanup pass."""
+    try:
+        from backend.db import SessionLocal
+        from sqlalchemy import text as _text
+    except Exception:
+        return []
+    try:
+        async with SessionLocal() as session:
+            rows = (
+                await session.execute(_text("""
+                    SELECT DISTINCT ON (model_id, worker_id)
+                        model_id, worker_id, state, device,
+                        memory_allocated_bytes, last_used_at,
+                        created_at, metadata
+                    FROM model_runs
+                    ORDER BY model_id, worker_id, created_at DESC
+                """))
+            ).all()
+    except Exception:
+        return []
+    return [
+        {
+            "model_id": r.model_id,
+            "worker_id": r.worker_id,
+            "state": r.state,
+            "device": r.device,
+            "memory_allocated_bytes": r.memory_allocated_bytes,
+            "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None,
+            "created_at": r.created_at.isoformat(),
+            "metadata": r.metadata,
+        }
+        for r in rows
+    ]
+
+
+# ---------- Health rollup + user activity ----------
+
+
+async def sample_user_activity() -> dict[str, Any]:
+    """Active-user counts for the admin overlay banner.
+
+    "Active in last 24 h / 7 d" is computed from the audit log
+    (any event whose `user_id` is non-null). Total user count comes
+    from the users table.
+
+    We compute the cutoff timestamps in Python and bind them as
+    `timestamptz` rather than building a SQL INTERVAL — asyncpg's
+    INTERVAL binding refuses str literals (it wants a `timedelta`)
+    and SQLAlchemy's `cast(..., INTERVAL)` lowers to a parameterized
+    cast, not the literal. A Python timestamp keeps it portable."""
+    from datetime import timedelta
+    try:
+        from backend.db import SessionLocal
+        from backend.models import AuditLog, User
+        from sqlalchemy import distinct, func as sa_func, select
+    except Exception:
+        return {"total_users": 0, "active_24h": 0, "active_7d": 0}
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d = now - timedelta(days=7)
+    try:
+        async with SessionLocal() as session:
+            total = (
+                await session.execute(select(sa_func.count(User.id)))
+            ).scalar_one() or 0
+            active_24h = (
+                await session.execute(
+                    select(sa_func.count(distinct(AuditLog.user_id)))
+                    .where(
+                        AuditLog.user_id.is_not(None),
+                        AuditLog.created_at > cutoff_24h,
+                    )
+                )
+            ).scalar_one() or 0
+            active_7d = (
+                await session.execute(
+                    select(sa_func.count(distinct(AuditLog.user_id)))
+                    .where(
+                        AuditLog.user_id.is_not(None),
+                        AuditLog.created_at > cutoff_7d,
+                    )
+                )
+            ).scalar_one() or 0
+            return {
+                "total_users": int(total),
+                "active_24h": int(active_24h),
+                "active_7d": int(active_7d),
+            }
+    except Exception:
+        return {"total_users": 0, "active_24h": 0, "active_7d": 0}
+
+
+def rollup_health(*, db_pool: dict, redis_info: dict, minio_info: dict,
+                  disks: list[dict], queue_depth: int) -> dict[str, Any]:
+    """Combine subsystem probes into a single ok|warn|error verdict
+    the admin overlay can render as a colored banner.
+
+    Each check carries its own state + short detail. Overall is the
+    worst of the parts. Thresholds are conservative so a healthy box
+    looks green at a glance and red genuinely means "go look now"."""
+    checks: list[dict[str, Any]] = []
+
+    db_ok = db_pool.get("reachable", True)  # default True so an unknown shape doesn't false-fail
+    if "error" in db_pool:
+        db_ok = False
+    checks.append({
+        "name": "Database",
+        "state": "ok" if db_ok else "error",
+        "detail": (
+            f"{db_pool.get('checked_out', 0)}/{db_pool.get('size', '?')} connections"
+            if db_ok else (db_pool.get("error") or "unreachable")
+        ),
+    })
+
+    redis_ok = redis_info.get("reachable", False)
+    checks.append({
+        "name": "Redis",
+        "state": "ok" if redis_ok else "error",
+        "detail": (
+            f"{redis_info.get('dbsize', 0)} keys, {redis_info.get('queue_depth', '?')} queued"
+            if redis_ok else (redis_info.get("error") or "unreachable")
+        ),
+    })
+
+    minio_ok = minio_info.get("reachable", False)
+    checks.append({
+        "name": "Object storage",
+        "state": "ok" if minio_ok else "error",
+        "detail": (
+            f"{sum(b.get('objects', 0) or 0 for b in minio_info.get('buckets', []))} objects"
+            if minio_ok else (minio_info.get("error") or "unreachable")
+        ),
+    })
+
+    if disks:
+        worst = max(disks, key=lambda d: d.get("percent", 0))
+        pct = worst.get("percent", 0)
+        if pct >= 95:
+            disk_state = "error"
+        elif pct >= 85:
+            disk_state = "warn"
+        else:
+            disk_state = "ok"
+        checks.append({
+            "name": "Disk",
+            "state": disk_state,
+            "detail": f"{worst.get('mountpoint', '?')} at {pct}% ({worst.get('device', '?')})",
+        })
+
+    if queue_depth is not None and queue_depth >= 0:
+        if queue_depth >= 200:
+            qstate = "error"
+        elif queue_depth >= 50:
+            qstate = "warn"
+        else:
+            qstate = "ok"
+        checks.append({
+            "name": "Job queue",
+            "state": qstate,
+            "detail": f"{queue_depth} pending",
+        })
+
+    rank = {"ok": 0, "warn": 1, "error": 2}
+    overall = "ok"
+    for c in checks:
+        if rank[c["state"]] > rank[overall]:
+            overall = c["state"]
+    return {"overall": overall, "checks": checks}
 
 
 def list_configured_models() -> list[dict[str, Any]]:
