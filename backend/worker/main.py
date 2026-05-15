@@ -117,6 +117,13 @@ async def _process_job(session_factory, job: dict) -> None:
         await mark_done(kind, image_id_s)
 
 
+async def _queue_depth_safe(redis_client: aioredis.Redis) -> int:
+    try:
+        return int(await redis_client.llen(JOB_QUEUE_KEY))
+    except Exception:
+        return -1
+
+
 async def main() -> None:
     logging.basicConfig(
         level=os.environ.get("WORKER_LOG_LEVEL", "INFO"),
@@ -135,6 +142,21 @@ async def main() -> None:
         logger.info("worker: transformers warmed")
     except Exception:
         logger.exception("worker: warm_transformers failed (continuing anyway)")
+
+    # C8.2 — emit heartbeats every 30 s so /admin/processes can see us
+    # even though we live in a sibling container outside the API's
+    # psutil reach. The metadata_provider closure captures queue depth
+    # live so the admin overlay can render real backlog numbers.
+    from backend.heartbeats import heartbeat_loop
+    async def _meta() -> dict:
+        return {"queue_depth": await _queue_depth_safe(redis_client)}
+    heartbeat_task = asyncio.create_task(
+        heartbeat_loop(
+            kind="ml-worker",
+            is_running=lambda: _RUNNING,
+            metadata_provider=_meta,
+        )
+    )
 
     logger.info("worker: ready, polling %s", JOB_QUEUE_KEY)
     while _RUNNING:
@@ -161,6 +183,11 @@ async def main() -> None:
             logger.exception("worker: job %s crashed", job)
 
     logger.info("worker: shutting down")
+    heartbeat_task.cancel()
+    try:
+        await heartbeat_task
+    except (asyncio.CancelledError, Exception):
+        pass
     try:
         await redis_client.aclose()
     finally:

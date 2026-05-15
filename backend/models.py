@@ -685,6 +685,65 @@ class ShareGrant(Base):
     )
 
 
+class WorkerHeartbeat(Base):
+    """C8.2 — per-worker liveness signal.
+
+    Background workers (`backend/worker/main.py` and friends) upsert a
+    row here every 30 s with their identifier, kind, hostname, pid, and
+    an arbitrary metadata JSONB blob (e.g. last job kind processed,
+    queue depth observed). The admin Processes tab unions psutil rows
+    with these heartbeats so containers running in a sibling namespace
+    are visible from the API side. A worker is considered "alive" when
+    `last_seen` is within ~120 s of now (4× the heartbeat interval)."""
+
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_seen: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    hostname: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pid: Mapped[Optional[int]] = mapped_column(nullable=True)
+    version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    extra_metadata: Mapped[Optional[dict]] = mapped_column(
+        "metadata", JSONB, nullable=True,
+    )
+
+
+class ModelRun(Base):
+    """C8.2 — ml-worker reports model load/unload/error transitions.
+
+    Latest row per (model_id, worker_id) wins for "current state"
+    queries; older rows act as an audit trail of what was loaded when.
+    Memory numbers come from torch.cuda.memory_allocated when the
+    model lives on CUDA, otherwise null. `device` is the torch device
+    string ('cuda:0', 'cpu', 'xpu', 'npu', 'mps') so the dashboard can
+    show "Florence-2 on cuda:0" or "Qwen on cpu" without inferring."""
+
+    __tablename__ = "model_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    device: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    memory_allocated_bytes: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    extra_metadata: Mapped[Optional[dict]] = mapped_column(
+        "metadata", JSONB, nullable=True,
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

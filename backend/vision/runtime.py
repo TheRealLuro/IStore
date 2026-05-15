@@ -25,6 +25,32 @@ def get_device() -> str:
     return _device()
 
 
+def _report_loaded(model_id: str, device: str) -> None:
+    """C8.2 — record that this worker loaded `model_id` on `device`
+    in the model_runs table. Best-effort: a failed write never raises
+    into the loader so model availability doesn't depend on the DB."""
+    try:
+        from backend.heartbeats import record_model_state_sync
+    except Exception:
+        return
+    mem: int | None = None
+    try:
+        import torch
+        if device.startswith("cuda") and torch.cuda.is_available():
+            mem = int(torch.cuda.memory_allocated())
+    except Exception:
+        mem = None
+    try:
+        record_model_state_sync(
+            model_id=model_id,
+            state="loaded",
+            device=device,
+            memory_allocated_bytes=mem,
+        )
+    except Exception:
+        pass
+
+
 def _materialize_to(model, device):
     """Move a transformers/torch model onto `device` safely.
 
@@ -91,6 +117,7 @@ def get_clip():
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _report_loaded("clip", device)
     return model, preprocess, tokenizer, device
 
 
@@ -151,6 +178,7 @@ def get_doc_summarizer():
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _report_loaded("doc_summarizer", device)
     return model, tokenizer, device
 
 
@@ -236,6 +264,7 @@ def get_florence2():
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _report_loaded("florence2", device)
     return model, processor, device
 
 
@@ -270,6 +299,7 @@ def get_caption_model():
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _report_loaded("caption_fallback", device)
     return model, processor, device
 
 
@@ -305,6 +335,7 @@ def get_summary_rewriter():
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _report_loaded("qwen", device)
     return model, tokenizer, device
 
 
@@ -351,4 +382,5 @@ def get_internvl2():
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _report_loaded("internvl2", device)
     return model, tokenizer, device
