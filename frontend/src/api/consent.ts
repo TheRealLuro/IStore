@@ -46,6 +46,7 @@ export const rescanAllFaces = () =>
 export type ConsentScope =
   | "face_recognition"
   | "gps_retention"
+  | "exif_retention"
   | "ai_summary"
   | "semantic_search"
   | "bandit_compression_telemetry";

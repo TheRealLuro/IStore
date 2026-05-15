@@ -44,6 +44,37 @@ const BRAND_FEATURES = [
   { icon: "users",      label: "Faces stay private",  sub: "Templates live only on your box. Optional" },
 ];
 
+// Whitelist filter for the post-auth `?next=` redirect target.
+//
+// Threat model: a phishing link like
+//   https://neuthek.app/?next=https://evil.example/login
+// would, naively, sign the victim in and then hard-navigate them to
+// the attacker's site — which can mimic neuthek's UI and harvest
+// follow-up data. The guard accepts ONLY same-origin path-only
+// redirects:
+//   - Must start with exactly one '/'
+//   - Reject leading '//' (protocol-relative)
+//   - Reject backslash variants ('\foo', '/\evil.com') — some
+//     browser URL parsers normalize backslash → forward slash
+//   - Reject embedded scheme tokens ('javascript:', 'data:')
+//     before the first '?' or '#'
+//   - Reject control chars (newlines, NULs) — anti-CRLF
+// On rejection, log + drop silently and the caller acts as if no
+// next= was supplied.
+function safeNextPath(raw) {
+  if (typeof raw !== "string" || !raw) return "";
+  if (/[\x00-\x1f\x7f]/.test(raw)) return "";
+  if (!raw.startsWith("/")) return "";
+  if (raw.startsWith("//")) return "";
+  if (raw.includes("\\")) return "";
+  // Strip query + fragment before scanning for scheme tokens.
+  const pathOnly = raw.split(/[?#]/, 1)[0];
+  if (/^\/+[a-z][a-z0-9+\-.]*:/i.test(pathOnly)) return "";
+  if (/^\/+javascript:/i.test(raw)) return "";
+  if (/^\/+data:/i.test(raw)) return "";
+  return raw;
+}
+
 // Read post-auth redirect target + initial mode from the URL. When
 // shared-view.jsx routes a recipient through the auth screen it sets
 // `?next=/share/{token}#email=…` (decoded shape) so we can bounce
@@ -53,8 +84,7 @@ function readAuthHandoff() {
   if (typeof window === "undefined") return { next: "", initialMode: "signup" };
   const params = new URLSearchParams(window.location.search);
   const next = params.get("next") || "";
-  // Only allow same-origin paths to defend against open-redirect.
-  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "";
+  const safeNext = safeNextPath(next);
   let initialMode = "signup";
   const hash = window.location.hash || "";
   if (hash.includes("auth=signin")) initialMode = "signin";

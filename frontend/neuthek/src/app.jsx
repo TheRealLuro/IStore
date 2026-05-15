@@ -238,6 +238,13 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
   const moveDdRef = useRefApp(null);
   const newFolderDdRef = useRefApp(null);
   const shareDdRef = useRefApp(null);
+  // Outside-click + Escape dismissal for the three bulk-bar popovers.
+  // `<details>` doesn't ship that behavior natively; without these
+  // hooks the user has to click the same summary chevron twice to
+  // close, which felt wrong (caught in the 2026-05-16 audit pass).
+  useDetailsAutoClose(moveDdRef);
+  useDetailsAutoClose(newFolderDdRef);
+  useDetailsAutoClose(shareDdRef);
   const [newFolderName, setNewFolderName] = useStateApp("");
   const [busy, setBusy] = useStateApp(null); // "move" | "new" | "delete" | "share"
   const [shareEmail, setShareEmail] = useStateApp("");
@@ -555,11 +562,40 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
   );
 }
 
+// Shared "click outside to close" hook for `<details>`-based popovers.
+// Native `<details>` doesn't dismiss on outside click — that was a
+// real UX bug in earlier builds (operator saw the Sort + Filters
+// menus stay open while clicking thumbnails). Pass the details
+// element's ref; this binds a one-time mousedown listener while the
+// popover is open and closes it on any click outside the element.
+// Escape is also wired so keyboard users get the same behavior.
+function useDetailsAutoClose(detailsRef) {
+  useEffectApp(() => {
+    const el = detailsRef.current;
+    if (!el) return undefined;
+    const onMouseDown = (e) => {
+      if (!el.open) return;
+      if (!el.contains(e.target)) {
+        el.open = false;
+      }
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape" && el.open) el.open = false;
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [detailsRef]);
+}
+
 // SortDropdown — collapses the three sort tabs (Recent / Name / Size)
 // into one compact subbar control. The inline direction arrow lets
 // the user flip asc/desc without leaving the popover. Built on the
-// same `<details>` primitive as `FiltersDropdown` for outside-click
-// dismissal.
+// same `<details>` primitive as `FiltersDropdown` + the shared
+// `useDetailsAutoClose` hook for outside-click dismissal.
 const SORT_OPTIONS = [
   { id: "recent", label: "Recent",  defaultDir: "desc" },
   { id: "name",   label: "Name",    defaultDir: "asc"  },
@@ -567,6 +603,7 @@ const SORT_OPTIONS = [
 ];
 function SortDropdown({ sort, sortDir, setSort, setSortDir }) {
   const detailsRef = useRefApp(null);
+  useDetailsAutoClose(detailsRef);
   const active = SORT_OPTIONS.find(o => o.id === sort) || SORT_OPTIONS[0];
   const onPick = (id) => {
     if (id === sort) {
@@ -634,6 +671,7 @@ function FiltersDropdown({
   const [search, setSearch] = useStateApp("");
   const detailsRef = useRefApp(null);
   const inputRef = useRefApp(null);
+  useDetailsAutoClose(detailsRef);
 
   // Auto-focus the search input when the dropdown opens, and clear it
   // when it closes — the Cmd-K-style "type immediately" pattern is the
