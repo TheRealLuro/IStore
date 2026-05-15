@@ -802,7 +802,7 @@ export function App() {
 
   if (authLoading) {
     return (
-      <div style={{ display: "grid", placeItems: "center", minHeight: "100dvh",
+      <div style={{ display: "grid", placeItems: "center", height: "100vh",
                     color: "var(--ink-3)", fontFamily: "Geist, system-ui" }}>
         Loading…
       </div>
