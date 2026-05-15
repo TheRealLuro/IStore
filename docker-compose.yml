@@ -120,6 +120,59 @@ services:
       retries: 12
       start_period: 30s
 
+  # ML worker — runs in its own container so Florence-2 / Qwen /
+  # RetinaFace inference doesn't hold the API container's GIL. The
+  # API publishes jobs to Redis (`backend/jobs.py`); this worker
+  # blocks on BLPOP, processes one job at a time, writes results to
+  # Postgres directly. Same image as the backend so source edits
+  # hit both via the bind mount.
+  ml-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_ML: "1"
+    container_name: neuthek-ml-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      APP_ENV: dev
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-istore}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-istorepass}
+      MINIO_SECURE: "false"
+      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-istore-originals}
+      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-istore-served}
+      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-istore-faces}
+      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-istore-quarantine}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
+      HF_HOME: /models
+      TRANSFORMERS_CACHE: /models
+      WORKER_LOG_LEVEL: INFO
+    volumes:
+      # Same source bind mount as the backend so editing
+      # backend/summarize.py reflects in both containers without a
+      # rebuild. Worker doesn't have `--reload` (it's a long-running
+      # consumer that re-imports models on restart, which is
+      # expensive); use `docker restart neuthek-ml-worker` after
+      # editing worker code.
+      - ./backend:/app/backend
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini:ro
+      # Reuse the host HuggingFace cache so the worker doesn't
+      # re-download Florence-2 + Qwen on first start.
+      - ${HF_CACHE_DIR:-${USERPROFILE:-${HOME}}/.cache/huggingface}:/models
+    command: ["python", "-m", "backend.worker.main"]
+
   # Frontend dev server — Vite with HMR, source bind-mounted so file
   # saves on the host trigger a browser reload. node_modules lives in
   # an anonymous volume so the container's installed deps don't get

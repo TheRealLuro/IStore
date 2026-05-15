@@ -266,6 +266,20 @@ def _inspect_ooxml(data: bytes, filename: str | None) -> None:
 
 
 def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, str]:
+    """Re-decode + re-encode an upload via Pillow to defang malicious
+    polyglots, then return the safe re-encoded bytes.
+
+    Preserves the EXIF blob (when present) on JPEG / WebP / TIFF
+    outputs. The previous behavior dropped EXIF on every re-encode,
+    which silently stripped GPS/camera metadata even when the user
+    had granted `gps_retention` — they uploaded an iPhone shot
+    expecting GPS to ride along, downloaded the "original" later,
+    and found bare bytes. Privacy is still enforced at a different
+    layer: GPS coordinates are only persisted to the queryable
+    `image_geo` table when `gps_retention` is GRANTED. The blob in
+    MinIO retains EXIF either way so the user's file stays faithful
+    to what they uploaded.
+    """
     PILImage.MAX_IMAGE_PIXELS = settings.upload_max_image_pixels
     try:
         with PILImage.open(BytesIO(data)) as pil:
@@ -275,23 +289,38 @@ def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, s
             width, height = pil.size
             if width * height > settings.upload_max_image_pixels:
                 raise UploadValidationError("Image is too large in pixels.", 413)
+            # Snapshot the EXIF blob BEFORE `convert` — converting drops
+            # the source image's `info` dict.
+            exif_blob = pil.info.get("exif")
             if detected_mime == "image/jpeg":
                 out = BytesIO()
-                pil.convert("RGB").save(out, format="JPEG", quality=95, optimize=True)
+                save_kwargs: dict = {"format": "JPEG", "quality": 95, "optimize": True}
+                if exif_blob:
+                    save_kwargs["exif"] = exif_blob
+                pil.convert("RGB").save(out, **save_kwargs)
                 return out.getvalue(), width, height, detected_mime
             if detected_mime == "image/png":
+                # PNG doesn't carry EXIF in the standard metadata block —
+                # nothing to preserve.
                 out = BytesIO()
                 pil.save(out, format="PNG")
                 return out.getvalue(), width, height, detected_mime
             if detected_mime == "image/webp":
                 out = BytesIO()
-                pil.save(out, format="WEBP", lossless=True)
+                save_kwargs = {"format": "WEBP", "lossless": True}
+                if exif_blob:
+                    save_kwargs["exif"] = exif_blob
+                pil.save(out, **save_kwargs)
                 return out.getvalue(), width, height, detected_mime
             if detected_mime == "image/gif":
                 out = BytesIO()
                 pil.save(out, format="GIF")
                 return out.getvalue(), width, height, detected_mime
             if detected_mime == "image/tiff":
+                # Re-encode TIFF to PNG (browsers don't render TIFF
+                # natively); TIFF EXIF doesn't survive the format swap
+                # — image_geo extraction already ran on the true
+                # original via `original_raw_bytes`.
                 out = BytesIO()
                 pil.save(out, format="PNG")
                 return out.getvalue(), width, height, "image/png"

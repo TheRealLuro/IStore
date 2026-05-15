@@ -37,6 +37,17 @@ logger = logging.getLogger(__name__)
 SAME_PERSON_THRESHOLD_FACE = 0.50      # individual-face match (vs. existing Face row)
 SAME_PERSON_THRESHOLD_CENTROID = 0.40  # named-person centroid match
 
+# Adaptive low-confidence match — when no centroid clears
+# `SAME_PERSON_THRESHOLD_CENTROID` but the *closest* one is still
+# notably above the runner-up, accept it. This rescues "appearance
+# mode" mismatches like a B&W extreme-close-up of someone whose
+# centroid was built from color selfies (cosine sim drops to ~0.20
+# under those domain shifts even when humans easily recognize the
+# face). The margin gate avoids false attaches when two people are
+# both equally "kinda close."
+SAME_PERSON_LOW_THRESHOLD = 0.18       # absolute floor — anything below is noise
+SAME_PERSON_LOW_MARGIN    = 0.08       # closest must beat 2nd-closest by this much
+
 # Back-compat constant exported for any external callers / tests.
 SAME_PERSON_THRESHOLD = SAME_PERSON_THRESHOLD_FACE
 
@@ -64,7 +75,20 @@ async def _match_named_person(
     user_id,
     embedding: list[float],
 ) -> Optional[Person]:
-    """Stage 1: nearest named person by centroid distance."""
+    """Nearest-named-person match by centroid distance.
+
+    Two acceptance paths:
+      1. Closest centroid clears `SAME_PERSON_THRESHOLD_CENTROID`
+         (0.40) — same as before, the "obvious match" path.
+      2. Closest centroid is at least `SAME_PERSON_LOW_THRESHOLD`
+         (0.18) AND beats the runner-up by `SAME_PERSON_LOW_MARGIN`
+         (0.08). This rescues appearance-mode mismatches (B&W vs
+         color, profile vs frontal) where a known person's centroid
+         is the clear winner but the absolute cosine sim is below
+         the conservative 0.40 floor. The margin gate prevents
+         false attaches when two named people are both "kinda
+         close" and we'd be guessing.
+    """
     distance = Person.centroid_embedding.cosine_distance(embedding)
     stmt = (
         select(Person, distance.label("distance"))
@@ -74,14 +98,28 @@ async def _match_named_person(
             Person.face_count > 0,
         )
         .order_by(distance.asc())
-        .limit(1)
+        .limit(2)  # top-2 so we can check the runner-up margin
     )
-    row = (await session.execute(stmt)).first()
-    if row is None:
+    rows = (await session.execute(stmt)).all()
+    if not rows:
         return None
-    person, dist = row[0], float(row[1])
-    if (1.0 - dist) >= SAME_PERSON_THRESHOLD_CENTROID:
-        return person
+    best_person, best_dist = rows[0][0], float(rows[0][1])
+    best_sim = 1.0 - best_dist
+    if best_sim >= SAME_PERSON_THRESHOLD_CENTROID:
+        return best_person
+
+    # Low-confidence-but-clear-winner path. Requires a runner-up to
+    # compare against — single-person libraries fall through to the
+    # default "no match" branch (no risk of a wrong attach when there's
+    # only one option, but also no signal to confirm it's right).
+    if len(rows) >= 2 and best_sim >= SAME_PERSON_LOW_THRESHOLD:
+        runner_sim = 1.0 - float(rows[1][1])
+        if (best_sim - runner_sim) >= SAME_PERSON_LOW_MARGIN:
+            logger.info(
+                "match_named: low-conf attach to %s (sim=%.3f, runner=%.3f)",
+                best_person.display_name, best_sim, runner_sim,
+            )
+            return best_person
     return None
 
 

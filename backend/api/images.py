@@ -13,6 +13,7 @@ from backend.auth.users import current_active_user
 from backend.consent import is_consent_active, is_scope_active
 from backend.db import SessionLocal, get_session
 from backend.config import settings
+from backend import jobs
 from backend.deletion import hard_delete_images
 from backend.image import fetch_original, fetch_served, store_upload
 from backend.models import (
@@ -46,6 +47,23 @@ def _detach(coro) -> None:
     task = asyncio.create_task(coro)
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+async def _enqueue_or_inline_fallback(enqueue_fn, *args, inline) -> None:
+    """Try enqueueing the job onto the Redis queue; if that fails (Redis
+    down, ml-worker not configured), run the work inline via
+    asyncio.create_task instead. The inline fallback preserves the
+    pre-worker dev experience but pays the cost of holding the GIL in
+    the API container — production deployments expect the worker
+    container to be running and Redis to be reachable.
+    """
+    try:
+        ok = await enqueue_fn(*args)
+    except Exception:
+        logger.exception("enqueue raised; falling back to inline")
+        ok = False
+    if not ok:
+        _detach(inline())
 
 
 async def _run_face_scan_one(user_id: UUID, image_id: UUID) -> None:
@@ -161,17 +179,29 @@ async def upload_image(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             f"Could not decode image: {exc}",
         ) from exc
-    # Defer post-processing so the upload response returns immediately.
-    # When both Pass B (faces) and the AI Vision summary apply, run them
-    # sequentially: the summary spliced person names from the faces pass.
+    # Defer post-processing to the ml-worker container so the upload
+    # response returns immediately AND the API event loop stays free
+    # to serve login + other requests during inference. When both
+    # Pass B (faces) and the AI Vision summary apply, the worker
+    # runs them sequentially so the summary can splice person names
+    # from the faces pass.
     needs_faces = image.category == "image" and image.pending_face_scan
     needs_summary = image.pending_summary
     if needs_faces and needs_summary:
-        _detach(_run_face_scan_then_summarize(user.id, image.id))
+        await _enqueue_or_inline_fallback(
+            jobs.enqueue_face_scan_then_summarize, user.id, image.id,
+            inline=lambda: _run_face_scan_then_summarize(user.id, image.id),
+        )
     elif needs_faces:
-        _detach(_run_face_scan_one(user.id, image.id))
+        await _enqueue_or_inline_fallback(
+            jobs.enqueue_face_scan, user.id, image.id,
+            inline=lambda: _run_face_scan_one(user.id, image.id),
+        )
     elif needs_summary:
-        _detach(_run_summarize_one(image.id))
+        await _enqueue_or_inline_fallback(
+            jobs.enqueue_summarize, image.id,
+            inline=lambda: _run_summarize_one(image.id),
+        )
     return image
 
 
@@ -443,12 +473,10 @@ async def summarize_progress(
     pending = int(row.pending or 0)
     with_summary = int(row.with_summary or 0)
 
-    # Auto-drain: schedule a fresh summarize task IF nothing is already
-    # in flight. Cap is 1 (not 4) because the vision pipeline downloads
-    # multi-GB Florence-2 / Qwen / CLIP weights on first run; running
-    # the loader in parallel just spawns redundant downloads of the
-    # same files and starves all of them. Sequential drain is faster
-    # end-to-end and survives a CPU-only deployment.
+    # Auto-drain: when there's pending work and the in-process tracker
+    # isn't already holding one, push a job onto the worker queue. The
+    # ml-worker container is the primary consumer; the inline fallback
+    # is for dev runs that don't have the worker container up.
     if pending > 0 and not _SUMMARIZE_IN_FLIGHT:
         img_id = (
             await session.execute(
@@ -464,7 +492,16 @@ async def summarize_progress(
         ).scalar_one_or_none()
         if img_id is not None:
             _SUMMARIZE_IN_FLIGHT.add(img_id)
-            _detach(_run_summarize_tracked(img_id))
+            await _enqueue_or_inline_fallback(
+                jobs.enqueue_summarize, img_id,
+                inline=lambda iid=img_id: _run_summarize_tracked(iid),
+            )
+            # When the queue path took it, the worker doesn't unset
+            # the in-flight tracker (it lives in another process).
+            # Discard immediately so future polls aren't gated on a
+            # stale entry; the next call re-checks the DB-side state
+            # rather than relying on this best-effort dedupe.
+            _SUMMARIZE_IN_FLIGHT.discard(img_id)
 
     return {
         "total": total,
@@ -715,8 +752,17 @@ async def image_people(
         )
     ).all()
 
-    return [
-        {
+    # Dedupe by person_id so a single named person doesn't render twice
+    # in the preview when multiple detections (cascade re-run, slight
+    # bbox jitter, etc.) all attached to the same Person row. Keep the
+    # detection with the highest confidence as the representative — its
+    # face crop is the one we want to show. Unnamed detections (no
+    # person_id) keep their per-row entry so the user can still label
+    # each one individually.
+    out: list[dict] = []
+    seen_person_ids: dict[int, dict] = {}
+    for det, face, person in rows:
+        entry = {
             "face_id": face.id,
             "detection_id": det.id,
             "person_id": person.id if person else None,
@@ -725,8 +771,20 @@ async def image_people(
             "bbox": [det.bbox_x, det.bbox_y, det.bbox_w, det.bbox_h],
             "detection_confidence": det.detection_confidence,
         }
-        for det, face, person in rows
-    ]
+        if person is not None:
+            existing = seen_person_ids.get(person.id)
+            if existing is None:
+                seen_person_ids[person.id] = entry
+                out.append(entry)
+            elif (det.detection_confidence or 0) > (existing.get("detection_confidence") or 0):
+                # Replace the previous lower-confidence entry in place
+                # so the order stays stable (first-occurrence position).
+                idx = out.index(existing)
+                out[idx] = entry
+                seen_person_ids[person.id] = entry
+        else:
+            out.append(entry)
+    return out
 
 
 @router.get("/{image_id}/original")
@@ -1002,7 +1060,10 @@ async def backfill_summaries(
         await session.commit()
 
     for image_id in ids:
-        _detach(_run_summarize_one(image_id))
+        await _enqueue_or_inline_fallback(
+            jobs.enqueue_summarize, image_id,
+            inline=lambda iid=image_id: _run_summarize_one(iid),
+        )
     return {"queued": len(ids), "limit": limit, "force": force}
 
 
@@ -1025,7 +1086,10 @@ async def resummarize_image(
     image.pending_summary = True
     await session.commit()
 
-    _detach(_run_summarize_one(image.id))
+    await _enqueue_or_inline_fallback(
+        jobs.enqueue_summarize, image.id,
+        inline=lambda: _run_summarize_one(image.id),
+    )
     return {"image_id": str(image.id), "pending_summary": True}
 
 

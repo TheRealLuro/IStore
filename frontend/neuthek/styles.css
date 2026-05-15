@@ -428,8 +428,15 @@ input, textarea { font-family: inherit; }
 }
 .gallery__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
+  /* `auto-fill` (vs `auto-fit`) keeps tiles at a sensible width when
+   * the user has only a few files — `auto-fit` would stretch each
+   * card across the full row width, which reads as comically large
+   * empty cards above a big empty band. Capping the column at 230px
+   * means a sparsely populated library still shows multiple tiles
+   * per row instead of one giant card. */
+  grid-template-columns: repeat(auto-fill, minmax(180px, 230px));
+  gap: 14px;
+  justify-content: start;
 }
 
 /* ---- list (bar) view — compact rows ---- *
