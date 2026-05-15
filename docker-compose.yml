@@ -158,6 +158,21 @@ services:
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
       WORKER_LOG_LEVEL: INFO
+    # NVIDIA GPU passthrough — required so the cu13-built torch inside
+    # the worker can actually reach the host's CUDA driver. Docker
+    # Desktop on Windows wires this through WSL2 + the NVIDIA driver
+    # automatically when the laptop has an NVIDIA card AND the
+    # nvidia-container-toolkit is installed (default on recent Docker
+    # Desktop builds). Without the reservation the worker still starts,
+    # but `torch.cuda.is_available()` returns False and inference falls
+    # back to CPU. The dashboard's Models tab notes the gap.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     volumes:
       # Same source bind mount as the backend so editing
       # backend/summarize.py reflects in both containers without a

@@ -66,6 +66,10 @@ async def emit_heartbeat(
                 version="0.1.0",
                 extra_metadata=metadata or {},
             )
+            # `metadata` is a reserved SQLAlchemy attribute on Insert.excluded,
+            # so we reach the column through dict-style access. The set_ key
+            # must be the DB column name (`metadata`), not the ORM attribute
+            # (`extra_metadata`) — the mapping is `mapped_column("metadata", JSONB)`.
             stmt = stmt.on_conflict_do_update(
                 index_elements=["worker_id"],
                 set_={
@@ -74,7 +78,7 @@ async def emit_heartbeat(
                     "hostname": stmt.excluded.hostname,
                     "pid": stmt.excluded.pid,
                     "version": stmt.excluded.version,
-                    "extra_metadata": stmt.excluded.extra_metadata,
+                    "metadata": stmt.excluded["metadata"],
                 },
             )
             await session.execute(stmt)
