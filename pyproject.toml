@@ -26,6 +26,11 @@ dependencies = [
     # in-app preview hero. Without it, PDFs fall back to a generic icon
     # and the "Generate PDF thumbnails" admin action becomes a no-op.
     "PyMuPDF>=1.24.0",
+    # psutil — cross-platform process + system probes powering the
+    # admin overlay's System / Processes / Hardware tabs (todo §1.3).
+    # Falls back gracefully to /dev/null-shaped responses when a
+    # platform doesn't expose a particular metric.
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]

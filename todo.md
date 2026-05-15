@@ -7,22 +7,43 @@
 This file tracks **what's still open** — broken, partial, or planned.
 Shipped work isn't listed here; read `git log` for that.
 
-> **Last shipped**: Sprint B + Sprint B+ (2026-05-14) — summary progress UI,
-> multi-model image+doc pipeline (Florence-2 regions/OD + OpenCLIP concept
-> vocab + gated InternVL2-4B), PDF OCR fallback, `summary_signals` JSONB,
-> Starred view, folder back button, admin per-row actions, face re-detect
-> cascade (D8) + mediapipe, reverse-geocode worker (Nominatim), Activity
-> log + Trash endpoints + un-hide panels.
+> **Last shipped**: Sprint D first slice (2026-05-14/15) — per-image
+> sharing primitive: `share_grants` table (migration 0022), full
+> `/images/{id}/shares` + `/shares/...` API (7 routes), argon2-hashed
+> tokens, recipient-email pinning, server-side 1-day cap for
+> new-user recipients, brute-force lockout on the claim path, public
+> `/share/{token}` viewer with auth-gated claim, ShareModal in preview
+> panel, bulk-share in the action bar, Shared sidebar count wired to
+> `/shares/incoming`. 13 pytest cases pass; full sharer + recipient +
+> revoke flow smoke-tested in the browser end-to-end. Before it:
+> Sprint B + B+ (summary progress, multi-model image+doc pipeline,
+> Florence-2/OpenCLIP/InternVL2/Qwen, PDF OCR, summary_signals,
+> Starred, folder back, admin per-row, D8 face re-detect cascade
+> + mediapipe, reverse-geocode worker, Activity log + Trash).
+> Also shipped 2026-05-15: §1.3 admin-overlay un-mock — all 6
+> previously-mock tabs (Models / Tasks / Logs / System / Processes /
+> Hardware) now read real state via psutil + Redis + MinIO probes;
+> new module `backend/system_probes.py` + 6 new `/admin/*` endpoints.
 > **Next up**: Sprint C (compliance + ship-blocking work). See §11.
 
 ---
 
 ## 1. Currently broken / partial
 
-### 1.1 No backend for sharing
-Preview panel's "Shared with" row stays hidden until **G1** ships the
-`share_grants` table + `POST/DELETE/GET /images/{id}/shares`. Long
-pole — Sprint D.
+### 1.1 No backend for sharing ✅ SHIPPED 2026-05-14
+`share_grants` table (migration 0022) + full router at
+[backend/api/shares.py](backend/api/shares.py):
+`POST/GET /images/{id}/shares`, `DELETE /images/{id}/shares/{share_id}`,
+`GET /shares/incoming`, `POST /shares/claim`,
+`GET /shares/{share_id}/asset` + `/signed/{variant}`,
+`GET /shares/preview/{token}` (unauth, rate-limited). Sharer picks
+recipient email + duration; existing-user recipients get the sharer's
+duration, new users get a server-enforced 1-day window starting at
+claim. Tokens are urlsafe-base64-32 stored as argon2 hashes. Brute
+force protected via the existing `SecurityControlsMiddleware` lockout
+machinery. Preview panel "Shared with" row + bulk-action Share +
+public `/share/{token}` viewer all wired. 13 pytest cases pass in
+[tests/test_shares.py](tests/test_shares.py).
 
 ### 1.2 Settings: features still hidden until their backends ship
 The Settings rail (Account / Privacy / Security / AI features / Your
@@ -36,11 +57,29 @@ sections remain hidden because they each need a new backend surface:
   returns it via `/consent/scopes`; UI shows only `granted_at` for now.
   Surface "Expires …" once retention preferences are user-controllable.
 
-### 1.3 Admin overlay non-Users tabs still mock
-Storage / Users / Audit tabs read live data. Users tab now has
-inline per-row quota + role editors. Models / Tasks / Logs / System
-/ Processes / Hardware tabs are still prototype mock — keep behind
-the `MOCK` pill until **C8.2** / **F1** backend surfaces land.
+### 1.3 Admin overlay non-Users tabs still mock ✅ SHIPPED 2026-05-15
+Every tab now reads real backend state. Six new endpoints in
+[backend/api/admin.py](backend/api/admin.py):
+`GET /admin/system` (uptime + DB pool + Redis + MinIO bucket sizes),
+`GET /admin/hardware` (CPU/memory/disks/GPU via psutil + torch.cuda
+fallback to nvidia-smi), `GET /admin/processes` (top-N by CPU%),
+`GET /admin/models` (configured model registry from settings),
+`GET /admin/tasks` (Redis queue depth + active set + recent audit
+rows), `GET /admin/logs` (audit log tail). New module
+[backend/system_probes.py](backend/system_probes.py) wraps psutil
+cross-platform with conservative None-on-failure shapes. FE wired
+in [admin.jsx](frontend/neuthek/src/admin.jsx) — every mock constant
+deleted, MOCK badge removed, sparklines now seeded from real
+samples. Smoke-tested in the browser end-to-end.
+
+Remaining future work (C8.2 / F1):
+- Per-model memory + load state needs ml-worker → API IPC
+  (a `model_runs` table per todo §C8.2).
+- ml-worker visibility on /admin/processes needs a
+  `worker_heartbeats` Redis-set or DB table when API + worker
+  run in separate containers.
+- Vendor-specific hardware probes (SMART, fans, thermals, PSU,
+  NIC) need per-vendor adapters per todo §F1.
 
 ---
 

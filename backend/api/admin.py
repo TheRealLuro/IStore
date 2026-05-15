@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.storage import DEFAULT_QUOTA_BYTES
 from backend.auth.users import current_admin_user, current_superuser
+from backend.config import settings
 from backend.db import get_session
 from backend.models import AuditLog, Image, User
 
@@ -337,3 +338,187 @@ async def admin_audit_log(
         )
         for r in rows
     ]
+
+
+# ---------- §1.3 — un-mock the rest of the admin overlay ----------
+#
+# Six tabs previously rendered hardcoded data behind a `MOCK` pill.
+# Each now reads real backend state via `backend/system_probes.py`,
+# the existing audit log, and the Redis job queue. The endpoints are
+# intentionally small surfaces — no new tables, no migrations — so
+# we can swap them in without coordinating a deploy. C8.2 (model_runs
+# table, worker heartbeats) and §F1 (runtime.toml + per-vendor probes)
+# remain future work that will expand these payloads.
+
+
+@router.get("/system")
+async def admin_system(
+    _: Annotated[User, Depends(current_admin_user)],
+) -> dict:
+    """Snapshot the API process's environment: uptime, DB pool stats,
+    MinIO bucket sizes, Redis health, app version. CPU / memory live
+    on /admin/hardware so a busy bucket scan doesn't keep the simpler
+    System tab from rendering."""
+    from backend.system_probes import (
+        sample_db_pool,
+        sample_minio,
+        sample_redis,
+        sample_uptime,
+    )
+    redis_info = await sample_redis()
+    minio_info = await sample_minio()
+    return {
+        "version": "0.1.0",
+        "env": settings.app_env,
+        "uptime": sample_uptime(),
+        "db_pool": sample_db_pool(),
+        "redis": redis_info,
+        "minio": minio_info,
+    }
+
+
+@router.get("/hardware")
+async def admin_hardware(
+    _: Annotated[User, Depends(current_admin_user)],
+) -> dict:
+    """CPU / memory / disk / GPU snapshot. Cross-platform via psutil;
+    GPU goes through torch.cuda first, falls back to a `nvidia-smi`
+    shell. Returns generously-typed dicts so the FE can render "—"
+    for anything a given platform can't expose."""
+    from backend.system_probes import (
+        sample_cpu,
+        sample_disks,
+        sample_gpu,
+        sample_memory,
+    )
+    return {
+        "cpu": sample_cpu(),
+        "memory": sample_memory(),
+        "disks": sample_disks(),
+        "gpu": sample_gpu(),
+    }
+
+
+@router.get("/processes")
+async def admin_processes(
+    _: Annotated[User, Depends(current_admin_user)],
+    top: int = Query(default=12, ge=1, le=64),
+) -> dict:
+    """Top-N processes on the API host by CPU%. RAM is RSS.
+
+    Note: the ML worker (`backend/worker/main.py`) only shows up here
+    when it runs in the same OS namespace as the API — typical in
+    bare-metal dev. In a split-container deploy, the worker lives in
+    a sibling container and isn't visible from this side. C8.2 lands
+    a worker_heartbeats table so the operator gets the worker in
+    that case too."""
+    from backend.system_probes import sample_processes
+    rows = sample_processes(top=top)
+    totals = {
+        "count": len(rows),
+        "cpu_percent_sum": round(sum(r["cpu_percent"] for r in rows), 1),
+        "memory_rss_bytes_sum": sum(r["memory_rss_bytes"] for r in rows),
+    }
+    return {"processes": rows, "totals": totals}
+
+
+@router.get("/models")
+async def admin_models(
+    _: Annotated[User, Depends(current_admin_user)],
+) -> dict:
+    """Configured-model registry from `settings`. Memory footprint /
+    load state of each model lives inside the ml-worker container —
+    C8.2 will hook the worker into a model_runs table and surface
+    real torch.cuda.memory_allocated() numbers here. For now the FE
+    shows configuration as a truthful proxy for "what's wired up"."""
+    from backend.system_probes import list_configured_models, sample_gpu
+    gpu = sample_gpu()
+    backend_label = (
+        "cuda" if gpu.get("available") and gpu.get("backend", "").startswith("torch") else
+        "nvidia-smi (detected)" if gpu.get("available") else
+        "cpu"
+    )
+    return {
+        "models": list_configured_models(),
+        "inference_backend": backend_label,
+        "gpu_available": bool(gpu.get("available")),
+    }
+
+
+@router.get("/tasks")
+async def admin_tasks(
+    _: Annotated[User, Depends(current_admin_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Background-job snapshot:
+      - queue: live Redis depth + active-job set size
+      - recent: last 50 audit rows whose action begins with `image.`
+        or `share.`, as a proxy for "what just happened" until the
+        C8.2 background_jobs table lands with true per-job history."""
+    from backend.system_probes import sample_redis
+    redis_info = await sample_redis()
+    recent_rows = (
+        await session.execute(
+            select(AuditLog)
+            .where(
+                (AuditLog.action.like("image.%"))
+                | (AuditLog.action.like("share.%"))
+                | (AuditLog.action.like("account.recovery_codes.%"))
+            )
+            .order_by(AuditLog.id.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+    return {
+        "queue": {
+            "depth": redis_info.get("queue_depth", -1),
+            "active": redis_info.get("active_jobs", 0),
+            "reachable": redis_info.get("reachable", False),
+            "queue_key": redis_info.get("queue_key"),
+        },
+        "recent": [
+            {
+                "id": r.id,
+                "user_id": str(r.user_id) if r.user_id else None,
+                "action": r.action,
+                "details": r.details,
+                "created_at": r.created_at,
+            }
+            for r in recent_rows
+        ],
+    }
+
+
+@router.get("/logs")
+async def admin_logs(
+    _: Annotated[User, Depends(current_admin_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict:
+    """The Logs tab in admin renders the audit log as a tailed stream.
+    Same data source as `/admin/audit` — the difference is shape:
+    `/admin/audit` returns a paginated row list (used for filters),
+    `/admin/logs` returns the most-recent N rows oldest-first so the
+    FE can append-render without a reverse pass.
+
+    Real uvicorn access logs + worker stderr aggregation are tracked
+    in C8.2 and out of scope here. Audit-log lines cover the
+    user-meaningful events that an operator actually wants to see."""
+    rows = (
+        await session.execute(
+            select(AuditLog).order_by(AuditLog.id.desc()).limit(limit)
+        )
+    ).scalars().all()
+    rows = list(reversed(rows))  # oldest-first for natural tail-style rendering
+    return {
+        "lines": [
+            {
+                "id": r.id,
+                "created_at": r.created_at,
+                "action": r.action,
+                "user_id": str(r.user_id) if r.user_id else None,
+                "details": r.details,
+            }
+            for r in rows
+        ],
+    }

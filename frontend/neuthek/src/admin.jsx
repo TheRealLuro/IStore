@@ -1,13 +1,16 @@
 // Dev / Admin overlay — for the engineer who deployed the box.
-// Tabs: Models · Tasks · Logs · System · Processes · Hardware
+// Tabs: Storage · Users · Audit · Models · Tasks · Logs · System · Processes · Hardware.
 //
-// All numbers in this overlay are still mock — the real /admin/* endpoints
-// (storage / users / audit) live in src/api/admin.ts. todo.md C8 has the
-// plan to swap each tab onto the real endpoints.
+// All nine tabs now read real backend state. Storage / Users / Audit
+// hit the same endpoints they always did; the other six were
+// previously mock JSX with hardcoded constants — todo §1.3 — and now
+// resolve through /admin/{models,tasks,logs,system,processes,hardware}
+// in backend/api/admin.py (powered by backend/system_probes.py).
 import React, {
   useState as useStateAd,
   useEffect as useEffectAd,
   useMemo as useMemoAd,
+  useRef as useRefAd,
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
@@ -22,6 +25,12 @@ import {
   updateUserQuota,
   updateUserRole,
   listAdminAudit,
+  getAdminSystem,
+  getAdminHardware,
+  getAdminProcesses,
+  getAdminModels,
+  getAdminTasks,
+  getAdminLogs,
 } from "@/api/admin";
 
 function admBytes(n) {
@@ -32,59 +41,25 @@ function admBytes(n) {
   return (n / 1024 ** 4).toFixed(2) + " TB";
 }
 
-const MODELS = [
-  { id: "person",  label: "Person re-ID",        size: "342 MB", trained: "12 hours ago", samples: 1247, accuracy: 96.4, threshold: 0.82 },
-  { id: "scene",   label: "Scene classifier",    size:  "98 MB", trained: "3 days ago",   samples: 80211, accuracy: 92.1, threshold: 0.70 },
-  { id: "ocr",     label: "OCR (handwriting)",   size: "224 MB", trained: "1 week ago",   samples:  4200, accuracy: 89.7, threshold: 0.65 },
-  { id: "summary", label: "Vision-language",     size: "1.2 GB", trained: "shipped",      samples: null,  accuracy: 94.0, threshold: null },
-  { id: "embed",   label: "Semantic embeddings", size: "768 MB", trained: "shipped",      samples: null,  accuracy: 91.5, threshold: null },
-];
-
-const TASKS_BASE = [
-  { id: 1, label: "Indexing 247 new files",         pct: 64, eta: "~3 min",  rate: 0.7 },
-  { id: 2, label: "Re-encoding face embeddings",    pct: 32, eta: "~12 min", rate: 0.4 },
-  { id: 3, label: "Backup → external SSD",          pct: 88, eta: "~40 sec", rate: 1.6 },
-];
-
-const LOG_LINES = [
-  "[14:22:09] indexer: ingested IMG_3471.heic (2.4 MB) → embeddings updated",
-  "[14:22:11] face: 2 detections, 1 matched (sister, conf=0.94)",
-  "[14:22:14] indexer: ingested savefile.pkl → tagged as game-save",
-  "[14:22:18] semantic: rebuilt FAISS index (8,402 vectors)",
-  "[14:22:21] api: GET /search?q=birthday party → 12 results in 47 ms",
-  "[14:22:24] watchdog: nightly backup scheduled for 03:00 UTC",
-  "[14:22:30] face: training pass 12/30, loss=0.087",
-  "[14:22:33] thumbs: warmed cache for 89 items (8.1 MB)",
-  "[14:22:36] api: GET /map/clusters → 23 clusters in 18 ms",
-  "[14:22:42] indexer: queue empty · idle",
-];
-
-// initial process snapshot — values jitter live
-const PROCS_BASE = [
-  { id: "neuthek-api",     name: "neuthek-api",        kind: "system", pid: 1142, cpu: 4.2,  mem: 412 },
-  { id: "indexer",        name: "indexer-worker",    kind: "ai",     pid: 1156, cpu: 38.1, mem: 1820 },
-  { id: "face",           name: "face-engine",       kind: "ai",     pid: 1199, cpu: 12.6, mem:  962 },
-  { id: "vlm",            name: "vlm-server",        kind: "ai",     pid: 1208, cpu: 22.4, mem: 4180 },
-  { id: "thumbs",         name: "thumbnailer",       kind: "system", pid: 1221, cpu: 6.8,  mem:  248 },
-  { id: "backup",         name: "backup-agent",      kind: "system", pid: 1234, cpu: 1.4,  mem:   84 },
-  { id: "postgres",       name: "postgres",          kind: "data",   pid: 1080, cpu: 2.1,  mem:  640 },
-  { id: "redis",          name: "redis",             kind: "data",   pid: 1082, cpu: 0.4,  mem:  128 },
-  { id: "watchdog",       name: "watchdog",          kind: "system", pid: 1003, cpu: 0.2,  mem:   42 },
-  { id: "web",            name: "web-frontend",      kind: "system", pid: 1340, cpu: 0.9,  mem:  192 },
-];
-
-function jitter(base, amount) {
-  return Math.max(0, base + (Math.random() - 0.5) * amount * 2);
+function fmtDuration(seconds) {
+  if (seconds == null) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m ${seconds % 60}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
 }
 
 function Sparkline({ values, color = "var(--ink)", height = 28 }) {
-  if (!values.length) return null;
+  if (!values || !values.length) return null;
   const w = 120, h = height;
   const max = Math.max(...values, 1);
   const min = Math.min(...values, 0);
   const range = max - min || 1;
   const pts = values.map((v, i) => {
-    const x = (i / (values.length - 1)) * w;
+    const x = (i / Math.max(1, values.length - 1)) * w;
     const y = h - ((v - min) / range) * h;
     return x.toFixed(1) + "," + y.toFixed(1);
   }).join(" ");
@@ -101,44 +76,25 @@ function Sparkline({ values, color = "var(--ink)", height = 28 }) {
 
 export function AdminOverlay({ open, onClose }) {
   const [tab, setTab] = useStateAd("storage");
-  const [tick, setTick] = useStateAd(0);
-  const [procs, setProcs] = useStateAd(PROCS_BASE);
-  const [history, setHistory] = useStateAd({ cpu: [], gpu: [], mem: [], net: [] });
-  const [filter, setFilter] = useStateAd("all");
-  const [retraining, setRetraining] = useStateAd(null);
 
-  // simulate live metrics
-  useEffectAd(() => {
-    if (!open) return;
-    const t = setInterval(() => {
-      setTick(x => x + 1);
-      setProcs(prev => prev.map(p => ({
-        ...p,
-        cpu: +Math.max(0.1, jitter(p.cpu, p.cpu * 0.18)).toFixed(1),
-        mem: Math.round(jitter(p.mem, p.mem * 0.04)),
-      })));
-      setHistory(h => {
-        const next = (key, base, amp) => [...(h[key] || []), Math.round(jitter(base, amp))].slice(-32);
-        return {
-          cpu: next("cpu", 25, 14),
-          gpu: next("gpu", 60, 18),
-          mem: next("mem", 12, 1.6),
-          net: next("net", 14, 6),
-        };
-      });
-    }, 800);
-    return () => clearInterval(t);
-  }, [open]);
+  // Probe the live system snapshot once on open to drive the header
+  // line (host uptime). The same query feeds the System tab so the
+  // round-trip is shared.
+  const { data: systemSnap } = useQuery({
+    queryKey: ["admin-system"],
+    queryFn: getAdminSystem,
+    enabled: open,
+    staleTime: 8_000,
+    refetchInterval: open ? 8_000 : false,
+  });
 
-  const liveTasks = useMemoAd(() => TASKS_BASE.map(t => ({
-    ...t,
-    pct: Math.min(99, t.pct + (tick % 5) * t.rate),
-  })), [tick]);
-
-  const totalCPU = procs.reduce((s, p) => s + p.cpu, 0);
-  const totalMem = procs.reduce((s, p) => s + p.mem, 0);
-  const filteredProcs = filter === "all" ? procs : procs.filter(p => p.kind === filter);
-  const sortedProcs = [...filteredProcs].sort((a, b) => b.cpu - a.cpu);
+  const headerUptime = systemSnap?.uptime?.host_uptime_seconds;
+  const headerDisks = useQuery({
+    queryKey: ["admin-hardware-header"],
+    queryFn: getAdminHardware,
+    enabled: open,
+    staleTime: 20_000,
+  }).data?.disks?.[0];
 
   return (
     <ModalAd open={open} onClose={onClose} size="xl" labelledBy="ad-title">
@@ -149,9 +105,17 @@ export function AdminOverlay({ open, onClose }) {
             Admin console
           </h2>
           <p>
-            Box: <span className="mono">neuthek-box-7f2a · 192.168.1.41</span> ·
-            uptime <span className="mono">17 d 04:22</span> ·
-            disk <span className="mono">38% / 4 TB</span>
+            {systemSnap ? (
+              <>
+                Host: <span className="mono">{systemSnap.uptime.platform}</span> ·
+                uptime <span className="mono">{fmtDuration(headerUptime)}</span>
+                {headerDisks && (
+                  <> · disk <span className="mono">{headerDisks.percent}% / {admBytes(headerDisks.total_bytes)}</span></>
+                )}
+              </>
+            ) : (
+              <span style={{ color: "var(--ink-3)" }}>Loading host…</span>
+            )}
           </p>
         </div>
         <ModalCloseAd onClose={onClose}/>
@@ -159,9 +123,9 @@ export function AdminOverlay({ open, onClose }) {
 
       <div className="admin__tabs">
         {[
-          { id: "storage",   label: "Storage",   real: true },
-          { id: "users",     label: "Users",     real: true },
-          { id: "audit",     label: "Audit",     real: true },
+          { id: "storage",   label: "Storage" },
+          { id: "users",     label: "Users" },
+          { id: "audit",     label: "Audit" },
           { id: "models",    label: "Models" },
           { id: "tasks",     label: "Tasks" },
           { id: "logs",      label: "Logs" },
@@ -171,7 +135,6 @@ export function AdminOverlay({ open, onClose }) {
         ].map(t => (
           <button key={t.id} className="admin__tab" data-active={tab === t.id} onClick={() => setTab(t.id)}>
             {t.label}
-            {!t.real && <span style={{ marginLeft: 6, fontSize: 9, opacity: 0.6 }}>MOCK</span>}
           </button>
         ))}
       </div>
@@ -180,194 +143,18 @@ export function AdminOverlay({ open, onClose }) {
         {tab === "storage"   && <RealStorageTab open={open}/>}
         {tab === "users"     && <RealUsersTab open={open}/>}
         {tab === "audit"     && <RealAuditTab open={open}/>}
-
-        {/* MODELS */}
-        {tab === "models" && (
-          <div>
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Model</th><th>Size</th><th>Last trained</th><th>Samples</th><th>Threshold</th><th>Acc.</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {MODELS.map(m => (
-                  <tr key={m.id}>
-                    <td>
-                      <strong>{m.label}</strong>{" "}
-                      <span className="mono" style={{ color: "var(--ink-3)", fontSize: 11 }}>{m.id}.pkl</span>
-                    </td>
-                    <td className="mono">{m.size}</td>
-                    <td>{m.trained}</td>
-                    <td className="mono">{m.samples == null ? "—" : m.samples.toLocaleString()}</td>
-                    <td className="mono">{m.threshold == null ? "—" : m.threshold.toFixed(2)}</td>
-                    <td><span className="admin-acc">{m.accuracy}%</span></td>
-                    <td>
-                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                        <button className="btn btn--ghost btn--sm" disabled={m.samples == null || retraining === m.id}
-                                onClick={() => { setRetraining(m.id); setTimeout(() => setRetraining(null), 2200); }}>
-                          <Icon name={retraining === m.id ? "refresh" : "play"} size={11}/>
-                          {retraining === m.id ? "Training…" : "Retrain"}
-                        </button>
-                        <button className="btn btn--ghost btn--sm">
-                          <Icon name="download" size={11}/> Export .pkl
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            <div className="admin-callout">
-              <div className="admin-callout__title">Person re-ID is improving fastest</div>
-              <p>+2.1% accuracy over the last 7 days from 38 user confirmations. Safe to enable auto-tagging at the lower threshold (0.78).</p>
-            </div>
-          </div>
-        )}
-
-        {/* TASKS */}
-        {tab === "tasks" && (
-          <div className="admin-tasks">
-            {liveTasks.map(t => (
-              <div key={t.id} className="admin-task">
-                <div className="admin-task__head">
-                  <div>{t.label}</div>
-                  <div className="mono" style={{ color: "var(--ink-3)" }}>{Math.round(t.pct)}% · {t.eta}</div>
-                </div>
-                <div className="admin-progress"><div className="admin-progress__fill" style={{ width: t.pct + "%" }}/></div>
-              </div>
-            ))}
-            <button className="btn btn--secondary" style={{ marginTop: 14 }}>
-              <Icon name="plus" size={12}/> Queue full reindex
-            </button>
-          </div>
-        )}
-
-        {/* LOGS */}
-        {tab === "logs" && (
-          <pre className="admin-logs">
-            {LOG_LINES.map((l, i) => <div key={i}>{l}</div>)}
-            <div className="admin-logs__cursor">▍</div>
-          </pre>
-        )}
-
-        {/* SYSTEM */}
-        {tab === "system" && (
-          <div className="admin-system">
-            <div className="admin-card">
-              <div className="admin-card__label">CPU</div>
-              <div className="admin-card__num">{(history.cpu[history.cpu.length - 1] ?? 25)}<span>%</span></div>
-              <div className="admin-card__sub">8-core · idle {(100 - (history.cpu[history.cpu.length - 1] ?? 25))}%</div>
-              <Sparkline values={history.cpu}/>
-            </div>
-            <div className="admin-card">
-              <div className="admin-card__label">GPU</div>
-              <div className="admin-card__num">{(history.gpu[history.gpu.length - 1] ?? 60)}<span>%</span></div>
-              <div className="admin-card__sub">indexer running</div>
-              <Sparkline values={history.gpu} color="var(--ink-2)"/>
-            </div>
-            <div className="admin-card">
-              <div className="admin-card__label">Memory</div>
-              <div className="admin-card__num">{((history.mem[history.mem.length - 1] ?? 12)).toFixed(1)}<span>GB</span></div>
-              <div className="admin-card__sub">of 32 GB</div>
-              <Sparkline values={history.mem} color="var(--ink-2)"/>
-            </div>
-            <div className="admin-card">
-              <div className="admin-card__label">Storage</div>
-              <div className="admin-card__num">1.5<span>TB</span></div>
-              <div className="admin-card__sub">of 4 TB · 2.5 TB free</div>
-            </div>
-            <div className="admin-card">
-              <div className="admin-card__label">Network</div>
-              <div className="admin-card__num">↑{Math.round(history.net[history.net.length - 1] ?? 14)} ↓{Math.round((history.net[history.net.length - 1] ?? 14) / 3)}<span>MB/s</span></div>
-              <div className="admin-card__sub">2 active sessions</div>
-              <Sparkline values={history.net} color="var(--ink-2)"/>
-            </div>
-            <div className="admin-card">
-              <div className="admin-card__label">Backup</div>
-              <div className="admin-card__num">03:00<span>UTC</span></div>
-              <div className="admin-card__sub">nightly → SSD</div>
-            </div>
-          </div>
-        )}
-
-        {/* PROCESSES */}
-        {tab === "processes" && (
-          <div>
-            <div className="admin-proc__head">
-              <div className="admin-proc__totals">
-                <span>Total CPU <strong className="mono">{totalCPU.toFixed(1)}%</strong></span>
-                <span style={{ marginLeft: 18 }}>Total RAM <strong className="mono">{(totalMem / 1024).toFixed(1)} GB</strong></span>
-                <span style={{ marginLeft: 18 }}>Processes <strong className="mono">{procs.length}</strong></span>
-              </div>
-              <div className="admin-proc__filters">
-                {["all", "ai", "system", "data"].map(f => (
-                  <button key={f} className="admin-proc__filter" data-active={filter === f} onClick={() => setFilter(f)}>{f}</button>
-                ))}
-              </div>
-            </div>
-            <table className="admin-table admin-table--compact">
-              <thead>
-                <tr>
-                  <th>Process</th><th>PID</th><th>Kind</th><th style={{ textAlign: "right" }}>CPU</th><th style={{ textAlign: "right" }}>RAM</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedProcs.map(p => (
-                  <tr key={p.id}>
-                    <td><span className="mono">{p.name}</span></td>
-                    <td className="mono" style={{ color: "var(--ink-3)" }}>{p.pid}</td>
-                    <td><span className="admin-kind" data-kind={p.kind}>{p.kind}</span></td>
-                    <td className="mono" style={{ textAlign: "right" }}>
-                      <span className="admin-bar"><span className="admin-bar__fill" style={{ width: Math.min(100, p.cpu * 2) + "%" }}/></span>
-                      {p.cpu.toFixed(1)}%
-                    </td>
-                    <td className="mono" style={{ textAlign: "right" }}>{p.mem >= 1024 ? (p.mem/1024).toFixed(1) + " GB" : p.mem + " MB"}</td>
-                    <td>
-                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-                        <button className="btn btn--ghost btn--sm" title="Restart"><Icon name="refresh" size={10}/></button>
-                        <button className="btn btn--ghost btn--sm" title="Stop"><Icon name="x" size={10}/></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* HARDWARE */}
-        {tab === "hardware" && (
-          <div className="admin-hw">
-            <div className="admin-hw__group">
-              <div className="admin-hw__group-title">Compute</div>
-              <div className="admin-hw__row"><span>CPU</span><strong className="mono">AMD Ryzen 7 7700X · 8C / 16T · 4.5 GHz</strong></div>
-              <div className="admin-hw__row"><span>GPU</span><strong className="mono">NVIDIA RTX 4060 Ti · 16 GB VRAM</strong></div>
-              <div className="admin-hw__row"><span>Memory</span><strong className="mono">32 GB DDR5-5600 · 2 × 16 GB</strong></div>
-              <div className="admin-hw__row"><span>NPU</span><strong className="mono">Hailo-8 · 26 TOPS · idle</strong></div>
-            </div>
-            <div className="admin-hw__group">
-              <div className="admin-hw__group-title">Storage</div>
-              <div className="admin-hw__row"><span>Primary</span><strong className="mono">Samsung 990 Pro · 4 TB NVMe · 38% used</strong></div>
-              <div className="admin-hw__row"><span>Backup</span><strong className="mono">Seagate IronWolf · 8 TB · 71% used</strong></div>
-              <div className="admin-hw__row"><span>SMART</span><strong className="mono" style={{ color: "var(--success, #2c7a4b)" }}>All disks healthy</strong></div>
-            </div>
-            <div className="admin-hw__group">
-              <div className="admin-hw__group-title">Network · Power · Thermal</div>
-              <div className="admin-hw__row"><span>NIC</span><strong className="mono">Intel I226-V · 2.5 GbE · link up</strong></div>
-              <div className="admin-hw__row"><span>Wi-Fi</span><strong className="mono">Wi-Fi 6E · –42 dBm · 5G band</strong></div>
-              <div className="admin-hw__row"><span>PSU</span><strong className="mono">450 W gold · drawing 78 W</strong></div>
-              <div className="admin-hw__row"><span>UPS</span><strong className="mono">APC BX1500M · 100% · ~38 min runtime</strong></div>
-              <div className="admin-hw__row"><span>CPU temp</span><strong className="mono">52 °C · fan 34%</strong></div>
-              <div className="admin-hw__row"><span>GPU temp</span><strong className="mono">61 °C · fan 41%</strong></div>
-            </div>
-          </div>
-        )}
+        {tab === "models"    && <RealModelsTab open={open}/>}
+        {tab === "tasks"     && <RealTasksTab open={open}/>}
+        {tab === "logs"      && <RealLogsTab open={open}/>}
+        {tab === "system"    && <RealSystemTab open={open} snap={systemSnap}/>}
+        {tab === "processes" && <RealProcessesTab open={open}/>}
+        {tab === "hardware"  && <RealHardwareTab open={open}/>}
       </div>
 
       <div className="modal__foot">
-        <span className="modal__foot-left mono">neuthek-os v0.4.2 · build 1f3a9c · live</span>
+        <span className="modal__foot-left mono">
+          neuthek {systemSnap?.version || "0.1.0"} · env {systemSnap?.env || "?"} · live
+        </span>
         <div className="modal__foot-actions">
           <button className="btn btn--secondary" onClick={onClose}>Close</button>
         </div>
@@ -376,7 +163,8 @@ export function AdminOverlay({ open, onClose }) {
   );
 }
 
-// Real-data sub-tabs — backed by /admin/storage, /admin/users, /admin/audit.
+// ---------- Storage (unchanged from before §1.3) ----------
+
 function RealStorageTab({ open }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["admin-storage"],
@@ -430,6 +218,8 @@ function RealStorageTab({ open }) {
     </div>
   );
 }
+
+// ---------- Users (unchanged) ----------
 
 function RoleCell({ user }) {
   const qc = useQueryClient();
@@ -583,6 +373,8 @@ function RealUsersTab({ open }) {
   );
 }
 
+// ---------- Audit (unchanged) ----------
+
 function RealAuditTab({ open }) {
   const [actionPrefix, setActionPrefix] = useStateAd("");
   const { data, isLoading } = useQuery({
@@ -622,4 +414,378 @@ function RealAuditTab({ open }) {
   );
 }
 
-// Named export above; legacy `window.AdminOverlay` removed.
+// ---------- §1.3 — un-mocked tabs ----------
+
+function RealModelsTab({ open }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-models"],
+    queryFn: getAdminModels,
+    enabled: open,
+    staleTime: 60_000,
+  });
+  if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  if (!data) return null;
+  return (
+    <div>
+      <div className="admin-callout" style={{ marginBottom: 14 }}>
+        <div className="admin-callout__title">
+          Inference backend: <span className="mono">{data.inference_backend}</span>
+        </div>
+        <p>
+          {data.gpu_available
+            ? "GPU detected; vision models load on CUDA when the worker boots."
+            : "No GPU detected — models load on CPU. Performance will be lower."}
+        </p>
+      </div>
+      <table className="admin-table">
+        <thead>
+          <tr>
+            <th>Role</th><th>Model</th><th>Variant</th><th>Enabled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.models.map((m) => (
+            <tr key={m.id}>
+              <td>
+                <strong>{m.label}</strong>
+                <div style={{ color: "var(--ink-3)", fontSize: 11 }}>{m.role}</div>
+              </td>
+              <td className="mono">{m.name}</td>
+              <td className="mono" style={{ color: "var(--ink-3)" }}>{m.variant || "—"}</td>
+              <td>
+                {m.enabled
+                  ? <span className="admin-acc">on</span>
+                  : <span style={{ color: "var(--ink-3)" }}>off</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ color: "var(--ink-3)", fontSize: 11, marginTop: 12 }}>
+        Per-model memory and run history will appear here once
+        C8.2 lands the model_runs table.
+      </div>
+    </div>
+  );
+}
+
+function RealTasksTab({ open }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-tasks"],
+    queryFn: getAdminTasks,
+    enabled: open,
+    staleTime: 4_000,
+    refetchInterval: open ? 4_000 : false,
+  });
+  if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  if (!data) return null;
+  const queue = data.queue;
+  return (
+    <div>
+      <div className="admin-system" style={{ marginBottom: 14 }}>
+        <div className="admin-card">
+          <div className="admin-card__label">Queue depth</div>
+          <div className="admin-card__num">{queue.reachable ? queue.depth : "—"}</div>
+          <div className="admin-card__sub">{queue.queue_key || "redis unreachable"}</div>
+        </div>
+        <div className="admin-card">
+          <div className="admin-card__label">In-flight</div>
+          <div className="admin-card__num">{queue.reachable ? queue.active : "—"}</div>
+          <div className="admin-card__sub">dedupe set size</div>
+        </div>
+        <div className="admin-card">
+          <div className="admin-card__label">Redis</div>
+          <div className="admin-card__num" style={{ color: queue.reachable ? "var(--success, #2c7a4b)" : "var(--danger, #c0392b)" }}>
+            {queue.reachable ? "OK" : "DOWN"}
+          </div>
+          <div className="admin-card__sub">job queue backend</div>
+        </div>
+      </div>
+      <div className="admin-callout">
+        <div className="admin-callout__title">Recent task activity</div>
+        <p>
+          Most-recent 50 image / share / recovery-code events from the
+          audit log. True per-job progress lands with the C8.2
+          background_jobs table.
+        </p>
+      </div>
+      <pre className="admin-logs">
+        {data.recent.length === 0 ? (
+          <div style={{ color: "var(--ink-3)" }}>No recent activity.</div>
+        ) : data.recent.map((e) => (
+          <div key={e.id}>
+            [{new Date(e.created_at).toISOString().slice(0, 19).replace("T", " ")}] {e.action}
+            {e.user_id ? ` user=${e.user_id.slice(0, 8)}` : ""}
+            {e.details ? ` ${JSON.stringify(e.details).slice(0, 220)}` : ""}
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
+}
+
+function RealLogsTab({ open }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-logs"],
+    queryFn: () => getAdminLogs(200),
+    enabled: open,
+    staleTime: 5_000,
+    refetchInterval: open ? 5_000 : false,
+  });
+  if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  if (!data) return null;
+  return (
+    <pre className="admin-logs">
+      {data.lines.length === 0 ? (
+        <div style={{ color: "var(--ink-3)" }}>No log lines yet — every audit event will appear here.</div>
+      ) : data.lines.map((l) => (
+        <div key={l.id}>
+          [{new Date(l.created_at).toISOString().slice(0, 19).replace("T", " ")}] {l.action}
+          {l.user_id ? ` user=${l.user_id.slice(0, 8)}` : ""}
+          {l.details ? ` ${JSON.stringify(l.details).slice(0, 220)}` : ""}
+        </div>
+      ))}
+      <div className="admin-logs__cursor">▍</div>
+    </pre>
+  );
+}
+
+function RealSystemTab({ open, snap }) {
+  // System cards: uptime, env, DB pool, Redis, MinIO. The host CPU /
+  // memory live on /admin/hardware; we render them here too because
+  // operators expect the System tab to show "is the box happy."
+  const { data: hw } = useQuery({
+    queryKey: ["admin-hardware-system"],
+    queryFn: getAdminHardware,
+    enabled: open,
+    staleTime: 5_000,
+    refetchInterval: open ? 5_000 : false,
+  });
+
+  // Keep a small rolling history per metric so the sparkline shows
+  // motion. Sourced from real samples — no jitter.
+  const historyRef = useRefAd({ cpu: [], mem: [], queue: [] });
+  useEffectAd(() => {
+    if (!hw || !snap) return;
+    const h = historyRef.current;
+    h.cpu = [...h.cpu, hw.cpu.percent].slice(-32);
+    h.mem = [...h.mem, Math.round((hw.memory.used_bytes / 1024 / 1024 / 1024) * 10) / 10].slice(-32);
+    h.queue = [...h.queue, snap.redis?.queue_depth ?? 0].slice(-32);
+  }, [hw, snap]);
+
+  if (!snap) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  const memUsedGB = hw ? (hw.memory.used_bytes / 1024 / 1024 / 1024).toFixed(1) : "—";
+  const memTotalGB = hw ? (hw.memory.total_bytes / 1024 / 1024 / 1024).toFixed(0) : "—";
+  return (
+    <div className="admin-system">
+      <div className="admin-card">
+        <div className="admin-card__label">CPU</div>
+        <div className="admin-card__num">{hw ? hw.cpu.percent.toFixed(0) : "—"}<span>%</span></div>
+        <div className="admin-card__sub">
+          {hw ? `${hw.cpu.logical_cores} cores · idle ${(100 - hw.cpu.percent).toFixed(0)}%` : ""}
+        </div>
+        <Sparkline values={historyRef.current.cpu}/>
+      </div>
+      <div className="admin-card">
+        <div className="admin-card__label">Memory</div>
+        <div className="admin-card__num">{memUsedGB}<span>GB</span></div>
+        <div className="admin-card__sub">of {memTotalGB} GB · {hw ? hw.memory.percent.toFixed(0) : "—"}%</div>
+        <Sparkline values={historyRef.current.mem} color="var(--ink-2)"/>
+      </div>
+      <div className="admin-card">
+        <div className="admin-card__label">Uptime</div>
+        <div className="admin-card__num">{fmtDuration(snap.uptime.process_uptime_seconds).split(" ")[0]}</div>
+        <div className="admin-card__sub">API process · py {snap.uptime.python_version}</div>
+      </div>
+      <div className="admin-card">
+        <div className="admin-card__label">Host</div>
+        <div className="admin-card__num" style={{ fontSize: 16 }}>{snap.uptime.platform.split("-").slice(0, 2).join(" ")}</div>
+        <div className="admin-card__sub">env {snap.env} · up {fmtDuration(snap.uptime.host_uptime_seconds)}</div>
+      </div>
+      <div className="admin-card">
+        <div className="admin-card__label">DB pool</div>
+        <div className="admin-card__num" style={{ color: snap.db_pool.reachable ? undefined : "var(--danger)" }}>
+          {snap.db_pool.checked_out ?? "—"}<span>/{snap.db_pool.size ?? "—"}</span>
+        </div>
+        <div className="admin-card__sub">checked-out / pool size</div>
+      </div>
+      <div className="admin-card">
+        <div className="admin-card__label">Redis</div>
+        <div className="admin-card__num" style={{ color: snap.redis.reachable ? undefined : "var(--danger)" }}>
+          {snap.redis.reachable ? admBytes(snap.redis.memory_used_bytes || 0) : "DOWN"}
+        </div>
+        <div className="admin-card__sub">
+          {snap.redis.reachable ? `${snap.redis.dbsize} keys · queue ${snap.redis.queue_depth}` : (snap.redis.error || "")}
+        </div>
+        <Sparkline values={historyRef.current.queue} color="var(--ink-2)"/>
+      </div>
+      <div className="admin-card" style={{ gridColumn: "span 2" }}>
+        <div className="admin-card__label">MinIO buckets</div>
+        {snap.minio.reachable ? (
+          <table className="admin-table admin-table--compact" style={{ marginTop: 8 }}>
+            <thead>
+              <tr><th>Bucket</th><th style={{ textAlign: "right" }}>Objects</th><th style={{ textAlign: "right" }}>Size</th></tr>
+            </thead>
+            <tbody>
+              {(snap.minio.buckets || []).map((b) => (
+                <tr key={b.name}>
+                  <td className="mono">{b.name}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{(b.objects ?? 0).toLocaleString()}</td>
+                  <td className="mono" style={{ textAlign: "right" }}>{admBytes(b.size_bytes ?? 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div style={{ color: "var(--danger)" }}>{snap.minio.error || "unreachable"}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RealProcessesTab({ open }) {
+  const [filter, setFilter] = useStateAd("all");
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-processes"],
+    queryFn: () => getAdminProcesses(20),
+    enabled: open,
+    staleTime: 5_000,
+    refetchInterval: open ? 5_000 : false,
+  });
+  if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  if (!data) return null;
+  const rows = filter === "all" ? data.processes : data.processes.filter(p => p.kind === filter);
+  return (
+    <div>
+      <div className="admin-proc__head">
+        <div className="admin-proc__totals">
+          <span>Top {data.processes.length} CPU <strong className="mono">{data.totals.cpu_percent_sum.toFixed(1)}%</strong></span>
+          <span style={{ marginLeft: 18 }}>Total RAM <strong className="mono">{admBytes(data.totals.memory_rss_bytes_sum)}</strong></span>
+          <span style={{ marginLeft: 18 }}>Sampled <strong className="mono">{data.totals.count}</strong></span>
+        </div>
+        <div className="admin-proc__filters">
+          {["all", "api", "ai", "data", "system"].map(f => (
+            <button key={f} className="admin-proc__filter" data-active={filter === f} onClick={() => setFilter(f)}>{f}</button>
+          ))}
+        </div>
+      </div>
+      <table className="admin-table admin-table--compact">
+        <thead>
+          <tr>
+            <th>Process</th><th>PID</th><th>Kind</th><th>User</th>
+            <th style={{ textAlign: "right" }}>CPU</th>
+            <th style={{ textAlign: "right" }}>RAM</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(p => (
+            <tr key={p.pid}>
+              <td>
+                <span className="mono">{p.name}</span>
+                {p.cmdline && (
+                  <div style={{ color: "var(--ink-3)", fontSize: 10, marginTop: 2 }} title={p.cmdline}>
+                    {p.cmdline.length > 70 ? p.cmdline.slice(0, 70) + "…" : p.cmdline}
+                  </div>
+                )}
+              </td>
+              <td className="mono" style={{ color: "var(--ink-3)" }}>{p.pid}</td>
+              <td><span className="admin-kind" data-kind={p.kind}>{p.kind}</span></td>
+              <td className="mono" style={{ color: "var(--ink-3)", fontSize: 11 }}>{p.username || "—"}</td>
+              <td className="mono" style={{ textAlign: "right" }}>
+                <span className="admin-bar"><span className="admin-bar__fill" style={{ width: Math.min(100, p.cpu_percent) + "%" }}/></span>
+                {p.cpu_percent.toFixed(1)}%
+              </td>
+              <td className="mono" style={{ textAlign: "right" }}>{admBytes(p.memory_rss_bytes)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RealHardwareTab({ open }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-hardware"],
+    queryFn: getAdminHardware,
+    enabled: open,
+    staleTime: 10_000,
+    refetchInterval: open ? 10_000 : false,
+  });
+  if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  if (!data) return null;
+  return (
+    <div className="admin-hw">
+      <div className="admin-hw__group">
+        <div className="admin-hw__group-title">Compute</div>
+        <div className="admin-hw__row">
+          <span>CPU</span>
+          <strong className="mono">
+            {data.cpu.brand || "Unknown"} · {data.cpu.physical_cores ?? "?"}C / {data.cpu.logical_cores ?? "?"}T
+            {data.cpu.freq?.current_mhz ? ` · ${(data.cpu.freq.current_mhz/1000).toFixed(1)} GHz` : ""}
+          </strong>
+        </div>
+        <div className="admin-hw__row">
+          <span>CPU load</span>
+          <strong className="mono">
+            {data.cpu.percent.toFixed(0)}% now
+            {data.cpu.load_avg_1_5_15 ? ` · load ${data.cpu.load_avg_1_5_15.map(n => n.toFixed(2)).join(" / ")}` : ""}
+          </strong>
+        </div>
+        <div className="admin-hw__row">
+          <span>Memory</span>
+          <strong className="mono">
+            {admBytes(data.memory.used_bytes)} / {admBytes(data.memory.total_bytes)} ({data.memory.percent.toFixed(0)}%)
+          </strong>
+        </div>
+        <div className="admin-hw__row">
+          <span>Swap</span>
+          <strong className="mono">
+            {data.memory.swap_total_bytes
+              ? `${admBytes(data.memory.swap_used_bytes)} / ${admBytes(data.memory.swap_total_bytes)}`
+              : "—"}
+          </strong>
+        </div>
+        <div className="admin-hw__row">
+          <span>GPU</span>
+          <strong className="mono" style={{ color: data.gpu.available ? "var(--success, #2c7a4b)" : "var(--ink-3)" }}>
+            {data.gpu.available
+              ? `${data.gpu.devices.length} device${data.gpu.devices.length === 1 ? "" : "s"} · ${data.gpu.backend}`
+              : "no GPU detected"}
+          </strong>
+        </div>
+        {data.gpu.devices.map((g) => (
+          <div className="admin-hw__row" key={g.index} style={{ paddingLeft: 16 }}>
+            <span>↳ {g.name}</span>
+            <strong className="mono">
+              {g.total_memory_bytes ? admBytes(g.total_memory_bytes) : "—"}
+              {g.utilization_percent != null ? ` · ${g.utilization_percent}% util` : ""}
+              {g.allocated_memory_bytes != null ? ` · ${admBytes(g.allocated_memory_bytes)} in use` : ""}
+            </strong>
+          </div>
+        ))}
+      </div>
+
+      <div className="admin-hw__group">
+        <div className="admin-hw__group-title">Storage</div>
+        {data.disks.length === 0 ? (
+          <div style={{ color: "var(--ink-3)" }}>No disks reported by psutil.</div>
+        ) : data.disks.map((d) => (
+          <div className="admin-hw__row" key={d.mountpoint}>
+            <span>{d.mountpoint}</span>
+            <strong className="mono">
+              {d.device} ({d.fstype}) · {admBytes(d.used_bytes)} / {admBytes(d.total_bytes)} · {d.percent.toFixed(0)}% used
+            </strong>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ color: "var(--ink-3)", fontSize: 11, marginTop: 12 }}>
+        SMART, fan, thermal, NIC and PSU probes need vendor-specific
+        tools (per §F1 hardware-vendor dispatch). They will surface here
+        once that pass lands.
+      </div>
+    </div>
+  );
+}
