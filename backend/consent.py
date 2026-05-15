@@ -49,7 +49,8 @@ RETENTION_DAYS = 3 * 365  # 3 years from grant per BIPA §15(a)
 # DB column from accumulating typos / arbitrary values.
 SUPPORTED_SCOPES: tuple[str, ...] = (
     "face_recognition",      # Pass B face detection + clustering
-    "gps_retention",         # store EXIF GPS in image_geo
+    "gps_retention",         # store EXIF GPS in image_geo + keep GPS tags in originals
+    "exif_retention",        # §B1 — keep camera EXIF (Make/Model/lens/DateTimeOriginal) in originals
     "ai_summary",             # Florence-2/Qwen scene + topic summaries
     "semantic_search",        # CLIP embeddings retained for vector search
     "bandit_compression_telemetry",  # LinUCB reward signals

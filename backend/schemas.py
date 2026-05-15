@@ -14,15 +14,53 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     totp_enabled: bool = False
 
 
+class ConsentBundleItem(BaseModel):
+    """One consent grant submitted in the §B2 registration payload.
+
+    Each item names a `SUPPORTED_SCOPES` entry (face_recognition /
+    gps_retention / exif_retention / ai_summary / semantic_search /
+    bandit_compression_telemetry) plus the user's explicit decision.
+    Decisions are persisted as ConsentRecord rows during the
+    `on_after_register` hook; collecting them at signup satisfies the
+    legal requirement that informed consent precedes data collection.
+    """
+    kind: str = Field(..., min_length=1, max_length=64)
+    state: str = Field(..., pattern="^(GRANTED|WITHDRAWN)$")
+
+
 class UserCreate(schemas.BaseUserCreate):
     display_name: str | None = None
     age_confirmed: bool = Field(..., description="Must be true; under-13 use is prohibited.")
+    # §B2 — accept consent decisions at registration time so the
+    # consent ledger predates the account row. The legacy flow
+    # (consents POSTed AFTER /auth/register) still works — this
+    # field is optional, and the user manager folds whatever's here
+    # into the ConsentRecord table inside the same on_after_register
+    # transaction that finalizes the user.
+    consents: list[ConsentBundleItem] | None = None
+    # Free-text the user typed as their consent signature; persisted
+    # on every grant row for the chain-of-custody record. Optional —
+    # the legacy /consent/{kind}/grant endpoint still wants a
+    # signature; for the register-bundled path we use display_name or
+    # email as the fallback when this field is empty.
+    consent_signature: str | None = None
 
     @model_validator(mode="after")
     def _require_age_gate(self) -> "UserCreate":
         if self.age_confirmed is not True:
             raise ValueError("You must confirm you are old enough to use neuthek.")
         return self
+
+    def create_update_dict(self):
+        # fastapi-users folds this dict straight into User(**dict). The
+        # `consents` + `consent_signature` fields are §B2 sidecar data
+        # that the UserManager.create() override pulls out manually
+        # before delegating to super(); strip them here so the User
+        # __init__ doesn't choke on unknown columns.
+        return {
+            k: v for k, v in super().create_update_dict().items()
+            if k not in {"consents", "consent_signature"}
+        }
 
 
 class UserUpdate(schemas.BaseUserUpdate):

@@ -103,6 +103,15 @@ class Settings(BaseSettings):
     # window while keeping bucket growth bounded.
     upload_quarantine_retention_days: int = Field(default=30)
 
+    # §B4 — retention sweepers. Each value is "days past which the
+    # sweeper acts." All three default to the §B4 spec horizons.
+    feedback_retention_days: int = Field(default=90)
+    audit_log_retention_days: int = Field(default=365)
+    account_delete_grace_days: int = Field(default=30)
+    # §B3 — /account/export rate limit. One full export per N hours
+    # per user (24h = once a day per §B3).
+    account_export_min_hours_between: int = Field(default=24)
+
     download_url_ttl_seconds: int = Field(default=300)
     require_signed_downloads: bool = Field(default=False)
 

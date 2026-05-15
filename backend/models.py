@@ -49,6 +49,15 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # §B4 — account-deletion grace window. /account/schedule-delete
+    # stamps this column to `now + ACCOUNT_DELETE_GRACE_DAYS` instead
+    # of nuking the row outright. The nightly sweep
+    # (retention.sweep_scheduled_account_deletes) picks up anything
+    # whose timestamp has passed. /account/cancel-delete clears it.
+    scheduled_delete_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
     images: Mapped[list["Image"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

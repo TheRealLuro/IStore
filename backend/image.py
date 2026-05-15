@@ -85,6 +85,50 @@ async def _upsert_tags(
         session.add(ImageTag(image_id=image.id, tag_id=tag.id, confidence=score))
 
 
+def _strip_exif_bytes(data: bytes, mime: str | None) -> bytes | None:
+    """Return a copy of `data` with the EXIF block removed.
+
+    §B1: when the user hasn't opted into `gps_retention` or
+    `exif_retention`, the originals bucket should never see EXIF
+    metadata. We re-encode through Pillow without the `exif=` kwarg
+    so the output has no APP1 marker / no embedded GPS / camera
+    fingerprint. Returns the new bytes, or None when we can't
+    safely strip (unknown format, decode failure) — caller falls
+    back to the original bytes so we never silently produce broken
+    output.
+
+    JPEG / WebP / TIFF are the formats that carry EXIF in our
+    pipeline; PNG/GIF don't. For PNG/GIF this is a no-op (returns
+    the input bytes unchanged so the caller's hash math stays
+    stable).
+    """
+    if not mime or not mime.startswith("image/"):
+        return None
+    if mime in {"image/png", "image/gif"}:
+        # No EXIF in these formats — nothing to strip.
+        return data
+    try:
+        with PILImage.open(BytesIO(data)) as pil:
+            pil.load()
+            out = BytesIO()
+            if mime == "image/jpeg":
+                pil.convert("RGB").save(
+                    out, format="JPEG", quality=95, optimize=True,
+                )
+            elif mime == "image/webp":
+                pil.save(out, format="WEBP", lossless=True)
+            elif mime == "image/tiff":
+                # Sanitize already converts TIFF→PNG for served; for
+                # originals we keep TIFF but drop EXIF.
+                pil.save(out, format="TIFF")
+            else:
+                return None
+            return out.getvalue()
+    except Exception:
+        logger.exception("strip_exif: re-encode failed; keeping original bytes")
+        return None
+
+
 def _exif_gps(raw_bytes: bytes) -> dict | None:
     """Return `{lat, lng, taken_at, captured_with}` from a JPEG/HEIC/TIFF
     EXIF block, or None if GPS isn't present / valid.
@@ -202,6 +246,22 @@ async def store_upload(
 
     if category != "image":
         return await _store_non_image(session, user, filename, raw_bytes, content_type, sha, category)
+
+    # §B1 — strip EXIF from originals unless the user has explicitly
+    # opted in. `gps_retention` keeps GPS subset, `exif_retention` keeps
+    # camera/lens subset; if neither is granted we re-encode without
+    # the EXIF blob entirely. We do this BEFORE handing bytes to the
+    # bandit compressor / originals bucket so neither path ever sees
+    # the unstripped variant. raw_for_metadata is preserved so the
+    # gps-extraction code below can still read GPS *iff* the consent
+    # is on (it'll have been kept in raw_bytes too in that case).
+    keep_gps = await is_scope_active(session, user.id, "gps_retention")
+    keep_camera = await is_scope_active(session, user.id, "exif_retention")
+    if not (keep_gps or keep_camera):
+        stripped = _strip_exif_bytes(raw_bytes, content_type)
+        if stripped is not None:
+            raw_bytes = stripped
+            sha = hashlib.sha256(raw_bytes).digest()
 
     # Width / height come pre-computed from validate_upload's PIL pass.
     # The previous duplicate `PILImage.open(...)` here was a 50-200 ms

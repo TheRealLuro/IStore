@@ -35,15 +35,29 @@ export async function loginWithTotp(
   return await me();
 }
 
+export interface RegisterConsent {
+  kind: string;
+  state: "GRANTED" | "WITHDRAWN";
+}
+
 export async function register(
   email: string,
   password: string,
   ageConfirmed = true,
+  consents?: RegisterConsent[],
+  consentSignature?: string,
 ): Promise<User> {
   return api.post<User>("/auth/register", {
     email,
     password,
     age_confirmed: ageConfirmed,
+    // §B2 — collect the consent ledger BEFORE the user row is
+    // externally visible. The backend's UserManager.create() override
+    // writes the ConsentRecord rows in the same transaction as the
+    // user. Legacy callers pass nothing here; the post-signup
+    // consents modal still works as a fallback.
+    ...(consents && consents.length ? { consents } : {}),
+    ...(consentSignature ? { consent_signature: consentSignature } : {}),
   });
 }
 

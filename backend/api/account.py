@@ -25,7 +25,7 @@ import json
 import logging
 import secrets
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.audit import add_audit
 from backend.auth.users import current_active_user, get_jwt_strategy
+from backend.config import settings
 from backend.db import get_session
 from backend.deletion import hard_delete_images
 from backend.email_send import send_recovery_codes_email
@@ -54,7 +55,13 @@ from backend.models import (
     Tag,
     User,
 )
-from backend.retention import sweep_expired_originals, sweep_expired_quarantine
+from backend.retention import (
+    sweep_audit_log_anonymize,
+    sweep_expired_originals,
+    sweep_expired_quarantine,
+    sweep_feedback_events,
+    sweep_scheduled_account_deletes,
+)
 from backend.storage import storage
 from backend.trainer import apply_drift_discount, consume_feedback
 
@@ -244,6 +251,104 @@ async def delete_account(
     )
 
 
+# ---------- §B4 — scheduled deletion with grace window ----------
+
+
+class ScheduledDeleteStatus(BaseModel):
+    scheduled_delete_at: datetime | None
+    grace_days: int
+
+
+@router.post("/schedule-delete", response_model=ScheduledDeleteStatus)
+async def schedule_account_delete(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScheduledDeleteStatus:
+    """Stage account deletion with a grace window.
+
+    Sets `users.scheduled_delete_at = now + ACCOUNT_DELETE_GRACE_DAYS`.
+    The nightly `sweep_scheduled_account_deletes` worker hard-deletes
+    everything past that timestamp via the same path
+    `/account/delete` uses today. The user can call
+    `/account/cancel-delete` before the timestamp to abort.
+
+    Idempotent on the timestamp: re-calling extends the deadline
+    forward by another grace window. The new value goes to the audit
+    log so we can prove the user's intent + reset chain.
+
+    Why a separate route from /account/delete: the existing immediate
+    route is what callers expect to nuke the account on click; the
+    grace flow is a friendlier option for self-serve teardown that
+    a UI prompt can cancel from.
+    """
+    grace_days = settings.account_delete_grace_days
+    if grace_days <= 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Grace days must be positive")
+    new_at = datetime.now(timezone.utc) + timedelta(days=grace_days)
+    refreshed = (
+        await session.execute(select(User).where(User.id == user.id))
+    ).scalar_one()
+    refreshed.scheduled_delete_at = new_at
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="account.delete.scheduled",
+        details={
+            "scheduled_delete_at": new_at.isoformat(),
+            "grace_days": grace_days,
+        },
+    )
+    await session.commit()
+    return ScheduledDeleteStatus(
+        scheduled_delete_at=new_at, grace_days=grace_days,
+    )
+
+
+@router.post("/cancel-delete", response_model=ScheduledDeleteStatus)
+async def cancel_account_delete(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScheduledDeleteStatus:
+    """Abort a previously scheduled deletion before the sweeper runs.
+
+    Idempotent: no-op if `scheduled_delete_at` is already NULL. Audit
+    row written either way so the cancellation trail survives even
+    after the user later schedules + cancels multiple times.
+    """
+    refreshed = (
+        await session.execute(select(User).where(User.id == user.id))
+    ).scalar_one()
+    prev = refreshed.scheduled_delete_at
+    refreshed.scheduled_delete_at = None
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="account.delete.canceled",
+        details={"previous_scheduled_at": prev.isoformat() if prev else None},
+    )
+    await session.commit()
+    return ScheduledDeleteStatus(
+        scheduled_delete_at=None,
+        grace_days=settings.account_delete_grace_days,
+    )
+
+
+@router.get("/schedule-delete", response_model=ScheduledDeleteStatus)
+async def get_scheduled_delete(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScheduledDeleteStatus:
+    """Read-only — current scheduled-delete state for the calling user.
+    Drives the settings UI's "deletion scheduled for X — cancel?" row."""
+    refreshed = (
+        await session.execute(select(User).where(User.id == user.id))
+    ).scalar_one()
+    return ScheduledDeleteStatus(
+        scheduled_delete_at=refreshed.scheduled_delete_at,
+        grace_days=settings.account_delete_grace_days,
+    )
+
+
 async def _verify_account_deleted(session: AsyncSession, user_id: UUID) -> dict[str, int]:
     checks = {
         "users": "SELECT count(*) FROM users WHERE id = :uid",
@@ -358,6 +463,20 @@ async def _build_export_zip(
                 "deleted_at": i.deleted_at.isoformat() if i.deleted_at else None,
                 "tags": tags_by_image.get(str(i.id), []),
                 "original_retained": i.original_blob_key is not None,
+                # §B3 — CLIP embedding is the user's own data; ship it
+                # in the export. 768 floats per row; the user knows
+                # what to do with it (search export tooling, model
+                # fingerprinting, deletion verification). Note in the
+                # readme that exporting + re-sharing the embedding
+                # exposes a privacy-sensitive vector.
+                "clip_embedding": (
+                    list(i.clip_embedding)
+                    if getattr(i, "clip_embedding", None) is not None
+                    else None
+                ),
+                "summary": i.summary,
+                "summary_topic": i.summary_topic,
+                "summary_points": i.summary_points,
             }
             for i in images
         ],
@@ -536,14 +655,66 @@ async def empty_account_trash(
     return {"deleted": len(rows)}
 
 
+async def _enforce_export_rate_limit(
+    session: AsyncSession, user_id: UUID
+) -> None:
+    """§B3 — one full export per `account_export_min_hours_between` per
+    user. The audit log is the canonical source so the limit holds
+    across restarts / replicas; no need for Redis.
+
+    Raises 429 with a `Retry-After` header so a polite client can
+    schedule the retry without polling.
+    """
+    hours = settings.account_export_min_hours_between
+    if hours <= 0:
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    recent = (
+        await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.user_id == user_id,
+                AuditLog.action == "account.export",
+                AuditLog.created_at >= cutoff,
+            )
+            .order_by(AuditLog.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if recent is None:
+        return
+    next_allowed = recent.created_at + timedelta(hours=hours)
+    retry_after = max(1, int((next_allowed - datetime.now(timezone.utc)).total_seconds()))
+    raise HTTPException(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=f"Account export is rate-limited to once every {hours} hours. "
+        f"Try again at {next_allowed.isoformat()}.",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
 @router.get("/export")
 async def export_account(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Response:
-    """Returns a ZIP of every byte the system holds about the caller."""
+    """Returns a ZIP of every byte the system holds about the caller.
+
+    §B3 — rate-limited to once per `account_export_min_hours_between`
+    (default 24h). Tracks via an `account.export` audit row written
+    on each successful export. Exceeding the cap returns 429 with
+    `Retry-After`.
+    """
+    await _enforce_export_rate_limit(session, user.id)
     fname = f"neuthek-export-{user.id}.zip"
     blob = await _build_export_zip(session, user)
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="account.export",
+        details={"bytes": len(blob), "filename": fname},
+    )
+    await session.commit()
     return Response(
         content=blob,
         media_type="application/zip",
@@ -619,6 +790,87 @@ async def admin_quarantine_sweep(
         blob_errors=res.blob_errors,
         bytes_freed=res.bytes_freed,
         cutoff=res.cutoff_iso,
+    )
+
+
+# ----- §B4 retention sweep endpoints -----
+
+
+class FeedbackSweepResponse(BaseModel):
+    rows_deleted: int
+    cutoff: str
+    retention_days: int
+
+
+@admin_router.post("/retention/sweep-feedback", response_model=FeedbackSweepResponse)
+async def admin_sweep_feedback(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_days: int | None = None,
+) -> FeedbackSweepResponse:
+    """§B4 — delete consumed feedback_events older than the horizon
+    (default 90 days). Optional `?retention_days=N` overrides for a
+    one-off deeper trim."""
+    if not user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Superuser required")
+    try:
+        res = await sweep_feedback_events(session, retention_days=retention_days)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return FeedbackSweepResponse(
+        rows_deleted=res.rows_deleted,
+        cutoff=res.cutoff_iso,
+        retention_days=res.retention_days,
+    )
+
+
+class AuditAnonymizeResponse(BaseModel):
+    rows_anonymized: int
+    cutoff: str
+    retention_days: int
+
+
+@admin_router.post("/retention/sweep-audit", response_model=AuditAnonymizeResponse)
+async def admin_sweep_audit(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    retention_days: int | None = None,
+) -> AuditAnonymizeResponse:
+    """§B4 — anonymize audit_log rows older than the horizon
+    (default 365 days) by NULLing `user_id`. Action + timestamp +
+    details survive so forensics still works without tying entries
+    to a specific person."""
+    if not user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Superuser required")
+    try:
+        res = await sweep_audit_log_anonymize(session, retention_days=retention_days)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return AuditAnonymizeResponse(
+        rows_anonymized=res.rows_anonymized,
+        cutoff=res.cutoff_iso,
+        retention_days=res.retention_days,
+    )
+
+
+class AccountSweepResponse(BaseModel):
+    accounts_hard_deleted: int
+    swept_at: str
+
+
+@admin_router.post("/retention/sweep-accounts", response_model=AccountSweepResponse)
+async def admin_sweep_accounts(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AccountSweepResponse:
+    """§B4 — hard-delete users whose `scheduled_delete_at` has passed.
+    Runs the same path /account/delete uses today."""
+    if not user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Superuser required")
+    res = await sweep_scheduled_account_deletes(session)
+    return AccountSweepResponse(
+        accounts_hard_deleted=res.accounts_hard_deleted,
+        swept_at=res.swept_at_iso,
     )
 
 

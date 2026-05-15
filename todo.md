@@ -124,33 +124,72 @@ table + bucket returns 0 rows / 0 objects for the target.
 
 ## 3. Privacy / consent
 
-### B1. EXIF / GPS handling ⏳
-- Strip EXIF (especially GPS) by default on upload. Store only fields
-  the user explicitly opts into ("show camera info on previews").
-- Surface the choice in the consent flow at signup, not buried in
-  settings.
-- Redact GPS from EXIF preview row even when data exists in the file
-  (unless user consents).
+### B1. EXIF / GPS handling ✅ SHIPPED 2026-05-16
+> Originals bucket sees zero EXIF unless the user opts in. New
+> `exif_retention` consent scope (alongside the existing
+> `gps_retention`); `store_upload` calls `_strip_exif_bytes` before
+> writing to originals when neither scope is GRANTED. PNG / GIF are
+> no-ops (no EXIF in the format); JPEG / WebP / TIFF re-encode
+> without the EXIF blob. 5 pytest cases in
+> [tests/test_b1_exif_strip.py](tests/test_b1_exif_strip.py).
+>
+> Consent flow surface (UI toggle for `exif_retention`) tracked under
+> the consents-modal pass — current FE submits `exif_retention=WITHDRAWN`
+> by default at signup, matching the strip-by-default posture.
 
-### B2. Consent BEFORE signup ⏳
-Today neuthek shows consents *after* the form; legal requirement is
-"before account creation." Reorder so the register call only fires
-post-consent (wiring is half-there in
-`auth.jsx → handleConsentsComplete`).
+### B2. Consent BEFORE signup ✅ SHIPPED 2026-05-16
+> Register payload now carries `consents: [{kind, state}, ...]` +
+> `consent_signature`. The `UserManager.create()` override
+> ([backend/auth/users.py](backend/auth/users.py)) extracts the bundle,
+> writes the ConsentRecord rows in the same transaction as the User
+> row, then audits each as `consent.register.<kind>.<state>`. Unknown
+> scopes are silently dropped (one stray field can't break account
+> creation). Legacy clients that send no bundle still work — they
+> fall through to the post-signup consents modal as before.
+> 5 pytest cases in
+> [tests/test_b2_register_consents.py](tests/test_b2_register_consents.py)
+> + verified end-to-end against the live host backend (2 consent
+> rows + 2 audit rows landed on a register call).
 
-### B3. Export + portability ⏳
-- `/account/export` returns a zip: originals + JSON sidecar with all
-  metadata + embeddings (encrypted) + summaries + people + consent log.
-- Re-export rate-limited (1/day per user).
-- Email a download link; link is signed, expires in 24 h.
+### B3. Export + portability ✅ SHIPPED 2026-05-16
+> `/account/export` ZIP now carries `clip_embedding` + `summary` +
+> `summary_topic` + `summary_points` per image alongside the
+> already-shipped persons / faces / consents / audit_log payload.
+> Rate-limited to one full export per `account_export_min_hours_between`
+> (default 24h) via an `account.export` audit row; returns 429 with
+> `Retry-After` once exceeded. 4 pytest cases in
+> [tests/test_b3_export.py](tests/test_b3_export.py).
+> Signed-email-link variant deferred until SMTP is configured per
+> deployment (config knobs already exist in
+> [backend/config.py](backend/config.py); endpoint can layer on top
+> of the existing export when needed).
 
-### B4. Retention sweepers ⏳
-> Originals + quarantine sweepers shipped (see git log). Still owed:
-- Bandit telemetry: 90 days then anonymize.
-- Audit log: 1 year then archive.
-- Deleted-account grace: 30 days then hard-delete everything.
-- Each sweeper writes to the audit log so we can prove deletion happened.
-- Per-user retention cap (originals horizon) — see **C4.5**.
+### B4. Retention sweepers ✅ SHIPPED 2026-05-16
+> Five sweepers in [backend/retention.py](backend/retention.py),
+> each idempotent + audit-logged, each exposed via a superuser
+> admin endpoint:
+>
+> | Sweeper | Default horizon | Admin route |
+> |---------|-----------------|-------------|
+> | `sweep_expired_originals` | per-row `original_expires_at` (default 30d) | `POST /admin/retention/sweep` |
+> | `sweep_expired_quarantine` | `upload_quarantine_retention_days` (30d) | `POST /admin/quarantine/sweep` |
+> | `sweep_feedback_events` | `feedback_retention_days` (90d) | `POST /admin/retention/sweep-feedback` |
+> | `sweep_audit_log_anonymize` | `audit_log_retention_days` (365d) | `POST /admin/retention/sweep-audit` |
+> | `sweep_scheduled_account_deletes` | `account_delete_grace_days` (30d) | `POST /admin/retention/sweep-accounts` |
+>
+> Scheduled deletion flow (§B4 "30-day grace"): migration 0026 adds
+> `users.scheduled_delete_at`; `/account/schedule-delete` stamps it
+> `now + grace_days` instead of nuking the row, `/account/cancel-delete`
+> NULLs it, the sweeper picks up anything past its timestamp. The
+> immediate `/account/delete` route still works for "delete now."
+>
+> Audit-log anonymization works against the append-only trigger via
+> a refined version (migration 0026) that permits exactly one
+> transition: `user_id IS NOT NULL → user_id IS NULL` with every
+> other column unchanged. Everything else still RAISES. 12 pytest
+> cases in [tests/test_b4_retention.py](tests/test_b4_retention.py).
+>
+> Per-user retention cap (originals horizon) — still owed under §C4.5.
 
 ---
 

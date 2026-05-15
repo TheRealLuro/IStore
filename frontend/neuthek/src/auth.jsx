@@ -13,7 +13,9 @@ import { ConsentsModal } from "./consents.jsx";
 import { login, loginWithTotp, register, TotpRequiredError } from "@/api/auth";
 import { useAuthStore } from "@/stores/authStore";
 import { ApiError } from "@/api/client";
-import { grantScope } from "@/api/consent";
+// §B2 — grantScope no longer needed at signup: the register call
+// carries the consent bundle. Settings panels still use it for
+// post-signup edits via `@/api/consent`.
 
 function PasswordReqs({ value }) {
   const reqs = [
@@ -160,24 +162,27 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     setShowConsents(true);
   };
 
-  // After the consents modal completes we register, log in, and persist the
-  // chosen per-scope grants. Each grant is fire-and-forget — a single
-  // failing scope shouldn't block sign-up, but we surface a soft warning.
-  const persistConsents = async (payload) => {
-    if (!payload) return;
+  // §B2 — translate the consents modal payload into the
+  // {kind, state} bundle the register endpoint accepts. Every
+  // scope the modal knows about is reported either as GRANTED or
+  // WITHDRAWN so the ledger has an explicit decision for each — the
+  // legal posture is "informed choice, not silent default."
+  const consentBundleFromPayload = (payload) => {
+    if (!payload) return [];
     const { scopes = {}, bipa = false } = payload;
-    const grants = [];
-    if (scopes.gps) grants.push("gps_retention");
-    if (scopes.aiSummary) grants.push("ai_summary");
-    if (scopes.semanticSearch) grants.push("semantic_search");
-    if (scopes.telemetry) grants.push("bandit_compression_telemetry");
-    if (bipa) grants.push("face_recognition");
-    if (grants.length === 0) return;
-    const results = await Promise.allSettled(grants.map((g) => grantScope(g)));
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed > 0) {
-      toast(`Saved ${grants.length - failed}/${grants.length} consents. You can review them in Settings → Privacy.`);
-    }
+    const decide = (on) => (on ? "GRANTED" : "WITHDRAWN");
+    return [
+      { kind: "gps_retention",      state: decide(scopes.gps) },
+      { kind: "ai_summary",          state: decide(scopes.aiSummary) },
+      { kind: "semantic_search",     state: decide(scopes.semanticSearch) },
+      { kind: "bandit_compression_telemetry", state: decide(scopes.telemetry) },
+      { kind: "face_recognition",    state: decide(bipa) },
+      // §B1 — exif_retention scope. The modal hasn't surfaced it
+      // yet; default WITHDRAWN until the consents-modal pass
+      // brings up the toggle. EXIF strip-by-default is the safer
+      // default per §B1.
+      { kind: "exif_retention",     state: "WITHDRAWN" },
+    ];
   };
 
   const handleConsentsComplete = async (payload) => {
@@ -185,12 +190,15 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     setAuthError(null);
     try {
       setSubmitting(true);
-      await register(email, pwd, true);
+      // §B2 — bundle the consents INTO the register call so the
+      // consent ledger predates the user row's external visibility.
+      // The backend UserManager.create() override writes the
+      // ConsentRecord rows in the same transaction.
+      const consents = consentBundleFromPayload(payload);
+      const signature = name.trim() || email;
+      await register(email, pwd, true, consents, signature);
       const u = await login(email, pwd);
       setUser(u);
-      // Persist after login so the bearer token is in place. Don't gate the
-      // signed-in state on it — auth is the priority.
-      persistConsents(payload).catch(() => {});
       if (redirectIfNext()) return;
       onSignedIn?.({ name: name.trim() || "You", email });
     } catch (e) {

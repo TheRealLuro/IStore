@@ -1,21 +1,34 @@
-"""Hybrid-retention sweeper (Phase 8 / Mode D).
+"""Retention sweepers (§B4 — privacy / data minimization).
 
-Drops original blobs that have aged past their per-row `original_expires_at`
-horizon (default 30 days from upload — see migration 0004). The served
-variant remains, EXIF/GPS/capture-date are preserved inside it (codecs.py
-re-injects EXIF on encode), and `download_original` falls back to the
-served bytes with `X-Original-Expired: true` so the frontend can surface
-the substitution to the user.
+Five sweepers, all pure async functions with idempotent semantics:
 
-§B4 — Quarantine retention sweeper. Rejected uploads land in
-`bucket_quarantine` so ops can inspect what triggered the rejection
-without those bytes ever touching `originals`. The objects accumulate
-forever otherwise — `sweep_expired_quarantine` ages them out on the
-schedule set by `upload_quarantine_retention_days` (default 30).
+  sweep_expired_originals        Drops original blobs past `original_expires_at`
+                                  (default 30 days from upload — migration 0004).
+                                  Served variant survives; `download_original`
+                                  falls back with `X-Original-Expired: true`.
+  sweep_expired_quarantine       Deletes objects in `bucket_quarantine` older
+                                  than `upload_quarantine_retention_days`
+                                  (default 30). Audit row at rejection time
+                                  is preserved; only the bytes go.
+  sweep_feedback_events          Deletes consumed_by_trainer=true feedback rows
+                                  older than the bandit-telemetry horizon
+                                  (default 90 days). The trainer already
+                                  consumed these; keeping them ties click
+                                  history to a person unnecessarily.
+  sweep_audit_log_anonymize      NULLs `user_id` on audit rows older than the
+                                  retention horizon (default 365 days). The
+                                  "this happened" record stays; the link to
+                                  a person is dropped.
+  sweep_scheduled_account_deletes  Hard-deletes users whose `scheduled_delete_at`
+                                  is in the past (30-day grace per §B4).
+                                  Calls hard_delete_images first, then drops
+                                  the user row (FK ON DELETE CASCADE handles
+                                  the rest).
 
-Per the plan, both sweepers are pure async functions plus thin admin
-endpoints — arq cron scheduling is Phase 9 work. Both are idempotent:
-running them with no expired entries is a no-op.
+All sweepers write to `audit_log` so deletion is provable. The trainer
+already gates on `consumed_by_trainer=true`, so feedback deletion
+doesn't race with in-flight learning. arq cron scheduling is Phase 9
+work; today these run via admin endpoints + host cron.
 """
 from __future__ import annotations
 
@@ -24,11 +37,11 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import delete as sa_delete, func as sa_func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
-from backend.models import AuditLog, Image
+from backend.models import AuditLog, FeedbackEvent, Image, User
 from backend.storage import storage
 
 logger = logging.getLogger(__name__)
@@ -234,4 +247,215 @@ async def sweep_expired_quarantine(
         blob_errors=blob_errors,
         bytes_freed=bytes_freed,
         cutoff_iso=cutoff.isoformat(),
+    )
+
+
+# ----- §B4: feedback-event retention (90 days) -----
+
+
+@dataclass
+class FeedbackSweepResult:
+    rows_deleted: int
+    cutoff_iso: str
+    retention_days: int
+
+
+async def sweep_feedback_events(
+    session: AsyncSession,
+    *,
+    retention_days: int | None = None,
+) -> FeedbackSweepResult:
+    """Delete bandit `feedback_events` rows that have been consumed by
+    the trainer AND are older than the retention horizon.
+
+    The trainer flips `consumed_by_trainer=true` once it folds an event
+    into the LinUCB sufficient stats. After that, the row is dead weight
+    — keeping it ties click history to a person without any model
+    benefit. §B4 sets 90 days as the soft window.
+
+    UN-consumed rows are NEVER deleted here: the next trainer run might
+    still need them. Operator can trigger a fresh trainer pass before
+    the sweep to drain the backlog (see /admin/trainer/run).
+    """
+    days = retention_days if retention_days is not None else settings.feedback_retention_days
+    if days <= 0:
+        raise ValueError("retention_days must be a positive integer")
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+
+    res = await session.execute(
+        sa_delete(FeedbackEvent)
+        .where(
+            FeedbackEvent.consumed_by_trainer.is_(True),
+            FeedbackEvent.created_at < cutoff,
+        )
+    )
+    deleted = int(res.rowcount or 0)
+    if deleted:
+        session.add(
+            AuditLog(
+                user_id=None,
+                action="retention.sweep_feedback",
+                details={
+                    "rows_deleted": deleted,
+                    "cutoff": cutoff.isoformat(),
+                    "retention_days": days,
+                    "swept_at": now.isoformat(),
+                },
+            )
+        )
+    await session.commit()
+
+    return FeedbackSweepResult(
+        rows_deleted=deleted,
+        cutoff_iso=cutoff.isoformat(),
+        retention_days=days,
+    )
+
+
+# ----- §B4: audit-log anonymization (1 year) -----
+
+
+@dataclass
+class AuditAnonymizeResult:
+    rows_anonymized: int
+    cutoff_iso: str
+    retention_days: int
+
+
+async def sweep_audit_log_anonymize(
+    session: AsyncSession,
+    *,
+    retention_days: int | None = None,
+) -> AuditAnonymizeResult:
+    """NULL `user_id` on audit rows older than the retention horizon.
+
+    "Archive" in the spec — but cold storage would just hide the rows;
+    the link from `audit_log` to a user is the data-protection
+    concern, so we anonymize in place. The action + timestamp + details
+    survive (operator can still answer "did a delete happen here?"
+    forensically); only the per-user identifier goes.
+
+    Skips rows already anonymized (`user_id IS NULL`) so re-running is
+    a no-op. Self-record: the sweep writes its own audit row with
+    user_id=NULL, which is fine — it's a system action.
+    """
+    days = retention_days if retention_days is not None else settings.audit_log_retention_days
+    if days <= 0:
+        raise ValueError("retention_days must be a positive integer")
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+
+    res = await session.execute(
+        update(AuditLog)
+        .where(
+            AuditLog.user_id.is_not(None),
+            AuditLog.created_at < cutoff,
+        )
+        .values(user_id=None)
+    )
+    anon = int(res.rowcount or 0)
+    if anon:
+        session.add(
+            AuditLog(
+                user_id=None,
+                action="retention.sweep_audit_anonymize",
+                details={
+                    "rows_anonymized": anon,
+                    "cutoff": cutoff.isoformat(),
+                    "retention_days": days,
+                    "swept_at": now.isoformat(),
+                },
+            )
+        )
+    await session.commit()
+
+    return AuditAnonymizeResult(
+        rows_anonymized=anon,
+        cutoff_iso=cutoff.isoformat(),
+        retention_days=days,
+    )
+
+
+# ----- §B4: scheduled account deletion (30-day grace) -----
+
+
+@dataclass
+class AccountDeleteSweepResult:
+    accounts_hard_deleted: int
+    accounts_skipped_no_due: int
+    swept_at_iso: str
+
+
+async def sweep_scheduled_account_deletes(
+    session: AsyncSession,
+) -> AccountDeleteSweepResult:
+    """Hard-delete users whose `scheduled_delete_at` has passed.
+
+    /account/schedule-delete sets `users.scheduled_delete_at = now + 30d`
+    (or whatever the grace setting holds) instead of nuking the account
+    immediately. The user can call /account/cancel-delete before that
+    timestamp to abort. Once the timestamp passes, this sweeper rolls
+    through and runs the same hard-delete path that
+    /account/delete uses today: hard_delete_images → DELETE users
+    → FK CASCADE handles the rest.
+    """
+    from sqlalchemy import select as sa_select  # local — avoid shadowing
+
+    from backend.deletion import hard_delete_images
+
+    now = datetime.now(timezone.utc)
+    due_users = (
+        await session.execute(
+            sa_select(User).where(
+                User.scheduled_delete_at.is_not(None),
+                User.scheduled_delete_at <= now,
+            )
+        )
+    ).scalars().all()
+
+    deleted = 0
+    for user in due_users:
+        user_id = user.id
+        image_ids = (
+            await session.execute(
+                sa_select(Image.id).where(Image.user_id == user_id)
+            )
+        ).scalars().all()
+        try:
+            await hard_delete_images(
+                session,
+                user_id=user_id,
+                image_ids=list(image_ids),
+                audit_action="account.images.delete",
+            )
+            await session.execute(sa_delete(User).where(User.id == user_id))
+            await session.flush()
+            # Audit AFTER the user row is gone — anchor by user_id in
+            # the details payload since the FK reference dies with the
+            # row.
+            session.add(
+                AuditLog(
+                    user_id=None,
+                    action="account.delete.scheduled_executed",
+                    details={
+                        "user_id": str(user_id),
+                        "scheduled_at": user.scheduled_delete_at.isoformat() if user.scheduled_delete_at else None,
+                        "executed_at": now.isoformat(),
+                    },
+                )
+            )
+            await session.commit()
+            deleted += 1
+        except Exception:
+            logger.exception(
+                "scheduled-delete: hard-delete failed for user %s — will retry next sweep",
+                user_id,
+            )
+            await session.rollback()
+
+    return AccountDeleteSweepResult(
+        accounts_hard_deleted=deleted,
+        accounts_skipped_no_due=0,
+        swept_at_iso=now.isoformat(),
     )

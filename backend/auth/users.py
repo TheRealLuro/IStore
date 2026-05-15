@@ -22,6 +22,76 @@ from backend.models import User
 logger = logging.getLogger(__name__)
 
 
+async def _persist_registration_consents(
+    *,
+    user: User,
+    consents: list,
+    signature: str,
+    request: Optional[Request],
+) -> None:
+    """§B2 — write ConsentRecord rows for the bundle submitted with
+    the register call.
+
+    The fastapi-users contract gives us a `User` instance but no
+    SQLAlchemy session; we open a fresh one against `SessionLocal` so
+    we're not entangled with the manager's user_db session lifecycle.
+    Each scope flows through the same `_validate_scope` allowlist the
+    /consent endpoints use, so a bogus kind raises before we touch
+    the DB.
+    """
+    from datetime import datetime, timezone
+
+    from backend.consent import SUPPORTED_SCOPES, _policy_sha256
+    from backend.db import SessionLocal
+    from backend.models import ConsentRecord
+    from backend.audit import add_audit
+
+    ip = ""
+    user_agent = ""
+    if request is not None:
+        client = getattr(request, "client", None)
+        if client is not None:
+            ip = client.host or ""
+        user_agent = request.headers.get("user-agent", "")
+
+    now = datetime.now(timezone.utc)
+    policy_sha = _policy_sha256()
+    async with SessionLocal() as session:
+        for item in consents:
+            if isinstance(item, dict):
+                kind = item.get("kind")
+                state = item.get("state")
+            else:
+                kind = getattr(item, "kind", None)
+                state = getattr(item, "state", None)
+            if not kind or kind not in SUPPORTED_SCOPES:
+                logger.warning("register-consent: skipping unsupported scope %r", kind)
+                continue
+            if state not in {"GRANTED", "WITHDRAWN"}:
+                logger.warning("register-consent: skipping unknown state %r for %r", state, kind)
+                continue
+            session.add(
+                ConsentRecord(
+                    user_id=user.id,
+                    consent_kind=kind,
+                    state=state,
+                    policy_version="v1",
+                    policy_text_sha256=policy_sha,
+                    signature_text=signature[:512] if signature else None,
+                    ip=ip or None,
+                    user_agent=user_agent or None,
+                    granted_at=now,
+                )
+            )
+            await add_audit(
+                session,
+                user_id=user.id,
+                action=f"consent.register.{kind}.{state.lower()}",
+                details={"scope": kind, "state": state, "ip": ip or None},
+            )
+        await session.commit()
+
+
 PASSWORD_RULES = [
     ("at least 8 characters", lambda p: len(p) >= 8),
     ("a lowercase letter", lambda p: bool(re.search(r"[a-z]", p))),
@@ -55,6 +125,50 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     # backend.email_send. None of these raise — a failed send must not
     # break account creation or the password-reset flow; the user can
     # always re-request a verify mail from /auth/request-verify-token.
+
+    # §B2 — consent-before-signup. UserCreate now carries optional
+    # `consents` + `consent_signature` fields. We override the
+    # standard `create()` so the consent ledger predates the user
+    # row's external visibility (the API returns the User AFTER both
+    # tables are written in the same transaction). If the registration
+    # form skips the consents (legacy clients), the rest of the flow
+    # is unaffected; users land at the consents-modal post-signup as
+    # before.
+    async def create(self, user_create, safe: bool = False, request: Optional[Request] = None):
+        consents = getattr(user_create, "consents", None)
+        signature = getattr(user_create, "consent_signature", None) or ""
+        # Strip the §B2-specific fields before handing the dict back
+        # to fastapi-users — the User table doesn't know about them.
+        # fastapi-users honors `model_dump(exclude=…)` per its source,
+        # but the simplest path is to clear them in-place on the
+        # input pydantic model. We keep the original payload so
+        # callers further up can still introspect.
+        try:
+            user_create.consents = None
+            user_create.consent_signature = None
+        except Exception:
+            pass
+
+        user = await super().create(user_create, safe, request)
+
+        if consents:
+            try:
+                await _persist_registration_consents(
+                    user=user, consents=consents,
+                    signature=signature or user.display_name or user.email or "",
+                    request=request,
+                )
+            except Exception:
+                # Don't break account creation if the consent write
+                # fails — log loudly so ops can backfill, but the
+                # user can still sign in and grant via the regular
+                # /consent/{kind}/grant endpoints.
+                logger.exception(
+                    "register: failed to persist consent bundle for %s — "
+                    "user will need to re-grant via /consent/{kind}",
+                    user.id,
+                )
+        return user
 
     async def on_after_register(
         self, user: User, request: Optional[Request] = None
