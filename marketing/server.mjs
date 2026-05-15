@@ -31,8 +31,19 @@ const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
+// Keep in sync with the WaitlistUseCase union in src/api.ts and the
+// <option> list in src/pages/Waitlist.tsx. Anything not in this set
+// is normalized to "other" by the signup handler below.
 const ALLOWED_USE_CASES = new Set([
-  "personal", "family", "creative", "research", "other",
+  "personal",
+  "family",
+  "creative",
+  "developer",
+  "student",
+  "research",
+  "educator",
+  "professional",
+  "other",
 ]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

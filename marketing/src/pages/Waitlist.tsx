@@ -122,11 +122,15 @@ export default function Waitlist() {
                   value={use}
                   onChange={(e) => setUse(e.target.value as WaitlistUseCase)}
                 >
-                  <option value="personal">Personal photo library</option>
-                  <option value="family">Shared family library</option>
-                  <option value="creative">Creative work / portfolio</option>
-                  <option value="research">Research / archive</option>
-                  <option value="other">Something else</option>
+                  <option value="personal">     Personal photos &amp; memories</option>
+                  <option value="family">       Family or shared household library</option>
+                  <option value="creative">     Creative work or portfolio</option>
+                  <option value="developer">    Developer or engineering work (screenshots, diagrams, lab photos)</option>
+                  <option value="student">      Student notes &amp; coursework</option>
+                  <option value="research">     Research, lab notes, or personal archive</option>
+                  <option value="educator">     Teaching, faculty, or course-material archive</option>
+                  <option value="professional"> Work documents, receipts, contracts</option>
+                  <option value="other">        Something else</option>
                 </select>
 
                 <button

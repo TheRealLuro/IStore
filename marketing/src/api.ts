@@ -8,11 +8,19 @@
 
 const API_PREFIX = "/api";
 
+/* Use-case keys are the closed enum the server accepts. Anything else
+ * maps to "other" server-side. Keep these IDs short and stable — the
+ * admin viewer groups by them and we don't want to renumber if we
+ * tweak the user-facing labels later. */
 export type WaitlistUseCase =
   | "personal"
   | "family"
   | "creative"
+  | "developer"
+  | "student"
   | "research"
+  | "educator"
+  | "professional"
   | "other";
 
 export interface WaitlistSignupBody {
