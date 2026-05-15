@@ -1,7 +1,7 @@
 import logging
 import re
 import uuid
-from typing import Annotated, AsyncGenerator, Optional
+from typing import Annotated, Any, AsyncGenerator, Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi_users import BaseUserManager, FastAPIUsers, InvalidPasswordException, UUIDIDMixin
@@ -93,6 +93,26 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
                 logger.exception(
                     "on_after_update: request_verify failed for %s", user.id
                 )
+
+    async def on_after_login(
+        self,
+        user: User,
+        request: Optional[Request] = None,
+        response: Optional[Any] = None,
+    ) -> None:
+        """§1.2.2 — TOTP gate.
+
+        When 2FA is enabled on this user, we refuse the normal login
+        path. The FE catches the 401 + `{"detail": "totp_required"}`
+        body and re-submits via /auth/jwt/login-totp with the code.
+        Raising here short-circuits fastapi-users before it returns
+        the JWT, so a TOTP-enabled user can never get a token via the
+        no-code endpoint."""
+        if user.totp_enabled and user.totp_secret_enc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "totp_required",
+            )
 
     async def on_after_reset_password(
         self, user: User, request: Optional[Request] = None

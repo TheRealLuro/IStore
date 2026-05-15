@@ -9,6 +9,9 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     display_name: str | None = None
     role: str = "user"
     age_confirmed: bool = False
+    # §1.2.2 — the FE needs to know whether to show "Enable 2FA" or
+    # "Disable 2FA" without a second round trip to /account/2fa/status.
+    totp_enabled: bool = False
 
 
 class UserCreate(schemas.BaseUserCreate):

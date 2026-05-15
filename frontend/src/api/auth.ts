@@ -1,10 +1,35 @@
-import { api, tokens } from "./client";
+import { ApiError, api, tokens } from "./client";
 import type { User } from "@/types/file";
 
+/** Sentinel thrown when /auth/jwt/login refuses because the user has
+ * TOTP enabled. The caller catches this, prompts for the 6-digit code,
+ * and re-submits via `loginWithTotp`. */
+export class TotpRequiredError extends Error {
+  constructor() { super("totp_required"); }
+}
+
 export async function login(email: string, password: string): Promise<User> {
+  try {
+    const res = await api.postForm<{ access_token: string; token_type: string }>(
+      "/auth/jwt/login",
+      { username: email, password },
+    );
+    tokens.set(res.access_token);
+    return await me();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401 && /totp_required/i.test(e.detail || "")) {
+      throw new TotpRequiredError();
+    }
+    throw e;
+  }
+}
+
+export async function loginWithTotp(
+  email: string, password: string, totpCode: string,
+): Promise<User> {
   const res = await api.postForm<{ access_token: string; token_type: string }>(
-    "/auth/jwt/login",
-    { username: email, password },
+    "/auth/jwt/login-totp",
+    { username: email, password, totp_code: totpCode },
   );
   tokens.set(res.access_token);
   return await me();
@@ -129,3 +154,50 @@ export async function recoveryLogin(
   tokens.set(res.access_token);
   return await me();
 }
+
+// ---- §1.2.2 TOTP 2FA ----
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  verified_at: string | null;
+}
+
+export interface TwoFactorSetupBundle {
+  secret: string;
+  otpauth_uri: string;
+  qr_png_base64: string;
+  issuer: string;
+}
+
+export const getTwoFactorStatus = () =>
+  api.get<TwoFactorStatus>("/account/2fa/status");
+
+export const setupTwoFactor = () =>
+  api.post<TwoFactorSetupBundle>("/account/2fa/setup");
+
+export const verifyTwoFactor = (code: string) =>
+  api.post<TwoFactorStatus>("/account/2fa/verify", { code });
+
+export const disableTwoFactor = (
+  body: { code?: string; password?: string },
+) => api.post<TwoFactorStatus>("/account/2fa/disable", body);
+
+// ---- §1.2.3 notification preferences ----
+
+export interface NotificationPrefRow {
+  kind: string;
+  channel: string;
+  enabled: boolean;
+}
+
+export interface NotificationPrefsResponse {
+  kinds: string[];
+  channels: string[];
+  prefs: NotificationPrefRow[];
+}
+
+export const getNotificationPrefs = () =>
+  api.get<NotificationPrefsResponse>("/account/notifications");
+
+export const updateNotificationPrefs = (prefs: NotificationPrefRow[]) =>
+  api.patch<NotificationPrefsResponse>("/account/notifications", { prefs });

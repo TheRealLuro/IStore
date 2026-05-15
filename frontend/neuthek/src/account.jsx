@@ -15,6 +15,8 @@ import {
   TelemetryDetailPanel,
   StorageBreakdownPanel,
   SecurityPanel,
+  NotificationsPanel,
+  PlanCard,
 } from "./account-panels.jsx";
 import toast from "react-hot-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -141,16 +143,16 @@ function initialsAcc(name) {
     .join("") || "?";
 }
 
-// Settings rail. We deliberately omit "Notifications" — it's entirely
-// mock (no email/push backend) and was confusing users who toggled it
-// expecting it to do something. Re-add when the notifications backend
-// ships (todo.md C8 / I.fe.1).
+// Settings rail. Notifications was previously hidden because the
+// backend wasn't wired; §1.2.3 landed `notification_prefs` + endpoints
+// so it's back.
 const APPSET_NAV = [
-  { id: "profile",   label: "Account",      icon: "user",     tone: "ink"    },
-  { id: "privacy",   label: "Privacy",      icon: "shield",   tone: "blue"   },
-  { id: "security",  label: "Security",     icon: "lock",     tone: "red"    },
-  { id: "ai",        label: "AI features",  icon: "sparkles", tone: "purple" },
-  { id: "data",      label: "Your data",    icon: "download", tone: "green"  },
+  { id: "profile",       label: "Account",       icon: "user",     tone: "ink"    },
+  { id: "privacy",       label: "Privacy",       icon: "shield",   tone: "blue"   },
+  { id: "security",      label: "Security",      icon: "lock",     tone: "red"    },
+  { id: "notifications", label: "Notifications", icon: "bell",     tone: "amber"  },
+  { id: "ai",            label: "AI features",   icon: "sparkles", tone: "purple" },
+  { id: "data",          label: "Your data",     icon: "download", tone: "green"  },
 ];
 
 // Pretty-print a granted/withdrawn ISO timestamp for the consent rows.
@@ -190,7 +192,16 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   const subFor = (k, onCopy, offCopy) => {
     const d = detailOf(k);
     const stamp = d?.granted_at ? fmtConsentDate(d.granted_at) : "";
-    if (d?.state === "GRANTED")  return `${onCopy}${stamp ? ` · Granted ${stamp}` : ""}`;
+    // §1.2.4 — surface "Expires …" alongside "Granted …" so the user
+    // sees when a consent will auto-lapse (face_recognition is the
+    // big one, set to a 3-year horizon by backend.consent on grant).
+    const expires = d?.expires_at ? fmtConsentDate(d.expires_at) : "";
+    if (d?.state === "GRANTED") {
+      const parts = [onCopy];
+      if (stamp) parts.push(`Granted ${stamp}`);
+      if (expires) parts.push(`Expires ${expires}`);
+      return parts.join(" · ");
+    }
     if (d?.state === "WITHDRAWN") return `${offCopy}${stamp ? ` · Withdrawn ${stamp}` : ""}`;
     return `${offCopy} · Not configured yet`;
   };
@@ -471,10 +482,8 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                       session enumeration backend ships. */}
                 </div>
 
-                {/* Subscription / Plan / Invoices: hidden until billing
-                    backend ships (todo.md "Things NOT to work on yet").
-                    The 2 TB plan badge above is a placeholder — real
-                    quota lives in users.quota_bytes via /storage/usage. */}
+                <div className="applist__label">Plan</div>
+                <PlanCard/>
               </>
             )}
 
@@ -553,6 +562,8 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
             )}
 
             {tab === "security" && <SecurityPanel twoFA={twoFA} setTwoFA={setTwoFA} emailNotif={emailNotif} setEmailNotif={setEmailNotif} Row={Row} Chev={Chev}/>}
+
+            {tab === "notifications" && <NotificationsPanel/>}
 
             {tab === "ai" && (
               <>

@@ -37,6 +37,18 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # "use the global default" (DEFAULT_QUOTA_BYTES in api/storage.py).
     quota_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
+    # §1.2.2 — TOTP 2FA. Secret is Fernet-encrypted via secret_box so a
+    # DB dump alone doesn't yield working codes. `enabled` flips to True
+    # only after the user verifies a code against the freshly-set secret.
+    # `verified_at` stamps the last successful verify (setup or login).
+    totp_secret_enc: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    totp_verified_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
     images: Mapped[list["Image"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
@@ -741,6 +753,40 @@ class ModelRun(Base):
     )
     extra_metadata: Mapped[Optional[dict]] = mapped_column(
         "metadata", JSONB, nullable=True,
+    )
+
+
+class NotificationPref(Base):
+    """§1.2.3 — per-user notification opt-in matrix.
+
+    Composite PK (user_id, kind, channel) — a single row per
+    (audience, event-kind, delivery-channel). Rows missing from the
+    table default to:
+      - True  for kind='security_alerts'  (operator can't silence
+              security mail without an explicit opt-out)
+      - False for everything else.
+    The default-true case is enforced in `backend/api/account.py`
+    when loading, not at the column level — that keeps the table
+    sparse (most users never visit the Notifications tab and have
+    zero rows).
+    """
+
+    __tablename__ = "notification_prefs"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # 'product_updates' | 'security_alerts' | 'account_activity' |
+    # 'storage_warnings' — extend as we add more notification types.
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # 'email' | 'in_app'. 'push' will land when we wire the service
+    # worker + Push API in a future pass.
+    channel: Mapped[str] = mapped_column(String(16), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 

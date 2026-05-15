@@ -220,6 +220,10 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
 
     _AUTH_PATHS = {
         "/auth/jwt/login",
+        # §1.2.2 — TOTP login endpoint. Same per-IP burst + lockout
+        # policy as the password path so a TOTP-enabled account can't
+        # be code-guessed.
+        "/auth/jwt/login-totp",
         "/auth/forgot-password",
         "/auth/reset-password",
         "/auth/request-verify-token",

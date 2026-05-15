@@ -75,6 +75,9 @@ export interface User {
   display_name: string | null;
   role: "user" | "admin" | "superuser";
   age_confirmed: boolean;
+  // §1.2.2 — flipped after the user verifies their first TOTP code.
+  // Drives the Security tab's Enable/Disable affordance.
+  totp_enabled: boolean;
 }
 
 // Sharing (todo §1.1 / G1). Backend: backend/api/shares.py.

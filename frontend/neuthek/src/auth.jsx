@@ -10,7 +10,7 @@ import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
 import { TermsModal as TermsModalA, PrivacyModal as PrivacyModalA } from "./policies.jsx";
 import { ConsentsModal } from "./consents.jsx";
-import { login, register } from "@/api/auth";
+import { login, loginWithTotp, register, TotpRequiredError } from "@/api/auth";
 import { useAuthStore } from "@/stores/authStore";
 import { ApiError } from "@/api/client";
 import { grantScope } from "@/api/consent";
@@ -90,6 +90,11 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   const [showTerms, setShowTerms] = useStateA(false);
   const [showPrivacy, setShowPrivacy] = useStateA(false);
   const [showConsents, setShowConsents] = useStateA(false);
+  // §1.2.2 — when /auth/jwt/login responds with `totp_required` we
+  // flip into a second-step prompt. The email + password are kept in
+  // state so the retry uses the same credentials.
+  const [totpNeeded, setTotpNeeded] = useStateA(false);
+  const [totpCode, setTotpCode] = useStateA("");
 
   // listen to "open xxx" events fired from inside the consents modal
   useEffectA(() => {
@@ -124,7 +129,9 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     if (mode === "signin") {
       try {
         setSubmitting(true);
-        const u = await login(email, pwd);
+        const u = totpNeeded
+          ? await loginWithTotp(email, pwd, totpCode.trim())
+          : await login(email, pwd);
         setUser(u);
         if (redirectIfNext()) return;
         onSignedIn?.({
@@ -132,9 +139,15 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
           email: u.email,
         });
       } catch (e) {
+        if (e instanceof TotpRequiredError) {
+          setTotpNeeded(true);
+          setTotpCode("");
+          setAuthError(null);
+          return;
+        }
         const msg = e instanceof ApiError
           ? (e.status === 400 || e.status === 401
-              ? "Wrong email or password."
+              ? (totpNeeded ? "Wrong 2FA code — check your authenticator app and try again." : "Wrong email or password.")
               : e.detail)
           : "Sign-in failed. Check your connection.";
         setAuthError(msg);
@@ -350,6 +363,45 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             {isSignup && pwd && <PasswordReqs value={pwd}/>}
           </div>
 
+          {/* §1.2.2 — TOTP second-step. When the initial /auth/jwt/login
+              call comes back with `totp_required` we flip into this
+              prompt; submitting re-fires the auth flow via
+              loginWithTotp instead of the password-only endpoint. */}
+          {!isSignup && totpNeeded && (
+            <div className="field" style={{ marginTop: 4 }}>
+              <label
+                className="field__label-floating field__label-floating--up"
+                style={{ color: "var(--ink-2)" }}
+              >
+                6-digit code from your authenticator
+              </label>
+              <input
+                autoFocus
+                type="text"
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                placeholder=" "
+                className="input input--lg input--floating"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
+                style={{
+                  fontFamily: "monospace", letterSpacing: "0.25em",
+                  textAlign: "center", fontSize: 17,
+                }}
+                autoComplete="one-time-code"
+              />
+              <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6, textAlign: "right" }}>
+                <a
+                  href="#"
+                  onClick={(e) => { e.preventDefault(); setTotpNeeded(false); setTotpCode(""); }}
+                >
+                  Use a different account
+                </a>
+              </div>
+            </div>
+          )}
+
           {isSignup && (
             <div className="auth__next-step">
               <Icon name="shield" size={14}/>
@@ -362,8 +414,14 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
               {authError}
             </div>
           )}
-          <button className="btn btn--primary btn--lg auth__cta" disabled={!canSubmit || submitting} onClick={handleSubmit}>
-            {submitting ? "Working…" : (isSignup ? "Continue" : "Sign in")}
+          <button
+            className="btn btn--primary btn--lg auth__cta"
+            disabled={(!totpNeeded && !canSubmit) || (totpNeeded && totpCode.length !== 6) || submitting}
+            onClick={handleSubmit}
+          >
+            {submitting
+              ? "Working…"
+              : (isSignup ? "Continue" : (totpNeeded ? "Verify code" : "Sign in"))}
             <Icon name="arrowRight" size={14}/>
           </button>
 

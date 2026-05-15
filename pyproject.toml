@@ -31,6 +31,12 @@ dependencies = [
     # Falls back gracefully to /dev/null-shaped responses when a
     # platform doesn't expose a particular metric.
     "psutil>=5.9.0",
+    # 2FA TOTP (todo §1.2.3) — pyotp generates RFC 6238 codes and
+    # provisioning URIs; qrcode renders the URI as a PNG the FE can
+    # show inline (no third-party QR service so the secret never
+    # leaves the host).
+    "pyotp>=2.9.0",
+    "qrcode>=8.0",
 ]
 
 [project.optional-dependencies]

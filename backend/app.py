@@ -16,6 +16,8 @@ from backend.api.people import router as people_router
 from backend.api.search import router as search_router
 from backend.api.shares import router as shares_router
 from backend.api.storage import router as storage_router
+from backend.api.two_factor import auth_router as two_factor_auth_router
+from backend.api.two_factor import router as two_factor_router
 from backend.auth.users import auth_backend, fastapi_users
 from backend.consent import router as consent_router
 from backend.context import reset_current_user_id, set_current_user_id
@@ -114,6 +116,8 @@ def create_app() -> FastAPI:
     app.include_router(people_router)
     app.include_router(faces_router)
     app.include_router(account_router)
+    app.include_router(two_factor_router)
+    app.include_router(two_factor_auth_router)
     app.include_router(admin_router)
     app.include_router(admin_dashboard_router)
     app.include_router(cloud_router)

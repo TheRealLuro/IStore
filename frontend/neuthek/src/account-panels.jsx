@@ -5,7 +5,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
 import { Switch as SwitchSP } from "./primitives.jsx";
 import { getStorageUsage } from "@/api/storage";
-import { getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login, getAccountActivity, getAccountTrash, emptyAccountTrash } from "@/api/auth";
+import {
+  getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login,
+  getAccountActivity, getAccountTrash, emptyAccountTrash,
+  getTwoFactorStatus, setupTwoFactor, verifyTwoFactor, disableTwoFactor,
+  getNotificationPrefs, updateNotificationPrefs,
+} from "@/api/auth";
 import { backfillSummaries } from "@/api/files";
 import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";
 import { useAuthStore } from "@/stores/authStore";
@@ -145,16 +150,180 @@ function PasswordPage({ onBack }) {
 
 // ---------- Two-factor / recovery codes ----------
 //
-// Real recovery-codes endpoint wired (status + regenerate). TOTP / backup
-// codes for an authenticator app are still on the backlog — todo.md C6.4.
+// Two layers of account-recovery here:
+//   - TOTP authenticator app (§1.2.2) — primary 2FA. Setup writes an
+//     encrypted secret + shows a QR; verify flips totp_enabled.
+//   - Recovery codes (§C6) — 8 single-use base32 codes, kept for the
+//     locked-out case (lost phone, etc.).
+function TotpSetupCard({ onSetup, onDone, onCancel, busy }) {
+  const [bundle, setBundle] = useStateSP(null);
+  const [code, setCode] = useStateSP("");
+  const qc = useQueryClient();
+  const setUser = useAuthStore((s) => s.setUser);
+  const begin = async () => {
+    try {
+      const b = await onSetup();
+      setBundle(b);
+    } catch (e) {
+      toast.error(e?.detail || "Could not start 2FA setup");
+    }
+  };
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    if (!code.trim()) return;
+    try {
+      await verifyTwoFactor(code.trim());
+      toast.success("2FA enabled.");
+      // Refresh the cached user so user.totp_enabled flips immediately.
+      const me = await (await import("@/api/auth")).me();
+      setUser(me);
+      qc.invalidateQueries({ queryKey: ["2fa-status"] });
+      onDone?.();
+    } catch (err) {
+      toast.error(err?.detail || "That code didn't match — try the next one.");
+    }
+  };
+  if (!bundle) {
+    return (
+      <div className="det-card" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button className="btn btn--primary" onClick={begin} disabled={busy}>
+          {busy ? "Starting…" : "Enable 2FA"}
+        </button>
+        <span style={{ fontSize: 12, color: "var(--ink-3)", flex: 1 }}>
+          We'll show a QR code for your authenticator app.
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="det-card" style={{ display: "grid", gap: 12 }}>
+      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+        <img
+          src={`data:image/png;base64,${bundle.qr_png_base64}`}
+          alt="2FA QR code"
+          style={{ width: 156, height: 156, background: "#fff", borderRadius: 6, padding: 6 }}
+        />
+        <div style={{ flex: 1, minWidth: 0, display: "grid", gap: 8 }}>
+          <div style={{ fontSize: 13 }}>
+            Scan this with your authenticator app
+            (Google Authenticator, 1Password, Authy, etc.).
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+            Or paste this secret manually:
+          </div>
+          <code style={{
+            padding: "6px 10px", background: "var(--surface-2)", borderRadius: 6,
+            fontSize: 12, wordBreak: "break-all",
+          }}>{bundle.secret}</code>
+          <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
+            Issuer: <span className="mono">{bundle.issuer}</span>
+          </div>
+        </div>
+      </div>
+      <form onSubmit={submit} style={{ display: "flex", gap: 8 }}>
+        <input
+          autoFocus
+          inputMode="numeric"
+          pattern="\d{6}"
+          placeholder="6-digit code"
+          maxLength={6}
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+          style={{
+            flex: 1, padding: "8px 10px", borderRadius: 6, fontFamily: "monospace",
+            fontSize: 14, letterSpacing: "0.15em", textAlign: "center",
+            border: "1px solid var(--line)", background: "var(--surface-2)",
+          }}
+        />
+        <button type="submit" className="btn btn--primary" disabled={code.length !== 6}>
+          Verify + enable
+        </button>
+        <button type="button" className="btn btn--ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function TotpDisableForm({ onDone }) {
+  const [code, setCode] = useStateSP("");
+  const [password, setPassword] = useStateSP("");
+  const [busy, setBusy] = useStateSP(false);
+  const qc = useQueryClient();
+  const setUser = useAuthStore((s) => s.setUser);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    if (!code.trim() && !password) {
+      toast.error("Enter a current 2FA code or your password.");
+      return;
+    }
+    if (!window.confirm("Disable 2FA on this account? Your account will be protected by password only.")) return;
+    setBusy(true);
+    try {
+      await disableTwoFactor({
+        code: code.trim() || undefined,
+        password: password || undefined,
+      });
+      toast.success("2FA disabled.");
+      const me = await (await import("@/api/auth")).me();
+      setUser(me);
+      qc.invalidateQueries({ queryKey: ["2fa-status"] });
+      onDone?.();
+    } catch (err) {
+      toast.error(err?.detail || "Could not disable 2FA");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form onSubmit={submit} style={{ display: "grid", gap: 8 }}>
+      <input
+        inputMode="numeric"
+        placeholder="Current 6-digit code"
+        value={code}
+        onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+        style={{
+          padding: "8px 10px", borderRadius: 6, fontFamily: "monospace", fontSize: 14,
+          border: "1px solid var(--line)", background: "var(--surface-2)",
+        }}
+      />
+      <div style={{ fontSize: 11, color: "var(--ink-3)", textAlign: "center" }}>— or —</div>
+      <input
+        type="password"
+        placeholder="Account password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        style={{
+          padding: "8px 10px", borderRadius: 6, fontSize: 13,
+          border: "1px solid var(--line)", background: "var(--surface-2)",
+        }}
+      />
+      <button type="submit" className="btn btn--secondary" style={{ color: "#cc2f26" }} disabled={busy}>
+        {busy ? "Working…" : "Turn off 2FA"}
+      </button>
+    </form>
+  );
+}
+
 function TwoFactorPage() {
+  const qc = useQueryClient();
+  const { data: totp } = useQuery({
+    queryKey: ["2fa-status"],
+    queryFn: getTwoFactorStatus,
+    staleTime: 15_000,
+  });
   const { data: status, refetch } = useQuery({
     queryKey: ["recovery-codes"],
     queryFn: getRecoveryCodesStatus,
     staleTime: 30_000,
   });
   const [issued, setIssued] = useStateSP(null);
+  const [setupOpen, setSetupOpen] = useStateSP(false);
   const [busy, setBusy] = useStateSP(false);
+  const [disableOpen, setDisableOpen] = useStateSP(false);
+
   const handleRegenerate = async () => {
     if (busy) return;
     setBusy(true);
@@ -169,12 +338,80 @@ function TwoFactorPage() {
       setBusy(false);
     }
   };
+
+  const handleSetup = async () => {
+    setBusy(true);
+    try {
+      return await setupTwoFactor();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const remaining = status?.remaining ?? 0;
   const generatedAt = status?.generated_at ? new Date(status.generated_at).toLocaleDateString() : "never";
+  const totpEnabled = !!totp?.enabled;
+  const verifiedAt = totp?.verified_at ? new Date(totp.verified_at).toLocaleString() : "never";
+
   return (
     <>
       <DetSection
+        title="Authenticator app (TOTP)"
+        desc="A 6-digit code from an app like Google Authenticator or 1Password. Required at every sign-in once enabled."
+        right={
+          <StatusPill tone={totpEnabled ? "green" : "orange"}>
+            {totpEnabled ? "Enabled" : "Off"}
+          </StatusPill>
+        }
+      >
+        {totpEnabled ? (
+          <>
+            <div className="det-card">
+              <div className="stat-grid">
+                <StatTile label="Status" value="Enabled" sub="required at sign-in"/>
+                <StatTile label="Last verified" value={verifiedAt} sub="local time"/>
+              </div>
+            </div>
+            {!disableOpen ? (
+              <div className="det-card" style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                <button className="btn btn--ghost" onClick={() => setDisableOpen(true)}>
+                  Turn off 2FA…
+                </button>
+              </div>
+            ) : (
+              <div className="det-card" style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 8 }}>
+                  Confirm with a current code or your password.
+                </div>
+                <TotpDisableForm onDone={() => setDisableOpen(false)}/>
+                <button type="button" className="btn btn--ghost" style={{ marginTop: 8 }} onClick={() => setDisableOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </>
+        ) : setupOpen ? (
+          <TotpSetupCard
+            onSetup={handleSetup}
+            onDone={() => setSetupOpen(false)}
+            onCancel={() => setSetupOpen(false)}
+            busy={busy}
+          />
+        ) : (
+          <div className="det-card" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button className="btn btn--primary" onClick={() => setSetupOpen(true)}>
+              Set up 2FA
+            </button>
+            <span style={{ fontSize: 12, color: "var(--ink-3)", flex: 1 }}>
+              Recommended for any account that holds anything you care about.
+            </span>
+          </div>
+        )}
+      </DetSection>
+
+      <DetSection
         title="Recovery codes"
+        desc="Eight single-use codes you can fall back to if you lose your authenticator."
         right={<StatusPill tone={remaining > 0 ? "green" : "orange"}>{remaining > 0 ? `${remaining} remaining` : "Not generated"}</StatusPill>}
       >
         <div className="det-card">
@@ -184,14 +421,10 @@ function TwoFactorPage() {
             <StatTile label="Method"       value="Email + code"       sub="signs you in if locked out"/>
           </div>
         </div>
-      </DetSection>
-
-      <DetSection title="Manage" desc="Regenerating issues 8 fresh codes and invalidates the old ones. We only show the plaintext once — save them somewhere safe.">
-        <div className="det-card" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div className="det-card" style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
           <button className="btn btn--secondary" onClick={handleRegenerate} disabled={busy}>
             {busy ? "Working…" : (status?.has_codes ? "Regenerate codes" : "Generate codes")}
           </button>
-          <span style={{ flex: 1 }}/>
         </div>
         {issued && (
           <div className="det-card" style={{ marginTop: 12 }}>
@@ -216,18 +449,6 @@ function TwoFactorPage() {
           </div>
         )}
       </DetSection>
-
-      <DetSection title="Trusted devices" desc="Devices that don't need a 2FA code at sign-in. Re-enroll if a device is lost.">
-        <div className="det-card" style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn--ghost">Reset trusted devices</button>
-        </div>
-      </DetSection>
-
-      <div className="det-danger">
-        <div className="det-danger__title">Disable two-factor authentication</div>
-        <div className="det-danger__desc">Your account will be protected only by a password. We strongly recommend keeping 2FA on.</div>
-        <button className="btn btn--secondary" style={{ color: "#cc2f26" }}>Turn off 2FA…</button>
-      </div>
     </>
   );
 }
@@ -830,5 +1051,200 @@ export function SecurityPanel({ twoFA, setTwoFA, Row, Chev }) {
       <div className="applist__label">Active devices</div>
       <DevicesPage/>
     </>
+  );
+}
+
+// ---------- §1.2.3 Notifications panel ----------
+//
+// The original NotifMatrix() was an unconnected toggle grid. This one
+// reads the real preferences from /account/notifications, mutates with
+// optimistic UI, and re-renders from the server's authoritative reply.
+// Each (kind, channel) toggle posts a PATCH that the backend dedupes
+// against the existing row.
+const NOTIF_KIND_LABELS = {
+  product_updates:  { title: "Product updates",   desc: "Release notes, new features, important changes." },
+  security_alerts:  { title: "Security alerts",   desc: "Sign-ins, password changes, 2FA setup. Recommended on." },
+  account_activity: { title: "Account activity",  desc: "Storage milestones, shared-with-you notices, deletions." },
+  storage_warnings: { title: "Storage warnings",  desc: "When you're near your quota or originals are aging out." },
+};
+const NOTIF_CHANNEL_LABELS = {
+  email:  "Email",
+  in_app: "In-app",
+};
+
+export function NotificationsPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["notification-prefs"],
+    queryFn: getNotificationPrefs,
+    staleTime: 30_000,
+  });
+  const [busy, setBusy] = useStateSP({});
+  const toggle = async (kind, channel, current) => {
+    const key = `${kind}:${channel}`;
+    if (busy[key]) return;
+    setBusy((b) => ({ ...b, [key]: true }));
+    try {
+      const next = await updateNotificationPrefs([{ kind, channel, enabled: !current }]);
+      qc.setQueryData(["notification-prefs"], next);
+      toast.success(
+        `${NOTIF_KIND_LABELS[kind]?.title || kind} (${NOTIF_CHANNEL_LABELS[channel] || channel}) → ${!current ? "on" : "off"}`,
+      );
+    } catch (e) {
+      toast.error(e?.detail || "Could not save");
+    } finally {
+      setBusy((b) => { const c = { ...b }; delete c[key]; return c; });
+    }
+  };
+  const byPair = useMemoSP(() => {
+    const m = new Map();
+    (data?.prefs || []).forEach((p) => m.set(`${p.kind}:${p.channel}`, p.enabled));
+    return m;
+  }, [data]);
+  return (
+    <>
+      <div className="appset__main-head">
+        <div>
+          <h3>Notifications</h3>
+          <p>Pick how neuthek reaches out to you. Push notifications via the browser are coming later.</p>
+        </div>
+      </div>
+      {isLoading ? (
+        <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>
+      ) : (
+        <>
+          <div className="applist__label">Channels</div>
+          <div className="det-card" style={{ padding: 0 }}>
+            <table className="admin-table admin-table--compact" style={{ width: "100%" }}>
+              <thead>
+                <tr>
+                  <th>Notification</th>
+                  {(data?.channels || []).map((c) => (
+                    <th key={c} style={{ textAlign: "center", width: 90 }}>
+                      {NOTIF_CHANNEL_LABELS[c] || c}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(data?.kinds || []).map((k) => {
+                  const meta = NOTIF_KIND_LABELS[k] || { title: k, desc: "" };
+                  return (
+                    <tr key={k}>
+                      <td>
+                        <strong>{meta.title}</strong>
+                        {meta.desc && (
+                          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>
+                            {meta.desc}
+                          </div>
+                        )}
+                      </td>
+                      {(data?.channels || []).map((c) => {
+                        const on = byPair.get(`${k}:${c}`) ?? false;
+                        const key = `${k}:${c}`;
+                        return (
+                          <td key={c} style={{ textAlign: "center" }}>
+                            <SwitchSP
+                              on={on}
+                              onChange={() => toggle(k, c, on)}
+                              disabled={!!busy[key]}
+                              aria-label={`${meta.title} via ${c}`}
+                            />
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 10, padding: "0 4px" }}>
+            Security alerts default to on — we never silently disable them, even when this whole tab is otherwise off.
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+// ---------- §1.2.4 Plan card ----------
+//
+// Honest version of the Plan panel — shows real storage usage from
+// /storage/usage and the current quota. No fake invoices, no fake
+// Stripe checkout. When billing actually lands (separate workstream,
+// not part of this slice), this is where the upgrade affordance goes.
+export function PlanCard() {
+  const { data: usage } = useQuery({
+    queryKey: ["storage-usage"],
+    queryFn: getStorageUsage,
+    staleTime: 30_000,
+  });
+  const user = useAuthStore((s) => s.user);
+  const used = usage?.used_bytes ?? 0;
+  const quota = usage?.quota_bytes ?? 0;
+  const pct = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
+  const tone = pct >= 90 ? "orange" : pct >= 70 ? "amber" : "green";
+  return (
+    <div className="det-card" style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Free plan</div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+            Everything in neuthek runs on your hardware. There's no
+            paid tier today — billing lands separately when the project
+            is ready for it.
+          </div>
+        </div>
+        <StatusPill tone={tone}>{pct.toFixed(0)}% used</StatusPill>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--ink-3)" }}>
+          <span>{fmtBytes(used)} used</span>
+          <span>of {fmtBytes(quota)}</span>
+        </div>
+        <div
+          style={{
+            height: 6, marginTop: 6, borderRadius: 4, overflow: "hidden",
+            background: "var(--surface-2, rgba(0,0,0,0.06))",
+          }}
+        >
+          <div
+            style={{
+              width: `${pct}%`, height: "100%",
+              background:
+                tone === "orange" ? "var(--danger, #c0392b)" :
+                tone === "amber"  ? "var(--warn, #b4690e)" :
+                "var(--success, #2c7a4b)",
+            }}
+          />
+        </div>
+      </div>
+      {usage?.by_category && Object.keys(usage.by_category).length > 0 && (
+        <div className="stat-grid" style={{ marginTop: 14 }}>
+          {Object.entries(usage.by_category)
+            .filter(([, b]) => b > 0)
+            .map(([cat, bytes]) => (
+              <StatTile
+                key={cat}
+                label={cat}
+                value={fmtBytes(bytes)}
+                sub={`${usage?.by_count?.[cat] ?? 0} files`}
+              />
+            ))}
+        </div>
+      )}
+      <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 6, background: "var(--surface-2, rgba(0,0,0,0.03))", fontSize: 12, color: "var(--ink-2)" }}>
+        Need more space? Either raise the per-user quota from the
+        admin console (operators only) or run a sweep on your trash
+        from the "Your data" tab. Paid tiers + invoice exports will be
+        added when the project starts charging.
+      </div>
+      {user?.is_superuser && (
+        <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-3)" }}>
+          Superuser? Per-user quota override lives in <code>/admin → Users</code>.
+        </div>
+      )}
+    </div>
   );
 }

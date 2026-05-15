@@ -48,6 +48,7 @@ from backend.models import (
     Face,
     FaceDetection,
     Image,
+    NotificationPref,
     Person,
     RecoveryCode,
     Tag,
@@ -796,3 +797,116 @@ async def recovery_login(
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
     return RecoveryLoginResponse(access_token=token)
+
+
+# ---------- §1.2.3 — notification preferences ----------
+#
+# `notification_prefs` is a sparse table — rows only exist when a user
+# has explicitly set a preference. Loading merges in defaults so the
+# FE always sees a complete matrix. Saving inserts/updates one row per
+# changed (kind, channel) pair.
+
+NOTIFICATION_KINDS = (
+    "product_updates",
+    "security_alerts",
+    "account_activity",
+    "storage_warnings",
+)
+NOTIFICATION_CHANNELS = ("email", "in_app")
+# security_alerts default to ON; everything else defaults to OFF.
+# This is the "informed-consent default": we don't spam users by
+# default, but we never let an operator silently lose security mail.
+_DEFAULTS: dict[tuple[str, str], bool] = {
+    (k, c): (k == "security_alerts")
+    for k in NOTIFICATION_KINDS for c in NOTIFICATION_CHANNELS
+}
+
+
+class NotificationPrefRow(BaseModel):
+    kind: str
+    channel: str
+    enabled: bool
+
+
+class NotificationPrefsResponse(BaseModel):
+    kinds: list[str]
+    channels: list[str]
+    prefs: list[NotificationPrefRow]
+
+
+class NotificationPrefsUpdate(BaseModel):
+    """Body for PATCH /account/notifications. Each entry overrides
+    that (kind, channel) pair. Pairs not in the list keep their state."""
+
+    prefs: list[NotificationPrefRow]
+
+
+@router.get("/notifications", response_model=NotificationPrefsResponse)
+async def get_notification_prefs(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> NotificationPrefsResponse:
+    rows = (
+        await session.execute(
+            select(NotificationPref).where(NotificationPref.user_id == user.id)
+        )
+    ).scalars().all()
+    overrides = {(r.kind, r.channel): r.enabled for r in rows}
+    prefs = [
+        NotificationPrefRow(
+            kind=k, channel=c,
+            enabled=overrides.get((k, c), _DEFAULTS.get((k, c), False)),
+        )
+        for k in NOTIFICATION_KINDS for c in NOTIFICATION_CHANNELS
+    ]
+    return NotificationPrefsResponse(
+        kinds=list(NOTIFICATION_KINDS),
+        channels=list(NOTIFICATION_CHANNELS),
+        prefs=prefs,
+    )
+
+
+@router.patch("/notifications", response_model=NotificationPrefsResponse)
+async def update_notification_prefs(
+    body: NotificationPrefsUpdate,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> NotificationPrefsResponse:
+    """Upsert rows from `body.prefs`. Unknown (kind, channel) pairs
+    are silently dropped — extending the matrix is a backend-side
+    operation, not driven by FE submission."""
+    valid_pairs = {(k, c) for k in NOTIFICATION_KINDS for c in NOTIFICATION_CHANNELS}
+    existing = {
+        (r.kind, r.channel): r
+        for r in (
+            await session.execute(
+                select(NotificationPref).where(NotificationPref.user_id == user.id)
+            )
+        ).scalars().all()
+    }
+    now = datetime.now(timezone.utc)
+    changed = 0
+    for p in body.prefs:
+        key = (p.kind, p.channel)
+        if key not in valid_pairs:
+            continue
+        if key in existing:
+            row = existing[key]
+            if row.enabled != p.enabled:
+                row.enabled = p.enabled
+                row.updated_at = now
+                changed += 1
+        else:
+            session.add(NotificationPref(
+                user_id=user.id, kind=p.kind, channel=p.channel,
+                enabled=p.enabled, updated_at=now,
+            ))
+            changed += 1
+    if changed:
+        session.add(AuditLog(
+            user_id=user.id,
+            action="account.notifications.update",
+            details={"changes": changed},
+        ))
+        await session.commit()
+    return await get_notification_prefs(user=user, session=session)
