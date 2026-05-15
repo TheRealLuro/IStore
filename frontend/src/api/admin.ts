@@ -153,11 +153,20 @@ export interface HardwareSnapshot {
     devices: {
       index: number;
       name: string;
+      vendor?: string;
       total_memory_bytes?: number | null;
       allocated_memory_bytes?: number | null;
       used_memory_bytes?: number;
       utilization_percent?: number;
+      driver_version?: string | null;
+      video_processor?: string | null;
+      // Set when the adapter is visible at the OS/PCIe level but
+      // not usable by this process (e.g. Docker without GPU
+      // passthrough, integrated GPU on a discrete-NVIDIA workload).
+      inaccessible?: boolean;
     }[];
+    notes?: string[];
+    driver_version?: string;
   };
 }
 

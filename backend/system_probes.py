@@ -145,19 +145,28 @@ def sample_disks() -> list[dict[str, Any]]:
 
 
 def _try_torch_cuda() -> dict[str, Any] | None:
-    """Use torch's CUDA introspection if torch is available *and* CUDA
-    is built. Returns None to signal "fall through to nvidia-smi"."""
+    """Inspect torch's CUDA capabilities. Returns:
+      - device dict when torch is CUDA-built AND devices are present
+      - None when torch is CPU-only OR no devices are visible to torch
+        (so the caller continues to other probes — driver-level GPUs
+        still show up via nvidia-smi/WMI even when torch can't use them)"""
     try:
         import torch
     except ImportError:
         return None
+    # CPU-only torch builds have torch.version.cuda == None. Falling
+    # through lets us still report the hardware via vendor tools.
+    if not getattr(torch.version, "cuda", None):
+        return None
     try:
         if not torch.cuda.is_available():
-            return {"available": False, "backend": "torch", "devices": []}
+            return None
     except Exception:
         return None
     try:
         count = torch.cuda.device_count()
+        if count == 0:
+            return None
         devices = []
         for i in range(count):
             name = torch.cuda.get_device_name(i)
@@ -171,24 +180,44 @@ def _try_torch_cuda() -> dict[str, Any] | None:
             devices.append({
                 "index": i,
                 "name": name,
+                "vendor": "NVIDIA",
                 "total_memory_bytes": int(total) if total else None,
                 "allocated_memory_bytes": int(allocated) if allocated else None,
             })
-        return {"available": True, "backend": "torch.cuda", "devices": devices}
+        return {
+            "available": True,
+            "backend": "torch.cuda",
+            "devices": devices,
+            "notes": [],
+        }
     except Exception:
         return None
 
 
+def _nvidia_smi_path() -> str | None:
+    """nvidia-smi search across the platforms that hide it from PATH.
+    Windows ships it under System32 (always on PATH in cmd, sometimes
+    not when Python is launched via PowerShell-without-profile)."""
+    p = shutil.which("nvidia-smi")
+    if p:
+        return p
+    if os.name == "nt":
+        candidate = r"C:\Windows\System32\nvidia-smi.exe"
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def _try_nvidia_smi() -> dict[str, Any] | None:
-    """Shell out to nvidia-smi as a fallback when torch isn't loaded
-    in the API process (the user's split-container setup has ML in a
-    sibling worker). Returns None if the binary isn't on PATH."""
-    if not shutil.which("nvidia-smi"):
+    """Driver-level NVIDIA enumeration via shell. Used when torch is
+    CPU-only or GPU passthrough isn't configured in this container."""
+    path = _nvidia_smi_path()
+    if not path:
         return None
     try:
         out = subprocess.run(
-            ["nvidia-smi",
-             "--query-gpu=index,name,memory.total,memory.used,utilization.gpu",
+            [path,
+             "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,driver_version",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=4,
         )
@@ -197,6 +226,7 @@ def _try_nvidia_smi() -> dict[str, Any] | None:
     if out.returncode != 0 or not out.stdout.strip():
         return None
     devices = []
+    driver_version: str | None = None
     for line in out.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 5:
@@ -205,19 +235,203 @@ def _try_nvidia_smi() -> dict[str, Any] | None:
             devices.append({
                 "index": int(parts[0]),
                 "name": parts[1],
-                # nvidia-smi reports MiB; multiply by 1024*1024 for bytes.
+                "vendor": "NVIDIA",
                 "total_memory_bytes": int(parts[2]) * 1024 * 1024,
                 "used_memory_bytes": int(parts[3]) * 1024 * 1024,
                 "utilization_percent": int(parts[4]),
+                "driver_version": parts[5] if len(parts) >= 6 else None,
             })
+            if len(parts) >= 6 and not driver_version:
+                driver_version = parts[5]
         except ValueError:
             continue
-    return {"available": bool(devices), "backend": "nvidia-smi", "devices": devices}
+    if not devices:
+        return None
+    return {
+        "available": True,
+        "backend": "nvidia-smi",
+        "devices": devices,
+        "driver_version": driver_version,
+        "notes": [],
+    }
+
+
+def _try_wmi_windows() -> list[dict[str, Any]]:
+    """WMI Win32_VideoController for any vendor — picks up the iGPU
+    (Intel Arc, AMD APU) plus discrete NVIDIA/AMD/Intel ARC. We use
+    PowerShell to avoid taking a `pywin32`/`wmi` dependency. Returns
+    a possibly-empty list; never raises."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_VideoController | "
+             "Select-Object -Property Name,AdapterRAM,DriverVersion,VideoProcessor | "
+             "ConvertTo-Json -Compress"],
+            capture_output=True, text=True, timeout=6,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if out.returncode != 0 or not out.stdout.strip():
+        return []
+    import json as _json
+    try:
+        data = _json.loads(out.stdout)
+    except _json.JSONDecodeError:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    rows: list[dict[str, Any]] = []
+    for d in data:
+        name = (d.get("Name") or "").strip()
+        if not name:
+            continue
+        vendor = "NVIDIA" if "nvidia" in name.lower() \
+            else "AMD" if any(s in name.lower() for s in ("amd", "radeon")) \
+            else "Intel" if any(s in name.lower() for s in ("intel", "arc")) \
+            else "Unknown"
+        rows.append({
+            "name": name,
+            "vendor": vendor,
+            "total_memory_bytes": int(d.get("AdapterRAM") or 0) or None,
+            "driver_version": (d.get("DriverVersion") or None),
+            "video_processor": (d.get("VideoProcessor") or None),
+        })
+    return rows
+
+
+def _try_lspci_linux() -> list[dict[str, Any]]:
+    """`lspci -nnk` is broadly available on Linux base images and
+    surfaces "VGA compatible controller" / "3D controller" rows for
+    every GPU on the host PCIe bus (even when no kernel module is
+    loaded). Useful inside containers without GPU passthrough so the
+    dashboard reads "GPU present but inaccessible to this process"
+    instead of the misleading "no GPU detected"."""
+    if not shutil.which("lspci"):
+        return []
+    try:
+        out = subprocess.run(
+            ["lspci", "-nn"], capture_output=True, text=True, timeout=4,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if out.returncode != 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in out.stdout.splitlines():
+        ll = line.lower()
+        if "vga compatible" not in ll and "3d controller" not in ll and "display controller" not in ll:
+            continue
+        # Format: "01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA106M [GeForce RTX 3060 Mobile] [10de:2520] (rev a1)"
+        try:
+            _, rest = line.split(":", 1)
+            _, payload = rest.split(":", 1)
+            name = payload.strip()
+        except ValueError:
+            name = line.strip()
+        vendor = "NVIDIA" if "nvidia" in ll \
+            else "AMD" if "amd" in ll or "radeon" in ll or "advanced micro" in ll \
+            else "Intel" if "intel" in ll \
+            else "Unknown"
+        rows.append({
+            "name": name,
+            "vendor": vendor,
+            "total_memory_bytes": None,
+            "driver_version": None,
+        })
+    return rows
 
 
 def sample_gpu() -> dict[str, Any]:
-    return _try_torch_cuda() or _try_nvidia_smi() or {
-        "available": False, "backend": None, "devices": [],
+    """Combine probes so the dashboard surfaces every GPU the host has,
+    even when this process can't use it.
+
+    Order:
+      1. torch.cuda — gives us memory + utilization when torch is a
+         CUDA build with devices visible.
+      2. nvidia-smi — driver-level NVIDIA enumeration; works even when
+         torch is CPU-only.
+      3. WMI (Windows) / lspci (Linux) — vendor + name for every video
+         adapter, so iGPUs and non-NVIDIA discrete GPUs also show up.
+
+    A `notes` array carries human-readable hints when the configured
+    state is suboptimal (e.g. "GPU detected but PyTorch is CPU-only —
+    reinstall with the right CUDA wheel for inference acceleration").
+    """
+    notes: list[str] = []
+
+    # Probe 1: torch.cuda (full memory stats when available).
+    torch_result = _try_torch_cuda()
+    if torch_result:
+        return torch_result
+
+    # If torch is imported but CPU-only, note it so the user knows
+    # there's a wheel mismatch even when no GPU is detected here.
+    try:
+        import torch  # noqa
+        if not getattr(torch.version, "cuda", None):
+            notes.append(
+                "PyTorch is installed but CPU-only (torch.version.cuda is None). "
+                "If you have an NVIDIA GPU, reinstall torch with the matching CUDA "
+                "wheel: `pip install --index-url https://download.pytorch.org/whl/cu128 "
+                "torch torchvision`."
+            )
+    except ImportError:
+        pass
+
+    # Probe 2: nvidia-smi (driver-level NVIDIA enumeration).
+    smi_result = _try_nvidia_smi()
+
+    # Probe 3: WMI / lspci (every video adapter regardless of vendor).
+    fallback_rows = _try_wmi_windows() or _try_lspci_linux()
+
+    # Compose. Prefer nvidia-smi rows when available (they carry memory
+    # numbers); fall back to WMI/lspci rows for non-NVIDIA adapters.
+    devices: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    if smi_result:
+        for d in smi_result["devices"]:
+            devices.append(d)
+            seen_names.add(d["name"])
+    for row in fallback_rows:
+        if row["name"] in seen_names:
+            continue
+        devices.append({
+            "index": len(devices),
+            "inaccessible": True,  # not exposed to this process
+            **row,
+        })
+
+    if not devices:
+        return {
+            "available": False, "backend": None, "devices": [],
+            "notes": notes,
+        }
+
+    # When fallback found something but torch+nvidia-smi didn't, add a
+    # specific hint depending on what's going on.
+    if smi_result:
+        backend = "nvidia-smi"
+        notes.append(
+            "GPU visible via nvidia-smi but not to PyTorch — the ml-worker "
+            "container likely needs a CUDA-enabled torch build."
+        )
+    else:
+        backend = "wmi" if os.name == "nt" else "lspci"
+        notes.append(
+            "GPU detected at the OS/PCIe level, but this process can't access "
+            "it. Inside Docker that usually means GPU passthrough isn't "
+            "configured (`deploy.resources.reservations.devices` + nvidia-"
+            "container-toolkit). On bare metal it means the NVIDIA driver "
+            "tools aren't on PATH."
+        )
+
+    return {
+        "available": True,
+        "backend": backend,
+        "devices": devices,
+        "notes": notes,
     }
 
 

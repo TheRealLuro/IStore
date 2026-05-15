@@ -757,14 +757,54 @@ function RealHardwareTab({ open }) {
         </div>
         {data.gpu.devices.map((g) => (
           <div className="admin-hw__row" key={g.index} style={{ paddingLeft: 16 }}>
-            <span>↳ {g.name}</span>
+            <span>
+              ↳ {g.name}
+              {g.vendor && (
+                <span style={{ marginLeft: 6, fontSize: 10, color: "var(--ink-3)" }}>
+                  {g.vendor}
+                </span>
+              )}
+              {g.inaccessible && (
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    padding: "1px 5px",
+                    borderRadius: 4,
+                    background: "var(--warn-bg, #fff7e6)",
+                    color: "var(--warn, #b4690e)",
+                  }}
+                  title="Visible to the host OS but not usable from this process"
+                >
+                  inaccessible
+                </span>
+              )}
+            </span>
             <strong className="mono">
               {g.total_memory_bytes ? admBytes(g.total_memory_bytes) : "—"}
               {g.utilization_percent != null ? ` · ${g.utilization_percent}% util` : ""}
               {g.allocated_memory_bytes != null ? ` · ${admBytes(g.allocated_memory_bytes)} in use` : ""}
+              {g.driver_version ? ` · drv ${g.driver_version}` : ""}
             </strong>
           </div>
         ))}
+        {Array.isArray(data.gpu.notes) && data.gpu.notes.length > 0 && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: "8px 12px",
+              borderRadius: 6,
+              background: "var(--warn-bg, #fff7e6)",
+              color: "var(--warn-fg, #6b4a0e)",
+              fontSize: 11.5,
+              lineHeight: 1.5,
+            }}
+          >
+            {data.gpu.notes.map((n, i) => (
+              <div key={i} style={{ marginTop: i === 0 ? 0 : 4 }}>• {n}</div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="admin-hw__group">
