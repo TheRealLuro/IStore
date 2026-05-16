@@ -202,7 +202,45 @@ async def trigger_sync(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
+    except Exception as exc:
+        # Catch provider-side failures (googleapiclient HttpError 403/404,
+        # GitHub 401, network errors) and translate to a clean 502 with
+        # the operator-actionable message extracted. Without this, the
+        # exception escapes the request thread and uvicorn drops the
+        # connection mid-response — the browser then surfaces it as
+        # "Failed to fetch" with no detail the user can act on.
+        logger.exception(
+            "trigger_sync: provider call failed user=%s provider=%s",
+            user.id, link.provider,
+        )
+        msg = _extract_provider_error_message(exc) or "Sync failed. Try again in a moment."
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=msg) from exc
     return SyncResponse(**result)
+
+
+def _extract_provider_error_message(exc: Exception) -> str | None:
+    """Pull the human-readable error text out of a Google/GitHub client
+    exception so the FE can show "enable the Drive API" instead of a
+    blank "internal error" page. Returns None when the message isn't
+    a known provider-error shape — callers fall back to a generic
+    message.
+    """
+    # googleapiclient.errors.HttpError carries the JSON error body on
+    # `.error_details` (list[dict]) and the HTTP status on `.resp.status`.
+    error_details = getattr(exc, "error_details", None)
+    if error_details:
+        try:
+            first = error_details[0]
+            if isinstance(first, dict) and first.get("message"):
+                return str(first["message"])
+        except Exception:
+            pass
+    # Fall back to str() which on HttpError includes the URL + JSON
+    # body — useful but verbose. Trim it.
+    text = str(exc)
+    if not text:
+        return None
+    return text[:500]
 
 
 @router.delete("/links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
