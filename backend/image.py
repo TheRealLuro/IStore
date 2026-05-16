@@ -69,20 +69,41 @@ async def _upsert_tags(
     image: Image,
     tags: list[tuple[str, float]],
 ) -> None:
+    """Persist CLIP-suggested tags for a freshly-stored image.
+
+    §C1.6 made tags per-user — both `tags.user_id` and `image_tags.user_id`
+    are NOT NULL. The CLIP-tag path previously created rows without
+    either, which silently worked for the very first user (the column
+    didn't exist) but blows up with `NotNullViolationError` against
+    the current schema. Always scope tag lookups + inserts to the
+    image's owner.
+    """
     if not tags:
         return
     labels = [t for t, _ in tags]
-    existing = await session.execute(select(Tag).where(Tag.label.in_(labels)))
+    # Scope existing-tag lookup to this user — without it, we'd attach
+    # a different user's "Sunset" tag to the current user's image and
+    # cross-RLS-boundary the row.
+    existing = await session.execute(
+        select(Tag).where(Tag.user_id == image.user_id, Tag.label.in_(labels))
+    )
     label_to_tag = {t.label: t for t in existing.scalars().all()}
 
     for label, score in tags:
         tag = label_to_tag.get(label)
         if tag is None:
-            tag = Tag(label=label, source="clip")
+            tag = Tag(user_id=image.user_id, label=label, source="clip")
             session.add(tag)
             await session.flush()
             label_to_tag[label] = tag
-        session.add(ImageTag(image_id=image.id, tag_id=tag.id, confidence=score))
+        session.add(
+            ImageTag(
+                image_id=image.id,
+                tag_id=tag.id,
+                user_id=image.user_id,
+                confidence=score,
+            )
+        )
 
 
 def _strip_exif_bytes(data: bytes, mime: str | None) -> bytes | None:

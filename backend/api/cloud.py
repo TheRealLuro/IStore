@@ -325,9 +325,41 @@ async def set_ai_opt_in(
         action="cloud.ai_opt_in" if body.opted_in else "cloud.ai_opt_out",
         details={"provider": link.provider, "image_count": int(res.rowcount or 0)},
     )
+
+    # When opting IN, enqueue summarize jobs for every newly-eligible
+    # image so the ml-worker actually starts processing them. Without
+    # this nudge, flipping the toggle only marks rows pending —
+    # nothing pushes them into the Redis queue, and the
+    # summarize-progress counter sits at "0 of N" forever. (The
+    # `/images/summarize-progress` poll also drains a few rows per
+    # tick as a safety net, but enqueuing eagerly here makes the FE
+    # ticking start the moment the user clicks "Enable".)
+    enqueued = 0
+    if body.opted_in:
+        from sqlalchemy import select
+        from backend import jobs as job_q
+
+        ids = (
+            await session.execute(
+                select(ImageModel.id).where(
+                    ImageModel.user_id == user.id,
+                    ImageModel.source_provider == link.provider,
+                    ImageModel.deleted_at.is_(None),
+                    ImageModel.pending_summary.is_(True),
+                )
+            )
+        ).scalars().all()
+        for img_id in ids:
+            try:
+                if await job_q.enqueue_summarize(img_id):
+                    enqueued += 1
+            except Exception:
+                logger.exception("ai-opt-in: enqueue failed for %s", img_id)
+
     await session.commit()
     return {
         "affected": int(res.rowcount or 0),
+        "enqueued": enqueued,
         "provider": link.provider,
         "opted_in": body.opted_in,
     }

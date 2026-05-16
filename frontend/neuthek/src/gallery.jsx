@@ -832,11 +832,21 @@ export function GalleryView({
       {!query && <div className="kicker" style={{ marginBottom: 10 }}>Files</div>}
 
       {filtered.length === 0 ? (
-        <div className="empty">
-          <div className="empty__icon"><Icon name="search" size={26} strokeWidth={1.4}/></div>
-          <div className="empty__title">No results for "{query}"</div>
-          <div className="empty__body">Try a broader term, or search by topic — "sunset", "portrait", "lake".</div>
-        </div>
+        query ? (
+          <div className="empty">
+            <div className="empty__icon"><Icon name="search" size={26} strokeWidth={1.4}/></div>
+            <div className="empty__title">No results for "{query}"</div>
+            <div className="empty__body">Try a broader term, or search by topic — "sunset", "portrait", "lake".</div>
+          </div>
+        ) : (
+          // No search active + no files at this scope. If the scope has
+          // folders (already rendered above), don't fall through to a
+          // big "search" hero — a quiet one-line note keeps the page
+          // calm. The gallery's folder strip is the focal point.
+          <div style={{ padding: "20px 4px", fontSize: 12.5, color: "var(--ink-3)" }}>
+            No individual files here yet — open a folder above, or drop files anywhere on the page to upload.
+          </div>
+        )
       ) : (
         <MarqueeGrid
           layoutMode={layoutMode}
