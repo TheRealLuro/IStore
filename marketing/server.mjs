@@ -68,31 +68,177 @@ function b64urlDecode(s) {
   return Buffer.from(s, "base64").toString("utf8");
 }
 
-function signVerifyToken(id) {
-  const exp = Math.floor(Date.now() / 1000) + VERIFY_TTL_SECONDS;
-  const payload = `${id}.${exp}`;
+// Generic HMAC-signed `purpose.id.exp.mac` token.
+// `purpose` namespaces the token type so an unsubscribe token can't be
+// replayed as a verify token (and vice versa). Verifier rejects on
+// purpose mismatch, expired exp, or bad MAC.
+function signToken(purpose, id, ttlSeconds) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const payload = `${purpose}.${id}.${exp}`;
   const mac = crypto.createHmac("sha256", VERIFY_SECRET).update(payload).digest("hex").slice(0, 32);
   return b64urlEncode(`${payload}.${mac}`);
 }
-function verifyVerifyToken(token) {
+function verifyToken(purpose, token) {
   let raw;
   try { raw = b64urlDecode(token); }
   catch { return null; }
   const parts = raw.split(".");
-  if (parts.length !== 3) return null;
-  const [idStr, expStr, mac] = parts;
+  if (parts.length !== 4) return null;
+  const [pur, idStr, expStr, mac] = parts;
+  if (pur !== purpose) return null;
   const id = parseInt(idStr, 10);
   const exp = parseInt(expStr, 10);
   if (!Number.isFinite(id) || !Number.isFinite(exp)) return null;
   if (Math.floor(Date.now() / 1000) > exp) return null;
   const expectMac = crypto.createHmac("sha256", VERIFY_SECRET)
-    .update(`${id}.${exp}`).digest("hex").slice(0, 32);
-  // Constant-time compare
+    .update(`${pur}.${id}.${exp}`).digest("hex").slice(0, 32);
   const a = Buffer.from(mac);
   const b = Buffer.from(expectMac);
   if (a.length !== b.length) return null;
   if (!crypto.timingSafeEqual(a, b)) return null;
   return { id, exp };
+}
+
+// Verify token kept as a thin wrapper for clarity at call sites.
+function signVerifyToken(id) { return signToken("v", id, VERIFY_TTL_SECONDS); }
+function verifyVerifyToken(token) { return verifyToken("v", token); }
+
+const UNSUB_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year — old emails should still unsub
+function signUnsubToken(id) { return signToken("u", id, UNSUB_TTL_SECONDS); }
+function verifyUnsubToken(token) { return verifyToken("u", token); }
+
+// ---------- Newsletter template ----------------------------------------
+// Inline-styled HTML — email clients drop external stylesheets, so every
+// rule lives on the element. Stays under ~600px for Gmail / Apple Mail
+// rendering. System fonts only — no Geist webfont, since email clients
+// fall back unpredictably for custom faces.
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function newsletterHighlights(entry) {
+  // Lead with the new features (more exciting); if there are fewer than 3,
+  // pad with fixes. Cap at 3 bullets so the email stays scannable.
+  const news = entry.body?.newFeatures || [];
+  const fixed = entry.body?.fixed || [];
+  return [...news, ...fixed].slice(0, 3);
+}
+
+function buildNewsletterHtml(entry, { readMoreUrl, unsubUrl, browserUrl }) {
+  const highlights = newsletterHighlights(entry);
+  const bullets = highlights.map((s) =>
+    `<li style="margin:0 0 10px;line-height:1.55;color:#0a0a0a;font-size:15px">${escapeHtml(s)}</li>`
+  ).join("");
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(entry.title)}</title></head>
+<body style="margin:0;padding:0;background:#f7f7f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0a0a0a">
+  <div style="max-width:560px;margin:0 auto;padding:32px 20px 24px">
+    <div style="text-align:center;margin-bottom:28px">
+      <a href="https://neuthek.com/" style="font-size:18px;font-weight:600;color:#0a0a0a;text-decoration:none;letter-spacing:-0.01em">neuthek</a>
+    </div>
+    <div style="background:#ffffff;border:1px solid #ececec;border-radius:14px;padding:28px 26px">
+      <div style="font-size:11px;font-weight:500;letter-spacing:0.12em;text-transform:uppercase;color:#8a8a8a;margin-bottom:14px">
+        ${escapeHtml(entry.week)} &middot; Weekly update
+      </div>
+      <h1 style="margin:0 0 14px;font-size:22px;line-height:1.25;font-weight:600;letter-spacing:-0.015em;color:#0a0a0a">
+        ${escapeHtml(entry.title)}
+      </h1>
+      <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#525252">
+        ${escapeHtml(entry.summary)}
+      </p>
+      ${highlights.length > 0 ? `
+      <div style="font-size:11px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:#8a8a8a;margin:0 0 10px">
+        What shipped this week
+      </div>
+      <ul style="margin:0 0 24px;padding-left:18px">${bullets}</ul>
+      ` : ""}
+      <div style="text-align:left;margin:8px 0 4px">
+        <a href="${escapeHtml(readMoreUrl)}" style="display:inline-block;background:#0a0a0a;color:#ffffff;padding:12px 22px;border-radius:999px;font-size:14px;font-weight:500;text-decoration:none">
+          Read the full update &rarr;
+        </a>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:22px;font-size:12px;color:#8a8a8a;line-height:1.65">
+      You're getting this because you opted into neuthek's weekly newsletter
+      when you joined the waitlist.<br>
+      <a href="${escapeHtml(unsubUrl)}" style="color:#525252;text-decoration:underline">Unsubscribe</a>
+      &nbsp;&middot;&nbsp;
+      <a href="${escapeHtml(browserUrl)}" style="color:#525252;text-decoration:underline">View in browser</a>
+    </div>
+  </div>
+</body></html>`;
+}
+
+function buildNewsletterText(entry, { readMoreUrl, unsubUrl }) {
+  const highlights = newsletterHighlights(entry);
+  const bullets = highlights.map((s) => `  - ${s}`).join("\n");
+  return [
+    `neuthek weekly update`,
+    `${entry.week}`,
+    ``,
+    entry.title,
+    ``,
+    entry.summary,
+    ``,
+    highlights.length > 0 ? `What shipped this week:` : "",
+    bullets,
+    ``,
+    `Read the full update: ${readMoreUrl}`,
+    ``,
+    `---`,
+    `You're getting this because you opted into neuthek's weekly newsletter`,
+    `when you joined the waitlist.`,
+    `Unsubscribe: ${unsubUrl}`,
+  ].filter(Boolean).join("\n");
+}
+
+async function sendNewsletterEmail({ to, subject, html, text, unsubUrl }) {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM || "neuthek <noreply@neuthek.com>";
+  if (!key) {
+    console.log(`[newsletter] would send to ${to} (no RESEND_API_KEY) — unsub: ${unsubUrl}`);
+    return { sent: false, reason: "no-resend-key" };
+  }
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      // RFC 8058: List-Unsubscribe + List-Unsubscribe-Post tell Gmail /
+      // Apple Mail to render a native "Unsubscribe" affordance and
+      // enable one-click compliance, which Gmail now penalises bulk
+      // senders for missing. Resend's `headers` field passes them
+      // through verbatim.
+      body: JSON.stringify({
+        from,
+        to,
+        subject,
+        html,
+        text,
+        headers: {
+          "List-Unsubscribe": `<${unsubUrl}>, <mailto:unsubscribe@neuthek.com?subject=unsubscribe>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`[newsletter] Resend rejected for ${to}: ${res.status} ${body}`);
+      return { sent: false, reason: `resend-${res.status}` };
+    }
+    return { sent: true };
+  } catch (err) {
+    console.error(`[newsletter] Resend network error for ${to}`, err);
+    return { sent: false, reason: "resend-network" };
+  }
 }
 
 // Resend HTTP API — no extra dependencies, just fetch(). Set RESEND_API_KEY
@@ -212,9 +358,27 @@ if (DATABASE_URL) {
       await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT false`);
       await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ`);
       await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS verify_sent_at TIMESTAMPTZ`);
+      await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS unsubscribed_at TIMESTAMPTZ`);
       await pool.query(`
         CREATE INDEX IF NOT EXISTS ix_waitlist_signups_created_at_desc
         ON waitlist_signups (created_at DESC)
+      `);
+      // Per-recipient audit + dedupe for newsletter sends. UNIQUE
+      // (signup_id, slug) means re-running a send for the same week
+      // skips already-delivered rows without bookkeeping in the API.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS newsletter_sends (
+          id          BIGSERIAL PRIMARY KEY,
+          signup_id   BIGINT NOT NULL REFERENCES waitlist_signups(id) ON DELETE CASCADE,
+          slug        TEXT NOT NULL,
+          sent_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+          status      TEXT NOT NULL DEFAULT 'sent',
+          error       TEXT,
+          UNIQUE (signup_id, slug)
+        )
+      `);
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS ix_newsletter_sends_slug ON newsletter_sends (slug)
       `);
     },
     async upsertSignup({ email, use_case, ip, user_agent, newsletter_opt_in }) {
@@ -247,7 +411,7 @@ if (DATABASE_URL) {
       const { rows } = await pool.query(
         `SELECT id, email, use_case, source, ip, user_agent,
                 notified, notified_at,
-                newsletter_opt_in, newsletter_consent_at,
+                newsletter_opt_in, newsletter_consent_at, unsubscribed_at,
                 verified, verified_at, verify_sent_at,
                 created_at
          FROM waitlist_signups
@@ -297,6 +461,55 @@ if (DATABASE_URL) {
     },
     async stampVerifySent(id) {
       await pool.query(`UPDATE waitlist_signups SET verify_sent_at = now() WHERE id = $1`, [id]);
+    },
+    async markUnsubscribed(id) {
+      const { rows } = await pool.query(
+        `UPDATE waitlist_signups
+         SET unsubscribed_at = COALESCE(unsubscribed_at, now()),
+             newsletter_opt_in = false
+         WHERE id = $1
+         RETURNING id, email, unsubscribed_at`,
+        [id]
+      );
+      return rows[0] || null;
+    },
+    async listNewsletterRecipients(slug) {
+      // Eligible recipients: verified, opted-in, not unsubscribed, and
+      // not already sent this slug (the LEFT JOIN + NULL filter is the
+      // dedupe). Returns minimal payload — just what the sender needs.
+      const { rows } = await pool.query(
+        `SELECT w.id, w.email
+         FROM waitlist_signups w
+         LEFT JOIN newsletter_sends s ON s.signup_id = w.id AND s.slug = $1
+         WHERE w.verified = true
+           AND w.newsletter_opt_in = true
+           AND w.unsubscribed_at IS NULL
+           AND s.id IS NULL
+         ORDER BY w.created_at ASC`,
+        [slug]
+      );
+      return rows;
+    },
+    async recordNewsletterSend({ signupId, slug, status, error }) {
+      // UNIQUE (signup_id, slug) means a race that double-attempts a
+      // send will fail-quiet on the second insert — the constraint
+      // does the dedupe. ON CONFLICT DO NOTHING keeps the call idempotent.
+      await pool.query(
+        `INSERT INTO newsletter_sends (signup_id, slug, status, error)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (signup_id, slug) DO NOTHING`,
+        [signupId, slug, status, error || null]
+      );
+    },
+    async newsletterSendStats(slug) {
+      const { rows } = await pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status = 'sent')   AS sent,
+           COUNT(*) FILTER (WHERE status = 'failed') AS failed
+         FROM newsletter_sends WHERE slug = $1`,
+        [slug]
+      );
+      return { sent: Number(rows[0].sent), failed: Number(rows[0].failed) };
     },
   };
 } else {
@@ -352,6 +565,21 @@ if (DATABASE_URL) {
       if (!names.has("verify_sent_at")) {
         db.exec("ALTER TABLE waitlist_signups ADD COLUMN verify_sent_at TEXT");
       }
+      if (!names.has("unsubscribed_at")) {
+        db.exec("ALTER TABLE waitlist_signups ADD COLUMN unsubscribed_at TEXT");
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS newsletter_sends (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          signup_id   INTEGER NOT NULL REFERENCES waitlist_signups(id) ON DELETE CASCADE,
+          slug        TEXT NOT NULL,
+          sent_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          status      TEXT NOT NULL DEFAULT 'sent',
+          error       TEXT,
+          UNIQUE (signup_id, slug)
+        );
+        CREATE INDEX IF NOT EXISTS ix_newsletter_sends_slug ON newsletter_sends (slug);
+      `);
     },
     async upsertSignup({ email, use_case, ip, user_agent, newsletter_opt_in }) {
       const flag = newsletter_opt_in ? 1 : 0;
@@ -396,7 +624,7 @@ if (DATABASE_URL) {
       const rows = db.prepare(
         `SELECT id, email, use_case, source, ip, user_agent,
                 notified, notified_at,
-                newsletter_opt_in, newsletter_consent_at,
+                newsletter_opt_in, newsletter_consent_at, unsubscribed_at,
                 verified, verified_at, verify_sent_at,
                 created_at
          FROM waitlist_signups
@@ -452,6 +680,44 @@ if (DATABASE_URL) {
     async stampVerifySent(id) {
       db.prepare(`UPDATE waitlist_signups SET verify_sent_at = ? WHERE id = ?`)
         .run(new Date().toISOString(), id);
+    },
+    async markUnsubscribed(id) {
+      const row = db.prepare(
+        `UPDATE waitlist_signups
+         SET unsubscribed_at = COALESCE(unsubscribed_at, CURRENT_TIMESTAMP),
+             newsletter_opt_in = 0
+         WHERE id = ?
+         RETURNING id, email, unsubscribed_at`
+      ).get(id);
+      return row || null;
+    },
+    async listNewsletterRecipients(slug) {
+      const rows = db.prepare(
+        `SELECT w.id, w.email
+         FROM waitlist_signups w
+         LEFT JOIN newsletter_sends s ON s.signup_id = w.id AND s.slug = ?
+         WHERE w.verified = 1
+           AND w.newsletter_opt_in = 1
+           AND w.unsubscribed_at IS NULL
+           AND s.id IS NULL
+         ORDER BY datetime(w.created_at) ASC`
+      ).all(slug);
+      return rows;
+    },
+    async recordNewsletterSend({ signupId, slug, status, error }) {
+      db.prepare(
+        `INSERT OR IGNORE INTO newsletter_sends (signup_id, slug, status, error)
+         VALUES (?, ?, ?, ?)`
+      ).run(signupId, slug, status, error || null);
+    },
+    async newsletterSendStats(slug) {
+      const row = db.prepare(
+        `SELECT
+           SUM(CASE WHEN status = 'sent'   THEN 1 ELSE 0 END) AS sent,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+         FROM newsletter_sends WHERE slug = ?`
+      ).get(slug);
+      return { sent: Number(row?.sent || 0), failed: Number(row?.failed || 0) };
     },
   };
 }
@@ -632,6 +898,149 @@ app.post("/api/waitlist/resend", async (req, res) => {
     console.error("[waitlist] resend error", err);
     return res.status(500).json({ ok: false, detail: "resend failed" });
   }
+});
+
+// ----- Unsubscribe (one-click, RFC 8058) -----
+// Accepts BOTH GET (user clicks email link → friendly /unsubscribe SPA
+// page) and POST (Gmail / Apple Mail one-click compliance). GET
+// triggers the same unsubscribe action so the SPA page can confirm
+// without a second round-trip; POST returns 204 No Content per the spec.
+async function handleUnsubscribe(req, res) {
+  const token = String(req.query?.token || req.body?.token || "");
+  if (!token) return res.status(400).json({ ok: false, detail: "missing token" });
+  const claims = verifyUnsubToken(token);
+  if (!claims) return res.status(400).json({ ok: false, detail: "invalid or expired token" });
+  try {
+    const row = await store.markUnsubscribed(claims.id);
+    if (!row) return res.status(404).json({ ok: false, detail: "signup not found" });
+    if (req.method === "POST") return res.status(204).end();
+    return res.json({ ok: true, email: row.email, unsubscribed_at: row.unsubscribed_at });
+  } catch (err) {
+    console.error("[unsubscribe] error", err);
+    return res.status(500).json({ ok: false, detail: "unsubscribe failed" });
+  }
+}
+app.get("/api/waitlist/unsubscribe", handleUnsubscribe);
+// Accept POST with either JSON body or `application/x-www-form-urlencoded`
+// (Gmail sends `application/x-www-form-urlencoded` with body
+// `List-Unsubscribe=One-Click` plus the token from the URL).
+app.post(
+  "/api/waitlist/unsubscribe",
+  express.urlencoded({ extended: false }),
+  handleUnsubscribe
+);
+
+// ----- Admin: send newsletter for a specific weekly update -----
+app.post("/api/admin/newsletter/send", adminAuth, async (req, res) => {
+  const slug = String(req.body?.slug || "").trim();
+  if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
+
+  // Look up the update entry. The index is loaded at server boot from
+  // src/data/updates-index.json; an unknown slug is a 404 (operator
+  // typo or stale index).
+  const entry = UPDATE_INDEX.find((u) => u.slug === slug);
+  if (!entry) return res.status(404).json({ ok: false, detail: "unknown update slug" });
+
+  let recipients;
+  try { recipients = await store.listNewsletterRecipients(slug); }
+  catch (err) {
+    console.error("[newsletter] recipient lookup failed", err);
+    return res.status(500).json({ ok: false, detail: "recipient lookup failed" });
+  }
+
+  if (recipients.length === 0) {
+    return res.json({ ok: true, total: 0, sent: 0, failed: 0, recipients: [] });
+  }
+
+  const readMoreUrl = `${PUBLIC_ORIGIN}/updates/${slug}`;
+  const subject = `${entry.title.length > 70
+    ? entry.title.slice(0, 67) + "..."
+    : entry.title}`;
+
+  // Sequential send with a small await between calls. Resend's free tier
+  // limits to 10 req/sec; we stay well under by sleeping 150ms between
+  // sends. For larger lists this could be migrated to /emails/batch
+  // (Resend's bulk endpoint, up to 100 per request).
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let sentCount = 0;
+  let failedCount = 0;
+  const failedEmails = [];
+
+  for (const r of recipients) {
+    const unsubToken = signUnsubToken(r.id);
+    const unsubUrl = `${PUBLIC_ORIGIN}/api/waitlist/unsubscribe?token=${encodeURIComponent(unsubToken)}`;
+    const browserUrl = readMoreUrl;
+    const html = buildNewsletterHtml(entry, { readMoreUrl, unsubUrl, browserUrl });
+    const text = buildNewsletterText(entry, { readMoreUrl, unsubUrl });
+    const result = await sendNewsletterEmail({
+      to: r.email,
+      subject,
+      html,
+      text,
+      unsubUrl,
+    });
+    const status = result.sent ? "sent" : "failed";
+    if (result.sent) sentCount++;
+    else {
+      failedCount++;
+      failedEmails.push({ email: r.email, reason: result.reason });
+    }
+    try {
+      await store.recordNewsletterSend({
+        signupId: r.id,
+        slug,
+        status,
+        error: result.sent ? null : result.reason || "unknown",
+      });
+    } catch (err) {
+      console.error(`[newsletter] log insert failed for ${r.email}`, err);
+    }
+    await sleep(150);
+  }
+
+  return res.json({
+    ok: true,
+    slug,
+    total: recipients.length,
+    sent: sentCount,
+    failed: failedCount,
+    failures: failedEmails,
+    resend_configured: !!process.env.RESEND_API_KEY,
+  });
+});
+
+// ----- Admin: preview newsletter HTML for a slug -----
+// Returns the same HTML body the broadcast would send, with a sample
+// unsubscribe URL. Useful for "does this look right" QA before
+// pulling the trigger on a real send.
+app.get("/api/admin/newsletter/preview", adminAuth, async (req, res) => {
+  const slug = String(req.query?.slug || "").trim();
+  if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
+  const entry = UPDATE_INDEX.find((u) => u.slug === slug);
+  if (!entry) return res.status(404).json({ ok: false, detail: "unknown update slug" });
+  const sampleToken = signUnsubToken(0); // id=0 is fine; this is a preview
+  const unsubUrl = `${PUBLIC_ORIGIN}/api/waitlist/unsubscribe?token=${encodeURIComponent(sampleToken)}`;
+  const readMoreUrl = `${PUBLIC_ORIGIN}/updates/${slug}`;
+  const html = buildNewsletterHtml(entry, { readMoreUrl, unsubUrl, browserUrl: readMoreUrl });
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(html);
+});
+
+// ----- Admin: list eligible recipients + previously-sent count for a slug -----
+app.get("/api/admin/newsletter/recipients", adminAuth, async (req, res) => {
+  const slug = String(req.query?.slug || "").trim();
+  if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
+  const entry = UPDATE_INDEX.find((u) => u.slug === slug);
+  if (!entry) return res.status(404).json({ ok: false, detail: "unknown update slug" });
+  const recipients = await store.listNewsletterRecipients(slug);
+  const stats = await store.newsletterSendStats(slug);
+  res.json({
+    slug,
+    title: entry.title,
+    eligible: recipients.length,
+    already_sent: stats.sent,
+    previous_failures: stats.failed,
+  });
 });
 
 // ----- Admin: re-send verify for a specific row -----

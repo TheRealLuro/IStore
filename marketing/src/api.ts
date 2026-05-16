@@ -94,6 +94,21 @@ export async function resendWaitlistVerify(email: string): Promise<void> {
   }
 }
 
+export interface UnsubscribeResult {
+  ok: boolean;
+  email: string;
+  unsubscribed_at: string;
+}
+
+export async function unsubscribeNewsletter(token: string): Promise<UnsubscribeResult> {
+  const res = await fetch(`${API_PREFIX}/waitlist/unsubscribe?token=${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    if (res.status === 400) throw new Error("invalid-token");
+    throw new Error(`server-error-${res.status}`);
+  }
+  return (await res.json()) as UnsubscribeResult;
+}
+
 // --------------------------------------------------------------------- //
 // Admin API — guarded by HTTP Basic Auth on the server. The client stores
 // the credentials in sessionStorage so a reload doesn't blow the session
@@ -131,6 +146,7 @@ export interface WaitlistEntry {
   notified_at: string | null;
   newsletter_opt_in: boolean;
   newsletter_consent_at: string | null;
+  unsubscribed_at: string | null;
   verified: boolean;
   verified_at: string | null;
   verify_sent_at: string | null;
@@ -171,4 +187,54 @@ export async function adminResendVerify(id: number): Promise<AdminResendResult> 
   if (res.status === 401) throw new Error("unauthorized");
   if (!res.ok) throw new Error(`server-error-${res.status}`);
   return (await res.json()) as AdminResendResult;
+}
+
+// --------------------------------------------------------------------- //
+// Newsletter admin API
+// --------------------------------------------------------------------- //
+
+export interface NewsletterRecipientsInfo {
+  slug: string;
+  title: string;
+  eligible: number;        // verified + opted-in + not yet sent
+  already_sent: number;    // dedupe count
+  previous_failures: number;
+}
+
+export async function adminNewsletterRecipients(slug: string): Promise<NewsletterRecipientsInfo> {
+  const res = await fetch(
+    `${API_PREFIX}/admin/newsletter/recipients?slug=${encodeURIComponent(slug)}`,
+    { headers: adminHeaders() },
+  );
+  if (res.status === 401) throw new Error("unauthorized");
+  if (!res.ok) throw new Error(`server-error-${res.status}`);
+  return (await res.json()) as NewsletterRecipientsInfo;
+}
+
+export interface NewsletterSendResult {
+  ok: boolean;
+  slug: string;
+  total: number;
+  sent: number;
+  failed: number;
+  failures: { email: string; reason?: string }[];
+  resend_configured: boolean;
+}
+
+export async function adminNewsletterSend(slug: string): Promise<NewsletterSendResult> {
+  const res = await fetch(`${API_PREFIX}/admin/newsletter/send`, {
+    method: "POST",
+    headers: {
+      ...adminHeaders(),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ slug }),
+  });
+  if (res.status === 401) throw new Error("unauthorized");
+  if (!res.ok) throw new Error(`server-error-${res.status}`);
+  return (await res.json()) as NewsletterSendResult;
+}
+
+export function adminNewsletterPreviewUrl(slug: string): string {
+  return `${API_PREFIX}/admin/newsletter/preview?slug=${encodeURIComponent(slug)}`;
 }

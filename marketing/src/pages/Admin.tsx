@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
 import {
+  adminNewsletterPreviewUrl,
+  adminNewsletterRecipients,
+  adminNewsletterSend,
   adminResendVerify,
   clearAdminAuth,
   hasAdminAuth,
   listWaitlist,
   markWaitlistNotified,
   setAdminAuth,
+  type NewsletterRecipientsInfo,
+  type NewsletterSendResult,
   type WaitlistEntry,
 } from "../api";
+import { UPDATES } from "../data/updates";
 
 /* Admin viewer for marketing-site waitlist signups.
  *
@@ -311,6 +317,9 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
           </div>
         )}
 
+        <NewsletterPanel newsletterCount={newsletterCount} verifiedCount={verifiedCount} />
+
+
         {loading ? (
           <div style={{ padding: 24, color: "var(--ink-3)" }}>Loading…</div>
         ) : filtered.length === 0 ? (
@@ -365,7 +374,15 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
                       )}
                     </td>
                     <td data-label="Newsletter">
-                      {r.newsletter_opt_in ? (
+                      {r.unsubscribed_at ? (
+                        <span
+                          className="pill"
+                          title={`unsubscribed ${fmtDate(r.unsubscribed_at)}`}
+                          style={{ color: "var(--bad)" }}
+                        >
+                          Unsubscribed
+                        </span>
+                      ) : r.newsletter_opt_in ? (
                         <span className="pill pill--good" title={r.newsletter_consent_at ? `consent ${fmtDate(r.newsletter_consent_at)}` : ""}>
                           Yes
                         </span>
@@ -417,5 +434,204 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
         )}
       </div>
     </section>
+  );
+}
+
+// --------------------------------------------------------------------- //
+
+function NewsletterPanel({
+  newsletterCount,
+  verifiedCount,
+}: {
+  newsletterCount: number;
+  verifiedCount: number;
+}) {
+  // Default to the most-recent update (UPDATES is newest-first).
+  const [slug, setSlug] = useState<string>(UPDATES[0]?.slug || "");
+  const [recipients, setRecipients] = useState<NewsletterRecipientsInfo | null>(null);
+  const [recipientsBusy, setRecipientsBusy] = useState<boolean>(false);
+  const [sendBusy, setSendBusy] = useState<boolean>(false);
+  const [sendResult, setSendResult] = useState<NewsletterSendResult | null>(null);
+  const [error, setError] = useState<string>("");
+  const [confirming, setConfirming] = useState<boolean>(false);
+
+  // Whenever the operator picks a new slug, look up how many people would
+  // get it and how many have already received it. Cheap query — no rate
+  // limiting needed.
+  useEffect(() => {
+    if (!slug) return;
+    let cancelled = false;
+    setRecipientsBusy(true);
+    setError("");
+    setSendResult(null);
+    setConfirming(false);
+    adminNewsletterRecipients(slug)
+      .then((data) => { if (!cancelled) setRecipients(data); })
+      .catch(() => { if (!cancelled) setError("Couldn't load recipient counts."); })
+      .finally(() => { if (!cancelled) setRecipientsBusy(false); });
+    return () => { cancelled = true; };
+  }, [slug]);
+
+  async function doSend() {
+    setSendBusy(true);
+    setError("");
+    try {
+      const result = await adminNewsletterSend(slug);
+      setSendResult(result);
+      // Refresh counts so already_sent reflects the new state.
+      try { setRecipients(await adminNewsletterRecipients(slug)); }
+      catch { /* non-fatal */ }
+    } catch {
+      setError("Send failed. Check the server logs.");
+    } finally {
+      setSendBusy(false);
+      setConfirming(false);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        margin: "8px 0 24px",
+        padding: 18,
+        border: "1px solid var(--line)",
+        borderRadius: 14,
+        background: "var(--surface-2)",
+      }}
+    >
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 12, flexWrap: "wrap", marginBottom: 12,
+      }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-3)" }}>
+            Newsletter broadcast
+          </div>
+          <div style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 4 }}>
+            <strong>{newsletterCount}</strong> opted in &middot;{" "}
+            <strong>{verifiedCount}</strong> verified &middot; sends go to
+            verified + opted-in + not-unsubscribed addresses
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <select
+          value={slug}
+          onChange={(e) => setSlug(e.target.value)}
+          style={{
+            padding: "9px 12px",
+            border: "1px solid var(--line)",
+            borderRadius: 8,
+            fontSize: 14,
+            background: "var(--surface)",
+            minWidth: 280,
+            maxWidth: "100%",
+          }}
+        >
+          {UPDATES.map((u) => (
+            <option key={u.slug} value={u.slug}>
+              {u.week} — {u.title.length > 60 ? u.title.slice(0, 57) + "..." : u.title}
+            </option>
+          ))}
+        </select>
+        <a
+          href={adminNewsletterPreviewUrl(slug)}
+          target="_blank" rel="noreferrer"
+          className="btn btn--ghost"
+          style={{ fontSize: 13, padding: "8px 14px" }}
+        >
+          Preview
+        </a>
+        {!confirming ? (
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => setConfirming(true)}
+            disabled={sendBusy || !recipients || recipients.eligible === 0}
+            style={{ fontSize: 13, padding: "9px 16px" }}
+          >
+            Send newsletter
+          </button>
+        ) : (
+          <>
+            <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
+              Send to <strong>{recipients?.eligible || 0}</strong> recipients?
+            </span>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={doSend}
+              disabled={sendBusy}
+              style={{ fontSize: 13, padding: "9px 16px" }}
+            >
+              {sendBusy ? "Sending…" : "Confirm send"}
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => setConfirming(false)}
+              disabled={sendBusy}
+              style={{ fontSize: 13, padding: "9px 14px" }}
+            >
+              Cancel
+            </button>
+          </>
+        )}
+      </div>
+
+      {recipientsBusy && (
+        <div style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3)" }}>Loading…</div>
+      )}
+      {!recipientsBusy && recipients && (
+        <div style={{ marginTop: 10, fontSize: 13, color: "var(--ink-2)" }}>
+          <strong>{recipients.eligible}</strong> eligible to send now
+          {recipients.already_sent > 0 && (
+            <> &middot; {recipients.already_sent} already sent this update (skipped)</>
+          )}
+          {recipients.previous_failures > 0 && (
+            <> &middot; {recipients.previous_failures} previously failed</>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div style={{ marginTop: 10, fontSize: 13, color: "var(--bad)" }}>{error}</div>
+      )}
+
+      {sendResult && (
+        <div
+          className="callout"
+          style={{
+            marginTop: 14, marginBottom: 0,
+            background: sendResult.failed > 0 ? "var(--warn-bg)" : "#ecfdf5",
+            borderColor: sendResult.failed > 0 ? "var(--warn-line)" : "#a7f3d0",
+            color: sendResult.failed > 0 ? "var(--warn-ink)" : "var(--good)",
+          }}
+        >
+          <strong>Send finished:</strong>{" "}
+          {sendResult.sent} of {sendResult.total} delivered
+          {sendResult.failed > 0 && <>, {sendResult.failed} failed</>}.
+          {!sendResult.resend_configured && (
+            <div style={{ marginTop: 6, fontSize: 12 }}>
+              <strong>Note:</strong> RESEND_API_KEY isn't set on this
+              deployment — sends were logged to the server console
+              instead of going out. Set the env var on Render to send
+              real email.
+            </div>
+          )}
+          {sendResult.failures.length > 0 && (
+            <ul style={{ margin: "8px 0 0", paddingLeft: 20, fontSize: 12 }}>
+              {sendResult.failures.slice(0, 5).map((f, i) => (
+                <li key={i}>{f.email}{f.reason ? ` — ${f.reason}` : ""}</li>
+              ))}
+              {sendResult.failures.length > 5 && (
+                <li>…and {sendResult.failures.length - 5} more</li>
+              )}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
