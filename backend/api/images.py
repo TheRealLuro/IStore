@@ -607,23 +607,29 @@ async def summarize_progress(
     (everything pending for normal-upload reasons; no banner) from an
     account that's actively re-summarizing (banner shown).
     """
+    # A row is "pending" iff the user is still waiting on a summary.
+    # That means:
+    #   - pending_summary=True (worker hasn't taken the job yet), OR
+    #   - summary IS NULL AND the worker has never tried it
+    #     (summary_generated_at IS NULL).
+    #
+    # The third state — `summary_generated_at IS NOT NULL AND
+    # summary IS NULL` — is the worker ran, the model returned no
+    # usable text (corrupt image, model OOM, content unsupported),
+    # and another retry would just spin. We exclude those from the
+    # progress count so the user doesn't see "58/59" forever after
+    # the queue actually drains. The Library Maintenance section
+    # offers a "force re-summarize" button for the rare case where
+    # a model retry would help.
+    pending_predicate = (
+        (Image.pending_summary.is_(True))
+        | (Image.summary.is_(None) & Image.summary_generated_at.is_(None))
+    )
     row = (
         await session.execute(
             select(
                 func.count().label("total"),
-                # "Pending" used to mean only `pending_summary=true`, but
-                # the worker also marks rows complete-without-a-summary
-                # when the LLM dispatch returns None (model crashed, ran
-                # out of memory, etc.). Those rows have
-                # `pending_summary=false` AND `summary IS NULL` — they
-                # need another backfill pass to populate. Counting them
-                # as pending here means the top progress banner reflects
-                # real coverage (matches what the user sees in the
-                # gallery), and the regular non-force backfill (which
-                # already targets `summary IS NULL`) picks them up.
-                func.count()
-                .filter((Image.pending_summary.is_(True)) | (Image.summary.is_(None)))
-                .label("pending"),
+                func.count().filter(pending_predicate).label("pending"),
                 func.count().filter(Image.summary.is_not(None)).label("with_summary"),
             ).where(
                 Image.user_id == user.id,
@@ -652,7 +658,13 @@ async def summarize_progress(
                     Image.user_id == user.id,
                     Image.deleted_at.is_(None),
                     Image.skip_ai_training.is_(False),
-                    (Image.pending_summary.is_(True)) | (Image.summary.is_(None)),
+                    # Same predicate as `pending` above — only enqueue
+                    # rows the worker hasn't already given up on.
+                    # Rows with summary_generated_at set + summary
+                    # NULL are dead-letter; manual re-summarize via
+                    # /images/backfill-summaries?force=true if needed.
+                    (Image.pending_summary.is_(True))
+                    | (Image.summary.is_(None) & Image.summary_generated_at.is_(None)),
                 )
                 .order_by(Image.uploaded_at.desc())
                 .limit(8)

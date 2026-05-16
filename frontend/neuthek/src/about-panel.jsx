@@ -10,7 +10,7 @@
 //   ◐ optional  — feature is implemented but requires per-deploy config
 //                 (e.g. Stripe keys, Google OAuth client).
 //   ○ planned   — placeholder so the surface is honest about what's next.
-import React from "react";
+import React, { useState as useStateA } from "react";
 import { Icon } from "./icons.jsx";
 
 const SECTIONS = [
@@ -167,83 +167,151 @@ export function AboutPanel() {
     },
     {},
   );
+  // Only the first section ("core") is expanded by default — the
+  // other 8 sections all collapsed so the page fits in the viewport
+  // without scrolling. Open sets are stored locally so toggling
+  // doesn't lose state when other parts of the modal re-render.
+  const [openIds, setOpenIds] = useStateA(new Set([SECTIONS[0]?.id]));
+  const toggle = (id) => setOpenIds((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const expandAll = () => setOpenIds(new Set(SECTIONS.map((s) => s.id)));
+  const collapseAll = () => setOpenIds(new Set());
+  const allExpanded = openIds.size === SECTIONS.length;
+
   return (
     <div style={{ padding: "4px 0 24px" }}>
       <div
         style={{
           display: "flex", flexWrap: "wrap", gap: 10,
-          padding: "4px 18px 14px",
+          padding: "4px 18px 8px",
           color: "var(--ink-3)", fontSize: 12.5,
+          alignItems: "center",
+          justifyContent: "space-between",
         }}
       >
-        <span>
-          <strong style={{ color: "var(--ink)" }}>{totals.live || 0}</strong> features live
-        </span>
-        <span>·</span>
-        <span>
-          <strong style={{ color: "var(--ink)" }}>{totals.optional || 0}</strong> needs configuration
-        </span>
-        <span>·</span>
-        <span>
-          <strong style={{ color: "var(--ink)" }}>{totals.planned || 0}</strong> planned
-        </span>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <span>
+            <strong style={{ color: "var(--ink)" }}>{totals.live || 0}</strong> live
+          </span>
+          <span>·</span>
+          <span>
+            <strong style={{ color: "var(--ink)" }}>{totals.optional || 0}</strong> needs config
+          </span>
+          <span>·</span>
+          <span>
+            <strong style={{ color: "var(--ink)" }}>{totals.planned || 0}</strong> planned
+          </span>
+        </div>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={allExpanded ? collapseAll : expandAll}
+        >
+          {allExpanded ? "Collapse all" : "Expand all"}
+        </button>
       </div>
 
-      {SECTIONS.map((sec) => (
-        <div key={sec.id} style={{ marginBottom: 18 }}>
-          <div
-            className="applist__label"
-            style={{
-              padding: "12px 18px 6px",
-              display: "flex", alignItems: "baseline",
-              justifyContent: "space-between", gap: 12,
-            }}
-          >
-            <span>{sec.title}</span>
-            <span style={{ color: "var(--ink-3)", fontWeight: 400, fontSize: 11.5 }}>
-              {sec.desc}
-            </span>
-          </div>
-          <div className="applist">
-            {sec.items.map((it) => (
+      {SECTIONS.map((sec) => {
+        const isOpen = openIds.has(sec.id);
+        const live = sec.items.filter((i) => i.status === "live").length;
+        return (
+          <div key={sec.id} style={{ margin: "0 12px 8px" }}>
+            <button
+              type="button"
+              onClick={() => toggle(sec.id)}
+              aria-expanded={isOpen}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "10px 12px",
+                background: isOpen ? "var(--surface-2)" : "transparent",
+                border: "1px solid var(--line)",
+                borderRadius: isOpen ? "10px 10px 0 0" : 10,
+                cursor: "pointer",
+                color: "var(--ink)",
+                textAlign: "left",
+                font: "inherit",
+              }}
+            >
+              <span style={{
+                display: "inline-flex",
+                transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+                transition: "transform 120ms ease",
+                color: "var(--ink-3)",
+              }}>
+                <Icon name="chevronRight" size={12}/>
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{sec.title}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>
+                  {sec.desc}
+                </div>
+              </div>
+              <span style={{
+                fontSize: 11,
+                color: "var(--ink-3)",
+                whiteSpace: "nowrap",
+              }}>
+                {live} / {sec.items.length} live
+              </span>
+            </button>
+            {isOpen && (
               <div
-                key={it.name}
+                className="applist"
                 style={{
-                  display: "flex", alignItems: "flex-start", gap: 12,
-                  padding: "10px 18px",
-                  borderBottom: "1px solid var(--line-soft, var(--line))",
+                  border: "1px solid var(--line)",
+                  borderTop: "none",
+                  borderRadius: "0 0 10px 10px",
+                  overflow: "hidden",
                 }}
               >
-                <span
-                  aria-hidden="true"
-                  style={{
-                    marginTop: 4,
-                    color: it.status === "live" ? "var(--success)" :
-                           it.status === "optional" ? "var(--warning)" : "var(--ink-3)",
-                  }}
-                >
-                  <Icon name={it.status === "planned" ? "refresh" : "check"} size={12} strokeWidth={2.6}/>
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, color: "var(--ink)", fontWeight: 500 }}>
-                    {it.name}
-                  </div>
-                  {it.note && (
-                    <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>
-                      {it.note}
+                {sec.items.map((it, idx) => (
+                  <div
+                    key={it.name}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 12,
+                      padding: "10px 14px",
+                      borderBottom: idx === sec.items.length - 1 ? "none" : "1px solid var(--line-soft, var(--line))",
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        marginTop: 4,
+                        color: it.status === "live" ? "var(--success)" :
+                               it.status === "optional" ? "var(--warning)" : "var(--ink-3)",
+                      }}
+                    >
+                      <Icon name={it.status === "planned" ? "refresh" : "check"} size={12} strokeWidth={2.6}/>
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "var(--ink)", fontWeight: 500 }}>
+                        {it.name}
+                      </div>
+                      {it.note && (
+                        <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>
+                          {it.note}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-                <Badge status={it.status}/>
+                    <Badge status={it.status}/>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       <div
         style={{
-          padding: "10px 18px", margin: "0 18px",
+          padding: "10px 18px", margin: "12px 12px 0",
           fontSize: 11.5, color: "var(--ink-3)",
           borderTop: "1px solid var(--line)",
         }}

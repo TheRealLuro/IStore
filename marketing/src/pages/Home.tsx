@@ -31,6 +31,33 @@ export default function Home() {
         </div>
       </section>
 
+      <section className="section section--tight">
+        <div className="container">
+          <div className="privacy-stance" role="note" aria-label="Privacy posture">
+            <span className="privacy-stance__icon" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg>
+            </span>
+            <div>
+              <h2 className="privacy-stance__title">
+                Your data isn't ours. We don't train on it. We don't sell it.
+              </h2>
+              <p className="privacy-stance__body">
+                neuthek is designed to run on a server <strong>you</strong> control.
+                Whether you self-host the open-source build (free) or use
+                the managed hosted version (your own tenant, fenced behind
+                Postgres row-level security), your photos, videos,
+                documents, face embeddings, summaries, and search history
+                are never exported to third parties, never used to train
+                AI models — ours or anyone else's — and never sold to ad
+                networks, brokers, or partners. AI features are opt-in
+                per scope. If you turn them off, the model passes don't
+                run on your library at all.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="section">
         <div className="container">
           <span className="eyebrow">What we're building</span>

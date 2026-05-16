@@ -13,6 +13,15 @@ import {
   getNotificationPrefs, updateNotificationPrefs,
 } from "@/api/auth";
 import { backfillSummaries } from "@/api/files";
+import { API_BASE_URL, tokens } from "@/api/client";
+
+// Small helper for raw fetch() calls that need an Authorization header
+// the same way `api.*` builds one. Centralized so future header
+// changes (e.g. CSRF) land in one place.
+const tokenHeader = () => {
+  const t = tokens.get();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+};
 import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";
 import { useAuthStore } from "@/stores/authStore";
 import { useQueryClient } from "@tanstack/react-query";
@@ -595,77 +604,217 @@ function InvoicesPage() {
   );
 }
 
-// ---------- Face data ----------
+// ---------- Face data (real-data version) ----------
 function FaceDetailPage() {
+  // Pull the people list — counts named persons + unlabelled clusters
+  // for the summary tiles. The /people/ endpoint already returns both
+  // shapes; we just derive totals here.
+  const { data: people, isLoading } = useQuery({
+    queryKey: ["people"],
+    queryFn: async () => {
+      const r = await fetch(`${API_BASE_URL}/people/`, {
+        headers: tokenHeader(),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    },
+    staleTime: 30_000,
+  });
+  const namedCount = (people?.persons || []).length;
+  const clusterCount = (people?.unlabeled_clusters || []).length;
+  const totalFaces = (people?.persons || []).reduce((a, p) => a + (p.face_count || 0), 0)
+    + (people?.unlabeled_clusters || []).reduce((a, c) => a + (c.face_count || 0), 0);
+  const [busy, setBusy] = useStateSP(false);
+  const qc = useQueryClient();
+
+  const onRescan = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`${API_BASE_URL}/people/rescan`, {
+        method: "POST", headers: tokenHeader(),
+      });
+      if (!r.ok) throw new Error("rescan failed");
+      toast.success("Rescan queued. Faces will re-appear as the workers process them.");
+      qc.invalidateQueries({ queryKey: ["people"] });
+    } catch (e) {
+      toast.error("Could not start rescan");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
       <DetSection title="Detection summary">
         <div className="stat-grid">
-          <StatTile label="Faces detected" value="1,284" sub="across 3,012 photos"/>
-          <StatTile label="People named"    value="14"    sub="of 23 groups"/>
-          <StatTile label="Embeddings"      value="On-device" sub="never uploaded"/>
+          <StatTile
+            label="Faces detected"
+            value={isLoading ? "…" : totalFaces.toLocaleString()}
+            sub={isLoading ? " " : `across ${namedCount + clusterCount} groups`}
+          />
+          <StatTile
+            label="People named"
+            value={isLoading ? "…" : namedCount.toString()}
+            sub={isLoading ? " " : `${clusterCount} unlabelled groups`}
+          />
+          <StatTile
+            label="Embeddings"
+            value="On this server"
+            sub="Never sold or shared"
+          />
         </div>
       </DetSection>
 
       <DetSection title="How it works">
         <DetExplain>
-          Face detection runs locally in your browser. Embeddings — the math fingerprints used to group people — never leave your device. The original photos are encrypted at rest and only decrypted when you view them.
+          Face detection runs on your neuthek server, not in a third-party
+          API. Face embeddings (the 512-dimensional vectors used to
+          cluster faces) stay in your Postgres database — they're never
+          sent to us, never uploaded anywhere, never used to train
+          models, and never sold. On self-hosted deployments the
+          embeddings literally never leave your hardware; on the
+          managed hosted version they live in <em>your</em> tenant's
+          database fenced by Postgres row-level security.
         </DetExplain>
       </DetSection>
 
       <DetSection title="Manage data">
-        <div className="det-card" style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn--secondary">Re-scan library</button>
-          <button className="btn btn--ghost">Export face groups</button>
+        <div className="det-card" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            className="btn btn--secondary"
+            onClick={onRescan}
+            disabled={busy}
+          >
+            {busy ? "Queuing…" : "Re-scan library"}
+          </button>
         </div>
       </DetSection>
 
       <div className="det-danger">
-        <div className="det-danger__title">Delete all face data</div>
-        <div className="det-danger__desc">Removes every embedding and named-person grouping. Your photos are not affected. This can't be undone.</div>
-        <button className="btn btn--secondary" style={{ color: "var(--danger)" }}>Delete face data…</button>
+        <div className="det-danger__title">Withdraw face recognition consent</div>
+        <div className="det-danger__desc">
+          Stops face detection on future uploads and deletes every face
+          embedding + named-person grouping in your library. Your photos
+          are not affected. This can't be undone — re-granting consent
+          starts fresh.
+        </div>
+        <button
+          className="btn btn--secondary"
+          style={{ color: "var(--danger)" }}
+          onClick={async () => {
+            if (busy) return;
+            if (!window.confirm("Withdraw face-recognition consent and delete every embedding? Photos are kept.")) return;
+            setBusy(true);
+            try {
+              const r = await fetch(`${API_BASE_URL}/consent/face-recognition/withdraw`, {
+                method: "POST", headers: tokenHeader(),
+              });
+              if (!r.ok) throw new Error();
+              toast.success("Face data deleted.");
+              qc.invalidateQueries({ queryKey: ["people"] });
+              qc.invalidateQueries({ queryKey: ["consent-scopes"] });
+            } catch {
+              toast.error("Could not withdraw consent");
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Withdraw consent + delete face data…
+        </button>
       </div>
     </>
   );
 }
 
-// ---------- Location settings ----------
+// ---------- Location settings (real-data version) ----------
 function LocationDetailPage() {
-  const [strip, setStrip] = useStateSP(false);
-  const [hide,  setHide]  = useStateSP(true);
+  // /images/geo returns { points: [{id, lat, lng}], consent: bool }.
+  // We derive counts from points; "cities visited" requires reverse
+  // geocoding which we don't ship here, so the second tile shows the
+  // raw GPS-bearing-image count instead.
+  const { data: geo, isLoading: geoLoading } = useQuery({
+    queryKey: ["images-geo"],
+    queryFn: async () => {
+      const r = await fetch(`${API_BASE_URL}/images/geo`, {
+        headers: tokenHeader(),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    },
+    staleTime: 30_000,
+  });
+  const { data: facets } = useQuery({
+    queryKey: ["facets"],
+    queryFn: async () => {
+      const r = await fetch(`${API_BASE_URL}/images/facets`, {
+        headers: tokenHeader(),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    },
+    staleTime: 30_000,
+  });
+  const gpsCount = (geo?.points || []).length;
+  const totalImages = (facets?.by_category || {}).image || 0;
+
   return (
     <>
       <DetSection title="Summary">
         <div className="stat-grid">
-          <StatTile label="Photos with GPS" value="2,841" sub="of 4,108 total"/>
-          <StatTile label="Cities visited"  value="42"    sub="across 12 countries"/>
+          <StatTile
+            label="Photos with GPS"
+            value={geoLoading ? "…" : gpsCount.toLocaleString()}
+            sub={`of ${totalImages.toLocaleString()} total`}
+          />
+          <StatTile
+            label="Map pins"
+            value={geoLoading ? "…" : gpsCount.toLocaleString()}
+            sub={geo?.consent ? "Visible on Map" : "Hidden (consent off)"}
+          />
         </div>
       </DetSection>
 
-      <DetSection title="Privacy controls">
-        <div className="det-card" style={{ padding: "4px 18px" }}>
-          <div className="det-toggle-row">
-            <div className="det-toggle-row__body">
-              <div className="det-toggle-row__title">Strip GPS on upload</div>
-              <div className="det-toggle-row__desc">Remove location metadata from new photos before storing them.</div>
-            </div>
-            <SwitchSP on={strip} onChange={setStrip} ariaLabel="Strip GPS"/>
-          </div>
-          <div className="det-toggle-row">
-            <div className="det-toggle-row__body">
-              <div className="det-toggle-row__title">Hide locations from shares</div>
-              <div className="det-toggle-row__desc">When sharing a photo or album, GPS data isn't visible to recipients.</div>
-            </div>
-            <SwitchSP on={hide} onChange={setHide} ariaLabel="Hide on share"/>
-          </div>
-        </div>
+      <DetSection title="How GPS is handled">
+        <DetExplain>
+          EXIF location is stripped from every upload by default — your
+          photos hit the storage bucket with no embedded coordinates.
+          When you opt in via the <strong>Keep GPS from photos</strong> toggle
+          in the main Privacy section, coordinates are persisted to a
+          separate <code>image_geo</code> table you can clear at any time.
+          We never share, sell, or train models on this data; on the
+          managed hosted version it's fenced behind Postgres row-level
+          security so even other neuthek users can't see your pins.
+        </DetExplain>
       </DetSection>
 
-      <div className="det-danger">
-        <div className="det-danger__title">Strip GPS from existing photos</div>
-        <div className="det-danger__desc">Permanently removes location data from all 2,841 existing photos. The Map view will lose its pins.</div>
-        <button className="btn btn--secondary" style={{ color: "var(--danger)" }}>Strip GPS from all photos…</button>
-      </div>
+      <DetSection title="Manage existing GPS">
+        <div className="det-card" style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+            The main toggle is in <strong>Privacy → Photo metadata → Keep GPS from photos</strong>.
+            That governs new uploads. To remove location from existing photos:
+          </div>
+          <button
+            className="btn btn--secondary"
+            style={{ color: "var(--danger)", alignSelf: "flex-start" }}
+            onClick={async () => {
+              if (!window.confirm(`Permanently strip GPS from all ${gpsCount} existing photos? Map pins disappear.`)) return;
+              try {
+                const r = await fetch(`${API_BASE_URL}/images/geo/strip-all`, {
+                  method: "POST", headers: tokenHeader(),
+                });
+                if (!r.ok) throw new Error();
+                toast.success("GPS removed from existing photos.");
+              } catch {
+                toast.error("Could not strip GPS (endpoint may not be deployed yet).");
+              }
+            }}
+          >
+            Strip GPS from all {gpsCount > 0 ? gpsCount.toLocaleString() + " " : ""}photos…
+          </button>
+        </div>
+      </DetSection>
     </>
   );
 }
