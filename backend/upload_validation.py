@@ -167,6 +167,21 @@ _OOXML = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+# Camera RAW formats. All TIFF-shaped (except CR3 which is ISOBMFF and
+# handled separately). The mime values are the IANA-registered
+# `image/x-<vendor>-<format>` aliases — Pillow doesn't decode any of
+# them properly, but rawpy does. See codecs.decode_raw_to_pil.
+_RAW_EXTS = {
+    ".nef": "image/x-nikon-nef",
+    ".cr2": "image/x-canon-cr2",
+    ".arw": "image/x-sony-arw",
+    ".dng": "image/x-adobe-dng",
+    ".raf": "image/x-fuji-raf",
+    ".orf": "image/x-olympus-orf",
+    ".rw2": "image/x-panasonic-rw2",
+    ".pef": "image/x-pentax-pef",
+}
+RAW_MIMES: frozenset[str] = frozenset(_RAW_EXTS.values())
 
 
 def _suffix(filename: str | None) -> str:
@@ -187,6 +202,14 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp", "image"
     if data.startswith((b"II*\x00", b"MM\x00*")):
+        # Camera RAW formats are TIFF-shaped. Disambiguate by extension
+        # so the decoder picks the right path — Pillow on a NEF only
+        # reads the tiny embedded preview, but rawpy reads the full
+        # sensor data. CR3 is ISOBMFF (`ftyp` magic) not TIFF and is
+        # caught further down.
+        ext_raw = _suffix(filename)
+        if ext_raw in _RAW_EXTS:
+            return _RAW_EXTS[ext_raw], "image"
         return "image/tiff", "image"
     if data.startswith(b"%PDF-"):
         return "application/pdf", "document"
@@ -323,6 +346,54 @@ def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, s
     to what they uploaded.
     """
     PILImage.MAX_IMAGE_PIXELS = settings.upload_max_image_pixels
+
+    # Camera RAW: Pillow only reads the small embedded JPEG preview, so
+    # re-encoding through it produces a tiny, soft image. rawpy decodes
+    # the full sensor data into a 16-bit RGB array; we then save as
+    # JPEG quality 95 so the served version is actually high-resolution.
+    # The originals bucket still gets the raw .nef / .cr2 / etc bytes
+    # so the user can re-download the source file.
+    if detected_mime in RAW_MIMES:
+        try:
+            import rawpy
+            import numpy as np
+        except ImportError:
+            raise UploadValidationError(
+                "RAW image support requires `rawpy` (LibRaw). Reinstall the "
+                "backend deps and try again.",
+                415,
+            )
+        try:
+            with rawpy.imread(BytesIO(data)) as raw:
+                # use_camera_wb keeps the in-camera white balance instead
+                # of rawpy's auto-WB, which often shifts NEFs cyan.
+                # output_bps=8 returns 0-255 RGB so JPEG can take it
+                # directly. no_auto_bright avoids the "brightened beyond
+                # what the photographer saw" surprise.
+                rgb = raw.postprocess(
+                    use_camera_wb=True,
+                    output_bps=8,
+                    no_auto_bright=True,
+                    user_flip=0,
+                )
+            pil = PILImage.fromarray(rgb)
+            width, height = pil.size
+            if width * height > settings.upload_max_image_pixels:
+                raise UploadValidationError("Image is too large in pixels.", 413)
+            out = BytesIO()
+            pil.save(out, format="JPEG", quality=95, optimize=True, subsampling=0)
+            # MIME flips to JPEG since that's what we're actually serving.
+            # The original RAW lives untouched in originals; image_geo
+            # extraction will still get GPS via the raw EXIF blob if the
+            # RAW file carries one.
+            return out.getvalue(), width, height, "image/jpeg"
+        except UploadValidationError:
+            raise
+        except Exception as exc:
+            raise UploadValidationError(
+                f"Could not decode RAW image: {exc}", 415
+            ) from exc
+
     try:
         with PILImage.open(BytesIO(data)) as pil:
             pil.verify()
@@ -355,9 +426,15 @@ def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, s
                 pil.save(out, **save_kwargs)
                 return out.getvalue(), width, height, detected_mime
             if detected_mime == "image/gif":
-                out = BytesIO()
-                pil.save(out, format="GIF")
-                return out.getvalue(), width, height, detected_mime
+                # Pillow's default `.save(format="GIF")` writes a SINGLE
+                # frame — animated GIFs would lose every frame after the
+                # first, silently turning into stills. The trailing-data
+                # polyglot attacks we sanitize against on JPEG/WebP don't
+                # apply to GIF (no EXIF, no APP markers), so just verify
+                # the bytes decoded and return the original. Animation
+                # survives the upload pipeline unchanged.
+                pil.verify()  # already done above; cheap idempotency
+                return data, width, height, detected_mime
             if detected_mime == "image/tiff":
                 # Re-encode TIFF to PNG (browsers don't render TIFF
                 # natively); TIFF EXIF doesn't survive the format swap

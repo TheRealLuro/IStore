@@ -105,6 +105,25 @@ async def pick_plan_with_bandit(
     on the image row so the Phase 6 trainer can update sufficient
     statistics when feedback (explicit ratings, implicit signals) arrives.
     """
+    # Hard rule: animated GIFs survive end-to-end as the original bytes.
+    # Every other codec we have is single-frame, so re-encoding a GIF
+    # would silently drop every frame after the first. We can't tell
+    # from mime alone whether it's animated, but treating all GIFs as
+    # passthrough is the safe choice — they're already compressed and
+    # the user explicitly chose this format. Bandit never gets a shot.
+    if (mime_in or "").lower() == "image/gif":
+        return PolicyDecision(
+            plan=CompressionPlan(
+                codec="passthrough",
+                quality=100,
+                max_dim=None,
+                passthrough_mime="image/gif",
+                passthrough_ext="gif",
+            ),
+            arm_id=None,
+            context_features=None,
+        )
+
     # Hard rule first — bandit should never have authority over screenshots.
     if (
         vision is not None
