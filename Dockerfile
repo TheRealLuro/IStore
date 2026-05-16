@@ -45,6 +45,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY backend /app/backend
 COPY migrations /app/migrations
 COPY alembic.ini /app/alembic.ini
+# Policy texts hashed at consent grant time (face-recognition v1, etc).
+# Without this, /consent/*/grant 500s with FileNotFoundError on the
+# /app/policies path. The dev compose layer also bind-mounts this dir
+# so edits to the policy take effect without a rebuild.
+COPY policies /app/policies
 
 EXPOSE 8000
 

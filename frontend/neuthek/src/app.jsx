@@ -1382,7 +1382,19 @@ export function App() {
   });
   const pendingConsents = useMemoApp(() => {
     const states = consentData?.states || {};
-    return Object.values(states).filter((s) => s === "NONE").length;
+    // Only count scopes the user can actually toggle from the Privacy
+    // panel. Without this, the backend's full SUPPORTED_SCOPES list
+    // includes things the panel doesn't surface yet, and the pill
+    // would stay at "needs your attention" forever.
+    const toggleable = [
+      "ai_summary",
+      "semantic_search",
+      "face_recognition",
+      "gps_retention",
+      "bandit_compression_telemetry",
+      "exif_retention",
+    ];
+    return toggleable.filter((k) => states[k] === "NONE").length;
   }, [consentData]);
 
   // Cross-folder file list, used only by the Map view. Splices the same

@@ -215,24 +215,66 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
     if (d?.state === "WITHDRAWN") return `${offCopy}${stamp ? ` · Withdrawn ${stamp}` : ""}`;
     return `${offCopy} · Not configured yet`;
   };
-  const aiSummaries    = scopeOf("ai_summary");
-  const semanticSearch = scopeOf("semantic_search");
-  const faceRecog      = scopeOf("face_recognition");
-  const gpsTags        = scopeOf("gps_retention");
-  const telemetry      = scopeOf("bandit_compression_telemetry");
+  // Per-scope in-flight guard. Without this, a rapid double-click fires
+  // two flipScope calls before the first one returns; the second uses
+  // the still-cached state and either no-ops or fights the first call.
+  // We also use it to drive an optimistic preview so the switch flips
+  // immediately instead of waiting for the round-trip to finish.
+  const [scopeBusy, setScopeBusy] = useStateAcc({});
+  const [scopeOverride, setScopeOverride] = useStateAcc({});
+  // Each scope reads its override first (set during the in-flight call),
+  // then falls back to the server-driven GRANTED check.
+  const readScope = (k) => {
+    if (k in scopeOverride) return scopeOverride[k];
+    return scopeOf(k);
+  };
+  const aiSummaries    = readScope("ai_summary");
+  const semanticSearch = readScope("semantic_search");
+  const faceRecog      = readScope("face_recognition");
+  const gpsTags        = readScope("gps_retention");
+  const telemetry      = readScope("bandit_compression_telemetry");
+  // §B1 — EXIF retention. OFF by default = strip Make/Model/lens/timestamp
+  // on upload (safer). ON = keep them in the original so the user can
+  // see and export the full camera metadata. Without this toggle the
+  // scope sits in NONE forever and the sidebar "needs your attention"
+  // pill never reaches zero — that's the bug we just fixed.
+  const exifRetention  = readScope("exif_retention");
   const flipScope = async (scope, currentlyOn) => {
+    if (scopeBusy[scope]) return;
+    setScopeBusy((m) => ({ ...m, [scope]: true }));
+    // Optimistic flip — the switch animates immediately so the click
+    // feels responsive. We rollback below if the network call fails.
+    setScopeOverride((m) => ({ ...m, [scope]: !currentlyOn }));
     try {
       if (currentlyOn) await withdrawScope(scope);
       else await grantScope(scope);
-      qc.invalidateQueries({ queryKey: ["consent-scopes"] });
+      await qc.invalidateQueries({ queryKey: ["consent-scopes"] });
+      // Drop the override once the server-side state lands in the
+      // cache; from here on `scopeOf` is the source of truth again.
+      setScopeOverride((m) => {
+        const { [scope]: _, ...rest } = m;
+        return rest;
+      });
+      toast.success(currentlyOn ? "Turned off." : "Turned on.");
     } catch (e) {
+      // Rollback optimistic flip on failure so the UI reflects reality.
+      setScopeOverride((m) => {
+        const { [scope]: _, ...rest } = m;
+        return rest;
+      });
       toast.error(e?.detail || "Could not save consent");
+    } finally {
+      setScopeBusy((m) => {
+        const { [scope]: _, ...rest } = m;
+        return rest;
+      });
     }
   };
   const setAiSummaries    = () => flipScope("ai_summary", aiSummaries);
   const setSemanticSearch = () => flipScope("semantic_search", semanticSearch);
   const setGpsTags        = () => flipScope("gps_retention", gpsTags);
   const setTelemetry      = () => flipScope("bandit_compression_telemetry", telemetry);
+  const setExifRetention  = () => flipScope("exif_retention", exifRetention);
   // face_recognition is BIPA-grade — granting requires the signed-statement
   // payload via the dedicated /consent/face-recognition/grant endpoint.
   // The generic /consent/{kind}/grant rejects it with 400. So clicking the
@@ -540,6 +582,11 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   <Expandable id="loc-detail" icon="info" tone="indigo"
                               title="Location settings" desc="Strip GPS from existing photos"
                               panel={<LocationDetailPanel/>}/>
+                  <Row icon="camera" tone="amber" title="Keep camera EXIF"
+                       desc={subFor("exif_retention",
+                         "Make / model / lens / shutter speed kept on originals.",
+                         "Stripped on upload — only pixels remain.")}
+                       tail={<SwitchAcc on={exifRetention} onChange={setExifRetention} ariaLabel="EXIF retention"/>}/>
                 </div>
 
                 <div className="applist__label">Diagnostics</div>

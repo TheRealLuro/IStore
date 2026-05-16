@@ -122,6 +122,11 @@ services:
       - ./backend:/app/backend
       - ./migrations:/app/migrations
       - ./alembic.ini:/app/alembic.ini:ro
+      # Policy texts (face-recognition v1, future privacy + telemetry).
+      # backend.consent._read_policy_text() resolves paths under
+      # `/app/policies` — without this mount the consent grant endpoints
+      # 500 with "No such file or directory".
+      - ./policies:/app/policies:ro
       # Reuse the host's HuggingFace cache when it exists — avoids the
       # ~25-minute first-run download of Florence-2 (2.9 GB) + Qwen
       # 2.5 (2.9 GB) + OpenCLIP. Falls back to the `model_cache` named
