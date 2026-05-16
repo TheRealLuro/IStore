@@ -23,6 +23,7 @@ from backend.api.tags import router as tags_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
 from backend.auth.users import auth_backend, fastapi_users
+from backend.config import settings
 from backend.consent import router as consent_router
 from backend.context import reset_current_user_id, set_current_user_id
 from backend.db import engine
@@ -35,7 +36,28 @@ from backend.storage import storage
 async def lifespan(app: FastAPI):
     await validate_production_settings()
     storage.ensure_buckets()
-    yield
+    # §C2 — hourly cloud-sync sweep. Pulls every active CloudLink in
+    # the background while the API serves traffic. Disabled when
+    # `CLOUD_SYNC_HOURLY_ENABLED=false` so test/dev runs don't fire
+    # outbound HTTP from pytest, and when the OAuth credentials
+    # aren't configured (the worker wakes up, sees no eligible
+    # links, and goes back to sleep).
+    import asyncio
+
+    from backend.cloud_sync_worker import run_hourly_sweep
+
+    task: asyncio.Task | None = None
+    if settings.cloud_sync_hourly_enabled:
+        task = asyncio.create_task(run_hourly_sweep())
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def create_app() -> FastAPI:

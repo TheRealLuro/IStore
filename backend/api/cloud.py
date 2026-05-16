@@ -170,6 +170,14 @@ async def oauth_callback(
 class SyncResponse(BaseModel):
     seen: int
     pulled: int
+    # §C2 — augmented with the diff counters added by the new sync
+    # worker. `skipped_unchanged` counts files whose sha256 +
+    # modifiedTime matched the last sync (no re-download). `conflicts`
+    # is the count of files where the local copy was edited after the
+    # last sync — we refuse to overwrite and the FE shows a banner.
+    skipped_unchanged: int = 0
+    conflicts: int = 0
+    conflict_remote_ids: list[str] = []
     provider: str
 
 
@@ -218,3 +226,102 @@ async def revoke_link(
         sa_delete(CloudLink).where(CloudLink.id == link_id)
     )
     await session.commit()
+
+
+# §C2 — per-source AI opt-in / opt-out. When the user explicitly
+# opts in, we flip `skip_ai_training=False` on every image from this
+# provider AND set `pending_summary=True` + `pending_face_scan=True`
+# so the existing background workers pick the rows up on the next
+# pass. Opt-out goes the other way — sets `skip_ai_training=True`
+# and zeroes the pending flags so the workers stop processing.
+
+
+class AiOptInBody(BaseModel):
+    opted_in: bool
+
+
+@router.post("/links/{link_id}/ai-opt-in")
+async def set_ai_opt_in(
+    link_id: int,
+    body: AiOptInBody,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Flip the Limited-Use AI flag for every image from this source."""
+    from sqlalchemy import update as sa_update
+    from backend.models import Image as ImageModel
+
+    link = await session.get(CloudLink, link_id)
+    if link is None or link.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+
+    res = await session.execute(
+        sa_update(ImageModel)
+        .where(
+            ImageModel.user_id == user.id,
+            ImageModel.source_provider == link.provider,
+            ImageModel.deleted_at.is_(None),
+        )
+        .values(
+            skip_ai_training=not body.opted_in,
+            # When opting in, mark pending so the workers re-queue.
+            pending_summary=body.opted_in,
+            pending_face_scan=body.opted_in,
+        )
+    )
+    from backend.audit import add_audit
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="cloud.ai_opt_in" if body.opted_in else "cloud.ai_opt_out",
+        details={"provider": link.provider, "image_count": int(res.rowcount or 0)},
+    )
+    await session.commit()
+    return {
+        "affected": int(res.rowcount or 0),
+        "provider": link.provider,
+        "opted_in": body.opted_in,
+    }
+
+
+@router.get("/links/{link_id}/conflicts")
+async def list_conflicts(
+    link_id: int,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Return the latest conflict events for a cloud link so the FE can
+    surface "we couldn't sync N files — review them" banner. Reads the
+    audit log; conflicts are an `action='cloud.sync.conflict'` row."""
+    from backend.models import AuditLog
+
+    link = await session.get(CloudLink, link_id)
+    if link is None or link.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+    # Pull conflicts since the last successful sync. `last_synced_at`
+    # is updated on every run including conflict-only ones, so we
+    # really want "since the last conflict-free run" — but the link
+    # row carries `status="active"|"conflicts"`. For v1 we just
+    # return the last 50.
+    rows = (
+        await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.user_id == user.id,
+                AuditLog.action == "cloud.sync.conflict",
+            )
+            .order_by(AuditLog.id.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+    items = []
+    for r in rows:
+        details = r.details or {}
+        if details.get("provider") == link.provider:
+            items.append({
+                "remote_id": details.get("remote_id"),
+                "remote_path": details.get("remote_path"),
+                "reason": details.get("reason"),
+                "at": r.created_at.isoformat() if r.created_at else None,
+            })
+    return {"provider": link.provider, "conflicts": items}

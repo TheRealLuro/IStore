@@ -215,6 +215,22 @@ class Settings(BaseSettings):
         default="http://localhost:8000/cloud/callback/google_drive"
     )
 
+    # §C2 — GitHub OAuth (second provider). Same "empty → endpoints
+    # 503" pattern. The redirect_uri must match the value registered
+    # at GitHub → Settings → Developer settings → OAuth Apps.
+    github_oauth_client_id: str = Field(default="")
+    github_oauth_client_secret: str = Field(default="")
+    github_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/cloud/callback/github"
+    )
+
+    # §C2 — hourly cloud-sync sweep. The lifespan-managed background
+    # task pulls every active CloudLink at this cadence. Set to 0 (or
+    # flip cloud_sync_hourly_enabled=false) to disable in test/dev runs
+    # that shouldn't issue outbound HTTP.
+    cloud_sync_hourly_enabled: bool = Field(default=True)
+    cloud_sync_interval_seconds: int = Field(default=3600)
+
     # ---- Stripe billing (migration 0025) ----
     # All empty → billing endpoints return 503 and `users.quota_bytes`
     # falls back to the per-user override or the global default. This

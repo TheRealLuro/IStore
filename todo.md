@@ -400,24 +400,75 @@ work (A2/A4/A5/A6/A7) all shipped 2026-05-16; see §11.
   `POST /folders/{id}/tags`. Status pill replaced by colored tag
   chips on the folder card (FolderRead.tags surfaces them).
 
-### C2. Cloud sync (Drive / iCloud / GitHub / etc.)
-- ⛔ Blocked on **A2/A3** (encrypted secret storage). OAuth refresh
-  tokens are long-lived credentials.
-- One provider at a time; Drive first (biggest user value, cleanest
-  API, well-documented Limited Use compliance).
-  1. `drive.readonly` scope only.
-  2. `cloud_links(user_id, provider, encrypted_refresh_token, scopes,
-     last_synced_at, status)`.
-  3. Hourly worker pulls listings, diffs against `cloud_files(user_id,
-     provider, remote_id, local_image_id, remote_modified, sha256)`,
-     pulls new/changed through the existing upload pipeline with a
-     synthesized folder per source-folder.
-  4. Pull-only; conflicts surfaced in a banner.
-  5. Disable AI summary + face scan on synced files unless user opts
-     in per-source (Google Limited Use forbids using Drive content to
-     train models).
-- GitHub second (own repos, treat each repo as a folder, skip secrets
-  by pattern). iCloud / Dropbox / OneDrive deferred.
+### C2. Cloud sync (Drive / iCloud / GitHub / etc.) ✅ SHIPPED 2026-05-16
+> Drive + GitHub end-to-end. OAuth state is HMAC-signed (per the
+> §A4 fix), refresh tokens are Fernet-encrypted at rest via
+> `secret_box` (§A2). 6 pytest cases in
+> [tests/test_c2_cloud_sync.py](tests/test_c2_cloud_sync.py).
+> Operator-facing setup in [.env.example](.env.example).
+
+**What's in:**
+- ✅ `drive.readonly` scope only. Pull-only — `store_upload` is the
+  only write path, never back to the remote.
+- ✅ `cloud_links(user_id, provider, encrypted_refresh_token, scopes,
+   last_synced_at, status)` — schema lives in migration 0014.
+  Status enum: `active` / `conflicts` / `error`.
+- ✅ Hourly worker —
+  [`backend/cloud_sync_worker.py:run_hourly_sweep`](backend/cloud_sync_worker.py)
+  launched from `lifespan`. Sweeps every active link;
+  `CLOUD_SYNC_INTERVAL_SECONDS` knob; disabled in test/dev via
+  `CLOUD_SYNC_HOURLY_ENABLED=false`. Per-link errors don't poison
+  the loop.
+- ✅ Diff against `cloud_files(user_id, provider, remote_id,
+  local_image_id, remote_modified, sha256, remote_parent_path)`.
+  When `remote_modified` matches AND `sha256` matches, the file is
+  skipped without re-downloading (Drive bumps `modifiedTime` on
+  permission edits that don't touch bytes).
+- ✅ **Synthesized folder per source-folder.**
+  `_ensure_remote_folder_tree` materializes a "Google Drive" /
+  "GitHub" root folder per user, then walks every distinct
+  `remote_parent_path` and creates the matching subtree
+  idempotently. The new ImageRead carries this `folder_id` via
+  the existing folder column — no new column needed.
+- ✅ **Pull-only; conflicts surfaced in a banner.** The sync worker
+  detects "local image was edited after last sync" (uploaded_at >
+  last_synced_at, or deleted_at set), refuses to overwrite, writes
+  a `cloud.sync.conflict` audit row, and flips the link to
+  `status='conflicts'`. The FE
+  [`cloud-sync-panel.jsx`](frontend/neuthek/src/cloud-sync-panel.jsx)
+  surfaces the affected files in a banner.
+- ✅ **Limited Use: AI off by default for synced files.** Migration
+  0029 adds `images.skip_ai_training` + `images.source_provider`.
+  `store_upload(...skip_ai_training=True, source_provider=...)`
+  skips the CLIP / Florence-2 / Qwen vision pass and sets
+  `pending_summary=False` + `pending_face_scan=False` so the
+  post-commit background workers leave the row alone. User can
+  opt-in per source via `POST /cloud/links/{id}/ai-opt-in` — this
+  flips the flag in bulk + re-arms the pending flags so the
+  workers pick the rows up.
+- ✅ **GitHub second.** Own repos only (`affiliation=owner` against
+  /user/repos), recursive `git/trees/<branch>?recursive=1` walk.
+  Image-extension filter (jpg/jpeg/png/gif/webp/heic/bmp/tiff).
+  Secret-pattern skip list covers `.env*`, `id_rsa*`, `id_ed25519*`,
+  `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.kdbx`, `*.dump`, `*.sql`,
+  `credentials.json`, `service_account.json`.
+- ✅ FE settings panel —
+  [`cloud-sync-panel.jsx`](frontend/neuthek/src/cloud-sync-panel.jsx)
+  + new "Cloud sync" tab in the Account modal. Connect / Sync now /
+  Disconnect / AI opt-in / Conflict banner, all wired to the new
+  endpoints via [`frontend/src/api/cloud.ts`](frontend/src/api/cloud.ts).
+
+**Deferred** (not in §C2 scope per spec):
+- iCloud / Dropbox / OneDrive — once a user actually asks for them.
+- Two-way sync — out of scope; we never write back to remotes.
+
+**Operator setup** ([.env.example](.env.example)):
+- `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` /
+  `GOOGLE_OAUTH_REDIRECT_URI` — Drive
+- `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` /
+  `GITHUB_OAUTH_REDIRECT_URI` — GitHub
+- `CLOUD_ENCRYPTION_KEY` — Fernet key (required since §A2)
+- `CLOUD_SYNC_HOURLY_ENABLED=true` (default) + `CLOUD_SYNC_INTERVAL_SECONDS=3600`
 
 ### C3. Map view refinements
 - ⛔ Blocked on **B1** (EXIF strip on by default + per-user opt-in).
@@ -842,8 +893,8 @@ All compliance items now closed:
    generation, `docker compose` or native install.
 3. **C5.2** B2B migration — bulk import + per-source scopes +
    dry-run + provider plugins.
-4. **C2** Drive cloud sync — pull-only, AI-off by default per
-   Limited Use.
+4. ~~**C2** Drive cloud sync~~ — ✅ shipped (Drive + GitHub, hourly
+   sweep, conflict banner, per-source AI opt-in).
 
 ### Sprint E — multi-axis filters + UX polish (~1 week)
 

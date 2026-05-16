@@ -23,7 +23,7 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 from io import BytesIO
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from PIL import Image as PILImage
 from sqlalchemy import select
@@ -230,6 +230,24 @@ async def store_upload(
     filename: str | None,
     raw_bytes: bytes,
     content_type: str | None,
+    *,
+    # §C2 — set True when ingesting from a cloud provider whose ToS
+    # forbids AI training on the content (Google Drive Limited Use).
+    # Skips the vision pass, leaves `pending_face_scan=False` and
+    # `pending_summary=False` so the post-commit background workers
+    # never pick the row up. The flag is persisted to
+    # `images.skip_ai_training` and can later be flipped per-source
+    # via the cloud-link settings UI; flipping it re-queues the file
+    # through the normal summarize/face-scan workers.
+    skip_ai_training: bool = False,
+    # §C2 — provider identifier ('google_drive', 'github', …) when the
+    # ingest came from a cloud sync; mirrored into
+    # `images.source_provider` for the UI badge + per-source bulk ops.
+    source_provider: str | None = None,
+    # §C2 — optional pre-assigned folder for the synthesized remote
+    # folder tree. The sync worker creates the folder rows up-front
+    # and passes the leaf id here so we don't have to round-trip.
+    folder_id: UUID | None = None,
 ) -> Image:
     validated = await validate_upload(
         user_id=user.id,
@@ -275,7 +293,14 @@ async def store_upload(
             pil.load()
             width, height = pil.size
 
-    vision = await _maybe_run_vision(raw_bytes)
+    # §C2 — skip the CLIP + scene + face-likelihood pass when the
+    # caller is ingesting from a Limited-Use cloud source. The bandit
+    # context still has to pick a compression plan, so we fall back to
+    # the size-only path with no vision context.
+    if skip_ai_training:
+        vision = None
+    else:
+        vision = await _maybe_run_vision(raw_bytes)
 
     vctx = (
         VisionContext(
@@ -332,6 +357,16 @@ async def store_upload(
         original_blob_key=original_key,
         served_blob_key=served_key,
         original_filename=filename,
+        # §C2 — Limited-Use flags + the optional pre-assigned folder
+        # from the cloud-sync worker. `pending_*` start at False on
+        # this path so the post-commit background workers skip the
+        # row; flipping `skip_ai_training` off later (per-source
+        # opt-in) sets them back to True to re-queue.
+        skip_ai_training=skip_ai_training,
+        source_provider=source_provider,
+        folder_id=folder_id,
+        pending_face_scan=not skip_ai_training,
+        pending_summary=not skip_ai_training,
         width=width,
         height=height,
         byte_size_original=len(raw_bytes),

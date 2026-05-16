@@ -137,6 +137,21 @@ class Image(Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # §C2 — Limited-Use compliance flag. When True (default for
+    # cloud-synced files), every AI pass is skipped: no CLIP
+    # embedding, no Florence-2 / Qwen summary, no RetinaFace face
+    # scan. The user can opt back in per-source via the cloud-link
+    # settings UI; flipping the flag re-queues the file through the
+    # normal `summarize-progress` background workers.
+    skip_ai_training: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    # §C2 — source provider tag ('google_drive', 'github', …). Lets us
+    # show "From Drive" badges + power the per-source AI opt-in.
+    source_provider: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+
     # Phase 14 — multi-model signal capture. Populated by the C2 image
     # pipeline so re-summarization is idempotent without re-running every
     # stage from scratch. Shape:
@@ -597,6 +612,11 @@ class CloudFile(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     remote_id: Mapped[str] = mapped_column(Text, nullable=False)
     remote_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # §C2 — slash-separated parent folder path the file lived under at
+    # ingest time. Used by the sync worker to materialize a matching
+    # neuthek folder tree under the per-provider root ("Google Drive").
+    # NULL means "remote root" / "unfileable" (e.g. shared-with-me).
+    remote_parent_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     local_image_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PgUUID(as_uuid=True),
         ForeignKey("images.id", ondelete="SET NULL"),

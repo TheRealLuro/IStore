@@ -18,6 +18,7 @@ import {
   NotificationsPanel,
   PlanCard,
 } from "./account-panels.jsx";
+import { CloudSyncPanel } from "./cloud-sync-panel.jsx";
 import toast from "react-hot-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { updateMe } from "@/api/auth";
@@ -152,6 +153,10 @@ const APPSET_NAV = [
   { id: "security",      label: "Security",      icon: "lock",     tone: "red"    },
   { id: "notifications", label: "Notifications", icon: "bell",     tone: "amber"  },
   { id: "ai",            label: "AI features",   icon: "sparkles", tone: "purple" },
+  // §C2 — Drive + GitHub sync. Lives between AI features and Your data
+  // because it's where most users will go after enabling AI features
+  // ("now let me pull in my Drive photos").
+  { id: "cloud",         label: "Cloud sync",    icon: "cloud",    tone: "sky"    },
   { id: "data",          label: "Your data",     icon: "download", tone: "green"  },
 ];
 
@@ -642,6 +647,18 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                          {busyDocThumbs ? "Working…" : "Run"}
                        </button>}/>
                 </div>
+              </>
+            )}
+
+            {tab === "cloud" && (
+              <>
+                <div className="appset__main-head">
+                  <div>
+                    <h3>Cloud sync</h3>
+                    <p>Pull files from Drive or GitHub. Read-only. AI off by default.</p>
+                  </div>
+                </div>
+                <CloudSyncPanel/>
               </>
             )}
 
