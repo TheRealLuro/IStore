@@ -92,7 +92,7 @@ async def initiate_connect(
     if provider not in PROVIDER_SCOPES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unsupported provider")
     try:
-        handoff = connect_provider(user.id, provider)  # type: ignore[arg-type]
+        handoff = await connect_provider(user.id, provider)  # type: ignore[arg-type]
     except (CloudSyncNotConfigured, NotImplementedError) as exc:
         # Surface a clear 503 to the FE so the connect button can show
         # "configure cloud sync first" without a parallel feature flag.
