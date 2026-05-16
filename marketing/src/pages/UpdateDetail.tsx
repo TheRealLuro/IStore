@@ -80,11 +80,13 @@ export default function UpdateDetail() {
 
   return (
     <div className="page">
-      <article className="section update-article">
-        <p className="kicker">
-          <Link to="/updates">← All updates</Link>
-        </p>
-        <header className="update-article__head">
+      <section className="section">
+        <div className="container">
+          <article className="update-article">
+            <p className="kicker">
+              <Link to="/updates">← All updates</Link>
+            </p>
+            <header className="update-article__head">
           <time dateTime={entry.published} className="mono update-article__date">
             {entry.week}
           </time>
@@ -150,7 +152,9 @@ export default function UpdateDetail() {
             </Link>
           )}
         </footer>
-      </article>
+          </article>
+        </div>
+      </section>
 
       <script
         type="application/ld+json"

@@ -25,36 +25,38 @@ export default function Updates() {
   return (
     <div className="page">
       <section className="section section--tight">
-        <div className="updates__hero">
-          <p className="kicker">Updates · Release notes</p>
-          <h1 className="updates__h1">What's new in neuthek</h1>
-          <p className="updates__lead">
-            A weekly log of what we shipped, fixed, and changed.
-            Pulled straight from the release notes — no marketing fluff.
-            Subscribe to <Link to="/waitlist" className="updates__lead-link">the waitlist</Link>{" "}
-            and we'll ping the list when each weekly entry lands.
-          </p>
-        </div>
+        <div className="container">
+          <div className="updates__hero">
+            <p className="kicker">Updates · Release notes</p>
+            <h1 className="updates__h1">What's new in neuthek</h1>
+            <p className="updates__lead">
+              A weekly log of what we shipped, fixed, and changed.
+              Pulled straight from the release notes — no marketing fluff.
+              Subscribe to <Link to="/waitlist" className="updates__lead-link">the waitlist</Link>{" "}
+              and we'll ping the list when each weekly entry lands.
+            </p>
+          </div>
 
-        <ol className="updates__list" aria-label="Recent updates">
-          {UPDATES.map((u) => (
-            <li key={u.slug} className="updates__item">
-              <Link to={`/updates/${u.slug}`} className="updates__card">
-                <div className="updates__meta">
-                  <time dateTime={u.published} className="mono updates__date">{u.week}</time>
-                  <div className="updates__tags">
-                    {u.tags.map((t) => (
-                      <span key={t} className="updates__tag">{t}</span>
-                    ))}
+          <ol className="updates__list" aria-label="Recent updates">
+            {UPDATES.map((u) => (
+              <li key={u.slug} className="updates__item">
+                <Link to={`/updates/${u.slug}`} className="updates__card">
+                  <div className="updates__meta">
+                    <time dateTime={u.published} className="mono updates__date">{u.week}</time>
+                    <div className="updates__tags">
+                      {u.tags.map((t) => (
+                        <span key={t} className="updates__tag">{t}</span>
+                      ))}
+                    </div>
                   </div>
-                </div>
-                <h2 className="updates__title">{u.title}</h2>
-                <p className="updates__summary">{u.summary}</p>
-                <span className="updates__cta">Read the notes →</span>
-              </Link>
-            </li>
-          ))}
-        </ol>
+                  <h2 className="updates__title">{u.title}</h2>
+                  <p className="updates__summary">{u.summary}</p>
+                  <span className="updates__cta">Read the notes →</span>
+                </Link>
+              </li>
+            ))}
+          </ol>
+        </div>
       </section>
 
       {/* JSON-LD: CollectionPage + ItemList. Tells crawlers that this

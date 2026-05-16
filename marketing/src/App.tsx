@@ -12,6 +12,7 @@ import Compare from "./pages/Compare";
 import Updates from "./pages/Updates";
 import UpdateDetail from "./pages/UpdateDetail";
 import Waitlist from "./pages/Waitlist";
+import VerifyEmail from "./pages/VerifyEmail";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import Admin from "./pages/Admin";
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/updates"    element={<Updates />} />
           <Route path="/updates/:slug" element={<UpdateDetail />} />
           <Route path="/waitlist"   element={<Waitlist />} />
+          <Route path="/waitlist/verify" element={<VerifyEmail />} />
           <Route path="/privacy"    element={<Privacy />} />
           <Route path="/terms"      element={<Terms />} />
           <Route path="/admin"      element={<Admin />} />

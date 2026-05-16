@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  adminResendVerify,
   clearAdminAuth,
   hasAdminAuth,
   listWaitlist,
@@ -131,9 +132,13 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
   const [rows, setRows] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [filter, setFilter] = useState<"all" | "pending" | "notified">("all");
+  const [filter, setFilter] = useState<
+    "all" | "pending" | "notified" | "unverified" | "newsletter"
+  >("all");
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [resendBusyId, setResendBusyId] = useState<number | null>(null);
+  const [resendNote, setResendNote] = useState<{ id: number; text: string } | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -159,6 +164,8 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
   const filtered = rows.filter((r) => {
     if (filter === "pending" && r.notified) return false;
     if (filter === "notified" && !r.notified) return false;
+    if (filter === "unverified" && r.verified) return false;
+    if (filter === "newsletter" && !r.newsletter_opt_in) return false;
     if (!q) return true;
     return r.email.toLowerCase().includes(q) ||
            (r.use_case || "").toLowerCase().includes(q);
@@ -166,6 +173,8 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
 
   const pendingCount = rows.filter((r) => !r.notified).length;
   const notifiedCount = rows.length - pendingCount;
+  const verifiedCount = rows.filter((r) => r.verified).length;
+  const newsletterCount = rows.filter((r) => r.newsletter_opt_in).length;
 
   async function copyAll() {
     const emails = filtered.map((r) => r.email).join(", ");
@@ -179,9 +188,17 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
 
   function exportCsv() {
     const data: unknown[][] = [
-      ["id", "email", "use_case", "source", "ip", "notified", "notified_at", "created_at", "user_agent"],
+      ["id", "email", "use_case", "source", "ip",
+       "verified", "verified_at",
+       "newsletter_opt_in", "newsletter_consent_at",
+       "notified", "notified_at",
+       "created_at", "user_agent"],
       ...rows.map((r) => [
         r.id, r.email, r.use_case, r.source, r.ip || "",
+        r.verified ? "yes" : "no",
+        r.verified_at || "",
+        r.newsletter_opt_in ? "yes" : "no",
+        r.newsletter_consent_at || "",
         r.notified ? "yes" : "no",
         r.notified_at || "",
         r.created_at,
@@ -203,6 +220,31 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  async function resendVerify(id: number) {
+    setResendBusyId(id);
+    setResendNote(null);
+    try {
+      const result = await adminResendVerify(id);
+      if (result.already_verified) {
+        setResendNote({ id, text: "Already verified." });
+      } else if (result.sent) {
+        setResendNote({ id, text: "Sent." });
+      } else if (result.verify_url) {
+        // Email service not configured — give the admin the link to
+        // copy-paste. Same content the server would have emailed.
+        try { await navigator.clipboard.writeText(result.verify_url); }
+        catch { /* ignore */ }
+        setResendNote({ id, text: "No mailer configured — link copied to clipboard." });
+      } else {
+        setResendNote({ id, text: "Send failed." });
+      }
+    } catch {
+      setResendNote({ id, text: "Couldn't resend." });
+    } finally {
+      setResendBusyId(null);
+    }
+  }
+
   return (
     <section className="section">
       <div className="container">
@@ -210,9 +252,11 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
           <div>
             <span className="eyebrow">Admin</span>
             <h1 style={{ fontSize: 36, marginTop: 4 }}>Waitlist signups</h1>
-            <p style={{ marginTop: 8, color: "var(--ink-2)" }}>
+            <p style={{ marginTop: 8, color: "var(--ink-2)", lineHeight: 1.7 }}>
               Pending <strong>{pendingCount}</strong> ·
               Notified <strong style={{ marginLeft: 4 }}>{notifiedCount}</strong> ·
+              Verified <strong style={{ marginLeft: 4 }}>{verifiedCount}</strong> ·
+              Newsletter <strong style={{ marginLeft: 4 }}>{newsletterCount}</strong> ·
               Total <strong style={{ marginLeft: 4 }}>{rows.length}</strong>
             </p>
           </div>
@@ -223,7 +267,7 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
         </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "24px 0 16px", flexWrap: "wrap" }}>
-          {(["all", "pending", "notified"] as const).map((f) => (
+          {(["all", "pending", "notified", "unverified", "newsletter"] as const).map((f) => (
             <button
               key={f}
               className="btn btn--ghost"
@@ -276,48 +320,93 @@ function WaitlistTable({ onLogout }: { onLogout: () => void }) {
               : "No entries match this filter."}
           </div>
         ) : (
-          <div className="compare-wrap" style={{ marginTop: 8 }}>
-            <table className="compare">
+          <div className="admin-table-wrap" style={{ marginTop: 8 }}>
+            <table className="admin-table">
+              <colgroup>
+                <col style={{ width: "30%" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "12%" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Email</th>
                   <th>Use case</th>
                   <th>Signed up</th>
-                  <th>IP</th>
+                  <th>Verified</th>
+                  <th>Newsletter</th>
                   <th>Status</th>
-                  <th style={{ width: 160 }}></th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((r) => (
                   <tr key={r.id}>
-                    <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{r.email}</td>
-                    <td style={{ textTransform: "capitalize" }}>{r.use_case}</td>
-                    <td style={{ fontFamily: "Geist Mono, monospace", fontSize: 12, color: "var(--ink-2)", whiteSpace: "nowrap" }}>
+                    <td className="admin-table__email">
+                      <div className="admin-table__email-line">{r.email}</div>
+                      {r.ip && (
+                        <div className="admin-table__ip">{r.ip}</div>
+                      )}
+                    </td>
+                    <td data-label="Use case" style={{ textTransform: "capitalize" }}>{r.use_case}</td>
+                    <td data-label="Signed up" className="admin-table__date">
                       {fmtDate(r.created_at)}
                     </td>
-                    <td style={{ fontFamily: "Geist Mono, monospace", fontSize: 12, color: "var(--ink-3)" }}>
-                      {r.ip || "—"}
+                    <td data-label="Verified">
+                      {r.verified ? (
+                        <span className="pill pill--good" title={r.verified_at ? `at ${fmtDate(r.verified_at)}` : ""}>
+                          Verified
+                        </span>
+                      ) : (
+                        <span className="pill pill--mid">Unverified</span>
+                      )}
                     </td>
-                    <td>
+                    <td data-label="Newsletter">
+                      {r.newsletter_opt_in ? (
+                        <span className="pill pill--good" title={r.newsletter_consent_at ? `consent ${fmtDate(r.newsletter_consent_at)}` : ""}>
+                          Yes
+                        </span>
+                      ) : (
+                        <span className="pill" style={{ color: "var(--ink-3)" }}>No</span>
+                      )}
+                    </td>
+                    <td data-label="Status">
                       {r.notified ? (
                         <span className="pill pill--good">
-                          Notified · {fmtDate(r.notified_at)}
+                          Notified
                         </span>
                       ) : (
                         <span className="pill pill--mid">Pending</span>
                       )}
                     </td>
-                    <td>
+                    <td data-label="Actions" className="admin-table__actions">
                       {!r.notified && (
                         <button
                           className="btn btn--ghost"
                           onClick={() => markNotified(r.id)}
                           disabled={busyId === r.id}
-                          style={{ fontSize: 12, padding: "6px 12px" }}
+                          style={{ fontSize: 12, padding: "6px 10px" }}
                         >
                           {busyId === r.id ? "…" : "Mark notified"}
                         </button>
+                      )}
+                      {!r.verified && (
+                        <button
+                          className="btn btn--ghost"
+                          onClick={() => resendVerify(r.id)}
+                          disabled={resendBusyId === r.id}
+                          style={{ fontSize: 12, padding: "6px 10px" }}
+                        >
+                          {resendBusyId === r.id ? "…" : "Resend verify"}
+                        </button>
+                      )}
+                      {resendNote?.id === r.id && (
+                        <div style={{ fontSize: 11, color: "var(--ink-2)", marginTop: 4 }}>
+                          {resendNote.text}
+                        </div>
                       )}
                     </td>
                   </tr>

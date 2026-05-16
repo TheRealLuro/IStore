@@ -1,11 +1,21 @@
 import { useState } from "react";
-import { postWaitlistSignup, type WaitlistUseCase } from "../api";
+import {
+  postWaitlistSignup,
+  resendWaitlistVerify,
+  type WaitlistUseCase,
+} from "../api";
 
 /* The form below POSTs to the marketing-site's own /api/waitlist/signup
    endpoint (served by ../server.mjs in the same Render Web Service as
    this SPA). No dependency on the main neuthek backend — the marketing
    surface is fully self-contained so it can run on Render while the
-   rest of the product is still in development. */
+   rest of the product is still in development.
+
+   After a successful submit, the server sends a verification email
+   (Resend HTTP API when RESEND_API_KEY is configured) and we show a
+   "check your inbox" state. The user must click the emailed link to
+   flip `verified=true` in the DB. Until then the row stays as an
+   unverified pending signup. */
 
 export default function Waitlist() {
   const [email, setEmail] = useState("");
@@ -14,23 +24,43 @@ export default function Waitlist() {
   // launch-pings-only signup unless the user explicitly opts in.
   const [newsletter, setNewsletter] = useState(false);
   const [status, setStatus] = useState<
-    "idle" | "submitting" | "done" | "done-offline" | "error"
+    | "idle"
+    | "submitting"
+    | "done-check-inbox"
+    | "done-already-verified"
+    | "done-offline"
+    | "error"
   >("idle");
   const [error, setError] = useState<string>("");
+  // Dev fallback when no email service is wired up server-side — the
+  // signup response includes the verify URL so the page can offer a
+  // direct click-through. NEVER set in prod responses.
+  const [devVerifyUrl, setDevVerifyUrl] = useState<string | null>(null);
+  const [emailSent, setEmailSent] = useState<boolean>(false);
+  const [resendBusy, setResendBusy] = useState<boolean>(false);
+  const [resendNote, setResendNote] = useState<string>("");
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!email) return;
     setStatus("submitting");
     setError("");
+    setDevVerifyUrl(null);
+    setResendNote("");
 
     try {
-      await postWaitlistSignup({
+      const result = await postWaitlistSignup({
         email: email.trim().toLowerCase(),
         use_case: use,
         newsletter_opt_in: newsletter,
       });
-      setStatus("done");
+      if (result.already_verified) {
+        setStatus("done-already-verified");
+      } else {
+        setEmailSent(!!result.verification_email_sent);
+        if (result.verify_url) setDevVerifyUrl(result.verify_url);
+        setStatus("done-check-inbox");
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       const networkFailure =
@@ -76,17 +106,70 @@ export default function Waitlist() {
       <section className="section">
         <div className="container split">
           <div>
-            {status === "done" && (
+            {status === "done-check-inbox" && (
               <div>
-                <h2>You're on the list.</h2>
+                <h2>Check your inbox.</h2>
                 <p style={{ marginTop: 16 }}>
-                  We saved <code>{email}</code>. We'll email you when
-                  the hosted version opens for early users and again
-                  at general availability.
+                  {emailSent ? (
+                    <>We sent a verification link to <code>{email}</code>. Click it
+                    to confirm your email and lock in your spot. The link
+                    is good for 7 days.</>
+                  ) : (
+                    <>We saved <code>{email}</code> and tried to send a verification
+                    link — but the email service isn't configured for this
+                    deployment yet. Your spot is held; an admin will
+                    follow up.</>
+                  )}
                 </p>
-                <p style={{ marginTop: 12 }}>
-                  In the meantime, watch the roadmap for what's
-                  landing next.
+                {devVerifyUrl && (
+                  <div className="callout" style={{ marginTop: 16 }}>
+                    <strong>Dev mode:</strong> the mailer isn't configured,
+                    so here's the verify link directly:{" "}
+                    <a href={devVerifyUrl} style={{ wordBreak: "break-all" }}>
+                      {devVerifyUrl}
+                    </a>
+                  </div>
+                )}
+                {emailSent && (
+                  <p style={{ marginTop: 12, fontSize: 14, color: "var(--ink-2)" }}>
+                    Didn't get it? Check spam, then{" "}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setResendBusy(true);
+                        setResendNote("");
+                        try {
+                          await resendWaitlistVerify(email);
+                          setResendNote("Resent. Give it a minute.");
+                        } catch {
+                          setResendNote("Couldn't resend. Try again in a few minutes.");
+                        } finally {
+                          setResendBusy(false);
+                        }
+                      }}
+                      disabled={resendBusy}
+                      style={{
+                        textDecoration: "underline",
+                        color: "var(--ink)",
+                        font: "inherit",
+                      }}
+                    >
+                      {resendBusy ? "resending…" : "resend it"}
+                    </button>
+                    .{resendNote && <span style={{ marginLeft: 8 }}>{resendNote}</span>}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {status === "done-already-verified" && (
+              <div>
+                <h2>You're already on the list.</h2>
+                <p style={{ marginTop: 16 }}>
+                  <code>{email}</code> is already verified. We've updated
+                  your preferences. We'll email you when the hosted
+                  version opens for early users and again at general
+                  availability.
                 </p>
               </div>
             )}
@@ -106,7 +189,11 @@ export default function Waitlist() {
             {(status === "idle" || status === "submitting" || status === "error") && (
               <form className="form" onSubmit={onSubmit} noValidate>
                 <h2 style={{ marginBottom: 8 }}>Save my spot.</h2>
-                <p>We only email you about the launch.</p>
+                <p>
+                  We'll send a one-click verification email so we know
+                  you actually own the address. Then we only email you
+                  about the launch.
+                </p>
 
                 <label htmlFor="email" style={{ fontSize: 13, color: "var(--ink-2)" }}>
                   Email

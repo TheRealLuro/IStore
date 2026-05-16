@@ -21,6 +21,7 @@
 import express from "express";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,6 +29,115 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || "5181", 10);
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
+
+// Public origin used to build the verification link in outgoing emails.
+// In prod, set PUBLIC_ORIGIN=https://neuthek.com so links resolve there.
+// In dev with `npm run dev` we point at the Vite proxy (5180) so clicking
+// the link from console lands on the SPA.
+const PUBLIC_ORIGIN =
+  process.env.PUBLIC_ORIGIN ||
+  (process.env.NODE_ENV === "production"
+    ? "https://neuthek.com"
+    : `http://localhost:5180`);
+
+// HMAC secret for verify tokens. Persisted to data/secret_verify.key so a
+// process restart doesn't invalidate every pending verification email.
+const SECRET_DIR = path.join(__dirname, "data");
+const SECRET_PATH = path.join(SECRET_DIR, "secret_verify.key");
+function loadOrCreateVerifySecret() {
+  if (process.env.WAITLIST_VERIFY_SECRET) return process.env.WAITLIST_VERIFY_SECRET;
+  try {
+    return fs.readFileSync(SECRET_PATH, "utf8").trim();
+  } catch {
+    fs.mkdirSync(SECRET_DIR, { recursive: true });
+    const fresh = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(SECRET_PATH, fresh, { mode: 0o600 });
+    return fresh;
+  }
+}
+const VERIFY_SECRET = loadOrCreateVerifySecret();
+const VERIFY_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+
+function b64urlEncode(buf) {
+  return Buffer.from(buf).toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDecode(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  return Buffer.from(s, "base64").toString("utf8");
+}
+
+function signVerifyToken(id) {
+  const exp = Math.floor(Date.now() / 1000) + VERIFY_TTL_SECONDS;
+  const payload = `${id}.${exp}`;
+  const mac = crypto.createHmac("sha256", VERIFY_SECRET).update(payload).digest("hex").slice(0, 32);
+  return b64urlEncode(`${payload}.${mac}`);
+}
+function verifyVerifyToken(token) {
+  let raw;
+  try { raw = b64urlDecode(token); }
+  catch { return null; }
+  const parts = raw.split(".");
+  if (parts.length !== 3) return null;
+  const [idStr, expStr, mac] = parts;
+  const id = parseInt(idStr, 10);
+  const exp = parseInt(expStr, 10);
+  if (!Number.isFinite(id) || !Number.isFinite(exp)) return null;
+  if (Math.floor(Date.now() / 1000) > exp) return null;
+  const expectMac = crypto.createHmac("sha256", VERIFY_SECRET)
+    .update(`${id}.${exp}`).digest("hex").slice(0, 32);
+  // Constant-time compare
+  const a = Buffer.from(mac);
+  const b = Buffer.from(expectMac);
+  if (a.length !== b.length) return null;
+  if (!crypto.timingSafeEqual(a, b)) return null;
+  return { id, exp };
+}
+
+// Resend HTTP API — no extra dependencies, just fetch(). Set RESEND_API_KEY
+// + RESEND_FROM in env to wire real email. Without a key we log the URL
+// to the console so local dev still works.
+async function sendVerifyEmail({ to, verifyUrl }) {
+  const key = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM || "neuthek <noreply@neuthek.com>";
+  if (!key) {
+    console.log(`[waitlist] verify link for ${to}: ${verifyUrl}`);
+    return { sent: false, reason: "no-resend-key" };
+  }
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to,
+        subject: "Confirm your neuthek waitlist signup",
+        html: `<!doctype html><html><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.55;color:#0a0a0a;max-width:560px;margin:0 auto;padding:24px;">
+          <h2 style="margin:0 0 12px;font-weight:600">Confirm your email</h2>
+          <p style="margin:0 0 16px;color:#525252">Thanks for joining the neuthek waitlist. Click the button below to confirm this email address — that way we know you actually own it and can reach you when the hosted version opens.</p>
+          <p style="margin:0 0 20px"><a href="${verifyUrl}" style="display:inline-block;background:#0a0a0a;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:500">Confirm my email</a></p>
+          <p style="margin:0 0 8px;color:#525252;font-size:13px">Or paste this link in your browser:</p>
+          <p style="margin:0 0 24px;color:#525252;font-size:13px;word-break:break-all"><a href="${verifyUrl}" style="color:#0a0a0a">${verifyUrl}</a></p>
+          <p style="margin:0;color:#8a8a8a;font-size:12px">The link expires in 7 days. If you didn't sign up, you can ignore this email.</p>
+        </body></html>`,
+        text: `Confirm your neuthek waitlist signup:\n\n${verifyUrl}\n\nThe link expires in 7 days. If you didn't sign up, you can ignore this email.`,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`[waitlist] Resend rejected: ${res.status} ${body}`);
+      return { sent: false, reason: `resend-${res.status}` };
+    }
+    return { sent: true };
+  } catch (err) {
+    console.error("[waitlist] Resend network error", err);
+    return { sent: false, reason: "resend-network" };
+  }
+}
 
 // Updates index used by the per-route prerender (see bottom of file).
 // Loaded once at boot; if the file is missing or malformed we just
@@ -90,19 +200,18 @@ if (DATABASE_URL) {
           notified_at  TIMESTAMPTZ,
           newsletter_opt_in BOOLEAN NOT NULL DEFAULT false,
           newsletter_consent_at TIMESTAMPTZ,
+          verified     BOOLEAN NOT NULL DEFAULT false,
+          verified_at  TIMESTAMPTZ,
+          verify_sent_at TIMESTAMPTZ,
           created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
         )
       `);
-      // Forward-migrate older deployments that don't have the
-      // newsletter columns yet. ADD COLUMN IF NOT EXISTS is idempotent.
-      await pool.query(`
-        ALTER TABLE waitlist_signups
-          ADD COLUMN IF NOT EXISTS newsletter_opt_in BOOLEAN NOT NULL DEFAULT false
-      `);
-      await pool.query(`
-        ALTER TABLE waitlist_signups
-          ADD COLUMN IF NOT EXISTS newsletter_consent_at TIMESTAMPTZ
-      `);
+      // Forward-migrate older deployments. ADD COLUMN IF NOT EXISTS is idempotent.
+      await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS newsletter_opt_in BOOLEAN NOT NULL DEFAULT false`);
+      await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS newsletter_consent_at TIMESTAMPTZ`);
+      await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT false`);
+      await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ`);
+      await pool.query(`ALTER TABLE waitlist_signups ADD COLUMN IF NOT EXISTS verify_sent_at TIMESTAMPTZ`);
       await pool.query(`
         CREATE INDEX IF NOT EXISTS ix_waitlist_signups_created_at_desc
         ON waitlist_signups (created_at DESC)
@@ -110,15 +219,13 @@ if (DATABASE_URL) {
     },
     async upsertSignup({ email, use_case, ip, user_agent, newsletter_opt_in }) {
       const flag = !!newsletter_opt_in;
-      // When the user opts IN, stamp the consent timestamp so we keep
-      // a chain-of-custody record (required by GDPR/CCPA-shaped
-      // disclosures). When they're already opted in, we don't reset
-      // the timestamp on a duplicate signup — first consent wins.
-      // Opting back OUT clears the timestamp.
-      await pool.query(
+      // INSERT-then-SELECT pattern so we can return the row id for the
+      // verify-token signer. ON CONFLICT updates fields but keeps the
+      // verified flag — re-signups don't un-verify a confirmed email.
+      const { rows } = await pool.query(
         `INSERT INTO waitlist_signups
-           (email, use_case, ip, user_agent, newsletter_opt_in, newsletter_consent_at)
-         VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 THEN now() ELSE NULL END)
+           (email, use_case, ip, user_agent, newsletter_opt_in, newsletter_consent_at, verify_sent_at)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 THEN now() ELSE NULL END, now())
          ON CONFLICT (email) DO UPDATE
            SET use_case = EXCLUDED.use_case,
                newsletter_opt_in = EXCLUDED.newsletter_opt_in,
@@ -129,15 +236,19 @@ if (DATABASE_URL) {
                    THEN NULL
                  ELSE waitlist_signups.newsletter_consent_at
                END,
-               created_at = now()`,
+               verify_sent_at = now(),
+               created_at = now()
+         RETURNING id, verified`,
         [email, use_case, ip || null, user_agent || null, flag]
       );
+      return rows[0];
     },
     async listSignups(limit = 500) {
       const { rows } = await pool.query(
         `SELECT id, email, use_case, source, ip, user_agent,
                 notified, notified_at,
                 newsletter_opt_in, newsletter_consent_at,
+                verified, verified_at, verify_sent_at,
                 created_at
          FROM waitlist_signups
          ORDER BY created_at DESC
@@ -152,10 +263,40 @@ if (DATABASE_URL) {
          SET notified = true, notified_at = now()
          WHERE id = $1
          RETURNING id, email, use_case, source, ip, user_agent,
-                   notified, notified_at, created_at`,
+                   notified, notified_at,
+                   newsletter_opt_in, newsletter_consent_at,
+                   verified, verified_at, verify_sent_at,
+                   created_at`,
         [id]
       );
       return rows[0] || null;
+    },
+    async markVerified(id) {
+      const { rows } = await pool.query(
+        `UPDATE waitlist_signups
+         SET verified = true, verified_at = COALESCE(verified_at, now())
+         WHERE id = $1
+         RETURNING id, email, verified, verified_at`,
+        [id]
+      );
+      return rows[0] || null;
+    },
+    async findById(id) {
+      const { rows } = await pool.query(
+        `SELECT id, email, verified, verify_sent_at FROM waitlist_signups WHERE id = $1`,
+        [id]
+      );
+      return rows[0] || null;
+    },
+    async findByEmail(email) {
+      const { rows } = await pool.query(
+        `SELECT id, email, verified, verify_sent_at FROM waitlist_signups WHERE email = $1`,
+        [email]
+      );
+      return rows[0] || null;
+    },
+    async stampVerifySent(id) {
+      await pool.query(`UPDATE waitlist_signups SET verify_sent_at = now() WHERE id = $1`, [id]);
     },
   };
 } else {
@@ -183,6 +324,9 @@ if (DATABASE_URL) {
           notified_at  TEXT,
           newsletter_opt_in INTEGER NOT NULL DEFAULT 0,
           newsletter_consent_at TEXT,
+          verified     INTEGER NOT NULL DEFAULT 0,
+          verified_at  TEXT,
+          verify_sent_at TEXT,
           created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS ix_waitlist_signups_created_at_desc
@@ -199,53 +343,72 @@ if (DATABASE_URL) {
       if (!names.has("newsletter_consent_at")) {
         db.exec("ALTER TABLE waitlist_signups ADD COLUMN newsletter_consent_at TEXT");
       }
+      if (!names.has("verified")) {
+        db.exec("ALTER TABLE waitlist_signups ADD COLUMN verified INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!names.has("verified_at")) {
+        db.exec("ALTER TABLE waitlist_signups ADD COLUMN verified_at TEXT");
+      }
+      if (!names.has("verify_sent_at")) {
+        db.exec("ALTER TABLE waitlist_signups ADD COLUMN verify_sent_at TEXT");
+      }
     },
     async upsertSignup({ email, use_case, ip, user_agent, newsletter_opt_in }) {
       const flag = newsletter_opt_in ? 1 : 0;
+      const now = new Date().toISOString();
       const existing = db.prepare(
-        "SELECT id, newsletter_consent_at FROM waitlist_signups WHERE email = ?"
+        "SELECT id, newsletter_consent_at, verified FROM waitlist_signups WHERE email = ?"
       ).get(email);
       if (existing) {
         // First-consent-wins for the timestamp; opting back out clears it.
         let nextStamp;
         if (flag && !existing.newsletter_consent_at) {
-          nextStamp = new Date().toISOString();
+          nextStamp = now;
         } else if (!flag) {
           nextStamp = null;
         } else {
           nextStamp = existing.newsletter_consent_at;
         }
+        // Note: we DON'T touch the verified flag — re-signing up with the
+        // same email doesn't un-verify a confirmed address.
         db.prepare(
           `UPDATE waitlist_signups
            SET use_case = ?,
                newsletter_opt_in = ?,
                newsletter_consent_at = ?,
+               verify_sent_at = ?,
                created_at = CURRENT_TIMESTAMP
            WHERE email = ?`
-        ).run(use_case, flag, nextStamp, email);
-      } else {
-        db.prepare(
-          `INSERT INTO waitlist_signups
-             (email, use_case, ip, user_agent, newsletter_opt_in, newsletter_consent_at)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        ).run(
-          email, use_case, ip || null, user_agent || null,
-          flag, flag ? new Date().toISOString() : null,
-        );
+        ).run(use_case, flag, nextStamp, now, email);
+        return { id: existing.id, verified: !!existing.verified };
       }
+      const info = db.prepare(
+        `INSERT INTO waitlist_signups
+           (email, use_case, ip, user_agent, newsletter_opt_in, newsletter_consent_at, verify_sent_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        email, use_case, ip || null, user_agent || null,
+        flag, flag ? now : null, now,
+      );
+      return { id: Number(info.lastInsertRowid), verified: false };
     },
     async listSignups(limit = 500) {
       const rows = db.prepare(
         `SELECT id, email, use_case, source, ip, user_agent,
                 notified, notified_at,
                 newsletter_opt_in, newsletter_consent_at,
+                verified, verified_at, verify_sent_at,
                 created_at
          FROM waitlist_signups
          ORDER BY datetime(created_at) DESC
          LIMIT ?`
       ).all(limit);
-      // Normalize boolean for the API.
-      return rows.map((r) => ({ ...r, notified: !!r.notified }));
+      return rows.map((r) => ({
+        ...r,
+        notified: !!r.notified,
+        newsletter_opt_in: !!r.newsletter_opt_in,
+        verified: !!r.verified,
+      }));
     },
     async markNotified(id) {
       const row = db.prepare(
@@ -253,9 +416,42 @@ if (DATABASE_URL) {
          SET notified = 1, notified_at = CURRENT_TIMESTAMP
          WHERE id = ?
          RETURNING id, email, use_case, source, ip, user_agent,
-                   notified, notified_at, created_at`
+                   notified, notified_at,
+                   newsletter_opt_in, newsletter_consent_at,
+                   verified, verified_at, verify_sent_at,
+                   created_at`
       ).get(id);
-      return row ? { ...row, notified: !!row.notified } : null;
+      return row ? {
+        ...row,
+        notified: !!row.notified,
+        newsletter_opt_in: !!row.newsletter_opt_in,
+        verified: !!row.verified,
+      } : null;
+    },
+    async markVerified(id) {
+      const row = db.prepare(
+        `UPDATE waitlist_signups
+         SET verified = 1, verified_at = COALESCE(verified_at, CURRENT_TIMESTAMP)
+         WHERE id = ?
+         RETURNING id, email, verified, verified_at`
+      ).get(id);
+      return row ? { ...row, verified: !!row.verified } : null;
+    },
+    async findById(id) {
+      const row = db.prepare(
+        `SELECT id, email, verified, verify_sent_at FROM waitlist_signups WHERE id = ?`
+      ).get(id);
+      return row ? { ...row, verified: !!row.verified } : null;
+    },
+    async findByEmail(email) {
+      const row = db.prepare(
+        `SELECT id, email, verified, verify_sent_at FROM waitlist_signups WHERE email = ?`
+      ).get(email);
+      return row ? { ...row, verified: !!row.verified } : null;
+    },
+    async stampVerifySent(id) {
+      db.prepare(`UPDATE waitlist_signups SET verify_sent_at = ? WHERE id = ?`)
+        .run(new Date().toISOString(), id);
     },
   };
 }
@@ -348,19 +544,112 @@ app.post("/api/waitlist/signup", async (req, res) => {
   const user_agent = String(req.headers["user-agent"] || "").slice(0, 500);
 
   try {
-    await store.upsertSignup({
+    const row = await store.upsertSignup({
       email,
       use_case,
       ip: ip !== "unknown" ? ip : null,
       user_agent: user_agent || null,
       newsletter_opt_in,
     });
-    // Anti-enumeration: never reveal whether this was new or duplicate.
-    return res.json({ ok: true, already_signed_up: false });
+    // Already-verified emails don't need another round-trip — just
+    // confirm the (possibly updated) use-case + newsletter pref.
+    if (row?.verified) {
+      return res.json({
+        ok: true,
+        already_signed_up: false,
+        already_verified: true,
+      });
+    }
+    const token = signVerifyToken(row.id);
+    const verifyUrl = `${PUBLIC_ORIGIN}/waitlist/verify?token=${encodeURIComponent(token)}`;
+    const send = await sendVerifyEmail({ to: email, verifyUrl });
+    // In non-production environments, also expose the URL in the JSON
+    // response so the test client can click through without a real
+    // mailer. Production responses NEVER include the URL — that would
+    // be an enumeration / takeover vector.
+    const debug = process.env.NODE_ENV !== "production" && !send.sent
+      ? { verify_url: verifyUrl }
+      : {};
+    return res.json({
+      ok: true,
+      already_signed_up: false,
+      already_verified: false,
+      verification_email_sent: !!send.sent,
+      ...debug,
+    });
   } catch (err) {
     console.error("[waitlist] signup error", err);
     return res.status(500).json({ ok: false, detail: "signup failed" });
   }
+});
+
+// ----- Verify endpoint (clicked from the email link) -----
+// The SPA at /waitlist/verify will call this and show a result page.
+app.get("/api/waitlist/verify", async (req, res) => {
+  const token = String(req.query.token || "");
+  if (!token) return res.status(400).json({ ok: false, detail: "missing token" });
+  const claims = verifyVerifyToken(token);
+  if (!claims) {
+    return res.status(400).json({ ok: false, detail: "invalid or expired token" });
+  }
+  try {
+    const row = await store.markVerified(claims.id);
+    if (!row) return res.status(404).json({ ok: false, detail: "signup not found" });
+    return res.json({ ok: true, email: row.email, verified_at: row.verified_at });
+  } catch (err) {
+    console.error("[waitlist] verify error", err);
+    return res.status(500).json({ ok: false, detail: "verify failed" });
+  }
+});
+
+// ----- Resend verification link -----
+// Public endpoint, rate-limited per IP and email. We respond
+// success-shaped whether or not the email exists so an attacker
+// can't enumerate signups.
+app.post("/api/waitlist/resend", async (req, res) => {
+  const ip = clientIp(req);
+  if (!rateLimit({ key: `resend:${ip}`, limit: 5, windowMs: 60_000 })) {
+    return res.status(429).json({ ok: false, detail: "too many resend attempts" });
+  }
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(email) || email.length > 254) {
+    return res.status(422).json({ ok: false, detail: "invalid email" });
+  }
+  if (!rateLimit({ key: `resend-email:${email}`, limit: 3, windowMs: 5 * 60_000 })) {
+    return res.status(429).json({ ok: false, detail: "wait a few minutes before requesting another link" });
+  }
+  try {
+    const existing = await store.findByEmail(email);
+    if (!existing || existing.verified) {
+      return res.json({ ok: true });
+    }
+    const token = signVerifyToken(existing.id);
+    const verifyUrl = `${PUBLIC_ORIGIN}/waitlist/verify?token=${encodeURIComponent(token)}`;
+    await sendVerifyEmail({ to: email, verifyUrl });
+    await store.stampVerifySent(existing.id);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[waitlist] resend error", err);
+    return res.status(500).json({ ok: false, detail: "resend failed" });
+  }
+});
+
+// ----- Admin: re-send verify for a specific row -----
+// `adminAuth` is declared below as a function declaration, so it's
+// hoisted into module scope and safe to reference here.
+app.post("/api/admin/waitlist/:id/resend-verify", adminAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, detail: "bad id" });
+  const row = await store.findById(id);
+  if (!row) return res.status(404).json({ ok: false, detail: "not found" });
+  if (row.verified) return res.json({ ok: true, already_verified: true });
+  const token = signVerifyToken(row.id);
+  const verifyUrl = `${PUBLIC_ORIGIN}/waitlist/verify?token=${encodeURIComponent(token)}`;
+  const send = await sendVerifyEmail({ to: row.email, verifyUrl });
+  await store.stampVerifySent(row.id);
+  // For admin, always include the URL so the operator can copy-paste it
+  // if email delivery is mis-configured.
+  return res.json({ ok: true, sent: !!send.sent, verify_url: verifyUrl });
 });
 
 // ----- Basic Auth gate for admin endpoints -----
@@ -619,6 +908,21 @@ if (fs.existsSync(distDir)) {
           jsonLd,
         };
       }
+    }
+    if (reqPath === "/waitlist" || reqPath === "/waitlist/") {
+      return {
+        title: "Join the neuthek waitlist",
+        description:
+          "Join the waitlist for neuthek, the AI-aware personal cloud. We email you twice — once when the hosted version opens and once at GA. Email verification required.",
+        canonical: "https://neuthek.com/waitlist",
+      };
+    }
+    if (reqPath === "/waitlist/verify" || reqPath === "/waitlist/verify/") {
+      return {
+        title: "Verify your email — neuthek",
+        description: "Confirm your neuthek waitlist signup.",
+        canonical: "https://neuthek.com/waitlist/verify",
+      };
     }
     return null;
   }

@@ -37,6 +37,17 @@ export interface WaitlistSignupBody {
 export interface WaitlistSignupResult {
   ok: boolean;
   already_signed_up: boolean;
+  // True if the email was already verified from a previous signup, so the
+  // UI can skip the "check your inbox" prompt.
+  already_verified?: boolean;
+  // True when the server successfully handed the verification email to
+  // the configured ESP (Resend). False if RESEND_API_KEY isn't set or the
+  // send call failed — in which case the server logged the link.
+  verification_email_sent?: boolean;
+  // Dev-only: when the email send couldn't go through (e.g. no API key
+  // in local dev), the server returns the verify URL here so the page
+  // can show a "click here" link directly. Never included in prod.
+  verify_url?: string;
 }
 
 export async function postWaitlistSignup(
@@ -53,6 +64,34 @@ export async function postWaitlistSignup(
     throw new Error(`server-error-${res.status}`);
   }
   return (await res.json()) as WaitlistSignupResult;
+}
+
+export interface VerifyResult {
+  ok: boolean;
+  email: string;
+  verified_at: string;
+}
+
+export async function verifyWaitlistEmail(token: string): Promise<VerifyResult> {
+  const res = await fetch(`${API_PREFIX}/waitlist/verify?token=${encodeURIComponent(token)}`);
+  if (!res.ok) {
+    if (res.status === 400) throw new Error("invalid-token");
+    throw new Error(`server-error-${res.status}`);
+  }
+  return (await res.json()) as VerifyResult;
+}
+
+export async function resendWaitlistVerify(email: string): Promise<void> {
+  const res = await fetch(`${API_PREFIX}/waitlist/resend`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    if (res.status === 429) throw new Error("rate-limited");
+    if (res.status === 422) throw new Error("invalid-email");
+    throw new Error(`server-error-${res.status}`);
+  }
 }
 
 // --------------------------------------------------------------------- //
@@ -90,6 +129,11 @@ export interface WaitlistEntry {
   user_agent: string | null;
   notified: boolean;
   notified_at: string | null;
+  newsletter_opt_in: boolean;
+  newsletter_consent_at: string | null;
+  verified: boolean;
+  verified_at: string | null;
+  verify_sent_at: string | null;
   created_at: string;
 }
 
@@ -110,4 +154,21 @@ export async function markWaitlistNotified(id: number): Promise<WaitlistEntry> {
   if (res.status === 401) throw new Error("unauthorized");
   if (!res.ok) throw new Error(`server-error-${res.status}`);
   return (await res.json()) as WaitlistEntry;
+}
+
+export interface AdminResendResult {
+  ok: boolean;
+  sent: boolean;
+  already_verified?: boolean;
+  verify_url?: string;
+}
+
+export async function adminResendVerify(id: number): Promise<AdminResendResult> {
+  const res = await fetch(`${API_PREFIX}/admin/waitlist/${id}/resend-verify`, {
+    method: "POST",
+    headers: adminHeaders(),
+  });
+  if (res.status === 401) throw new Error("unauthorized");
+  if (!res.ok) throw new Error(`server-error-${res.status}`);
+  return (await res.json()) as AdminResendResult;
 }
