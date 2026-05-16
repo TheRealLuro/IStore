@@ -10,6 +10,9 @@ import { postWaitlistSignup, type WaitlistUseCase } from "../api";
 export default function Waitlist() {
   const [email, setEmail] = useState("");
   const [use, setUse] = useState<WaitlistUseCase>("personal");
+  // Newsletter consent — defaults to UNCHECKED. The form remains a
+  // launch-pings-only signup unless the user explicitly opts in.
+  const [newsletter, setNewsletter] = useState(false);
   const [status, setStatus] = useState<
     "idle" | "submitting" | "done" | "done-offline" | "error"
   >("idle");
@@ -22,7 +25,11 @@ export default function Waitlist() {
     setError("");
 
     try {
-      await postWaitlistSignup({ email: email.trim().toLowerCase(), use_case: use });
+      await postWaitlistSignup({
+        email: email.trim().toLowerCase(),
+        use_case: use,
+        newsletter_opt_in: newsletter,
+      });
       setStatus("done");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
@@ -133,6 +140,31 @@ export default function Waitlist() {
                   <option value="other">        Something else</option>
                 </select>
 
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 10,
+                    marginTop: 4,
+                    fontSize: 13,
+                    color: "var(--ink-2)",
+                    cursor: "pointer",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={newsletter}
+                    onChange={(e) => setNewsletter(e.target.checked)}
+                    style={{ marginTop: 3, flexShrink: 0 }}
+                  />
+                  <span>
+                    Also send me the weekly newsletter — release notes
+                    each Friday with what shipped and why. Optional;
+                    you can unsubscribe any time.
+                  </span>
+                </label>
+
                 <button
                   type="submit"
                   className="btn btn--primary btn--lg"
@@ -147,8 +179,9 @@ export default function Waitlist() {
                 )}
 
                 <p style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                  By submitting you confirm you'd like a launch email.
-                  No other use, no sharing, no resale.
+                  By submitting you confirm you'd like a launch email
+                  {newsletter ? " plus the weekly newsletter" : ""}.
+                  No sharing, no resale.
                 </p>
               </form>
             )}

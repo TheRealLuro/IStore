@@ -1,10 +1,13 @@
 // /updates/:slug — single weekly-update article.
 //
-// Renders the body sections + an Article-shape JSON-LD block so search
-// engines and AI answer engines can pick up the headline, summary,
-// publish date, and full body without needing to render JS. The
-// BreadcrumbList graph entry also helps Google show the canonical
-// "neuthek → Updates → <article>" trail in SERP cards.
+// Renders the five-bucket body (Found / Fixed / New / Why / What
+// they do) plus rich JSON-LD so search engines and AI answer engines
+// can lift the summary, publish date, and full body without rendering
+// JS. The BreadcrumbList also gives Google the canonical
+// "neuthek → Updates → <article>" trail for SERP cards.
+//
+// Older/newer footer nav follows reading-order intuition: older
+// sits on the LEFT, newer on the RIGHT (back/forward across time).
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
 import { findUpdateBySlug, UPDATES } from "../data/updates";
@@ -13,9 +16,9 @@ export default function UpdateDetail() {
   const { slug } = useParams<{ slug: string }>();
   const entry = slug ? findUpdateBySlug(slug) : undefined;
 
-  // Find the previous + next entries for "← prev / next →" footer nav.
-  // Sorted by `published` descending in the data file, so the array
-  // index is already chronological.
+  // UPDATES is sorted newest-first, so:
+  //   - index - 1 → the entry AFTER this one (newer)
+  //   - index + 1 → the entry BEFORE this one (older)
   const idx = entry ? UPDATES.findIndex((u) => u.slug === entry.slug) : -1;
   const newer = idx > 0 ? UPDATES[idx - 1] : null;
   const older = idx >= 0 && idx < UPDATES.length - 1 ? UPDATES[idx + 1] : null;
@@ -28,8 +31,6 @@ export default function UpdateDetail() {
     document.title = `${entry.title} — neuthek updates`;
     setMeta("description", entry.summary);
     setLink("canonical", `https://neuthek.com/updates/${entry.slug}`);
-    // OG / Twitter share previews — share-rich snippet for each
-    // individual article when someone posts it on social.
     setMeta("og:title", entry.title, "property");
     setMeta("og:description", entry.summary, "property");
     setMeta("og:type", "article", "property");
@@ -44,12 +45,38 @@ export default function UpdateDetail() {
         <section className="section">
           <h1>Update not found</h1>
           <p>
-            We couldn't find that update. <Link to="/updates">Browse the changelog →</Link>
+            We couldn't find that update.{" "}
+            <Link to="/updates">Browse the changelog →</Link>
           </p>
         </section>
       </div>
     );
   }
+
+  // Flatten the body buckets into one long text string for the
+  // Article JSON-LD `articleBody` field. AI crawlers and answer
+  // engines can read this without executing JS — important because
+  // many of them (including some of ChatGPT's browsing modes) skip
+  // pages that are pure client-side rendered until they've parsed
+  // the HTML / JSON-LD.
+  const articleText = [
+    entry.summary,
+    "",
+    "Problems we found:",
+    ...entry.body.found.map((s) => `- ${s}`),
+    "",
+    "How we fixed them:",
+    ...entry.body.fixed.map((s) => `- ${s}`),
+    "",
+    "New features in this release:",
+    ...entry.body.newFeatures.map((s) => `- ${s}`),
+    "",
+    "Why this work matters:",
+    entry.body.why,
+    "",
+    "What this means for you:",
+    ...entry.body.whatTheyDo.map((s) => `- ${s}`),
+  ].join("\n");
 
   return (
     <div className="page">
@@ -70,39 +97,56 @@ export default function UpdateDetail() {
           </div>
         </header>
 
-        <div className="update-article__body">
-          {entry.sections.map((s, i) => {
-            if (s.kind === "heading") {
-              return <h2 key={i} className="update-article__h2">{s.text}</h2>;
-            }
-            if (s.kind === "para") {
-              return <p key={i} className="update-article__para">{s.text}</p>;
-            }
-            if (s.kind === "bullets") {
-              return (
-                <ul key={i} className="update-article__bullets">
-                  {s.items.map((it, j) => <li key={j}>{it}</li>)}
-                </ul>
-              );
-            }
-            if (s.kind === "code") {
-              return (
-                <pre key={i} className="update-article__code mono"><code>{s.body}</code></pre>
-              );
-            }
-            return null;
-          })}
+        <BucketSection
+          tone="warn"
+          title="Problems we found"
+          icon="!"
+          intro="What wasn't working as well as it should have."
+          items={entry.body.found}
+        />
+        <BucketSection
+          tone="ok"
+          title="How we fixed them"
+          icon="✓"
+          intro="What changed in this release to fix the issues above."
+          items={entry.body.fixed}
+        />
+        <BucketSection
+          tone="new"
+          title="New features"
+          icon="+"
+          intro="Brand-new capabilities that weren't there last week."
+          items={entry.body.newFeatures}
+        />
+        <div className="update-bucket update-bucket--why">
+          <h2 className="update-bucket__title">Why this matters</h2>
+          <p className="update-bucket__intro">
+            The reason this work mattered, in plain English.
+          </p>
+          <p className="update-bucket__why-body">{entry.body.why}</p>
         </div>
+        <BucketSection
+          tone="info"
+          title="What this means for you"
+          icon="→"
+          intro="How the changes actually show up when you use neuthek."
+          items={entry.body.whatTheyDo}
+        />
 
         <footer className="update-article__foot">
-          {newer && (
-            <Link to={`/updates/${newer.slug}`} className="update-article__nav">
-              ← Newer: {newer.title}
+          {/* Older on the LEFT, newer on the RIGHT — matches book /
+              browser reading order: "earlier → later" flows
+              left-to-right. */}
+          {older ? (
+            <Link to={`/updates/${older.slug}`} className="update-article__nav">
+              ← Older: {older.title}
             </Link>
+          ) : (
+            <span/>
           )}
-          {older && (
-            <Link to={`/updates/${older.slug}`} className="update-article__nav update-article__nav--right">
-              Older: {older.title} →
+          {newer && (
+            <Link to={`/updates/${newer.slug}`} className="update-article__nav update-article__nav--right">
+              Newer: {newer.title} →
             </Link>
           )}
         </footer>
@@ -119,6 +163,7 @@ export default function UpdateDetail() {
                 "@id": `https://neuthek.com/updates/${entry.slug}#article`,
                 headline: entry.title,
                 description: entry.summary,
+                articleBody: articleText,
                 datePublished: entry.published,
                 dateModified: entry.published,
                 author: {
@@ -160,6 +205,32 @@ export default function UpdateDetail() {
         }}
       />
     </div>
+  );
+}
+
+function BucketSection({
+  title, items, tone, icon, intro,
+}: {
+  title: string;
+  items: string[];
+  tone: "ok" | "warn" | "new" | "info";
+  icon: string;
+  intro: string;
+}) {
+  if (!items?.length) return null;
+  return (
+    <section className={`update-bucket update-bucket--${tone}`}>
+      <h2 className="update-bucket__title">
+        <span className="update-bucket__icon" aria-hidden="true">{icon}</span>
+        {title}
+      </h2>
+      <p className="update-bucket__intro">{intro}</p>
+      <ul className="update-bucket__list">
+        {items.map((s, i) => (
+          <li key={i}>{s}</li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -1,0 +1,75 @@
+{
+  "_comment": "Server-readable mirror of marketing/src/data/updates.ts. When you add a new entry there, copy the slug/title/published/week/summary/tags/body block here so the Express server's per-route prerender (server.mjs) can inject the full text into the HTML for AI crawlers + search engines that don't render JS. The mirror is intentionally a simple JSON file so the server doesn't need to spin up a TS transpiler at runtime.",
+  "updates": [
+    {
+      "slug": "2026-w20-google-link-marquee-perf",
+      "title": "Link your Google account, faster selection, fewer broken settings",
+      "published": "2026-05-16",
+      "week": "Week of May 16, 2026",
+      "summary": "You can now connect a Google account to a neuthek profile you originally made with email + password, the drag-to-select rectangle in the gallery is much smoother, AI summaries finally finish processing instead of getting stuck, and a handful of Settings pages stopped showing fake data.",
+      "tags": ["accounts", "gallery", "ai", "settings"],
+      "body": {
+        "found": [
+          "If you signed up with an email and password, there was no way to also use Sign in with Google for the same account — it would just create a brand-new profile.",
+          "Drag-selecting many photos at once felt sluggish: the box lagged behind your mouse, and the gallery sometimes stuttered while you were dragging.",
+          "AI summaries got stuck at, say, 58 of 59 done — the last one or two would never finish, and the progress number wouldn't budge.",
+          "The Settings panels for face data and locations were showing made-up numbers (\"1,284 faces detected\") instead of your actual library counts.",
+          "Settings didn't reflect whether you had a Google account linked, even after you linked it."
+        ],
+        "fixed": [
+          "Settings → Account → Sign-in & security now has a Link Google button. One click sends you to Google's consent screen and brings you back into the same neuthek account.",
+          "The drag-to-select rectangle is now smooth on libraries with hundreds of photos. We rebuilt how it tracks your mouse so it stays in step.",
+          "AI summaries no longer get stuck on photos the AI can't read. After one failed try we stop retrying that specific file so the counter moves on, and the rest of your library keeps processing.",
+          "The Face data and Location panels in Settings now show your real numbers — how many photos have GPS, how many faces were detected, how many people you've named.",
+          "Settings now reflects everything that's actually true about your account: email verified, 2FA on/off, Google linked, admin, age confirmed."
+        ],
+        "newFeatures": [
+          "Link Google to an existing account — Settings → Account → \"Link Google\".",
+          "A read-only \"Account state\" grid in Settings that summarises everything about your profile in one place.",
+          "Code files synced from Google Drive open in a syntax-highlighted reader with line numbers, similar to how PDFs open in a viewer.",
+          "Camera RAW formats (Nikon NEF, Canon CR2, Sony ARW, Fuji RAF, etc.) decode at full quality instead of as a tiny embedded preview.",
+          "Animated GIFs stay animated end-to-end — they're no longer flattened to a single frame on upload."
+        ],
+        "why": "Two themes this week: making your account feel like one account no matter how you sign in, and stopping things from looking broken when they're actually working. Stuck progress bars and fake numbers in Settings erode trust even when the underlying system is fine, so we went through the panels and made sure each number you see is real and each loop has a way to finish.",
+        "whatTheyDo": [
+          "Open Settings → Account. The new badges under your name show your real status, and the Link Google row attaches Google sign-in to this account so you can use either path next time.",
+          "On a desktop, click on empty space in the gallery and drag — every photo your rectangle touches gets selected. Hold Shift to add to what you already have selected.",
+          "The AI summary banner at the top of the gallery will now actually reach \"all done\" instead of camping at 58/59 forever.",
+          "Open a RAW photo from your camera and it shows up at the full resolution your camera captured, not a soft thumbnail.",
+          "Open Settings → Privacy. The Face data and Location detail panels show real counts from your library and explain that embeddings stay on your server."
+        ]
+      }
+    },
+    {
+      "slug": "2026-w19-drive-sync-and-rls",
+      "title": "Pull your Google Drive in, lock down the database, strip GPS by default",
+      "published": "2026-05-09",
+      "week": "Week of May 9, 2026",
+      "summary": "Connect your Google Drive in Settings and your photos + documents flow into neuthek without you uploading anything by hand. We hardened the database so a bug in one place can't leak someone else's files. And photos you upload no longer carry hidden GPS coordinates unless you explicitly opt in.",
+      "tags": ["cloud-sync", "security", "privacy"],
+      "body": {
+        "found": [
+          "Getting your existing photos into neuthek meant uploading them by hand, which is fine for ten photos and miserable for ten thousand.",
+          "A bug in any query could, in theory, leak one user's files to another — we wanted the database itself to refuse that even if the code asked the wrong thing.",
+          "Most phones embed your exact GPS coordinates in every photo. If you shared a photo, the location went with it whether you wanted it to or not."
+        ],
+        "fixed": [
+          "Built a one-click Google Drive connection. We never write back to your Drive (it's read-only); we just pull copies in.",
+          "Turned on Postgres row-level security across every table that holds your stuff (photos, folders, tags, faces, summaries, audit log). Even a buggy query physically can't see another user's rows.",
+          "Photos uploaded to neuthek now have their GPS stripped on the way in. The toggle to keep GPS is in Settings → Privacy → Photo metadata if you want it."
+        ],
+        "newFeatures": [
+          "Google Drive sync with a per-source AI opt-in toggle, so cloud photos stay outside the training pipeline by default.",
+          "An hourly background sweep that pulls in new files automatically once you're connected, plus conflict detection if you edit a photo locally after it synced.",
+          "EXIF strip-on-upload, with separate consent toggles for keeping GPS data and keeping camera-make/lens metadata."
+        ],
+        "why": "Two things matter most for a personal cloud: getting your stuff in, and trusting that it stays yours. Drive sync removes the friction of \"how do I move my existing photos here?\". Row-level security and EXIF strip make the system fail-safe — even if something goes wrong, your data and your location stay where they should.",
+        "whatTheyDo": [
+          "Open Settings → Cloud sync → Connect Google Drive. After the consent screen, files start arriving in a \"Google Drive\" folder in your gallery. You can sync manually or let the hourly sweep handle it.",
+          "Nothing changes visually from the row-level-security work, but a buggy or hacked query in the future literally cannot return another user's data.",
+          "Every photo you upload from your phone or camera now lands without an embedded location, so if you share it, you're not also sharing where you were standing."
+        ]
+      }
+    }
+  ]
+}

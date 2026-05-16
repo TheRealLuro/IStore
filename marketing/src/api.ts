@@ -26,6 +26,12 @@ export type WaitlistUseCase =
 export interface WaitlistSignupBody {
   email: string;
   use_case: WaitlistUseCase;
+  // Newsletter opt-in. The waitlist still only sends two emails by
+  // default (early-access + GA); checking this expands the consent to
+  // include the weekly newsletter that goes out with each release
+  // notes drop. We persist the flag server-side so a future export to
+  // a real ESP knows who actually wants the recurring sends.
+  newsletter_opt_in?: boolean;
 }
 
 export interface WaitlistSignupResult {
