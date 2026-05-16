@@ -4,7 +4,7 @@
 // from /images/ via React Query and passes the resulting list (mapped to the
 // neuthek shape) down to GalleryView. Folders, faces, storage stats are still
 // mock for now (todo.md C/E).
-import React, { useState as useStateG, useMemo as useMemoG } from "react";
+import React, { useState as useStateG, useMemo as useMemoG, useRef as useRefG, useEffect as useEffectG } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Icon, initials as defaultInitials } from "./icons.jsx";
@@ -239,6 +239,7 @@ function FileRow({ f, selected, multiSelected, onClick, onMultiSelectToggle, onR
       className="filerow"
       data-selected={selected}
       data-multi={multiSelected}
+      data-card={f.id}
       onClick={onClick}
       onDoubleClick={(e) => { e.stopPropagation(); onRename && onRename(f); }}
       title="Click to preview · double-click to rename"
@@ -320,6 +321,7 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
   ] : []));
   return (
     <div ref={cardRef} className="card" data-selected={selected} data-multi={multiSelected}
+         data-card={f.id}
          onClick={(e) => {
            // The check circle at the top-left of the thumb owns its own
            // click handler; if it stopPropagation's, we never get here.
@@ -836,32 +838,174 @@ export function GalleryView({
           <div className="empty__body">Try a broader term, or search by topic — "sunset", "portrait", "lake".</div>
         </div>
       ) : (
-        <>
-          <div className={layoutMode === "list" ? "gallery__list" : "gallery__grid"}>
-            {layoutMode === "list" ? filtered.map(f => (
-              <FileRow
-                key={f.id}
-                f={f}
-                selected={selected === f.id}
-                multiSelected={!!multiSelected?.has?.(f.id)}
-                onClick={() => onSelect(f)}
-                onMultiSelectToggle={onMultiSelectToggle}
-                onRename={onRename}
-              />
-            )) : filtered.map(f => (
-              <FileCard
-                key={f.id}
-                f={f}
-                query={query}
-                selected={selected === f.id}
-                multiSelected={!!multiSelected?.has?.(f.id)}
-                onClick={() => onSelect(f)}
-                onMultiSelectToggle={onMultiSelectToggle}
-                onRename={onRename}
-              />
-            ))}
-          </div>
-        </>
+        <MarqueeGrid
+          layoutMode={layoutMode}
+          filtered={filtered}
+          selected={selected}
+          multiSelected={multiSelected}
+          onSelect={onSelect}
+          onMultiSelectToggle={onMultiSelectToggle}
+          onRename={onRename}
+          query={query}
+        />
+      )}
+    </div>
+  );
+}
+
+// Drag-rectangle ("marquee") multi-select. Mouse down on empty grid
+// space starts a rubber-band selection; release commits every card
+// whose bbox intersects the rectangle. Holding shift adds to the
+// existing selection; plain drag replaces it. Skips when the user
+// starts the drag on a card or any of its action affordances.
+function MarqueeGrid({
+  layoutMode, filtered, selected, multiSelected, onSelect, onMultiSelectToggle, onRename, query,
+}) {
+  const gridRef = useRefG(null);
+  const [rect, setRect] = useStateG(null); // {l, t, w, h} in grid-local coords
+  const dragRef = useRefG(null);
+
+  useEffectG(() => {
+    const grid = gridRef.current;
+    if (!grid) return;
+
+    const onDown = (e) => {
+      // Only start a marquee on plain left-click and only when the
+      // pointer is on the grid background (not on a card or input).
+      if (e.button !== 0) return;
+      const target = e.target;
+      if (target.closest("[data-card], button, a, input, [contenteditable], [role='switch']")) return;
+      const box = grid.getBoundingClientRect();
+      const startX = e.clientX - box.left;
+      const startY = e.clientY - box.top;
+      const additive = !!(e.shiftKey || e.metaKey || e.ctrlKey);
+      // Snapshot the current selection so the additive path doesn't
+      // forget what was already selected when we re-emit on each move.
+      const initial = new Set(multiSelected ? Array.from(multiSelected) : []);
+      dragRef.current = { startX, startY, additive, initial, lastIds: new Set() };
+      setRect({ l: startX, t: startY, w: 0, h: 0 });
+      // Prevent text selection while dragging.
+      e.preventDefault();
+      grid.setPointerCapture?.(e.pointerId);
+    };
+
+    const onMove = (e) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const box = grid.getBoundingClientRect();
+      const x = e.clientX - box.left;
+      const y = e.clientY - box.top;
+      const l = Math.min(drag.startX, x);
+      const t = Math.min(drag.startY, y);
+      const w = Math.abs(x - drag.startX);
+      const h = Math.abs(y - drag.startY);
+      // Ignore micro-jitters — only enter marquee mode once we've
+      // moved more than a few px, otherwise a plain click would feel
+      // like it dropped a card from a multi-selection.
+      if (w < 4 && h < 4) return;
+      setRect({ l, t, w, h });
+
+      // Compute which cards intersect and emit toggles for the deltas.
+      const cards = grid.querySelectorAll("[data-card]");
+      const want = new Set();
+      cards.forEach((card) => {
+        const cb = card.getBoundingClientRect();
+        const cardL = cb.left - box.left;
+        const cardT = cb.top - box.top;
+        const cardR = cardL + cb.width;
+        const cardB = cardT + cb.height;
+        const intersects = !(cardR < l || cardL > l + w || cardB < t || cardT > t + h);
+        if (intersects) {
+          const id = card.getAttribute("data-card");
+          if (id) want.add(id);
+        }
+      });
+      // Emit minimal diff vs lastIds — adds + removes per move tick.
+      const last = drag.lastIds;
+      // Items newly inside the rectangle this frame.
+      want.forEach((id) => {
+        if (!last.has(id)) {
+          const alreadySelected = drag.initial.has(id);
+          // Replace-mode: select everything in the rectangle outright.
+          // Additive: only add ids that weren't already in the initial set.
+          if (!drag.additive || !alreadySelected) {
+            onMultiSelectToggle && onMultiSelectToggle(id);
+          }
+        }
+      });
+      // Items that left the rectangle this frame.
+      last.forEach((id) => {
+        if (!want.has(id)) {
+          const alreadySelected = drag.initial.has(id);
+          if (!drag.additive || !alreadySelected) {
+            onMultiSelectToggle && onMultiSelectToggle(id);
+          }
+        }
+      });
+      drag.lastIds = want;
+    };
+
+    const onUp = () => {
+      dragRef.current = null;
+      setRect(null);
+    };
+
+    grid.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      grid.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [multiSelected, onMultiSelectToggle]);
+
+  return (
+    <div
+      ref={gridRef}
+      className={layoutMode === "list" ? "gallery__list" : "gallery__grid"}
+      style={{ position: "relative", userSelect: rect ? "none" : "auto" }}
+    >
+      {layoutMode === "list" ? filtered.map(f => (
+        <FileRow
+          key={f.id}
+          f={f}
+          selected={selected === f.id}
+          multiSelected={!!multiSelected?.has?.(f.id)}
+          onClick={() => onSelect(f)}
+          onMultiSelectToggle={onMultiSelectToggle}
+          onRename={onRename}
+        />
+      )) : filtered.map(f => (
+        <FileCard
+          key={f.id}
+          f={f}
+          query={query}
+          selected={selected === f.id}
+          multiSelected={!!multiSelected?.has?.(f.id)}
+          onClick={() => onSelect(f)}
+          onMultiSelectToggle={onMultiSelectToggle}
+          onRename={onRename}
+        />
+      ))}
+      {rect && (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            left: rect.l,
+            top: rect.t,
+            width: rect.w,
+            height: rect.h,
+            background: "color-mix(in oklab, var(--accent, #5b8def) 18%, transparent)",
+            border: "1px solid var(--accent, #5b8def)",
+            borderRadius: 6,
+            pointerEvents: "none",
+            zIndex: 5,
+          }}
+        />
       )}
     </div>
   );

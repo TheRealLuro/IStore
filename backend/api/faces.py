@@ -165,6 +165,15 @@ async def reassign_detection(
     await session.flush()
     det.face_id = new_face.id
 
+    # Refresh the target person's centroid so future detections cluster
+    # to this corrected label without another manual relabel.
+    if target_person_id is not None:
+        try:
+            from backend.faces_pipeline import update_person_centroid
+            await update_person_centroid(session, user.id, target_person_id)
+        except Exception:
+            pass
+
     await add_audit(
         session,
         user_id=user.id,

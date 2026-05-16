@@ -206,7 +206,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         <button className="lightbox__close" aria-label="Close" onClick={(e) => { e.stopPropagation(); setLightbox(false); }}>
           <Icon name="x" size={18}/>
         </button>
-        <AuthedImg url={file.thumb} className="lightbox__img" alt={file.name} onClick={(e) => e.stopPropagation()}/>
+        <AuthedImg url={file.thumbFull || file.thumb} className="lightbox__img" alt={file.name} onClick={(e) => e.stopPropagation()}/>
       </div>
     )}
     {pdfModal && isPdf && (

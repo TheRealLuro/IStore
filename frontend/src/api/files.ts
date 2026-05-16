@@ -214,8 +214,13 @@ export async function suggestNames(
 }
 
 /** URL for image cards / preview (compressed served variant). Includes auth via fetch wrapper. */
-export function servedUrl(id: string): string {
-  return `${API_BASE_URL}/images/${id}/served`;
+export function servedUrl(id: string, opts: { maxDim?: number } = {}): string {
+  // The backend supports a `?max_dim=` query param that returns a
+  // resized + re-encoded variant (LRU-cached server-side). Pass it
+  // for gallery cards / preview-pane thumbs so we don't ship a 3 MB
+  // WebP just to render a 200 px square.
+  const qs = opts.maxDim ? `?max_dim=${Math.max(64, Math.min(4096, opts.maxDim | 0))}` : "";
+  return `${API_BASE_URL}/images/${id}/served${qs}`;
 }
 
 export function originalUrl(id: string): string {

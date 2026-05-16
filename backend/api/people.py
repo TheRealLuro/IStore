@@ -352,6 +352,22 @@ async def detect_and_label(
         )
         new_faces += len(delta)
 
+    # Recompute the Person's centroid from EVERY face attached to them
+    # (the new batch plus any prior labelings). Without this step, the
+    # face-matching pipeline can't auto-cluster future detections to
+    # this person — the user would have to keep manually re-labeling.
+    # With the centroid up to date, `match_named_person` picks this
+    # person whenever a new face's embedding comes within
+    # SAME_PERSON_THRESHOLD_CENTROID (~0.40 cosine) of it.
+    if new_faces > 0:
+        try:
+            await update_person_centroid(session, user.id, target.id)
+        except Exception:
+            logger.exception(
+                "detect_and_label: centroid update failed for person=%s",
+                target.id,
+            )
+
     await add_audit(
         session,
         user_id=user.id,
