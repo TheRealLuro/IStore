@@ -932,12 +932,98 @@ async def download_served(
     image_id: UUID,
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    max_dim: Annotated[int | None, Query(ge=64, le=4096)] = None,
 ) -> Response:
+    """Return the served (compressed) image bytes.
+
+    When `max_dim` is set, the served image is resized so its longest
+    side is at most `max_dim` pixels and re-encoded as WebP q=75. This
+    is the gallery-card thumbnail path: serving a 4K-wide WebP into a
+    200px card forced the browser to decode 1-3 MB per card just to
+    render a tiny thumb, which is the worst hit on the perf budget.
+    Resized variants are LRU-cached in process memory so repeated
+    scrolls don't keep re-encoding the same image.
+
+    Animated GIFs are exempt from the resize path — their served bytes
+    are passthrough (we don't have a single-frame thumb of an animation
+    without losing it), so the request returns the full GIF unchanged.
+    """
     if settings.require_signed_downloads:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Use a signed download URL")
     image = await _load_owned_image(image_id, user, session)
     blob, mime = await fetch_served(image)
-    return Response(content=blob, media_type=mime)
+
+    if max_dim is not None and mime and mime.startswith("image/") and mime != "image/gif":
+        try:
+            blob, mime = await asyncio.to_thread(
+                _resized_thumb_cached, image.id, blob, max_dim,
+            )
+        except Exception:
+            logger.exception("served thumb resize failed for %s; returning original", image.id)
+
+    headers = {
+        # 1 day private cache — the image content for a given (id, size)
+        # is content-addressed by the stored blob's hash; we never
+        # update served bytes in place. Lets the browser skip the
+        # network entirely on repeat scroll-backs.
+        "Cache-Control": "private, max-age=86400",
+    }
+    return Response(content=blob, media_type=mime, headers=headers)
+
+
+# Process-local LRU cache for resized served variants. Keyed on
+# (image_id, max_dim) → (jpeg/webp bytes, mime). Capped at ~256 MB
+# total bytes so a busy gallery doesn't exhaust container memory.
+# Eviction is FIFO by insertion order which works fine because the
+# gallery's most-recent items are the most-likely re-requested.
+_THUMB_CACHE: "dict[tuple[UUID, int], tuple[bytes, str]]" = {}
+_THUMB_CACHE_BYTES: list[int] = [0]  # mutable counter inside list to avoid `global`
+_THUMB_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+
+def _resized_thumb_cached(image_id: UUID, blob: bytes, max_dim: int) -> tuple[bytes, str]:
+    key = (image_id, max_dim)
+    hit = _THUMB_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from io import BytesIO
+    from PIL import Image as PILImage
+
+    with PILImage.open(BytesIO(blob)) as pil:
+        pil.load()
+        longest = max(pil.size)
+        if longest <= max_dim:
+            # Source is already small enough — no resize, just cache the
+            # original bytes so repeat hits skip the decode pass.
+            mime_out = pil.get_format_mimetype() or "image/webp"
+            _store_in_thumb_cache(key, blob, mime_out)
+            return blob, mime_out
+        scale = max_dim / longest
+        new_size = (
+            max(1, int(round(pil.size[0] * scale))),
+            max(1, int(round(pil.size[1] * scale))),
+        )
+        # `WebP q=75` strikes a good ratio for grid thumbnails — at
+        # 400 px wide a typical photo lands around 12-25 KB, two
+        # orders of magnitude smaller than the 4K served original.
+        if pil.mode == "P":
+            pil = pil.convert("RGB")
+        out = BytesIO()
+        pil.resize(new_size, PILImage.LANCZOS).save(out, format="WEBP", quality=75, method=4)
+        out_bytes = out.getvalue()
+    _store_in_thumb_cache(key, out_bytes, "image/webp")
+    return out_bytes, "image/webp"
+
+
+def _store_in_thumb_cache(key, blob: bytes, mime: str) -> None:
+    _THUMB_CACHE[key] = (blob, mime)
+    _THUMB_CACHE_BYTES[0] += len(blob)
+    # Evict oldest entries until the byte budget fits. dict in 3.7+
+    # preserves insertion order, so iterating yields oldest-first.
+    while _THUMB_CACHE_BYTES[0] > _THUMB_CACHE_MAX_BYTES and _THUMB_CACHE:
+        oldest_key = next(iter(_THUMB_CACHE))
+        oldest_blob, _ = _THUMB_CACHE.pop(oldest_key)
+        _THUMB_CACHE_BYTES[0] -= len(oldest_blob)
 
 
 def _pdf_meta_sync(raw: bytes) -> dict:

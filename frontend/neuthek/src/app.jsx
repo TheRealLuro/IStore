@@ -180,7 +180,13 @@ function fileItemToNeuthek(f) {
     name: f.original_filename || `untitled.${ext.toLowerCase()}`,
     size,
     when,
-    thumb: hasServedThumb ? servedUrl(f.id) : null,
+    // Card thumb caps at 600 px on the longest side (room for retina
+    // grids @ 300 CSS px). Backend resizes + caches the variant; the
+    // network payload drops from MB-scale to ~20 KB per card so a
+    // 60-card scroll doesn't decode 50+ MB of WebP.
+    thumb: hasServedThumb ? servedUrl(f.id, { maxDim: 600 }) : null,
+    // Full-resolution path for the preview-hero lightbox + sharing.
+    thumbFull: hasServedThumb ? servedUrl(f.id) : null,
     ext,
     topic: f.summary_topic,
     aiContent: f.summary,
@@ -251,6 +257,108 @@ const t = {
 // Pick best of (images-only) · Delete — plus a Clear/exit button.
 // Built local to <App/> via lazy-imported helpers so the toolbar
 // owns the queryClient invalidation contract for each action.
+function DetectPersonModal({ open, imageCount, name, setName, progress, running, onSubmit, onClose }) {
+  // Close on Escape unless a scan is in flight.
+  useEffectApp(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === "Escape" && !running) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, running, onClose]);
+  if (!open) return null;
+  const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  return (
+    <div
+      className="lightbox"
+      onClick={() => { if (!running) onClose(); }}
+      style={{ background: "rgba(0,0,0,0.45)" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--surface)",
+          color: "var(--ink)",
+          borderRadius: 14,
+          width: "min(440px, calc(100vw - 32px))",
+          padding: 22,
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <Icon name="users" size={18}/>
+          <strong style={{ fontSize: 15 }}>Detect person</strong>
+        </div>
+        <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginBottom: 16 }}>
+          Runs face detection on {imageCount} selected image{imageCount === 1 ? "" : "s"}
+          and labels every face it finds. The label also trains the
+          clustering centroid so future uploads of the same person
+          auto-group to them.
+        </div>
+
+        {!running && progress.total === 0 && (
+          <form onSubmit={onSubmit}>
+            <label style={{ display: "block", fontSize: 12, color: "var(--ink-3)", marginBottom: 4 }}>
+              Name
+            </label>
+            <input
+              autoFocus
+              className="input input--lg"
+              placeholder="e.g. Alice Johnson"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={{ width: "100%" }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+              <button type="button" className="btn btn--ghost" onClick={onClose}>Cancel</button>
+              <button type="submit" className="btn btn--primary" disabled={!name.trim()}>
+                Start scan
+              </button>
+            </div>
+          </form>
+        )}
+
+        {(running || progress.total > 0) && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--ink-3)", marginBottom: 6 }}>
+              <span>Scanning for "{name}"…</span>
+              <span className="mono">{progress.done} / {progress.total}</span>
+            </div>
+            <div
+              style={{
+                height: 8,
+                borderRadius: 999,
+                background: "var(--surface-2)",
+                overflow: "hidden",
+              }}
+              role="progressbar"
+              aria-valuenow={pct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  background: "var(--accent, #5b8def)",
+                  transition: "width 240ms ease",
+                }}
+              />
+            </div>
+            <div style={{ marginTop: 12, fontSize: 12, color: "var(--ink-3)" }}>
+              Found {progress.found} face{progress.found === 1 ? "" : "s"} so far.
+            </div>
+            {!running && progress.done === progress.total && (
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+                <button type="button" className="btn btn--primary" onClick={onClose}>Done</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestOf, inTrashView = false }) {
   const qc = useQueryClient();
   const moveDdRef = useRefApp(null);
@@ -369,27 +477,44 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
     }
   };
 
+  // "Detect person" modal state. The modal shows the name input,
+  // then once submitted swaps to a per-batch progress bar so the user
+  // can see scanning isn't frozen. Batches keep the request small so
+  // a 50-image bulk doesn't burn 60+ s on one HTTP call (the face
+  // pipeline is ~1 s per image on CPU).
+  const [detectModalOpen, setDetectModalOpen] = useStateApp(false);
   const [detectName, setDetectName] = useStateApp("");
-  const detectDdRef = useRefApp(null);
-  useDetailsAutoClose(detectDdRef);
+  const [detectProgress, setDetectProgress] = useStateApp({ done: 0, total: 0, found: 0 });
   const doDetectAndLabel = async (e) => {
     e?.preventDefault?.();
     const name = detectName.trim();
     if (!name || busy) return;
     setBusy("detect");
+    const BATCH = 5;
+    const total = selectedIds.length;
+    let found = 0;
+    let scanned = 0;
+    setDetectProgress({ done: 0, total, found: 0 });
     try {
-      const r = await detectAndLabel(selectedIds, name);
-      const label = r.new_faces === 1 ? "1 new face" : `${r.new_faces} new faces`;
+      for (let i = 0; i < selectedIds.length; i += BATCH) {
+        const slice = selectedIds.slice(i, i + BATCH);
+        const r = await detectAndLabel(slice, name);
+        scanned += r.images_scanned;
+        found += r.new_faces;
+        setDetectProgress({ done: Math.min(i + slice.length, total), total, found });
+        // Refresh queries between batches so the gallery + people sidebar
+        // tick up while the long scan is running.
+        qc.invalidateQueries({ queryKey: ["people"] });
+        qc.invalidateQueries({ queryKey: ["files"] });
+      }
       toast.success(
-        r.new_faces > 0
-          ? `Found ${label} across ${r.images_scanned} image${r.images_scanned === 1 ? "" : "s"} — labeled as "${name}"`
-          : `Scanned ${r.images_scanned} image${r.images_scanned === 1 ? "" : "s"} but didn't find new faces`,
+        found > 0
+          ? `Labeled ${found} face${found === 1 ? "" : "s"} across ${scanned} image${scanned === 1 ? "" : "s"} as "${name}". Future detections will cluster to them automatically.`
+          : `Scanned ${scanned} image${scanned === 1 ? "" : "s"} but didn't find any new faces.`,
       );
-      setDetectName("");
-      if (detectDdRef.current) detectDdRef.current.open = false;
-      qc.invalidateQueries({ queryKey: ["people"] });
       qc.invalidateQueries({ queryKey: ["image-people"] });
-      qc.invalidateQueries({ queryKey: ["files"] });
+      setDetectModalOpen(false);
+      setDetectName("");
       onClear();
     } catch (err) {
       toast.error(err?.detail || "Detect failed");
@@ -631,34 +756,28 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
       )}
 
       {!inTrashView && selectedAreAllImages && (
-        <details ref={detectDdRef} className="dd dd--secondary dd--sm">
-          <summary>
-            <Icon name="users" size={12}/> {busy === "detect" ? "Detecting…" : "Detect person"}
-          </summary>
-          <div className="dd__panel">
-            <form onSubmit={doDetectAndLabel} style={{ display: "flex", gap: 6 }}>
-              <input
-                className="input input--sm"
-                placeholder="Name (e.g. Alice)"
-                value={detectName}
-                onChange={(e) => setDetectName(e.target.value)}
-                autoFocus
-                disabled={busy === "detect"}
-              />
-              <button
-                type="submit"
-                className="btn btn--primary btn--sm"
-                disabled={!detectName.trim() || busy === "detect"}
-              >
-                Label
-              </button>
-            </form>
-            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>
-              Runs face detection on the selected photos and assigns every
-              newly-found face to this name.
-            </div>
-          </div>
-        </details>
+        <button
+          type="button"
+          className="btn btn--secondary btn--sm"
+          onClick={() => setDetectModalOpen(true)}
+          disabled={busy === "detect"}
+          title="Detect faces in the selected images and label them"
+        >
+          <Icon name="users" size={12}/> Detect person
+        </button>
+      )}
+
+      {detectModalOpen && (
+        <DetectPersonModal
+          open={detectModalOpen}
+          imageCount={selectedIds.length}
+          name={detectName}
+          setName={setDetectName}
+          progress={detectProgress}
+          running={busy === "detect"}
+          onSubmit={doDetectAndLabel}
+          onClose={() => { if (busy !== "detect") setDetectModalOpen(false); }}
+        />
       )}
 
       <button
