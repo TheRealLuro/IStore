@@ -43,13 +43,13 @@ import { useAuthStore } from "@/stores/authStore";
 import {
   listFiles, getImageGeo, servedUrl, renameImage,
   getSummarizeProgress, searchSemantic, getFacets,
-  bulkDelete, bulkMove, createFolderWithImages,
+  bulkDelete, bulkRestore, bulkMove, createFolderWithImages,
   clearSearchHistory,
 } from "@/api/files";
 import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
 import { eraseImageCaches } from "./cache-eraser.js";
 import { listFolders } from "@/api/folders";
-import { listPeople, faceCropUrl } from "@/api/people";
+import { listPeople, faceCropUrl, detectAndLabel } from "@/api/people";
 import { AuthedThumb } from "./auth-image.jsx";
 import { EditableName } from "./nameable-chip.jsx";
 import { getConsentScopes, grantConsent } from "@/api/consent";
@@ -137,9 +137,25 @@ function SummarizingBanner({ signedIn, dismissed, onDismiss }) {
 // gallery / preview / cards keep working without rewrites. Anything we can't
 // derive from the FileItem (mock topic / aiContent / gps / tags / folder) is
 // either left unset or filled in with safe defaults.
+// Code/text MIMEs the FE recognizes for the dedicated code-icon
+// rendering path. Keep this in sync with backend/upload_validation.py
+// `_CODE_EXTS` values (the right-hand side mime, not the keys).
+const CODE_MIME_PREFIXES = ["text/x-", "text/javascript", "text/css", "text/html", "text/xml", "text/markdown", "application/json", "application/x-ipynb"];
+
+function isCodeMime(mime) {
+  if (!mime) return false;
+  return CODE_MIME_PREFIXES.some((p) => mime.startsWith(p));
+}
+
 function fileItemToNeuthek(f) {
   const cat = f.category;
-  const type = cat === "document" ? "doc" : cat === "image" ? "image" : cat === "video" ? "video" : "doc";
+  let type = cat === "document" ? "doc" : cat === "image" ? "image" : cat === "video" ? "video" : "doc";
+  // Special-case code / structured-text files: they're served as
+  // `document` upstream but the gallery card + preview hero should
+  // show a code icon, not the generic page-of-paper icon.
+  if (cat === "document" && isCodeMime(f.mime_type_original)) {
+    type = "code";
+  }
   const ext = (f.original_filename || "").split(".").pop()?.toUpperCase() || (f.mime_type_original?.split("/")[1] || "FILE").toUpperCase();
   const sizeBytes = f.byte_size_served ?? f.byte_size_original ?? 0;
   const size = sizeBytes < 1024 * 1024
@@ -235,7 +251,7 @@ const t = {
 // Pick best of (images-only) · Delete — plus a Clear/exit button.
 // Built local to <App/> via lazy-imported helpers so the toolbar
 // owns the queryClient invalidation contract for each action.
-function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestOf }) {
+function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestOf, inTrashView = false }) {
   const qc = useQueryClient();
   const moveDdRef = useRefApp(null);
   const newFolderDdRef = useRefApp(null);
@@ -306,19 +322,77 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
 
   const doDelete = async () => {
     if (busy) return;
-    if (!window.confirm(`Move ${selectedIds.length} item${selectedIds.length === 1 ? "" : "s"} to trash?`)) return;
+    // In the trash view, "Delete" means permanent purge (the items
+    // are already trashed). Elsewhere it's soft-delete → moves to
+    // Trash with deleted_at set so the user can still restore.
+    const verb = inTrashView ? "Permanently delete" : "Move";
+    const tail = inTrashView ? " — this can't be undone." : " to trash?";
+    if (!window.confirm(`${verb} ${selectedIds.length} item${selectedIds.length === 1 ? "" : "s"}${tail}`)) return;
     setBusy("delete");
     try {
-      const r = await bulkDelete(selectedIds);
+      const r = await bulkDelete(selectedIds, { purge: inTrashView });
       const skipNote = r.skipped_count > 0 ? ` (${r.skipped_count} skipped)` : "";
-      toast.success(`Moved ${r.count} to trash${skipNote}`);
-      // §A5 — purge per-id FE caches in addition to the list-level
-      // invalidations from invalidateAll(). The backend has already
-      // dropped every row + blob; the FE follows.
-      await eraseImageCaches(qc, selectedIds);
+      toast.success(
+        inTrashView
+          ? `Permanently deleted ${r.count}${skipNote}`
+          : `Moved ${r.count} to trash${skipNote}`,
+      );
+      if (inTrashView) {
+        // Only erase per-id caches when we've truly purged the row;
+        // soft-deletes keep the row alive in the trash slice and
+        // restoring needs the cached thumbnail.
+        await eraseImageCaches(qc, selectedIds);
+      }
+      invalidateAll();
+      qc.invalidateQueries({ queryKey: ["files", "TRASHED"] });
       onClear();
     } catch (e) {
       toast.error(e?.detail || "Delete failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doRestore = async () => {
+    if (busy) return;
+    setBusy("restore");
+    try {
+      const r = await bulkRestore(selectedIds);
+      toast.success(`Restored ${r.count}`);
+      invalidateAll();
+      qc.invalidateQueries({ queryKey: ["files", "TRASHED"] });
+      onClear();
+    } catch (e) {
+      toast.error(e?.detail || "Restore failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const [detectName, setDetectName] = useStateApp("");
+  const detectDdRef = useRefApp(null);
+  useDetailsAutoClose(detectDdRef);
+  const doDetectAndLabel = async (e) => {
+    e?.preventDefault?.();
+    const name = detectName.trim();
+    if (!name || busy) return;
+    setBusy("detect");
+    try {
+      const r = await detectAndLabel(selectedIds, name);
+      const label = r.new_faces === 1 ? "1 new face" : `${r.new_faces} new faces`;
+      toast.success(
+        r.new_faces > 0
+          ? `Found ${label} across ${r.images_scanned} image${r.images_scanned === 1 ? "" : "s"} — labeled as "${name}"`
+          : `Scanned ${r.images_scanned} image${r.images_scanned === 1 ? "" : "s"} but didn't find new faces`,
+      );
+      setDetectName("");
+      if (detectDdRef.current) detectDdRef.current.open = false;
+      qc.invalidateQueries({ queryKey: ["people"] });
+      qc.invalidateQueries({ queryKey: ["image-people"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+      onClear();
+    } catch (err) {
+      toast.error(err?.detail || "Detect failed");
     } finally {
       setBusy(null);
     }
@@ -544,14 +618,57 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
         </div>
       </details>
 
+      {inTrashView && (
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={doRestore}
+          disabled={busy === "restore"}
+          title="Restore selection from trash"
+        >
+          <Icon name="refresh" size={12}/> {busy === "restore" ? "Restoring…" : "Restore"}
+        </button>
+      )}
+
+      {!inTrashView && selectedAreAllImages && (
+        <details ref={detectDdRef} className="dd dd--secondary dd--sm">
+          <summary>
+            <Icon name="users" size={12}/> {busy === "detect" ? "Detecting…" : "Detect person"}
+          </summary>
+          <div className="dd__panel">
+            <form onSubmit={doDetectAndLabel} style={{ display: "flex", gap: 6 }}>
+              <input
+                className="input input--sm"
+                placeholder="Name (e.g. Alice)"
+                value={detectName}
+                onChange={(e) => setDetectName(e.target.value)}
+                autoFocus
+                disabled={busy === "detect"}
+              />
+              <button
+                type="submit"
+                className="btn btn--primary btn--sm"
+                disabled={!detectName.trim() || busy === "detect"}
+              >
+                Label
+              </button>
+            </form>
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6 }}>
+              Runs face detection on the selected photos and assigns every
+              newly-found face to this name.
+            </div>
+          </div>
+        </details>
+      )}
+
       <button
         type="button"
         className="btn btn--ghost btn--sm bulk-bar__danger"
         onClick={doDelete}
         disabled={busy === "delete"}
-        title="Move selection to trash"
+        title={inTrashView ? "Permanently delete selection — can't be undone" : "Move selection to trash"}
       >
-        <Icon name="trash" size={12}/> {busy === "delete" ? "Deleting…" : "Delete"}
+        <Icon name="trash" size={12}/> {busy === "delete" ? "Deleting…" : (inTrashView ? "Delete forever" : "Delete")}
       </button>
 
       <button
@@ -1252,7 +1369,13 @@ export function App() {
   // (null = root). We only fetch when signed-in to avoid firing a 401 on
   // the auth screen.
   const trimmedQuery = query.trim();
-  const useGlobalScope = trimmedQuery.length > 0;
+  // Top-level "type" views (Photos, Videos, Documents) ignore the
+  // current folder and surface the user's whole library by media kind.
+  // Without this, those tabs would silently filter to `folder_id IS
+  // NULL` (the root) and miss everything inside Google Drive / synced
+  // folders — which surprised users with "where did my files go?"
+  const isTypeView = view === "photos" || view === "videos" || view === "docs";
+  const useGlobalScope = trimmedQuery.length > 0 || isTypeView;
   const filesScope = useGlobalScope ? "ALL" : folderId;
   // Fold the filter chip state into the listFiles query so server-side
   // filtering does the heavy lifting (the gallery only paints what
@@ -1732,6 +1855,7 @@ export function App() {
                 })}
                 onClear={clearMultiSelected}
                 onPickBestOf={() => setShowBestOf(true)}
+                inTrashView={view === "trash"}
               />
             )}
             {/* Filters — single dropdown button collapsing the scene /

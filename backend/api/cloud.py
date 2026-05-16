@@ -48,6 +48,11 @@ class CloudLinkRead(BaseModel):
     scopes: str | None
     last_synced_at: str | None
     created_at: str
+    # §C2 — persisted AI opt-in state, surfaced so the FE can show
+    # "Enabled ✓" / "Paused ✓" on a fresh page load. Off by default
+    # to honor Google Drive Limited Use compliance until the user
+    # explicitly opts in.
+    ai_opted_in: bool = False
 
 
 @router.get("/links", response_model=list[CloudLinkRead])
@@ -70,6 +75,7 @@ async def list_links(
             scopes=row.scopes,
             last_synced_at=row.last_synced_at.isoformat() if row.last_synced_at else None,
             created_at=row.created_at.isoformat(),
+            ai_opted_in=bool(row.ai_opted_in),
         )
         for row in rows
     ]
@@ -292,6 +298,11 @@ async def set_ai_opt_in(
     link = await session.get(CloudLink, link_id)
     if link is None or link.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+
+    # Persist the toggle on the link itself so a page reload reflects
+    # the right state — local FE state used to evaporate on refresh,
+    # leaving the user thinking the click didn't take.
+    link.ai_opted_in = bool(body.opted_in)
 
     res = await session.execute(
         sa_update(ImageModel)

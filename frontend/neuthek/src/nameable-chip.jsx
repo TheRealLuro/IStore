@@ -12,14 +12,15 @@
 import React, { useState, useRef, useEffect } from "react";
 import toast from "react-hot-toast";
 import { useQueryClient } from "@tanstack/react-query";
-import { nameCluster, renamePerson } from "@/api/people";
+import { nameCluster, renamePerson, reassignDetection } from "@/api/people";
 
 export function EditableName({
   // Current name (null/empty for unlabeled clusters).
   name,
-  // Exactly one of these two should be set:
-  personId,   // an existing Person row → renamePerson
-  clusterId,  // unlabeled cluster → nameCluster (becomes a Person)
+  // Exactly one of these three should be set:
+  detectionId, // re-target one face_detection — leaves siblings alone
+  personId,    // an existing Person row → renamePerson (cascades)
+  clusterId,   // unlabeled cluster → nameCluster (becomes a Person)
   // Classes for the static + editing states. Caller controls the chip
   // shell; we only own the label / input swap.
   className,
@@ -62,12 +63,17 @@ export function EditableName({
     }
     setBusy(true);
     try {
-      if (personId != null) {
+      // detectionId takes precedence: this is the per-detection
+      // relabel that won't cascade across the cluster. Falls back
+      // to the legacy person/cluster paths for the people sidebar.
+      if (detectionId != null) {
+        await reassignDetection(detectionId, { display_name: next });
+      } else if (personId != null) {
         await renamePerson(personId, next);
       } else if (clusterId != null) {
         await nameCluster(clusterId, next);
       } else {
-        throw new Error("Need personId or clusterId");
+        throw new Error("Need detectionId, personId, or clusterId");
       }
       toast.success(`Saved "${next}"`);
       for (const key of invalidate) qc.invalidateQueries({ queryKey: key });

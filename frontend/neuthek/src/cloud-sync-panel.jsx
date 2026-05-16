@@ -25,7 +25,6 @@ import {
 
 const PROVIDER_META = {
   google_drive: { label: "Google Drive", note: "Read-only · drive.readonly scope" },
-  github: { label: "GitHub", note: "Public + private repos you own" },
 };
 
 function fmtRel(iso) {
@@ -136,11 +135,17 @@ export function CloudSyncPanel() {
     }
   };
 
-  // Track the AI opt-in state per link in the panel so the user sees
-  // which button is "active" right after they click. The server returns
-  // `affected` (rows flipped just now), but that's zero until files
-  // have been synced, so we keep our own boolean per link.
+  // Per-link AI opt-in. Reads from the server's `link.ai_opted_in`
+  // first (persistent across reloads now that migration 0030 lives),
+  // overlaid with a local optimistic flip while a toggle request is
+  // in flight. Without the overlay, the button would lag behind the
+  // server roundtrip; without the server read, a refresh would forget
+  // the user's choice (the original bug).
   const [aiOptedByLink, setAiOptedByLink] = useState({});
+  const readAiOpted = (link) => {
+    if (link.id in aiOptedByLink) return aiOptedByLink[link.id];
+    return !!link.ai_opted_in;
+  };
   const onToggleAi = async (link, opted) => {
     setAiOptedByLink((m) => ({ ...m, [link.id]: opted }));
     try {
@@ -212,7 +217,7 @@ export function CloudSyncPanel() {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Icon name={link.provider === "github" ? "stack" : "cloud"} size={16}/>
+              <Icon name="cloud" size={16}/>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{meta.label}</div>
                 <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
@@ -294,7 +299,7 @@ export function CloudSyncPanel() {
                 </div>
               </div>
               {(() => {
-                const opted = aiOptedByLink[link.id];
+                const opted = readAiOpted(link);
                 return (
                   <>
                     <button
@@ -337,7 +342,7 @@ export function CloudSyncPanel() {
       >
         <div style={{ fontSize: 13, fontWeight: 600 }}>Connect a source</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {(["google_drive", "github"]).map((p) => {
+          {(["google_drive"]).map((p) => {
             const meta = PROVIDER_META[p];
             const already = connected.has(p);
             return (
@@ -348,7 +353,7 @@ export function CloudSyncPanel() {
                 disabled={already}
                 title={meta.note}
               >
-                <Icon name={p === "github" ? "stack" : "cloud"} size={12}/>
+                <Icon name="cloud" size={12}/>
                 {already ? `${meta.label} connected` : `Connect ${meta.label}`}
               </button>
             );

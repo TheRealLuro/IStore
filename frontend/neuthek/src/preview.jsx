@@ -11,6 +11,7 @@ import { listShares } from "@/api/shares";
 import { PdfPageStack } from "./pdf-stack.jsx";
 import { ShareModal } from "./share-modal.jsx";
 import { eraseImageCaches } from "./cache-eraser.js";
+import { CodePreview, isCodeMime } from "./code-preview.jsx";
 
 function fmtBytes(n) {
   if (n == null) return "—";
@@ -162,10 +163,16 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     (file.mime_type_original || "").toLowerCase() === "application/pdf"
     || (file.ext || "").toLowerCase() === "pdf"
   ));
+  // Code / text files (`.py`, `.js`, `Dockerfile`, …). The backend
+  // returns `text/x-<lang>` for these; CodePreview picks the right
+  // Prism grammar from that mime. Falls back to plain monospace if
+  // the language isn't in the loader table.
+  const isCode = !!(file && isDoc && !isPdf && isCodeMime(file.mime_type_original));
   const [pdfModal, setPdfModal] = useStateP2(false);
-  // Close the PDF modal when the panel is closed externally or the
-  // user navigates to a different file.
-  useEffectP2(() => { setPdfModal(false); }, [file?.id]);
+  const [codeModal, setCodeModal] = useStateP2(false);
+  // Close the PDF / code modals when the panel is closed externally or
+  // the user navigates to a different file.
+  useEffectP2(() => { setPdfModal(false); setCodeModal(false); }, [file?.id]);
   // Esc closes the PDF modal before falling through to the panel-close
   // handler. We already have an Esc listener for lightbox + preview;
   // it doesn't know about pdfModal, so add a guard here.
@@ -175,6 +182,12 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [pdfModal]);
+  useEffectP2(() => {
+    if (!codeModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setCodeModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [codeModal]);
   if (!file) return null;
 
   const addTag = (t) => {
@@ -231,6 +244,45 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
                 to us and every page is visible in one continuous scroll
                 instead of paginated under PDFium's `view=Fit` mode. */}
             <PdfPageStack fileId={file.id}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {codeModal && isCode && (
+      <div className="lightbox" onClick={() => setCodeModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon">
+              <Icon name="code" size={14}/>
+            </span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={handleDownload}
+              aria-label="Download"
+              title="Download"
+            >
+              <Icon name="download" size={14}/>
+            </button>
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={() => setCodeModal(false)}
+              aria-label="Close code viewer"
+              title="Close"
+            >
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <CodePreview
+              fileId={file.id}
+              mime={file.mime_type_original}
+              byteSize={file.byteSize}
+              filename={file.name}
+            />
           </div>
         </div>
       </div>
@@ -302,6 +354,24 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             </div>
           </button>
         )
+      ) : isCode ? (
+        // Code: hero shows the language icon (same as the gallery card).
+        // Clicking opens a full modal with syntax-highlighted lines —
+        // matches the PDF UX where the hero is a static preview and
+        // the modal is the scrollable reader.
+        <button
+          type="button"
+          onClick={() => setCodeModal(true)}
+          className="preview__hero"
+          aria-label="Open code viewer"
+          title="Click to open code viewer"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="code" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
       ) : file.thumb ? (
         <AuthedThumb
           url={file.thumb}
@@ -394,8 +464,14 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
                     />
                     <EditableName
                       name={p.person_display_name}
-                      personId={p.person_id}
-                      clusterId={p.cluster_id}
+                      // Per-detection relabel so correcting one
+                      // misdetection doesn't drag every photo of the
+                      // originally-grouped person along with it.
+                      detectionId={p.detection_id}
+                      // Pass clusterId as a fallback for the rare
+                      // case where the detection has no Face row yet —
+                      // the cluster path creates the Person fresh.
+                      clusterId={p.face_id ? null : p.cluster_id}
                       className={"face-chip__name" + (labelled ? "" : " face-chip__name--unnamed")}
                       invalidate={[["image-people", file.id], ["people"]]}
                     />

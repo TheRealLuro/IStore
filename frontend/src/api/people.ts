@@ -53,3 +53,27 @@ export const redetectFaces = (imageId: string) =>
   api.post<{ stage: string; detected: number; persisted: number }>(
     `/images/${imageId}/redetect-faces`,
   );
+
+// Per-face-detection relabel: re-targets a single FaceDetection to a
+// different (or new) Person without renaming the existing Person.
+// Used by the preview panel's face chip so correcting a misdetection
+// doesn't cascade to every photo of the originally-grouped person.
+export const reassignDetection = (
+  detectionId: number,
+  body: { person_id?: number | null; display_name?: string | null },
+) =>
+  api.post<{ detection_id: number; face_id: number; person_id: number | null }>(
+    `/faces/detections/${detectionId}/reassign`,
+    body,
+  );
+
+// Multi-select bulk action: run face detection on the given images and
+// label every newly-detected face with `display_name`. Reuses an
+// existing Person with that name if there is one.
+export const detectAndLabel = (image_ids: string[], display_name: string) =>
+  api.post<{
+    person_id: number;
+    display_name: string;
+    images_scanned: number;
+    new_faces: number;
+  }>("/people/detect-and-label", { image_ids, display_name });
