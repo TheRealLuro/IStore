@@ -172,10 +172,70 @@ Read-only sync of your Drive images into neuthek. Two prerequisites:
   upload, no delete. Your Drive is the source of truth.
 - **No AI training.** Per Google's Limited Use policy, files synced
   from Drive aren't used for AI training. We disable AI summary +
-  face scan on synced files unless you explicitly opt in per source.
+  face scan on synced files unless you explicitly opt in per source
+  (Account → Cloud sync → **Enable** under the link).
 - **Encrypted refresh tokens.** Stored ciphertext-only in Postgres;
   the master key is in `.env`, not the DB. A DB dump alone can't
   decrypt them.
+
+### What the FE does on success
+
+When Google's consent screen redirects you back to the app, the URL
+carries `?cloud_connected=google_drive`. The frontend:
+
+1. Toasts "Connected to Google Drive. Open Cloud sync to pull your files."
+2. Auto-opens **Account → Cloud sync** so the new link is visible
+   immediately.
+3. Strips the query param so a refresh doesn't replay the toast.
+
+The hourly worker (`backend/cloud_sync_worker.py`) will also pull
+fresh changes every hour (`CLOUD_SYNC_INTERVAL_SECONDS`); the
+**Sync now** button triggers an immediate sweep.
+
+### Conflicts
+
+If you edit a synced file locally (rename, delete, tag), the worker
+**refuses to overwrite** it on the next sync. You'll see a yellow
+banner inside the Cloud sync panel listing the affected files. Open
+the original in Drive and re-upload it manually, or delete the local
+copy and re-sync.
+
+---
+
+## 2b. GitHub sync (C2 — second provider)
+
+Same read-only model as Drive but for images committed to your own
+GitHub repos. Excludes secret-shaped filenames (`.env*`, `id_rsa*`,
+`*.key`, `*.pem`, `*.p12`, `*.kdbx`, `*.dump`, `*.sql`,
+`credentials.json`, `service_account.json`).
+
+1. **GitHub OAuth app.** Steps:
+
+   1. Go to <https://github.com/settings/developers>.
+   2. **OAuth Apps → New OAuth App**.
+   3. Fields:
+      - Application name: `neuthek`
+      - Homepage URL: `http://localhost:5173` (or your prod URL)
+      - Authorization callback URL:
+        `http://localhost:8000/cloud/callback/github`
+   4. Click **Register application**.
+   5. Click **Generate a new client secret** and copy both values.
+
+2. Add to `.env`:
+
+   ```
+   GITHUB_OAUTH_CLIENT_ID=Iv1.xxxxxxxxxxxxxxxx
+   GITHUB_OAUTH_CLIENT_SECRET=<40-char-secret>
+   GITHUB_OAUTH_REDIRECT_URI=http://localhost:8000/cloud/callback/github
+   ```
+
+3. Restart the backend container (`docker compose -p istore restart
+   backend`). In the app, **Account → Cloud sync → Connect GitHub**.
+
+The repo structure becomes the synthesized folder tree: each repo
+is a top-level folder under "GitHub", subfolders within the repo
+become subfolders in neuthek. Same Limited Use posture as Drive —
+AI features off by default, opt-in per source.
 
 ---
 
