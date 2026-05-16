@@ -10,9 +10,9 @@ import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
 import { TermsModal as TermsModalA, PrivacyModal as PrivacyModalA } from "./policies.jsx";
 import { ConsentsModal } from "./consents.jsx";
-import { login, loginWithTotp, register, TotpRequiredError } from "@/api/auth";
+import { login, loginWithTotp, me, register, TotpRequiredError } from "@/api/auth";
 import { useAuthStore } from "@/stores/authStore";
-import { ApiError } from "@/api/client";
+import { ApiError, API_BASE_URL, tokens } from "@/api/client";
 // §B2 — grantScope no longer needed at signup: the register call
 // carries the consent bundle. Settings panels still use it for
 // post-signup edits via `@/api/consent`.
@@ -137,6 +137,72 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     window.addEventListener("neuthek-open", handler);
     return () => window.removeEventListener("neuthek-open", handler);
   }, []);
+
+  // Google SSO landing handler. `/auth/google/callback` redirects back
+  // to `/#sso_token=<jwt>&sso_new=0|1` on success or `/#sso_error=…`
+  // on failure. We pull the JWT out of the fragment, drop it into
+  // tokens.set(), fetch the user profile, and feed the existing
+  // `onSignedIn` path so downstream code can't tell the difference
+  // between SSO and password sign-in. The fragment is stripped before
+  // we touch state so a refresh doesn't replay the flow.
+  useEffectA(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash || "";
+    if (!hash || (!hash.includes("sso_token=") && !hash.includes("sso_error="))) return;
+    const frag = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+    const ssoToken = frag.get("sso_token");
+    const ssoError = frag.get("sso_error");
+    // Strip immediately so a reload doesn't re-enter this path.
+    try {
+      window.history.replaceState({}, "", window.location.pathname + window.location.search);
+    } catch {}
+    if (ssoError) {
+      const msg = ssoError === "not_configured"
+        ? "Google sign-in isn't set up yet on this deployment."
+        : ssoError === "email_unverified"
+          ? "Your Google account hasn't verified its email yet — verify it on Google and try again."
+          : ssoError === "totp_required"
+            ? "Two-factor is enabled on this account. Sign in with email + password, then your 6-digit code."
+            : ssoError === "account_inactive"
+              ? "This account is locked. Contact support."
+              : `Google sign-in failed (${ssoError}). Try again.`;
+      setAuthError(msg);
+      toast.error(msg);
+      return;
+    }
+    if (!ssoToken) return;
+    (async () => {
+      try {
+        setSubmitting(true);
+        tokens.set(ssoToken);
+        const u = await me();
+        setUser(u);
+        const wasNew = frag.get("sso_new") === "1";
+        toast.success(wasNew ? "Welcome to neuthek!" : "Signed in with Google.");
+        if (redirectIfNext()) return;
+        onSignedIn?.({
+          name: u.display_name || (u.email ? u.email.split("@")[0] : "You"),
+          email: u.email,
+        });
+      } catch (e) {
+        tokens.clear();
+        const msg = "Google sign-in failed. Try again.";
+        setAuthError(msg);
+        toast.error(msg);
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+    // Intentionally empty deps — run once on mount; the auth screen
+    // unmounts on success, so re-running on state changes is wasted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startGoogleSignIn = () => {
+    // Hard navigation so the OAuth redirect flow leaves the SPA — the
+    // FE re-mounts after Google bounces us back to /#sso_token=…
+    window.location.href = `${API_BASE_URL}/auth/google/login`;
+  };
 
   // rotate the feature pitch
   useEffectA(() => {
@@ -332,7 +398,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
           </p>
 
           {/* social — primary on sign-in, secondary on sign-up */}
-          <button className="btn btn--secondary btn--lg auth__social">
+          <button
+            type="button"
+            className="btn btn--secondary btn--lg auth__social"
+            onClick={startGoogleSignIn}
+            disabled={submitting}
+          >
             <svg width="16" height="16" viewBox="0 0 18 18" aria-hidden="true">
               <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62z"/>
               <path fill="#34A853" d="M9 18c2.43 0 4.47-.81 5.96-2.18l-2.91-2.26c-.8.54-1.83.86-3.05.86-2.34 0-4.33-1.58-5.04-3.7H.96v2.33A9 9 0 0 0 9 18z"/>
@@ -341,7 +412,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             </svg>
             Continue with Google
           </button>
-          <button className="btn btn--secondary btn--lg auth__social">
+          <button
+            type="button"
+            className="btn btn--secondary btn--lg auth__social"
+            onClick={() => toast("Apple sign-in is coming soon. Use Google or email for now.", { icon: "🍎" })}
+            disabled={submitting}
+          >
             <svg width="14" height="16" viewBox="0 0 14 17" aria-hidden="true" fill="currentColor">
               <path d="M11.18 8.92c-.02-2.16 1.76-3.2 1.84-3.25-1-1.47-2.57-1.67-3.13-1.7-1.34-.13-2.6.78-3.27.78-.69 0-1.72-.76-2.83-.74C2.36 4.04.97 4.86.21 6.18c-1.5 2.6-.38 6.45 1.07 8.56.71 1.04 1.56 2.2 2.66 2.16 1.07-.04 1.48-.69 2.78-.69 1.29 0 1.65.69 2.78.66 1.15-.02 1.88-1.05 2.58-2.1.81-1.2 1.15-2.36 1.17-2.42-.03-.01-2.24-.86-2.27-3.42zM9.05 2.75c.59-.71 1-1.7.88-2.69-.85.04-1.89.57-2.5 1.27-.55.62-1.03 1.62-.9 2.59.95.07 1.92-.48 2.52-1.17z"/>
             </svg>

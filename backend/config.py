@@ -215,6 +215,17 @@ class Settings(BaseSettings):
         default="http://localhost:8000/cloud/callback/google_drive"
     )
 
+    # Google Sign-In (sign in / register with Google on the auth screen).
+    # Distinct redirect URI from the cloud-sync flow so the consent
+    # screens use different scope sets (`openid email profile` here
+    # vs. `drive.readonly` over in cloud sync). Re-uses
+    # google_oauth_client_id + google_oauth_client_secret since both
+    # flows belong to the same Google Cloud project — only the redirect
+    # URI list in the Console needs both entries.
+    google_signin_redirect_uri: str = Field(
+        default="http://localhost:8000/auth/google/callback"
+    )
+
     # §C2 — GitHub OAuth (second provider). Same "empty → endpoints
     # 503" pattern. The redirect_uri must match the value registered
     # at GitHub → Settings → Developer settings → OAuth Apps.

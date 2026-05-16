@@ -19,6 +19,7 @@ import {
   PlanCard,
 } from "./account-panels.jsx";
 import { CloudSyncPanel } from "./cloud-sync-panel.jsx";
+import { AboutPanel } from "./about-panel.jsx";
 import toast from "react-hot-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { updateMe } from "@/api/auth";
@@ -158,6 +159,10 @@ const APPSET_NAV = [
   // ("now let me pull in my Drive photos").
   { id: "cloud",         label: "Cloud sync",    icon: "cloud",    tone: "sky"    },
   { id: "data",          label: "Your data",     icon: "download", tone: "green"  },
+  // "About" lists every shipped feature so users can see what's
+  // actually wired up in their build — useful for self-hosters who
+  // want to know whether their .env unlocks Stripe, cloud sync, etc.
+  { id: "about",         label: "About this app", icon: "info",    tone: "ink"    },
 ];
 
 // Pretty-print a granted/withdrawn ISO timestamp for the consent rows.
@@ -698,6 +703,18 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   <Row icon="trash" tone="red" title="Delete account" desc="Permanently remove your library"
                        tail={<Chev/>} onClick={() => onOpenSubmodal?.("delete")}/>
                 </div>
+              </>
+            )}
+
+            {tab === "about" && (
+              <>
+                <div className="appset__main-head">
+                  <div>
+                    <h3>About this app</h3>
+                    <p>Everything implemented in this build, grouped by area.</p>
+                  </div>
+                </div>
+                <AboutPanel/>
               </>
             )}
           </main>
