@@ -1196,13 +1196,19 @@ button:focus-visible,
   border: 1px solid var(--line);
   border-left: 3px solid var(--ink-3);
   border-radius: 10px;
-  background: var(--surface, rgba(255,255,255,0.02));
+  background: var(--surface);
+  color: var(--ink);
 }
-.update-bucket--warn { border-left-color: var(--warning, #f59e0b); }
-.update-bucket--ok   { border-left-color: var(--success, #22c55e); }
-.update-bucket--new  { border-left-color: var(--accent, #5b8def); }
-.update-bucket--info { border-left-color: var(--ink, #fff); }
-.update-bucket--why  { border-left-color: var(--ink-2, rgba(255,255,255,0.6)); }
+/* Hard-coded accessible tones — the marketing site has no
+   `--success` / `--warning` / `--ink-1` tokens defined (it's a
+   single light theme), and the earlier `var(--name, fallback)`
+   resolved to white-on-white because the fallback was the dark-mode
+   value. These hex values read on the #fff background. */
+.update-bucket--warn { border-left-color: #d97706; }
+.update-bucket--ok   { border-left-color: #16a34a; }
+.update-bucket--new  { border-left-color: #2563eb; }
+.update-bucket--info { border-left-color: var(--ink); }
+.update-bucket--why  { border-left-color: var(--ink-2); }
 
 .update-bucket__title {
   display: flex;
@@ -1212,6 +1218,7 @@ button:focus-visible,
   font-size: 18px;
   font-weight: 600;
   line-height: 1.25;
+  color: var(--ink);
 }
 .update-bucket__icon {
   display: inline-grid;
@@ -1222,16 +1229,16 @@ button:focus-visible,
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
-  background: color-mix(in oklab, currentColor 14%, transparent);
+  color: #fff;
 }
-.update-bucket--warn .update-bucket__icon { color: var(--warning, #f59e0b); }
-.update-bucket--ok   .update-bucket__icon { color: var(--success, #22c55e); }
-.update-bucket--new  .update-bucket__icon { color: var(--accent, #5b8def); }
-.update-bucket--info .update-bucket__icon { color: var(--ink, #fff); }
+.update-bucket--warn .update-bucket__icon { background: #d97706; }
+.update-bucket--ok   .update-bucket__icon { background: #16a34a; }
+.update-bucket--new  .update-bucket__icon { background: #2563eb; }
+.update-bucket--info .update-bucket__icon { background: var(--ink); }
 
 .update-bucket__intro {
   font-size: 12.5px;
-  color: var(--ink-3, rgba(255,255,255,0.55));
+  color: var(--ink-3);
   margin: 0 0 12px;
 }
 .update-bucket__list {
@@ -1242,12 +1249,12 @@ button:focus-visible,
   font-size: 14.5px;
   line-height: 1.6;
   margin-bottom: 8px;
-  color: var(--ink-1, rgba(255,255,255,0.92));
+  color: var(--ink);
 }
 .update-bucket__list li:last-child { margin-bottom: 0; }
 .update-bucket__why-body {
   font-size: 14.5px;
   line-height: 1.65;
   margin: 0;
-  color: var(--ink-1, rgba(255,255,255,0.92));
+  color: var(--ink);
 }

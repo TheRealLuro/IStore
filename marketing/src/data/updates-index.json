@@ -1,73 +1,93 @@
 {
-  "_comment": "Server-readable mirror of marketing/src/data/updates.ts. When you add a new entry there, copy the slug/title/published/week/summary/tags/body block here so the Express server's per-route prerender (server.mjs) can inject the full text into the HTML for AI crawlers + search engines that don't render JS. The mirror is intentionally a simple JSON file so the server doesn't need to spin up a TS transpiler at runtime.",
+  "_comment": "Server-readable mirror of marketing/src/data/updates.ts. When you add or edit an entry there, copy the same shape here so the Express server's per-route prerender (server.mjs) injects the full text into the HTML response for AI crawlers + search engines that don't render JS.",
   "updates": [
     {
-      "slug": "2026-w20-google-link-marquee-perf",
-      "title": "Link your Google account, faster selection, fewer broken settings",
+      "slug": "2026-w20-google-drive-sync-and-google-sign-in",
+      "title": "Google Drive sync + Sign in with Google: bring your photos and your account in one click",
       "published": "2026-05-16",
       "week": "Week of May 16, 2026",
-      "summary": "You can now connect a Google account to a neuthek profile you originally made with email + password, the drag-to-select rectangle in the gallery is much smoother, AI summaries finally finish processing instead of getting stuck, and a handful of Settings pages stopped showing fake data.",
-      "tags": ["accounts", "gallery", "ai", "settings"],
+      "summary": "This week was all about Google. You can now connect Google Drive to pull your existing photos and documents into neuthek without uploading by hand, sign in with Google (or link a Google account to an existing email + password account from Settings), and trust that everything stays opt-in — Drive content is fenced out of AI training by default, and your Google identity is used only to sign you in, never sold or shared.",
+      "tags": ["google-drive", "google-sign-in", "cloud-sync", "ai-photo-search", "privacy"],
       "body": {
         "found": [
-          "If you signed up with an email and password, there was no way to also use Sign in with Google for the same account — it would just create a brand-new profile.",
-          "Drag-selecting many photos at once felt sluggish: the box lagged behind your mouse, and the gallery sometimes stuttered while you were dragging.",
-          "AI summaries got stuck at, say, 58 of 59 done — the last one or two would never finish, and the progress number wouldn't budge.",
-          "The Settings panels for face data and locations were showing made-up numbers (\"1,284 faces detected\") instead of your actual library counts.",
-          "Settings didn't reflect whether you had a Google account linked, even after you linked it."
+          "Getting an existing photo library into neuthek meant uploading by hand — fine for ten photos, miserable for ten thousand.",
+          "If you signed up with email + password, there was no way to also use Sign in with Google for the same account: clicking 'Continue with Google' would create a separate, empty profile.",
+          "Signing in with Google failed when you'd previously authorised the app for Drive — Google adds the Drive scope back on subsequent flows and our token exchange refused the response.",
+          "Once Drive was connected, photos and documents synced but nothing ever auto-grouped them into folders that matched your Drive layout.",
+          "After connecting Drive, the AI summary counter would sometimes camp at, say, 58 of 59 forever because one image returned no caption and got requeued in a loop."
         ],
         "fixed": [
-          "Settings → Account → Sign-in & security now has a Link Google button. One click sends you to Google's consent screen and brings you back into the same neuthek account.",
-          "The drag-to-select rectangle is now smooth on libraries with hundreds of photos. We rebuilt how it tracks your mouse so it stays in step.",
-          "AI summaries no longer get stuck on photos the AI can't read. After one failed try we stop retrying that specific file so the counter moves on, and the rest of your library keeps processing.",
-          "The Face data and Location panels in Settings now show your real numbers — how many photos have GPS, how many faces were detected, how many people you've named.",
-          "Settings now reflects everything that's actually true about your account: email verified, 2FA on/off, Google linked, admin, age confirmed."
+          "Built one-click Google Drive sync — Settings → Cloud sync → Connect Google Drive. We use the read-only `drive.readonly` scope (we can never write to your Drive), encrypt the refresh token at rest with Fernet, and run an hourly background sweep so new files arrive automatically.",
+          "Settings → Account → Sign-in & security now has a Link Google button that attaches a Google identity to an existing neuthek account. Sign in with Google from the auth screen now lands in the same account.",
+          "Token-exchange failures fixed by setting OAUTHLIB_RELAX_TOKEN_SCOPE=1 so Google's scope expansion stops being treated as a mismatch. The id_token is still verified against Google's keys.",
+          "Drive sync now mirrors your Drive folder tree into neuthek — a top-level 'Google Drive' folder with every sub-folder preserved underneath, so your library looks like your Drive looks.",
+          "AI summaries stop retrying photos the model can't caption. Counter drains to N/N instead of getting stuck."
         ],
         "newFeatures": [
-          "Link Google to an existing account — Settings → Account → \"Link Google\".",
-          "A read-only \"Account state\" grid in Settings that summarises everything about your profile in one place.",
-          "Code files synced from Google Drive open in a syntax-highlighted reader with line numbers, similar to how PDFs open in a viewer.",
-          "Camera RAW formats (Nikon NEF, Canon CR2, Sony ARW, Fuji RAF, etc.) decode at full quality instead of as a tiny embedded preview.",
-          "Animated GIFs stay animated end-to-end — they're no longer flattened to a single frame on upload."
+          "Google Drive sync (read-only, PKCE OAuth, encrypted refresh tokens, hourly sweep, conflict detection).",
+          "Sign in with Google on the auth screen — one click, no email-verification round-trip.",
+          "Link Google to an existing neuthek account from Settings.",
+          "Per-source AI opt-in toggle in the cloud-sync panel, so Drive content stays out of the AI training pipeline by default (Google Limited Use policy compliance).",
+          "Conflict banner in the cloud-sync panel when neuthek detects you edited a file locally after it last synced."
         ],
-        "why": "Two themes this week: making your account feel like one account no matter how you sign in, and stopping things from looking broken when they're actually working. Stuck progress bars and fake numbers in Settings erode trust even when the underlying system is fine, so we went through the panels and made sure each number you see is real and each loop has a way to finish.",
+        "why": "If the easiest way to get your photos into neuthek is to download them from Drive and re-upload, you're not going to do it. Drive sync removes that friction. And Sign in with Google removes the friction of remembering another password — but only if it actually lands in the right account, which it now does whether you started with email or with Google. Drive's Limited Use policy also means cloud content can't be used to train AI models, so we kept AI off-by-default for synced files; you choose per-source whether to enable summaries and face recognition.",
         "whatTheyDo": [
-          "Open Settings → Account. The new badges under your name show your real status, and the Link Google row attaches Google sign-in to this account so you can use either path next time.",
-          "On a desktop, click on empty space in the gallery and drag — every photo your rectangle touches gets selected. Hold Shift to add to what you already have selected.",
-          "The AI summary banner at the top of the gallery will now actually reach \"all done\" instead of camping at 58/59 forever.",
-          "Open a RAW photo from your camera and it shows up at the full resolution your camera captured, not a soft thumbnail.",
-          "Open Settings → Privacy. The Face data and Location detail panels show real counts from your library and explain that embeddings stay on your server."
+          "Open Settings → Cloud sync, click Connect Google Drive, grant consent on Google's screen — you come back to a synced library inside a 'Google Drive' folder. Click Sync now to pull immediately, or let the hourly sweep handle it.",
+          "On the sign-in screen, click 'Continue with Google'. If you already have a neuthek account with that Google email or with Google linked in Settings, you land in it. If not, you get a fresh account.",
+          "Open Settings → Account → Sign-in & security → 'Link Google' to attach Google sign-in to your current account. The row flips to 'Unlink' once linked.",
+          "Inside Settings → Cloud sync, toggle 'Enable AI features for Google Drive files' per source if you want AI summaries and face detection to run on synced photos. Default is off."
         ]
       }
     },
     {
-      "slug": "2026-w19-drive-sync-and-rls",
-      "title": "Pull your Google Drive in, lock down the database, strip GPS by default",
+      "slug": "2026-w19-marketing-site-launch-and-bug-hunt",
+      "title": "Marketing site launch + 30+ bug fixes across the engine",
       "published": "2026-05-09",
       "week": "Week of May 9, 2026",
-      "summary": "Connect your Google Drive in Settings and your photos + documents flow into neuthek without you uploading anything by hand. We hardened the database so a bug in one place can't leak someone else's files. And photos you upload no longer carry hidden GPS coordinates unless you explicitly opt in.",
-      "tags": ["cloud-sync", "security", "privacy"],
+      "summary": "We shipped the public neuthek.com marketing site this week — the home page, features, hosting, developers, roadmap, compare-to-the-big-providers, and waitlist pages all went live. While building it we also chased down a long backlog of engine bugs across the gallery, upload pipeline, face recognition, and admin dashboard. Most fixes are invisible — they're the stuff that should have worked the first time.",
+      "tags": ["marketing-site", "bug-fixes", "stability", "ui-polish", "privacy"],
       "body": {
         "found": [
-          "Getting your existing photos into neuthek meant uploading them by hand, which is fine for ten photos and miserable for ten thousand.",
-          "A bug in any query could, in theory, leak one user's files to another — we wanted the database itself to refuse that even if the code asked the wrong thing.",
-          "Most phones embed your exact GPS coordinates in every photo. If you shared a photo, the location went with it whether you wanted it to or not."
+          "Uploads crashed with a 'null value in column user_id' database error on every photo upload because the AI-tag insert was missing the owner column the recent multi-user migration required.",
+          "Animated GIFs flattened to a single frame on upload because the upload pipeline re-encoded them through Pillow's single-frame save.",
+          "Camera RAW files (Nikon NEF, Canon CR2, Sony ARW, Fuji RAF) showed up as soft thumbnails because we were re-encoding the embedded JPEG preview instead of decoding the actual sensor data.",
+          "Deleting a photo permanently removed it instead of moving it to Trash, so users had no way to undo.",
+          "The Photos / Videos / Documents sidebar pills showed counts for the current folder only, even though those views are conceptually 'all my videos across the library'.",
+          "Re-labelling a single face would rename the entire person row, dragging every other photo of that person along with the new name.",
+          "The admin dashboard took 25+ seconds to open because every poll walked every object in every storage bucket on the API event loop.",
+          "Code files from Google Drive (.py, .js, .md, etc.) had no viewer — they showed up as generic 'document' icons with no preview.",
+          "The Settings page showed mock 'face data' and 'location' stats with hard-coded numbers instead of your actual library counts.",
+          "The empty-gallery state told you 'No results' even when you had folders visible above (it only checked file count, not folders)."
         ],
         "fixed": [
-          "Built a one-click Google Drive connection. We never write back to your Drive (it's read-only); we just pull copies in.",
-          "Turned on Postgres row-level security across every table that holds your stuff (photos, folders, tags, faces, summaries, audit log). Even a buggy query physically can't see another user's rows.",
-          "Photos uploaded to neuthek now have their GPS stripped on the way in. The toggle to keep GPS is in Settings → Privacy → Photo metadata if you want it."
+          "AI-tag insert now stamps user_id so every uploaded photo gets its CLIP tags without crashing.",
+          "Animated GIFs are passthrough end-to-end — no re-encode, no frame loss.",
+          "Added rawpy (LibRaw) to decode camera RAW into the full sensor image, then re-encoded at JPEG quality 95. NEF / CR2 / ARW / DNG / RAF / ORF / RW2 / PEF all work.",
+          "Delete is now soft by default — items go to Trash with deleted_at stamped. The Trash view shows them with a Restore button and a 'Delete forever' button for permanent removal.",
+          "Photos / Videos / Documents sidebar tabs are now cross-folder by definition. Counts come from a new /images/facets field that aggregates the entire library, not just the current folder.",
+          "Face re-labelling clones the underlying face row instead of mutating the shared Person — correcting one mis-grouped photo no longer renames everyone.",
+          "Admin dashboard's bucket-walk now lives behind a 60-second LRU cache + a worker thread + a 20,000-object iteration cap. Subsequent opens are ~330x faster (28 s → 86 ms).",
+          "Code-file preview opens in a syntax-highlighted PDF-style modal with line numbers (Prism, ~40 grammars eagerly loaded).",
+          "Settings → Privacy → Face data and Location panels now show real numbers pulled from /people/ and /images/geo, with copy that explains your embeddings stay on the server you control.",
+          "Empty-gallery state checks for folders too — if you have synced Drive folders at root, the gallery shows them instead of falling through to the 'drop files here' CTA."
         ],
         "newFeatures": [
-          "Google Drive sync with a per-source AI opt-in toggle, so cloud photos stay outside the training pipeline by default.",
-          "An hourly background sweep that pulls in new files automatically once you're connected, plus conflict detection if you edit a photo locally after it synced.",
-          "EXIF strip-on-upload, with separate consent toggles for keeping GPS data and keeping camera-make/lens metadata."
+          "Public marketing site at neuthek.com — home, features, hosting, developers, roadmap, compare page, waitlist, privacy + terms.",
+          "Waitlist endpoint with Postgres or SQLite storage, admin viewer with Basic Auth, and rate limiting on the public form.",
+          "Roadmap page listing what's shipped, what's in progress, and what's planned through to public release.",
+          "Compare table showing neuthek next to Google Photos / iCloud / OneDrive / Dropbox on the dimensions that matter (privacy, search by meaning, self-host, compression, AI lock-in).",
+          "Drag-rectangle multi-select in the gallery: click empty space and drag to select cards.",
+          "Cross-folder Detect-Person workflow: select a batch of photos, type a name, neuthek runs face detection on each one and assigns every newly-found face to that person."
         ],
-        "why": "Two things matter most for a personal cloud: getting your stuff in, and trusting that it stays yours. Drive sync removes the friction of \"how do I move my existing photos here?\". Row-level security and EXIF strip make the system fail-safe — even if something goes wrong, your data and your location stay where they should.",
+        "why": "Two big motivations this week. First, neuthek needed a place on the public web where you could read what it is, decide if it's for you, and join the launch waitlist — without us having to slack you the elevator pitch. Second, every week we test the engine end-to-end and a stack of small bugs surfaces; we'd rather burn a week paying them down than let them compound into a system that feels unreliable. None of these individual fixes are dramatic, but together they're the difference between 'half-finished prototype' and 'something I'd actually trust my library with'.",
         "whatTheyDo": [
-          "Open Settings → Cloud sync → Connect Google Drive. After the consent screen, files start arriving in a \"Google Drive\" folder in your gallery. You can sync manually or let the hourly sweep handle it.",
-          "Nothing changes visually from the row-level-security work, but a buggy or hacked query in the future literally cannot return another user's data.",
-          "Every photo you upload from your phone or camera now lands without an embedded location, so if you share it, you're not also sharing where you were standing."
+          "Visit neuthek.com to read about the product, see the roadmap, compare to the big providers, and join the waitlist.",
+          "Upload any photo — including animated GIFs, camera RAW (NEF / CR2 / ARW / etc), and HEIC — without the upload silently failing or losing data.",
+          "Delete a photo and see it show up in the Trash view. Restore it or delete it forever from there.",
+          "Click Photos / Videos / Documents in the sidebar to see your full library across every folder.",
+          "On a desktop, click and drag across the gallery to multi-select. Use the Detect person dropdown in the multi-select bar to tag a batch of photos at once.",
+          "Open the admin dashboard without waiting half a minute.",
+          "Open a code file synced from Drive and read it with syntax highlighting and line numbers."
         ]
       }
     }
