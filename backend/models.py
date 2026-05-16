@@ -30,6 +30,16 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
 
     display_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     role: Mapped[str] = mapped_column(String(16), nullable=False, server_default="user")
+    # Stable Google account identifier. Captured during either the SSO
+    # sign-in flow OR when an already-signed-in user connects Drive —
+    # the Drive consent screen also returns an id_token now that the
+    # flow requests `openid email profile` alongside `drive.readonly`.
+    # Indexed unique so a second user can't claim the same Google
+    # account, and so the SSO callback can resolve "which neuthek user
+    # is this Google sub?" with one row lookup.
+    google_sub: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
     age_confirmed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
@@ -589,6 +599,16 @@ class CloudLink(Base):
     )
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
+    )
+    # §C2 — per-link AI opt-in. Defaults to False so cloud sources stay
+    # outside the training pipeline by default (Google Drive Limited
+    # Use compliance + the principle that AI is opt-in everywhere). The
+    # /cloud/links/{id}/ai-opt-in endpoint flips this AND the
+    # `skip_ai_training` flag on every image from this source, so the
+    # FE reads its toggle state from here on a fresh page load instead
+    # of having to infer it by looking at a sampled image's flag.
+    ai_opted_in: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
     )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
