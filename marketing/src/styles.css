@@ -970,3 +970,166 @@ button:focus-visible,
   outline-offset: 3px;
   border-radius: 4px;
 }
+
+/* ---------- Updates index + detail ---------- */
+/* List of weekly release-note cards on /updates. Each card opens to
+   /updates/:slug. Style is intentionally close to the rest of the
+   marketing site so the page reads as part of the same product, not
+   a wedged-in blog. */
+.updates__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+.updates__item {
+  margin: 0;
+}
+.updates__card {
+  display: block;
+  padding: 22px 22px 18px;
+  border: 1px solid var(--line, rgba(255,255,255,0.08));
+  border-radius: 14px;
+  background: var(--surface, rgba(255,255,255,0.02));
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+}
+.updates__card:hover {
+  border-color: var(--ink, #fff);
+  transform: translateY(-1px);
+  background: var(--surface-2, rgba(255,255,255,0.04));
+}
+.updates__card:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.updates__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.updates__date {
+  font-size: 12px;
+  color: var(--ink-3, rgba(255,255,255,0.55));
+  letter-spacing: 0.02em;
+}
+.updates__tags {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.updates__tag {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, currentColor 22%, transparent);
+  background: color-mix(in oklab, currentColor 10%, transparent);
+  color: var(--ink-2, rgba(255,255,255,0.75));
+}
+.updates__title {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.updates__summary {
+  margin: 0;
+  color: var(--ink-2, rgba(255,255,255,0.7));
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+.updates__cta {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--ink, #fff);
+  font-weight: 500;
+}
+
+/* Single article page */
+.update-article {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.update-article__head {
+  margin-bottom: 28px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.update-article__date {
+  font-size: 12px;
+  color: var(--ink-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.update-article__title {
+  margin: 8px 0 12px;
+  font-size: clamp(28px, 4.5vw, 38px);
+  line-height: 1.2;
+  font-weight: 600;
+}
+.update-article__summary {
+  margin: 0 0 14px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink-2, rgba(255,255,255,0.75));
+}
+.update-article__body {
+  font-size: 15.5px;
+  line-height: 1.7;
+  color: var(--ink-1, rgba(255,255,255,0.92));
+}
+.update-article__h2 {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 28px 0 8px;
+}
+.update-article__para {
+  margin: 0 0 14px;
+}
+.update-article__bullets {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+.update-article__bullets li {
+  margin-bottom: 6px;
+}
+.update-article__code {
+  display: block;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2, rgba(255,255,255,0.04));
+  font-size: 12.5px;
+  overflow-x: auto;
+}
+.update-article__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 36px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.update-article__nav {
+  color: var(--ink-2, rgba(255,255,255,0.75));
+  font-size: 13px;
+  text-decoration: none;
+  max-width: 45%;
+}
+.update-article__nav:hover {
+  color: var(--ink, #fff);
+}
+.update-article__nav--right {
+  margin-left: auto;
+  text-align: right;
+}

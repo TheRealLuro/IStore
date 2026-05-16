@@ -1,0 +1,80 @@
+# neuthek
+
+> neuthek is an AI-aware personal cloud storage product in active
+> development. It pairs object storage (MinIO / S3-compatible) with
+> a Postgres + pgvector index so users can search their library by
+> natural language — "snowy roof at sunset", "whiteboard photos from
+> last week's meeting" — instead of remembering filenames or scrolling.
+> Photos, videos, documents (PDFs included), and source code from
+> connected Google Drive accounts all live in one library. Two delivery
+> modes are planned: open-source self-host (free) and managed hosted
+> (waitlist). Nothing is publicly released yet.
+
+## What neuthek is
+
+- **AI-aware personal cloud storage.** Semantic search via OpenCLIP
+  ViT-L-14 embeddings persisted in pgvector. Florence-2 captions
+  every image; the caption + filename + EXIF metadata feed a hybrid
+  CLIP-cosine + Postgres-FTS ranker.
+- **Content-aware compression.** A LinUCB bandit picks per-image
+  codec (WebP / MozJPEG / AVIF / JXL) and quality (55-92) from a
+  32-dimensional context vector. Animated GIFs and detected screenshots
+  bypass lossy paths.
+- **Privacy-first.** EXIF metadata is stripped on upload by default;
+  GPS and camera fingerprints are opt-in per scope. Postgres FORCE
+  Row-Level Security fences every per-user query at the database
+  layer. Refresh tokens for cloud sync are Fernet-encrypted at rest.
+  Face recognition is BIPA-grade: signed-consent ledger, templates
+  stay on your server, three-year auto-expiry.
+- **Self-host or hosted.** The stack is FastAPI + PostgreSQL +
+  pgvector + Redis + MinIO + a separate ML worker for Florence-2 /
+  Qwen / RetinaFace. `docker-compose up` brings the whole thing up.
+  Hosted version (managed) is in development for users who'd rather
+  not run Docker.
+
+## Stack
+
+- API: FastAPI on Python 3.12, async SQLAlchemy, asyncpg
+- Database: PostgreSQL 16 + pgvector (1536-d / 768-d / 512-d indexes)
+- Object storage: MinIO (S3 API), with optional SSE-S3 / SSE-KMS
+- Cache + queue: Redis 7
+- Vision: open-clip-torch (ViT-L-14), insightface (RetinaFace +
+  ArcFace), microsoft/Florence-2-large via transformers, rawpy /
+  LibRaw for camera RAW formats (NEF / CR2 / ARW / DNG / etc)
+- ML worker: separate container so Florence-2 / Qwen inference
+  doesn't hold the API container's GIL
+- Auth: fastapi-users JWT + TOTP 2FA + Argon2 password hashing
+- Frontend: React 18 + TanStack Query + Vite + Prism (code preview)
+- Billing: Stripe Embedded Checkout (Pro + Business tiers)
+- Marketing site: separate Vite SPA (this URL — neuthek.com)
+
+## Pages
+
+- [/](https://neuthek.com/): Home, hero, feature carousel.
+- [/features](https://neuthek.com/features): Detailed feature list.
+- [/hosting](https://neuthek.com/hosting): Self-host vs managed
+  hosted, pricing posture.
+- [/developers](https://neuthek.com/developers): Stack overview,
+  API references, contribution path.
+- [/roadmap](https://neuthek.com/roadmap): What's shipped, what's
+  in progress, what's planned.
+- [/compare](https://neuthek.com/compare): Side-by-side vs Google
+  Photos, iCloud, OneDrive, Dropbox.
+- [/updates](https://neuthek.com/updates): Weekly release notes /
+  changelog — single source of truth for "what changed this week".
+- [/waitlist](https://neuthek.com/waitlist): Sign up for launch ping.
+- [/privacy](https://neuthek.com/privacy): Privacy policy.
+- [/terms](https://neuthek.com/terms): Terms of service.
+
+## Status
+
+In active development. The engine runs locally on a Docker compose
+stack today. The hosted instance and public open-source release are
+both being prepared. Users can [join the waitlist](https://neuthek.com/waitlist)
+to be notified when either ships.
+
+## Contact
+
+For press, partnership, or self-host questions: open an issue on the
+public repo (when published), or use the waitlist form to leave a
+message in the optional "tell us about your use case" field.

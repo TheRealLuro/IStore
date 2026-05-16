@@ -145,6 +145,146 @@ function initialsAcc(name) {
     .join("") || "?";
 }
 
+// Small chip-row of "truths" about the user — rendered next to the
+// name/email block on the Account tab so the user can see their
+// verified / 2FA / Google-linked / age-confirmed status at a glance.
+// Each badge maps a boolean on the User payload to a color + label.
+function UserStatusBadges({ user }) {
+  const items = [
+    { ok: user?.is_verified, on: "Email verified", off: "Email unverified" },
+    { ok: user?.totp_enabled, on: "2FA on", off: "2FA off" },
+    { ok: user?.google_linked, on: "Google linked", off: null },
+    { ok: user?.age_confirmed, on: null, off: "Age not confirmed" },
+    { ok: user?.is_superuser || user?.role === "admin", on: "Admin", off: null },
+  ];
+  const chips = items
+    .map((it) => {
+      if (it.ok && it.on) return { label: it.on, tone: "good" };
+      if (!it.ok && it.off) return { label: it.off, tone: "warn" };
+      return null;
+    })
+    .filter(Boolean);
+  if (!chips.length) return null;
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+      {chips.map((c) => (
+        <span
+          key={c.label}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "2px 8px",
+            borderRadius: 999,
+            fontSize: 11,
+            fontWeight: 500,
+            color: c.tone === "good" ? "var(--success)" : "var(--warning)",
+            background: c.tone === "good"
+              ? "color-mix(in oklab, var(--success) 12%, transparent)"
+              : "color-mix(in oklab, var(--warning) 12%, transparent)",
+            border: c.tone === "good"
+              ? "1px solid color-mix(in oklab, var(--success) 28%, transparent)"
+              : "1px solid color-mix(in oklab, var(--warning) 28%, transparent)",
+          }}
+        >
+          <span style={{
+            width: 5, height: 5, borderRadius: 999,
+            background: "currentColor",
+          }}/>
+          {c.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// 2FA status row — bridges the Account tab to the Security tab where
+// the real Enable / Disable flow lives. Reads `user.totp_enabled` so
+// the row reflects reality without an extra round trip.
+function UserTwoFactorRow({ user, onOpenTwoFA }) {
+  const enabled = !!user?.totp_enabled;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 14px",
+        borderTop: "1px solid var(--line-soft, var(--line))",
+      }}
+    >
+      <div style={{
+        width: 28, height: 28, borderRadius: 8,
+        display: "grid", placeItems: "center",
+        background: enabled
+          ? "color-mix(in oklab, var(--success) 14%, transparent)"
+          : "var(--surface-2)",
+        color: enabled ? "var(--success)" : "var(--ink-3)",
+        flexShrink: 0,
+      }}>
+        <Icon name="shield" size={14}/>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>
+          Two-factor authentication
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+          {enabled
+            ? "Enabled. A 6-digit code is required at sign-in."
+            : "Disabled. Anyone with your password can sign in."}
+        </div>
+      </div>
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm"
+        onClick={onOpenTwoFA}
+      >
+        Manage
+      </button>
+    </div>
+  );
+}
+
+// Read-only key/value grid showing every truth about the user we can
+// derive client-side. The Settings tab now becomes the authoritative
+// "this is who you are to neuthek" view.
+function UserStateGrid({ user }) {
+  const rows = [
+    { k: "User ID", v: user?.id, mono: true },
+    { k: "Email", v: user?.email || "—" },
+    { k: "Display name", v: user?.display_name || user?.name || "—" },
+    { k: "Role", v: user?.role || "user" },
+    { k: "Account active", v: user?.is_active ? "Yes" : "No" },
+    { k: "Email verified", v: user?.is_verified ? "Yes" : "No" },
+    { k: "Age confirmed", v: user?.age_confirmed ? "Yes (13+)" : "Not yet" },
+    { k: "Two-factor auth", v: user?.totp_enabled ? "Enabled" : "Off" },
+    { k: "Google linked", v: user?.google_linked ? "Yes" : "No" },
+    { k: "Admin access", v: (user?.is_superuser || user?.role === "admin") ? "Yes" : "No" },
+  ];
+  return (
+    <div className="applist" style={{ padding: "4px 14px" }}>
+      {rows.map((r) => (
+        <div
+          key={r.k}
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "8px 0",
+            borderBottom: "1px solid var(--line-soft, var(--line))",
+            fontSize: 12.5,
+          }}
+        >
+          <span style={{ color: "var(--ink-3)" }}>{r.k}</span>
+          <span className={r.mono ? "mono" : undefined} style={{ color: "var(--ink)", textAlign: "right", wordBreak: "break-all" }}>
+            {String(r.v ?? "—")}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Sign-in-with-Google link/unlink row for Settings → Account.
 //
 // When the user hasn't connected Google yet, the row shows a button
@@ -612,6 +752,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                       <div className="appset__profile-body">
                         <div className="appset__profile-name">{user?.name || "—"}</div>
                         <div className="appset__profile-email">{user?.email || ""}</div>
+                        <UserStatusBadges user={user}/>
                       </div>
                       <button className="btn btn--secondary btn--sm" onClick={() => setEditingProfile(true)}>Edit</button>
                     </>
@@ -625,12 +766,11 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                               tailExtra={<span style={{ color: "var(--ink-3)", marginRight: 8 }}>•••••••••</span>}
                               panel={<PasswordChangePanel onSaved={() => tog("pwd")}/>}/>
                   <GoogleLinkRow user={user}/>
-                  {/* 2FA TOTP isn't wired yet (todo.md C6.4). The real
-                      lockout-recovery flow lives in the Security tab as
-                      "Recovery codes" (wired to /account/recovery-codes).
-                      Trusted devices is also still mock — hidden until
-                      session enumeration backend ships. */}
+                  <UserTwoFactorRow user={user} onOpenTwoFA={() => setTab("security")}/>
                 </div>
+
+                <div className="applist__label">Account state</div>
+                <UserStateGrid user={user}/>
 
                 <div className="applist__label">Plan</div>
                 <PlanCard/>
