@@ -117,7 +117,19 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
     # Drive's `drive.readonly` is the smallest scope that lists+downloads
     # the user's files. We deliberately avoid `drive` (full r/w) so we
     # can never silently corrupt the user's source.
-    "google_drive": ["https://www.googleapis.com/auth/drive.readonly"],
+    #
+    # The `openid email profile` triplet is appended so the same OAuth
+    # grant doubles as a Google sign-in link: the token response
+    # carries an id_token we can decode, capture the `sub`, and stamp
+    # onto the user's `google_sub` column. Then a later "Sign in with
+    # Google" lands the same person back in the same neuthek account
+    # instead of forking a new one.
+    "google_drive": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "openid",
+        "email",
+        "profile",
+    ],
     # GitHub support was removed by user request — repos turned out to
     # not be a natural fit for a personal storage app (every public
     # repo turns the gallery into a dumping ground of READMEs and
@@ -331,6 +343,13 @@ async def complete_oauth(
         )
 
     if provider == "google_drive":
+        # `OAUTHLIB_RELAX_TOKEN_SCOPE` keeps Flow.fetch_token from
+        # rejecting Google's scope expansion (`email` → full URI form,
+        # `include_granted_scopes` adding back drive.readonly etc).
+        # Same workaround the SSO module uses.
+        import os
+        os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
         flow = _google_flow()
         # Restore the PKCE verifier stashed during connect_provider so
         # Google accepts the exchange. Without this, fetch_token raises
@@ -355,6 +374,41 @@ async def complete_oauth(
             )
         refresh_token_to_store = creds.refresh_token
         scopes = ",".join(creds.scopes or [])
+
+        # Drive's OAuth scopes now include openid/email/profile (see
+        # PROVIDER_SCOPES) so the token response carries an id_token.
+        # Decode it, capture the Google `sub`, and stamp it onto the
+        # User row — that's what lets the SSO callback ("Sign in with
+        # Google") map a future sign-in back to THIS neuthek account.
+        # Best-effort: a failure here doesn't block the Drive
+        # connection from succeeding, since the user may have skipped
+        # the identity scopes on the consent screen.
+        try:
+            id_token_raw = getattr(creds, "id_token", None)
+            if id_token_raw:
+                from google.oauth2 import id_token as google_id_token  # type: ignore
+                from google.auth.transport import requests as google_requests  # type: ignore
+
+                claims = google_id_token.verify_oauth2_token(
+                    id_token_raw,
+                    google_requests.Request(),
+                    settings.google_oauth_client_id,
+                )
+                sub = claims.get("sub")
+                if sub:
+                    user_row = (
+                        await session.execute(
+                            select(User).where(User.id == user_id)
+                        )
+                    ).scalar_one_or_none()
+                    if user_row is not None and user_row.google_sub != sub:
+                        user_row.google_sub = sub
+                        logger.info(
+                            "cloud_sync: linked user=%s to google_sub=%s",
+                            user_id, sub,
+                        )
+        except Exception:
+            logger.exception("cloud_sync: id_token decode skipped (non-fatal)")
     else:  # github
         import requests
         if not settings.github_oauth_client_id or not settings.github_oauth_client_secret:

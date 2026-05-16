@@ -304,8 +304,21 @@ async def detect_and_label(
 
     from backend.faces_pipeline import process_image_for_faces
 
+    async def _post_face_ids(image_id) -> set[int]:
+        rows = (
+            await session.execute(
+                select(FaceDetection.face_id).where(
+                    FaceDetection.image_id == image_id,
+                    FaceDetection.user_id == user.id,
+                    FaceDetection.face_id.is_not(None),
+                )
+            )
+        ).scalars().all()
+        return {int(r) for r in rows}
+
     images_scanned = 0
     new_faces = 0
+    images_no_face = []  # images where every pass came back empty
     for image_id in body.image_ids:
         image = (
             await session.execute(
@@ -323,6 +336,9 @@ async def detect_and_label(
         except Exception:
             logger.exception("detect_and_label: failed to fetch %s", image_id)
             continue
+
+        # First pass — normal detector + auto-cascade for high
+        # face_likelihood images.
         try:
             await process_image_for_faces(session, user, image, raw)
             images_scanned += 1
@@ -330,20 +346,50 @@ async def detect_and_label(
             logger.exception("detect_and_label: face pipeline failed on %s", image_id)
             continue
 
-        # Find face ids that didn't exist on this image before the scan.
-        post = (
-            await session.execute(
-                select(FaceDetection.face_id).where(
-                    FaceDetection.image_id == image_id,
-                    FaceDetection.user_id == user.id,
-                    FaceDetection.face_id.is_not(None),
-                )
-            )
-        ).scalars().all()
-        post_ids = {int(r) for r in post}
+        post_ids = await _post_face_ids(image_id)
         delta = post_ids - pre_existing.get(image_id, set())
+
+        # Retry pass — user explicitly told us this person is in the
+        # image, so force the cascade detector at its lowest threshold
+        # regardless of face_likelihood (the normal flow gates cascade
+        # on likelihood ≥ 0.5). This rescues B&W close-ups, profile
+        # shots, partial-face crops, and other "the model isn't sure
+        # this is a face" cases.
         if not delta:
+            try:
+                from backend.vision.faces import detect_with_cascade
+                from backend.vision.inference_pool import run_in_inference_pool
+
+                cascaded, stage = await run_in_inference_pool(
+                    detect_with_cascade, raw,
+                )
+                if cascaded:
+                    logger.info(
+                        "detect_and_label: cascade rescued %s via %s (%d faces)",
+                        image_id, stage, len(cascaded),
+                    )
+                    await process_image_for_faces(
+                        session, user, image, raw,
+                        detections=cascaded,
+                        min_confidence=0.05,
+                    )
+                    post_ids = await _post_face_ids(image_id)
+                    delta = post_ids - pre_existing.get(image_id, set())
+            except Exception:
+                logger.exception(
+                    "detect_and_label: cascade retry failed on %s", image_id,
+                )
+
+        if not delta:
+            # Still no face after the cascade. Record the image so the
+            # FE can show the user which photos got force-labeled
+            # without an embedding to anchor on. Future uploads of the
+            # same person will still cluster via centroid; this entry
+            # exists for the user's awareness ("these N didn't have a
+            # detectable face, but we tagged them as you asked").
+            images_no_face.append(str(image_id))
             continue
+
         # Assign the new Face rows to the target Person.
         await session.execute(
             sa_update(Face)
@@ -375,6 +421,7 @@ async def detect_and_label(
         details={
             "image_count": images_scanned,
             "new_faces": new_faces,
+            "no_face_count": len(images_no_face),
             "person_id": target.id,
             "display_name": name,
         },
@@ -385,6 +432,7 @@ async def detect_and_label(
         "display_name": name,
         "images_scanned": images_scanned,
         "new_faces": new_faces,
+        "no_face_images": images_no_face,
     }
 
 

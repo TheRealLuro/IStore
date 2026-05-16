@@ -41,11 +41,25 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 import secrets
 import uuid
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
+
+# Google sometimes returns a *superset* of the requested scopes —
+# `email` / `profile` get expanded to the full `userinfo.email` /
+# `userinfo.profile` URIs, and previously-granted scopes (e.g.
+# `drive.readonly` from the cloud-sync flow) are tacked on when
+# `include_granted_scopes=true`. The default `oauthlib` behavior is
+# to refuse the token exchange when the response scope set differs
+# from the request — the exact failure mode we saw as "token
+# exchange failed" on the FE. Setting this env var BEFORE
+# google-auth-oauthlib imports requests-oauthlib is the documented
+# workaround. We still verify the id_token below so the relaxed
+# scope check doesn't loosen the security posture.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -202,23 +216,37 @@ async def _find_or_create_user(
     google_sub: str,
     request: Request | None,
 ) -> tuple[User, bool]:
-    """Look up an existing user by email or create one. Returns
-    (user, was_created)."""
-    # We rely on email as the join key. Google's `email_verified=true`
-    # is what makes this safe — without it, an attacker who registers
-    # a Google account at "victim@neuthek.local" could impersonate the
-    # existing user. We refuse unverified emails outright before
-    # reaching this point.
+    """Look up an existing user by Google sub first, then email.
+    Returns (user, was_created)."""
+    # Prefer `google_sub` — it's stable across email changes and gets
+    # set whenever the user connects Drive (so a "I signed up with
+    # password, then connected Drive, now I want to Sign in with
+    # Google" flow lands in the right account).
     existing = (
         await session.execute(
-            select(User).where(User.email == email)
+            select(User).where(User.google_sub == google_sub)
         )
     ).scalar_one_or_none()
+    if existing is None:
+        # Fall back to email. Google's `email_verified=true` is what
+        # makes this safe — without it, an attacker who registers a
+        # Google account at "victim@neuthek.local" could impersonate
+        # the existing user. We refuse unverified emails outright
+        # before reaching this point.
+        existing = (
+            await session.execute(
+                select(User).where(User.email == email)
+            )
+        ).scalar_one_or_none()
     if existing is not None:
+        changed = False
+        # Backfill google_sub if this is the first time we've seen one.
+        if not existing.google_sub:
+            existing.google_sub = google_sub
+            changed = True
         # If the user existed but Google's verification is fresher,
         # mark them verified — the email_send/verify flow can be
         # skipped now.
-        changed = False
         if not existing.is_verified:
             existing.is_verified = True
             changed = True
@@ -253,6 +281,7 @@ async def _find_or_create_user(
         # doesn't skip the legal gate — it just removes the password
         # friction.
         age_confirmed=False,
+        google_sub=google_sub,
     )
     session.add(user)
     await session.flush()
