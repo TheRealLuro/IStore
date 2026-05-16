@@ -1456,6 +1456,40 @@ export function App() {
     window.history.replaceState({}, "", url.pathname + (url.search || ""));
   }, [signedIn]);
 
+  // Settings → Account → "Link Google" landing handler. The callback
+  // redirects back to `/#sso_linked=1&email=...` (the same lightbox
+  // pattern as cloud-sync), or `#sso_error=<reason>` on failure.
+  // Runs once per sign-in, then strips the fragment so a refresh
+  // doesn't replay the toast.
+  useEffectApp(() => {
+    if (!signedIn || typeof window === "undefined") return;
+    const hash = window.location.hash || "";
+    if (!hash.includes("sso_linked=") && !hash.includes("sso_error=")) return;
+    const frag = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+    const linked = frag.get("sso_linked");
+    const linkErr = frag.get("sso_error");
+    // Clear immediately so a reload doesn't replay.
+    try {
+      window.history.replaceState({}, "", window.location.pathname + window.location.search);
+    } catch {}
+    if (linked === "1") {
+      toast.success("Google account linked. Sign in with Google now lands here.");
+      qcApp.invalidateQueries({ queryKey: ["me"] });
+      // Re-bootstrap the auth store so the user object gains
+      // `google_linked: true` without a hard refresh.
+      try { useAuthStore.getState().bootstrap(); } catch {}
+      setAccountTab("profile");
+      setShowAccount(true);
+    } else if (linkErr) {
+      const msg = linkErr === "google_already_linked"
+        ? "That Google account is already linked to a different neuthek user."
+        : linkErr === "link_user_missing"
+          ? "Could not find this user to link. Sign out and back in, then try again."
+          : `Could not link Google (${linkErr}).`;
+      toast.error(msg);
+    }
+  }, [signedIn]);
+
   const [showTerms, setShowTerms] = useStateApp(false);
   const [showPrivacy, setShowPrivacy] = useStateApp(false);
   const [showFace, setShowFace] = useStateApp(false);

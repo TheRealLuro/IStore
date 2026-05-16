@@ -12,6 +12,34 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     # §1.2.2 — the FE needs to know whether to show "Enable 2FA" or
     # "Disable 2FA" without a second round trip to /account/2fa/status.
     totp_enabled: bool = False
+    # Surfaced so Settings → Account can show "Sign in with Google
+    # linked" / "Link Google account" without an extra round trip.
+    # Derived in `model_validator` below from `google_sub` so the raw
+    # identifier never leaves the server.
+    google_linked: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _project_google_linked(cls, data):
+        # `data` is either a User ORM instance (when fastapi-users
+        # serializes via from_attributes) or a dict from a manual
+        # construct. Normalize both to set `google_linked` from the
+        # presence of `google_sub`.
+        if isinstance(data, dict):
+            if "google_linked" not in data:
+                data["google_linked"] = bool(data.get("google_sub"))
+            return data
+        sub = getattr(data, "google_sub", None)
+        try:
+            # Pydantic v2 will read the rest of the attrs via from_attributes;
+            # we just need to plant `google_linked` so the projection
+            # below picks it up. Attach on the instance for the ORM
+            # path — orm_mode/from_attributes reads attributes lazily,
+            # so adding a Python attribute is enough.
+            object.__setattr__(data, "google_linked", bool(sub))
+        except Exception:
+            pass
+        return data
 
 
 class ConsentBundleItem(BaseModel):

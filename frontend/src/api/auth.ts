@@ -215,3 +215,15 @@ export const getNotificationPrefs = () =>
 
 export const updateNotificationPrefs = (prefs: NotificationPrefRow[]) =>
   api.patch<NotificationPrefsResponse>("/account/notifications", { prefs });
+
+// Sign-in-with-Google link/unlink for the Settings → Account row.
+// `linkGoogleAccount` returns a URL the FE should hard-navigate to —
+// the user consents on Google, the callback stamps google_sub onto
+// this user, and Google redirects back to the FE with #sso_linked=1.
+export async function linkGoogleAccount(): Promise<{ auth_url: string }> {
+  return api.post<{ auth_url: string }>("/auth/google/link");
+}
+
+export async function unlinkGoogleAccount(): Promise<{ linked: boolean; changed: boolean }> {
+  return api.delete<{ linked: boolean; changed: boolean }>("/auth/google/link");
+}

@@ -61,13 +61,17 @@ from uuid import UUID
 # scope check doesn't loosen the security posture.
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.auth.users import current_active_user
 from backend.config import settings
-from backend.db import SessionLocal
+from backend.db import SessionLocal, get_session
 from backend.models import User
 
 logger = logging.getLogger(__name__)
@@ -77,29 +81,65 @@ router = APIRouter(prefix="/auth/google", tags=["auth"])
 # ---------- HMAC-signed state (same pattern as cloud_sync) ----------------
 
 
-def _build_state() -> str:
-    """Random nonce + HMAC. Unlike the cloud-sync version we don't bind
-    a user_id because the sign-in flow has no caller-user (anonymous
-    visitor)."""
+def _build_state(link_user_id: UUID | None = None) -> str:
+    """Random nonce + HMAC. For the anonymous sign-in flow the state is
+    just `<nonce>.<mac>` — no user binding because the caller is a
+    not-yet-authenticated visitor. The "link an existing account" flow
+    passes `link_user_id`, and the state becomes
+    `link:<user_id>.<nonce>.<mac>` so the callback can tell the two
+    paths apart and look up the right neuthek user without trusting
+    the cookie that came back with Google's redirect (the user might
+    be in a different browser session by then)."""
     nonce = secrets.token_urlsafe(16)
+    if link_user_id is not None:
+        payload = f"link:{link_user_id}.{nonce}"
+    else:
+        payload = nonce
     mac = hmac.new(
         settings.jwt_secret.encode("utf-8"),
-        nonce.encode("utf-8"),
+        payload.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-    return f"{nonce}.{mac}"
+    return f"{payload}.{mac}"
 
 
 def _verify_state(state: str) -> bool:
-    if not isinstance(state, str) or state.count(".") != 1:
+    if not isinstance(state, str):
         return False
-    nonce, mac = state.split(".", 1)
-    expected = hmac.new(
-        settings.jwt_secret.encode("utf-8"),
-        nonce.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, mac)
+    # Sign-in state: `<nonce>.<mac>`.
+    if state.count(".") == 1:
+        nonce, mac = state.split(".", 1)
+        expected = hmac.new(
+            settings.jwt_secret.encode("utf-8"),
+            nonce.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(expected, mac)
+    # Link state: `link:<user_id>.<nonce>.<mac>`.
+    if state.count(".") == 2 and state.startswith("link:"):
+        payload, mac = state.rsplit(".", 1)
+        expected = hmac.new(
+            settings.jwt_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(expected, mac)
+    return False
+
+
+def _extract_link_user_id(state: str) -> UUID | None:
+    """Return the user_id encoded in a `link:<user_id>.<nonce>.<mac>`
+    state, or None for a regular sign-in state."""
+    if not state or not state.startswith("link:"):
+        return None
+    try:
+        # state is `link:<uuid>.<nonce>.<mac>`. Split off the prefix
+        # then take the first dot-separated piece.
+        body = state[len("link:"):]
+        uuid_str = body.split(".", 1)[0]
+        return UUID(uuid_str)
+    except (ValueError, IndexError):
+        return None
 
 
 # ---------- PKCE verifier storage (reuses cloud_sync's Redis helpers) -----
@@ -202,6 +242,61 @@ async def google_login() -> RedirectResponse:
         await _stash_pkce_verifier(state, flow.code_verifier)
     logger.info("auth.google: login redirect state=%s", state[:8])
     return RedirectResponse(url=auth_url, status_code=302)
+
+
+# ---------- /auth/google/link (logged-in user adds Google to their account) ----
+
+
+class LinkInitResponse(BaseModel):
+    auth_url: str
+
+
+@router.post("/link", response_model=LinkInitResponse)
+async def google_link_init(
+    user: Annotated[User, Depends(current_active_user)],
+) -> LinkInitResponse:
+    """Start the OAuth flow that attaches a Google account to the
+    currently-signed-in neuthek user.
+
+    Returns the consent-screen URL. The state encodes this user's id
+    (`link:<uuid>.<nonce>.<mac>`), HMAC-signed so the callback can
+    trust it without re-reading the session cookie — Google's redirect
+    is a fresh browser navigation and may land in a different tab /
+    profile than the one that initiated the request.
+
+    The FE hits this with POST + Bearer auth, then does
+    `window.location.href = auth_url` to send the user to Google.
+    """
+    flow = _google_flow()
+    flow.autogenerate_code_verifier = True
+    auth_url, state = flow.authorization_url(
+        access_type="online",
+        include_granted_scopes="true",
+        prompt="select_account",
+        state=_build_state(link_user_id=user.id),
+    )
+    if flow.code_verifier:
+        await _stash_pkce_verifier(state, flow.code_verifier)
+    logger.info(
+        "auth.google: link init user=%s state=%s", user.id, state[:8],
+    )
+    return LinkInitResponse(auth_url=auth_url)
+
+
+@router.delete("/link")
+async def google_link_clear(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Drop the Google account binding from this user. After this they
+    can't Sign in with Google to land in *this* neuthek account until
+    they link again."""
+    if not user.google_sub:
+        return {"linked": False, "changed": False}
+    user.google_sub = None
+    await session.commit()
+    logger.info("auth.google: unlinked user=%s", user.id)
+    return {"linked": False, "changed": True}
 
 
 # ---------- /auth/google/callback ----------------------------------------
@@ -397,6 +492,53 @@ async def google_callback(
     if not google_sub:
         return RedirectResponse(
             url=f"{fe_root}/#sso_error=no_subject", status_code=302
+        )
+
+    # Link flow: the state encoded a specific neuthek user_id, so we
+    # stamp the Google sub onto THAT row instead of running the
+    # sign-in find-or-create. Used by Settings → Account → "Link
+    # Google account" — the user is already authenticated and just
+    # wants to connect their Google identity. We refuse if the sub
+    # is already attached to a *different* neuthek user.
+    link_user_id = _extract_link_user_id(state)
+    if link_user_id is not None:
+        async with SessionLocal() as session:
+            try:
+                target = (
+                    await session.execute(
+                        select(User).where(User.id == link_user_id)
+                    )
+                ).scalar_one_or_none()
+                if target is None:
+                    return RedirectResponse(
+                        url=f"{fe_root}/#sso_error=link_user_missing", status_code=302
+                    )
+                conflict = (
+                    await session.execute(
+                        select(User).where(
+                            User.google_sub == google_sub,
+                            User.id != link_user_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if conflict is not None:
+                    return RedirectResponse(
+                        url=f"{fe_root}/#sso_error=google_already_linked", status_code=302
+                    )
+                target.google_sub = google_sub
+                if not target.display_name and display_name:
+                    target.display_name = display_name
+                await session.commit()
+            except Exception:
+                logger.exception("auth.google: link failed for user=%s", link_user_id)
+                return RedirectResponse(
+                    url=f"{fe_root}/#sso_error=link_internal", status_code=302
+                )
+        logger.info(
+            "auth.google: linked user=%s google_sub=%s", link_user_id, google_sub,
+        )
+        return RedirectResponse(
+            url=f"{fe_root}/#sso_linked=1&email={email}", status_code=302,
         )
 
     # Use a fresh session — the callback isn't under `Depends(get_session)`.
