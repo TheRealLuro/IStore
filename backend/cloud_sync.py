@@ -188,12 +188,69 @@ def _google_flow():
     return flow
 
 
-def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHandoff:
+_PKCE_REDIS_PREFIX = "cloud:pkce:"
+_PKCE_TTL_SECONDS = 600  # 10 min — Google's consent screen rarely takes longer
+_PKCE_FALLBACK: dict[str, str] = {}
+
+
+async def _stash_pkce_verifier(state: str, verifier: str) -> None:
+    """Save the PKCE code_verifier under sha256(state) so `complete_oauth`
+    can pick it up when Google calls back.
+
+    google-auth-oauthlib v1.4+ auto-enables PKCE on Web Application
+    clients. The auth URL carries `code_challenge`, and the callback
+    MUST send the matching `code_verifier`. Without this stash, the
+    token exchange dies with `invalid_grant: Missing code verifier`.
+
+    Stored in Redis so two backend processes (uvicorn workers, a
+    host-run dev server vs. the Docker container) can both reach it.
+    Falls back to a process-local dict if Redis is unreachable —
+    fine for local-dev when the same process handles both halves.
+    """
+    key = _PKCE_REDIS_PREFIX + hashlib.sha256(state.encode()).hexdigest()
+    try:
+        import redis.asyncio as redis  # type: ignore
+        client = redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            await client.set(key, verifier, ex=_PKCE_TTL_SECONDS)
+        finally:
+            await client.aclose()
+        return
+    except Exception:
+        _PKCE_FALLBACK[key] = verifier
+
+
+async def _pop_pkce_verifier(state: str) -> str | None:
+    """Retrieve + delete the stashed verifier. Single-use — the same
+    state should never be exchanged twice."""
+    key = _PKCE_REDIS_PREFIX + hashlib.sha256(state.encode()).hexdigest()
+    try:
+        import redis.asyncio as redis  # type: ignore
+        client = redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            value = await client.get(key)
+            if value is not None:
+                await client.delete(key)
+                return value
+        finally:
+            await client.aclose()
+    except Exception:
+        pass
+    return _PKCE_FALLBACK.pop(key, None)
+
+
+async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHandoff:
     """Build the auth URL the FE should send the user to.
 
     `state` is HMAC-signed with the JWT secret + a per-call nonce so
     the callback can resolve who started the flow without trusting
     the browser (see `_build_state`).
+
+    For Google Drive we explicitly enable PKCE — google-auth-oauthlib
+    v1.4+ auto-enables it on Web Application clients. The code_verifier
+    lives in Redis (10 min TTL, keyed by sha256(state)) so the
+    callback can retrieve it; without this, Google rejects the token
+    exchange with "invalid_grant: Missing code verifier."
     """
     if provider not in ("google_drive", "github"):
         raise CloudSyncNotConfigured(
@@ -207,6 +264,11 @@ def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHandoff:
     signed_state = _build_state(user_id)
     if provider == "google_drive":
         flow = _google_flow()
+        # Own the verifier lifecycle ourselves rather than relying on the
+        # Flow object surviving between requests — it doesn't, since
+        # connect_provider and complete_oauth run on different requests
+        # (potentially different processes).
+        flow.autogenerate_code_verifier = True
         # `access_type=offline` is what makes Google return a refresh
         # token. `prompt=consent` forces a refresh-token grant even on
         # re-auth so we never end up with a link row missing its
@@ -217,6 +279,9 @@ def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHandoff:
             prompt="consent",
             state=signed_state,
         )
+        # Stash so `complete_oauth` can pair the code with the verifier.
+        if flow.code_verifier:
+            await _stash_pkce_verifier(state, flow.code_verifier)
     elif provider == "github":
         if not settings.github_oauth_client_id or not settings.github_oauth_client_secret:
             raise CloudSyncNotConfigured(
@@ -263,6 +328,13 @@ async def complete_oauth(
 
     if provider == "google_drive":
         flow = _google_flow()
+        # Restore the PKCE verifier stashed during connect_provider so
+        # Google accepts the exchange. Without this, fetch_token raises
+        # `invalid_grant: Missing code verifier` because we sent a
+        # code_challenge in the original auth URL but no verifier here.
+        verifier = await _pop_pkce_verifier(state)
+        if verifier:
+            flow.code_verifier = verifier
         # `fetch_token` performs the code → access_token + refresh_token
         # exchange. Google verifies the state internally.
         flow.fetch_token(code=code)
