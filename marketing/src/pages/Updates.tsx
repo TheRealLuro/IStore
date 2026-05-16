@@ -24,16 +24,18 @@ export default function Updates() {
 
   return (
     <div className="page">
-      <section className="section section--hero">
-        <p className="kicker">Updates</p>
-        <h1 className="hero__title">What's new in neuthek</h1>
-        <p className="hero__sub">
-          A weekly log of what we shipped, fixed, and changed. Pulled
-          straight from the release notes — no marketing fluff.
-        </p>
-      </section>
+      <section className="section section--tight">
+        <div className="updates__hero">
+          <p className="kicker">Updates · Release notes</p>
+          <h1 className="updates__h1">What's new in neuthek</h1>
+          <p className="updates__lead">
+            A weekly log of what we shipped, fixed, and changed.
+            Pulled straight from the release notes — no marketing fluff.
+            Subscribe to <Link to="/waitlist" className="updates__lead-link">the waitlist</Link>{" "}
+            and we'll ping the list when each weekly entry lands.
+          </p>
+        </div>
 
-      <section className="section">
         <ol className="updates__list" aria-label="Recent updates">
           {UPDATES.map((u) => (
             <li key={u.slug} className="updates__item">

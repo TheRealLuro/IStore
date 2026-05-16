@@ -1133,3 +1133,55 @@ button:focus-visible,
   margin-left: auto;
   text-align: right;
 }
+
+/* ---------- Updates page polish ---------- */
+.updates__hero {
+  max-width: 720px;
+  margin: 0 0 32px;
+}
+.updates__h1 {
+  font-size: clamp(32px, 4.6vw, 48px);
+  line-height: 1.15;
+  margin: 6px 0 12px;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+.updates__lead {
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: var(--ink-2, rgba(255,255,255,0.7));
+  margin: 0;
+}
+.updates__lead-link {
+  color: var(--ink, #fff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Privacy stance card pinned at the top of the Privacy/Roadmap pages */
+.privacy-stance {
+  margin: 0 0 24px;
+  padding: 16px 18px;
+  border: 1px solid color-mix(in oklab, var(--success, #22c55e) 30%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--success, #22c55e) 6%, transparent);
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.privacy-stance__icon {
+  flex-shrink: 0;
+  color: var(--success, #22c55e);
+  margin-top: 2px;
+}
+.privacy-stance__title {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.privacy-stance__body {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink-2, rgba(255,255,255,0.75));
+  margin: 0;
+}

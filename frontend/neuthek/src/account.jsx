@@ -285,6 +285,47 @@ function UserStateGrid({ user }) {
   );
 }
 
+// Pinned card at the top of the Privacy tab. States the project's
+// posture on data unambiguously so the user doesn't have to read the
+// full Privacy Notice to know whether their photos get scraped into
+// model training somewhere. Wording covers BOTH delivery modes —
+// self-hosted (you own the box) and managed hosted (we run the box
+// for you) — so the same string works on either deployment.
+function PrivacyStanceCard() {
+  return (
+    <div
+      style={{
+        margin: "0 0 14px",
+        padding: "14px 16px",
+        borderRadius: 12,
+        background: "color-mix(in oklab, var(--success, #22c55e) 8%, transparent)",
+        border: "1px solid color-mix(in oklab, var(--success, #22c55e) 28%, transparent)",
+        display: "flex",
+        gap: 12,
+        alignItems: "flex-start",
+      }}
+    >
+      <div style={{ color: "var(--success)", flexShrink: 0, marginTop: 2 }}>
+        <Icon name="shield" size={18}/>
+      </div>
+      <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.55 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, color: "var(--ink)", marginBottom: 4 }}>
+          Your data isn't ours. We never train on it. We never sell it.
+        </div>
+        <div style={{ color: "var(--ink-2, var(--ink-3))" }}>
+          neuthek runs on a server <em>you</em> control (self-hosted) or
+          a tenant fenced behind Postgres row-level security (hosted).
+          Your photos, videos, documents, face embeddings, summaries,
+          and search history are not exported to third parties, are
+          not used to train AI models — ours or anyone else's — and
+          are not sold to ad networks, brokers, or partners. AI is
+          opt-in per scope; everything off the AI pages stays local.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Sign-in-with-Google link/unlink row for Settings → Account.
 //
 // When the user hasn't connected Google yet, the row shows a button
@@ -785,6 +826,8 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                     <p>Control what we collect and how it's used.</p>
                   </div>
                 </div>
+
+                <PrivacyStanceCard/>
 
                 <div className="applist__label">AI on your library</div>
                 <div className="applist">
