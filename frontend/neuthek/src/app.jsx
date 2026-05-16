@@ -1389,6 +1389,18 @@ export function App() {
     hasFaces: filterHasFaces,
     hasGps: filterHasGps,
   }), [filesScope, filterScene, filterContentType, filterIndoorOutdoor, filterHasFaces, filterHasGps]);
+  // Folder count for the current scope — used by the empty-state guard
+  // below so a library that contains synced cloud folders (Google
+  // Drive, etc.) doesn't show "library is empty, upload something" at
+  // the root just because no un-foldered files exist. The folder
+  // listing is already fetched inside GalleryView; this is a separate
+  // shared cache-key query so the App can read it directly.
+  const { data: rootFoldersForEmpty = [] } = useQuery({
+    queryKey: ["folders", folderId ?? null, null],
+    queryFn: () => listFolders(folderId ?? null, null),
+    enabled: signedIn && view === "gallery",
+    staleTime: 30_000,
+  });
   const { data: rawFiles = [] } = useQuery({
     queryKey: ["files", filesQueryFilters],
     queryFn: () => listFiles(filesQueryFilters),
@@ -1695,7 +1707,14 @@ export function App() {
   // files; only fall through to the "trash is empty" message when the
   // list is genuinely empty.
   const trashIsEmpty = view === "trash" && trashedFiles.length === 0;
-  const showEmpty = empty || trashIsEmpty || (files.length === 0 && !query && view !== "people");
+  // Don't fall through to the upload-CTA when the user has *folders*
+  // visible (synced Google Drive folder, etc.) — render the gallery so
+  // those folders are clickable. Previously this fired EmptyGallery
+  // any time `files.length === 0`, hiding every synced subtree.
+  const hasFoldersInScope = view === "gallery" && (rootFoldersForEmpty?.length || 0) > 0;
+  const showEmpty = empty || trashIsEmpty || (
+    files.length === 0 && !query && view !== "people" && !hasFoldersInScope
+  );
   const densityGap = t.density === "compact" ? 10 : t.density === "comfy" ? 22 : 16;
   const isMap = view === "places";
 
