@@ -1301,6 +1301,101 @@ button:focus-visible,
   .update-article__nav--right { margin-left: 0; text-align: left; }
 }
 
+/* ---------- FAQ page ---------- */
+/* Scannable Q&A with topic jump-nav at the top. Answers render inline
+   (not behind disclosure widgets) so AI answer engines can lift them
+   without executing the page's JS. */
+.faq-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 36px;
+}
+.faq-jump a {
+  font-size: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-2);
+  text-decoration: none;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.faq-jump a:hover {
+  color: var(--ink);
+  border-color: var(--ink-3);
+  background: var(--surface-2);
+}
+
+.faq-topic {
+  margin: 0 0 40px;
+  scroll-margin-top: 80px;
+}
+.faq-topic__title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.faq-item {
+  scroll-margin-top: 80px;
+}
+.faq-item__q {
+  position: relative;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+.faq-item__anchor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--ink-4);
+  text-decoration: none;
+  font-weight: 400;
+  font-size: 16px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.faq-item:hover .faq-item__anchor,
+.faq-item__anchor:focus-visible {
+  opacity: 1;
+}
+.faq-item__anchor:hover { color: var(--ink-2); }
+.faq-item__a p {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink);
+  margin: 0;
+  padding-left: 22px;
+}
+.faq-foot {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+.faq-foot a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 720px) {
+  .faq-topic { margin-bottom: 30px; }
+  .faq-topic__title { font-size: 18px; }
+  .faq-item__q { font-size: 16px; }
+  .faq-item__a p { font-size: 14.5px; }
+  .faq-item__anchor { opacity: 1; }  /* always visible on touch */
+}
+
 /* ---------- Admin waitlist table ---------- */
 /* Purpose-built for the /admin signup viewer. Different shape than
    the marketing compare table:

@@ -504,13 +504,15 @@ function NewsletterPanel({
         gap: 12, flexWrap: "wrap", marginBottom: 12,
       }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-3)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink)" }}>
             Newsletter broadcast
           </div>
-          <div style={{ fontSize: 14, color: "var(--ink-2)", marginTop: 4 }}>
+          <div style={{ fontSize: 14, color: "var(--ink)", marginTop: 6, lineHeight: 1.55 }}>
             <strong>{newsletterCount}</strong> opted in &middot;{" "}
-            <strong>{verifiedCount}</strong> verified &middot; sends go to
-            verified + opted-in + not-unsubscribed addresses
+            <strong>{verifiedCount}</strong> verified &middot;{" "}
+            <span style={{ color: "var(--ink-2)" }}>
+              sends go to verified + opted-in + not-unsubscribed addresses
+            </span>
           </div>
         </div>
       </div>
@@ -519,18 +521,28 @@ function NewsletterPanel({
         <select
           value={slug}
           onChange={(e) => setSlug(e.target.value)}
+          // Explicit color — the marketing site inherits a white color from
+          // somewhere upstream for some form elements, so dropdown text was
+          // rendering invisible. Force the ink + white-bg combo here.
           style={{
             padding: "9px 12px",
             border: "1px solid var(--line)",
             borderRadius: 8,
             fontSize: 14,
-            background: "var(--surface)",
+            background: "#ffffff",
+            color: "#0a0a0a",
             minWidth: 280,
             maxWidth: "100%",
+            fontFamily: "inherit",
+            appearance: "auto",
           }}
         >
           {UPDATES.map((u) => (
-            <option key={u.slug} value={u.slug}>
+            <option
+              key={u.slug}
+              value={u.slug}
+              style={{ color: "#0a0a0a", background: "#ffffff" }}
+            >
               {u.week} — {u.title.length > 60 ? u.title.slice(0, 57) + "..." : u.title}
             </option>
           ))}

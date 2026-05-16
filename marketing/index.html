@@ -76,15 +76,45 @@
           "@type": "Organization",
           "@id": "https://neuthek.com/#org",
           "name": "neuthek",
+          "alternateName": ["Neuthek", "neuthek.com"],
           "url": "https://neuthek.com/",
           "logo": "https://neuthek.com/favicon.svg",
-          "description": "neuthek is building an AI-aware personal cloud storage product. Self-host and hosted versions are both in development; nothing is publicly released yet."
+          "image": "https://neuthek.com/og-cover.svg",
+          "slogan": "The next best cloud storage solution.",
+          "description": "neuthek is building an AI-aware personal cloud storage product. Semantic image search via OpenCLIP, content-aware compression, privacy-first design. Self-host and managed hosted versions both in development; nothing publicly released yet.",
+          "foundingDate": "2026",
+          "knowsAbout": [
+            "Cloud storage",
+            "Personal cloud",
+            "AI photo search",
+            "Semantic search",
+            "OpenCLIP",
+            "Image embeddings",
+            "Content-aware compression",
+            "Self-hosted software",
+            "Privacy-preserving AI",
+            "Open source",
+            "FastAPI",
+            "PostgreSQL",
+            "pgvector",
+            "MinIO",
+            "Google Drive sync",
+            "Face recognition (opt-in, BIPA-grade)"
+          ],
+          "contactPoint": {
+            "@type": "ContactPoint",
+            "contactType": "general inquiries",
+            "url": "https://neuthek.com/waitlist",
+            "availableLanguage": ["en"]
+          }
         },
         {
           "@type": "WebSite",
           "@id": "https://neuthek.com/#site",
           "url": "https://neuthek.com/",
           "name": "neuthek",
+          "alternateName": "neuthek — the next best cloud storage solution",
+          "description": "Marketing site for neuthek, the AI-aware personal cloud storage product in active development.",
           "publisher": { "@id": "https://neuthek.com/#org" },
           "inLanguage": "en"
         },
@@ -92,11 +122,17 @@
           "@type": "SoftwareApplication",
           "@id": "https://neuthek.com/#app",
           "name": "neuthek",
-          "applicationCategory": "Storage",
+          "alternateName": "neuthek personal cloud",
+          "applicationCategory": "StorageApplication",
           "applicationSubCategory": "CloudStorage",
           "operatingSystem": "Linux, macOS, Windows (via Docker, planned)",
-          "description": "An AI-aware personal cloud storage product in active development. Semantic image search and content-aware compression. The next best cloud storage solution. Self-host and hosted versions both planned; nothing publicly released yet.",
+          "description": "An AI-aware personal cloud storage product in active development. Semantic image search via OpenCLIP ViT-L-14 embeddings, content-aware compression via LinUCB bandit, privacy-first design with Postgres FORCE Row-Level Security and Fernet-encrypted cloud-sync refresh tokens. The next best cloud storage solution. Self-host and hosted versions both planned; nothing publicly released yet.",
+          "url": "https://neuthek.com/",
+          "downloadUrl": "https://neuthek.com/hosting",
           "softwareVersion": "0.1.0-dev",
+          "softwareRequirements": "Docker, 4 GB RAM minimum, 10 GB disk + storage for your photos. PostgreSQL 16, Redis 7, MinIO included in the docker-compose stack.",
+          "creator": { "@id": "https://neuthek.com/#org" },
+          "publisher": { "@id": "https://neuthek.com/#org" },
           "offers": [
             {
               "@type": "Offer",
@@ -116,11 +152,20 @@
           "featureList": [
             "Open source",
             "Self-hostable",
-            "Semantic image search via OpenCLIP",
-            "Content-aware compression",
-            "JWT authentication",
-            "PostgreSQL + pgvector + MinIO + Redis stack",
-            "Privacy-first design"
+            "Semantic image search via OpenCLIP ViT-L-14",
+            "Florence-2 image captions feeding hybrid CLIP-cosine + FTS ranker",
+            "Content-aware compression (WebP / MozJPEG / AVIF / JXL bandit-selected)",
+            "Camera RAW support (NEF, CR2, ARW, DNG, RAF, ORF, RW2, PEF)",
+            "Animated GIF passthrough (no frame loss)",
+            "PDF text extraction into the search index",
+            "JWT authentication + TOTP 2FA + Argon2 hashing",
+            "PostgreSQL 16 + pgvector + MinIO + Redis stack",
+            "FORCE Row-Level Security per user",
+            "Google Drive read-only sync with PKCE OAuth",
+            "BIPA-grade face recognition (opt-in, signed-consent ledger)",
+            "EXIF stripping on upload by default",
+            "Soft-delete trash with restore",
+            "Self-host via docker-compose"
           ]
         }
       ]

@@ -1118,6 +1118,12 @@ if (fs.existsSync(distDir)) {
   app.use(express.static(distDir, {
     immutable: true,
     maxAge: "1y",
+    // index: false — without this, express.static intercepts GET / and
+    // serves dist/index.html directly, bypassing our per-route prerender
+    // for the homepage (and only the homepage, since /features, /faq,
+    // etc. have no matching static file). Disabling the auto-index makes
+    // the catch-all below the single source of truth for HTML responses.
+    index: false,
     setHeaders(res, file) {
       // index.html should never be long-cached so a redeploy is visible.
       if (file.endsWith("index.html")) {
@@ -1192,6 +1198,25 @@ if (fs.existsSync(distDir)) {
   // additive; unknown paths fall through to the plain SPA shell.
   function metaForPath(reqPath) {
     if (reqPath === "/" || reqPath === "") {
+      // Sitelinks SearchAction — tells Google + Bing to render a
+      // search box under the brand SERP card. The "target" template
+      // is a URL pattern; we point at /faq#anchor so the result lands
+      // on a real, indexable answer rather than a JS-only handler.
+      const homeJsonLd = JSON.stringify({
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "@id": "https://neuthek.com/#site",
+        url: "https://neuthek.com/",
+        name: "neuthek",
+        potentialAction: {
+          "@type": "SearchAction",
+          target: {
+            "@type": "EntryPoint",
+            urlTemplate: "https://neuthek.com/faq?q={search_term_string}",
+          },
+          "query-input": "required name=search_term_string",
+        },
+      });
       return {
         title: "neuthek — the next best cloud storage solution",
         description:
@@ -1230,13 +1255,26 @@ if (fs.existsSync(distDir)) {
               <li>Stack: FastAPI, PostgreSQL, pgvector, Redis, MinIO, OpenCLIP, Florence-2.</li>
             </ul>
           </section>
+          <section>
+            <h2>Common questions</h2>
+            <p>
+              <strong>What is neuthek?</strong> An AI-aware personal cloud storage product in active development.
+              <strong>Is it open source?</strong> Yes — the self-host build is open source and free.
+              <strong>Does it train AI on my photos?</strong> No — your data is not used to train any model, and is never sold.
+              <strong>How does AI search work?</strong> OpenCLIP ViT-L-14 embeds each photo into a 768-dim vector; queries embed into the same space and pgvector ranks by cosine similarity.
+              <strong>What does it run on?</strong> FastAPI + PostgreSQL 16 + pgvector + Redis + MinIO + a separate ML worker. Self-host via docker-compose.
+              See the <a href="/faq">full FAQ</a> for more.
+            </p>
+          </section>
           <p>
             <a href="/waitlist">Join the waitlist</a> ·
             <a href="/features">Features</a> ·
             <a href="/hosting">Hosting</a> ·
+            <a href="/faq">FAQ</a> ·
             <a href="/updates">Weekly updates</a>
           </p>
         `,
+        jsonLd: homeJsonLd,
       };
     }
     if (reqPath === "/updates" || reqPath === "/updates/") {
@@ -1331,6 +1369,62 @@ if (fs.existsSync(distDir)) {
         title: "Verify your email — neuthek",
         description: "Confirm your neuthek waitlist signup.",
         canonical: "https://neuthek.com/waitlist/verify",
+      };
+    }
+    if (reqPath === "/faq" || reqPath === "/faq/") {
+      // Mirror of the FAQS list in src/pages/Faq.tsx — kept in this
+      // server file so the per-route prerender (and the FAQPage
+      // JSON-LD it injects) is visible to AI crawlers without
+      // rendering React. When you add or edit a question in Faq.tsx,
+      // copy the same q/a pair into FAQ_DATA below.
+      const FAQ_DATA = [
+        { q: "What is neuthek?", a: "neuthek is an AI-aware personal cloud storage product in active development. It combines S3-compatible object storage with a PostgreSQL + pgvector index so you can search your photos, videos, and documents by natural language — phrases like \"snowy roof at sunset\" or \"whiteboard photos from last week\" — instead of remembering filenames or scrolling. Two delivery modes are planned: open-source self-host (free) and managed hosted (waitlist). Nothing is publicly released yet." },
+        { q: "Is neuthek open source?", a: "Yes — the self-host build will be released under an open-source license. The same engine powers both the self-host distribution and the managed hosted version, so there is no \"open core\" lockout. Self-host is free and runs via docker-compose; hosted exists for users who'd rather not run their own server." },
+        { q: "When does neuthek launch?", a: "Both self-host and hosted are in active development. Weekly progress is posted on the /updates page — each Friday we publish a release-note article covering what shipped, what was fixed, and what's planned. To be notified when either ships, join the waitlist; we send a launch email when early-access opens and a second when general availability begins." },
+        { q: "Who is neuthek for?", a: "neuthek is built for people who currently use Google Photos, iCloud Photos, OneDrive, or Dropbox for their personal photo and document libraries, but want stronger privacy, full ownership of their data, and natural-language search. Practical fits include families consolidating their photo library, creatives organizing portfolios, students archiving coursework, and developers who want a self-hostable Drive replacement on their own hardware." },
+        { q: "Does neuthek train AI on my photos?", a: "No. Your photos, videos, documents, face embeddings, summaries, and search history are not used to train any AI model — neither neuthek's nor a third party's. They are also not sold to ad networks, brokers, or partners. The vision models we run (OpenCLIP, Florence-2, RetinaFace, ArcFace) are pre-trained, frozen weights — we never fine-tune on user data." },
+        { q: "What data does neuthek store about me?", a: "On upload, neuthek stores the original file in object storage and computes a 768-dimensional CLIP embedding plus an optional Florence-2 caption. EXIF metadata is stripped by default; GPS coordinates and camera fingerprints are opt-in per scope. For face recognition (also opt-in), neuthek stores a 512-dim ArcFace template tied to a person you label. All per-user rows are fenced behind Postgres FORCE Row-Level Security at the database layer." },
+        { q: "How does face recognition work and is it private?", a: "Face recognition is opt-in, off by default. When enabled, neuthek detects faces using RetinaFace and computes ArcFace embeddings (512-dim vectors) — the templates stay on the server you control and are never exported. The implementation is BIPA-grade: signed-consent ledger, three-year auto-expiry of unrelated templates, and an in-app data-deletion path that wipes the embeddings and any associated person records." },
+        { q: "Is my data encrypted?", a: "TLS is enforced for all client connections via Caddy. At rest, object storage supports SSE-S3 and SSE-KMS modes depending on backend. Refresh tokens for cloud-sync integrations (Google Drive) are encrypted with Fernet before being written to disk. Password hashes use Argon2. Postgres at-rest encryption is recommended at the OS or volume layer and documented in the self-host setup." },
+        { q: "How does AI photo search actually work?", a: "When a photo is uploaded, neuthek computes a 768-dimensional embedding using the OpenCLIP ViT-L-14 model. When you search a phrase, the same model embeds your query into the same vector space and Postgres + pgvector finds the nearest matches by cosine similarity. The result is ranked alongside traditional Postgres full-text-search over filename, EXIF metadata, and Florence-2 captions, so both \"sunset\" (semantic) and \"IMG_0420\" (exact filename) work." },
+        { q: "What kinds of searches work?", a: "Concrete objects (\"red car\", \"golden retriever\"), scenes (\"snowy mountain\", \"office whiteboard\"), styles (\"black and white portrait\", \"watercolor\"), and abstract concepts (\"cozy\", \"chaotic\"). Searches can combine modalities: \"PDF receipts from Amazon\" works because the OCR-extracted text on PDFs joins the same FTS index that backs natural-language queries." },
+        { q: "Does AI search run locally or in the cloud?", a: "On the server that runs neuthek. In the self-host build, that's your own hardware — the ML worker container holds the OpenCLIP + Florence-2 weights and processes every embedding request inside your network. In the managed hosted version, embeddings are computed in your tenant on managed GPUs, with no third-party AI API call." },
+        { q: "What file types does neuthek support?", a: "Photos: JPEG, PNG, HEIC, HEIF, WebP, AVIF, animated GIF (passthrough — frames preserved), and camera RAW formats (Nikon NEF, Canon CR2, Sony ARW, Adobe DNG, Fuji RAF, Olympus ORF, Panasonic RW2, Pentax PEF) via LibRaw decoding. Videos: MP4, MOV, WebM, MKV. Documents: PDF (with OCR-extracted text into the search index), Markdown, plain text, and source-code files (.py, .js, .ts, .md, etc.) with syntax-highlighted preview." },
+        { q: "Does neuthek handle camera RAW files properly?", a: "Yes. RAW files are decoded with rawpy (a Python binding for LibRaw) into the full sensor image, then re-encoded into a high-quality JPEG (q=95) for thumbnails — not just the small embedded preview most apps fall back to. NEF, CR2, ARW, DNG, RAF, ORF, RW2, and PEF formats all work." },
+        { q: "What are the upload size limits?", a: "The self-host default upload limit is 200 MB per file with a 10 GB per-day cap per user, configurable in environment variables. The managed hosted version's per-tier limits will be published on the /hosting page when pricing is final." },
+        { q: "What is content-aware compression?", a: "neuthek's served-image pipeline uses a LinUCB contextual bandit to pick the best codec and quality for each image. A 32-dimensional feature vector (resolution, aspect ratio, detected screenshot/photo, color count, etc.) is fed into the bandit, which chooses among WebP, MozJPEG, AVIF, and JXL at quality 55-92. Detected screenshots fall into a lossless WebP path. Animated GIFs bypass lossy paths entirely. The result is typically 40-70% smaller files than uniform JPEG-q85 with no visible quality drop." },
+        { q: "How does self-hosting work?", a: "The self-host distribution will ship as a docker-compose stack: FastAPI app container, ML worker container (Florence-2 / OpenCLIP / RetinaFace weights), PostgreSQL 16 with pgvector extension, Redis 7 for queueing, MinIO for object storage, and Caddy for TLS. `docker compose up -d` brings the whole thing up. Hardware: ~4 GB RAM minimum (8 GB recommended), 10 GB disk + your photo storage, and ideally a recent CPU with AVX2 for ML inference. GPU is optional but speeds up batch processing." },
+        { q: "What's the difference between self-host and managed hosted?", a: "Same engine, different operations. Self-host is free, gives you complete control of the hardware and data, and requires comfort with Docker for setup and updates. Managed hosted is paid (pricing TBD), runs your data in a single-tenant deployment fenced behind Postgres RLS, handles backups + TLS + updates automatically, and is for users who'd rather not maintain their own server. There is no feature gating between the two builds." },
+        { q: "Can I migrate from Google Photos / iCloud / OneDrive / Dropbox?", a: "Yes. For Google Drive (which holds Google Photos exports plus general Drive files), neuthek has built-in cloud sync — Settings -> Cloud sync -> Connect Google Drive grants read-only access to your Drive folder tree, mirrors it into neuthek, and runs an hourly background sweep for new files. For iCloud / OneDrive / Dropbox, the current path is: use the provider's bulk export (Apple's Privacy Portal, OneDrive's download-as-zip, Dropbox's account-export) then drag the folder into neuthek for upload. Direct iCloud / OneDrive / Dropbox sync integrations are on the roadmap." },
+        { q: "How does Google Drive sync work?", a: "neuthek uses Google's OAuth 2.0 with PKCE to request the `drive.readonly` scope — read-only, so neuthek can never write or delete files in your Drive. The refresh token is encrypted with Fernet before being stored. An hourly background sweep pulls new files, mirroring your Drive folder tree under a top-level \"Google Drive\" folder. Conflict detection flags files you edited locally after the last sync. Drive content is fenced out of AI training pipelines by default (Google Limited Use policy compliance); you can opt in per source to enable AI summaries and face detection." },
+        { q: "How much will it cost?", a: "Self-host is free, forever. Managed hosted pricing is being finalized and will be published on the /hosting page before launch. The plan is: a free tier with a modest storage cap, a Pro tier for personal use, and a Business tier for shared / family use — all paid through Stripe." },
+        { q: "How do I get early access?", a: "Join the waitlist at neuthek.com/waitlist. We email twice — once when early-access opens (limited cohort for the hosted version) and once at general availability. The signup form also has a checkbox for an optional weekly newsletter that summarizes each /updates entry." },
+        { q: "What technology stack does neuthek use?", a: "Backend: FastAPI on Python 3.12 with async SQLAlchemy and asyncpg. Database: PostgreSQL 16 with the pgvector extension for embedding indexes. Cache + queue: Redis 7. Object storage: MinIO (S3 API), supporting SSE-S3 / SSE-KMS encryption. Vision: open-clip-torch (ViT-L-14) for embeddings, insightface (RetinaFace + ArcFace) for face detection, and microsoft/Florence-2-large for image captions. Auth: fastapi-users with JWT bearer tokens, TOTP 2FA, and Argon2 password hashing. Frontend: React 18 with TanStack Query, Vite, and Prism for code-file preview." },
+      ];
+      const faqHtml = FAQ_DATA.map((f) =>
+        `<section><h3>${escapeHtml(f.q)}</h3><p>${escapeHtml(f.a)}</p></section>`
+      ).join("");
+      const jsonLd = JSON.stringify({
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "@id": "https://neuthek.com/faq#page",
+        url: "https://neuthek.com/faq",
+        name: "FAQ — neuthek",
+        inLanguage: "en",
+        isPartOf: { "@id": "https://neuthek.com/#site" },
+        mainEntity: FAQ_DATA.map((f) => ({
+          "@type": "Question",
+          name: f.q,
+          acceptedAnswer: { "@type": "Answer", text: f.a },
+        })),
+      });
+      return {
+        title: "FAQ — neuthek (AI-aware personal cloud storage)",
+        description:
+          "Frequently asked questions about neuthek — what it is, how AI search works, privacy posture, self-host vs hosted, Google Drive migration, file support, and pricing.",
+        canonical: "https://neuthek.com/faq",
+        bodyHtml: `<header><h1>Answers about neuthek</h1></header>${faqHtml}`,
+        jsonLd,
       };
     }
     return null;

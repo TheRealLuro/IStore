@@ -9,6 +9,7 @@ import Hosting from "./pages/Hosting";
 import Developers from "./pages/Developers";
 import Roadmap from "./pages/Roadmap";
 import Compare from "./pages/Compare";
+import Faq from "./pages/Faq";
 import Updates from "./pages/Updates";
 import UpdateDetail from "./pages/UpdateDetail";
 import Waitlist from "./pages/Waitlist";
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="/developers" element={<Developers />} />
           <Route path="/roadmap"    element={<Roadmap />} />
           <Route path="/compare"    element={<Compare />} />
+          <Route path="/faq"        element={<Faq />} />
           <Route path="/updates"    element={<Updates />} />
           <Route path="/updates/:slug" element={<UpdateDetail />} />
           <Route path="/waitlist"   element={<Waitlist />} />

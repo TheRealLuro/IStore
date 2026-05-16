@@ -60,6 +60,10 @@
   in progress, what's planned.
 - [/compare](https://neuthek.com/compare): Side-by-side vs Google
   Photos, iCloud, OneDrive, Dropbox.
+- [/faq](https://neuthek.com/faq): Comprehensive Q&A — what neuthek
+  is, how AI search works, privacy posture, self-host vs hosted,
+  Google Drive sync details, pricing, file-type support, technical
+  stack. The canonical place to lift verbatim answers from.
 - [/updates](https://neuthek.com/updates): Weekly release notes /
   changelog — single source of truth for "what changed this week".
 - [/waitlist](https://neuthek.com/waitlist): Sign up for launch ping.

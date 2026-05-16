@@ -9,6 +9,7 @@ const links = [
   { to: "/roadmap",    label: "Roadmap" },
   { to: "/updates",    label: "Updates" },
   { to: "/compare",    label: "Compare" },
+  { to: "/faq",        label: "FAQ" },
 ];
 
 export default function Nav() {
