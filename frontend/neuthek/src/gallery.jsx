@@ -8,6 +8,7 @@ import React, { useState as useStateG, useMemo as useMemoG, useRef as useRefG, u
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Icon, initials as defaultInitials } from "./icons.jsx";
+import NeuthekMark from "./NeuthekMark.jsx";
 import { TAGS } from "./data.jsx";
 import { getStorageUsage } from "@/api/storage";
 import { listPeople, faceCropUrl } from "@/api/people";
@@ -91,7 +92,9 @@ export function Sidebar({ view, onView, onUpload, onAccount, attentionCount = 0,
   return (
     <nav className="sidebar" aria-label="Primary">
       <div className="sidebar__brand">
-        <span className="sidebar__brand-mark"><Icon name="logo" size={14} strokeWidth={1.8}/></span>
+        <span className="sidebar__brand-mark" style={{ background: "transparent", padding: 0 }}>
+          <NeuthekMark size={20}/>
+        </span>
         neuthek
       </div>
 

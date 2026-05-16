@@ -330,19 +330,41 @@ async def list_images(
             Tag, Tag.id == ImageTag.tag_id
         ).where(Tag.label == tag)
     if person_id is not None or person is not None:
-        # Join images -> face_detections -> faces -> persons.
-        stmt = (
-            stmt.join(FaceDetection, FaceDetection.image_id == Image.id)
+        # Two ways an image can belong to a person:
+        #   (a) Face detection: image → face_detections → faces → persons
+        #   (b) Manual tag:     image → image_persons → persons
+        #
+        # The user's "select 29 photos, name them Me" flow writes (b)
+        # for every selected image, even ones where face detection
+        # failed. Without considering (b) here, the per-person photo
+        # count read low (only the photos with a detected face showed
+        # up under the person). The UNION below covers both.
+        from backend.models import ImagePerson
+
+        face_subq = (
+            select(FaceDetection.image_id)
             .join(Face, Face.id == FaceDetection.face_id)
             .where(FaceDetection.user_id == user.id)
         )
+        manual_subq = select(ImagePerson.image_id).where(
+            ImagePerson.user_id == user.id
+        )
         if person_id is not None:
-            stmt = stmt.where(Face.person_id == person_id)
+            face_subq = face_subq.where(Face.person_id == person_id)
+            manual_subq = manual_subq.where(ImagePerson.person_id == person_id)
         if person is not None:
-            stmt = stmt.join(Person, Person.id == Face.person_id).where(
+            face_subq = face_subq.join(
+                Person, Person.id == Face.person_id
+            ).where(
                 Person.user_id == user.id, Person.display_name == person
             )
-        stmt = stmt.distinct()
+            manual_subq = manual_subq.join(
+                Person, Person.id == ImagePerson.person_id
+            ).where(
+                Person.user_id == user.id, Person.display_name == person
+            )
+        person_image_ids = face_subq.union(manual_subq)
+        stmt = stmt.where(Image.id.in_(person_image_ids))
     if has_faces is True:
         # EXISTS subquery — cheaper than a join + DISTINCT and still
         # composes with all the other filters above.
@@ -607,23 +629,25 @@ async def summarize_progress(
     (everything pending for normal-upload reasons; no banner) from an
     account that's actively re-summarizing (banner shown).
     """
-    # A row is "pending" iff the user is still waiting on a summary.
-    # That means:
-    #   - pending_summary=True (worker hasn't taken the job yet), OR
-    #   - summary IS NULL AND the worker has never tried it
-    #     (summary_generated_at IS NULL).
+    # A row is "pending" iff the worker hasn't even attempted it yet.
+    # That means `summary_generated_at IS NULL` — the worker either
+    # hasn't picked the job up, or hasn't finished.
     #
-    # The third state — `summary_generated_at IS NOT NULL AND
-    # summary IS NULL` — is the worker ran, the model returned no
-    # usable text (corrupt image, model OOM, content unsupported),
-    # and another retry would just spin. We exclude those from the
-    # progress count so the user doesn't see "58/59" forever after
-    # the queue actually drains. The Library Maintenance section
-    # offers a "force re-summarize" button for the rare case where
-    # a model retry would help.
+    # A row with `summary_generated_at IS NOT NULL AND summary IS NULL`
+    # is dead-letter: the worker ran, the model returned no usable text
+    # (corrupt image, OOM, content unsupported), and re-running would
+    # just spin. We exclude those from the progress count so the user
+    # doesn't see "58/59" forever after the queue actually drains.
+    # The per-item "Force re-summarize" action is the manual retry path.
+    #
+    # Previously this also checked `pending_summary=True` as an OR, but
+    # the older failure path stamped `summary_generated_at` while
+    # leaving `pending_summary=True`, so stuck rows were double-counted
+    # — the counter stuck at N-1/N forever. _mark_done now sets
+    # pending_summary=False on failure too, but this predicate is the
+    # belt-and-suspenders for any historical rows that pre-date that fix.
     pending_predicate = (
-        (Image.pending_summary.is_(True))
-        | (Image.summary.is_(None) & Image.summary_generated_at.is_(None))
+        Image.summary.is_(None) & Image.summary_generated_at.is_(None)
     )
     row = (
         await session.execute(
@@ -658,13 +682,13 @@ async def summarize_progress(
                     Image.user_id == user.id,
                     Image.deleted_at.is_(None),
                     Image.skip_ai_training.is_(False),
-                    # Same predicate as `pending` above — only enqueue
-                    # rows the worker hasn't already given up on.
-                    # Rows with summary_generated_at set + summary
-                    # NULL are dead-letter; manual re-summarize via
+                    # Match `pending_predicate` above. Rows with
+                    # summary_generated_at set + summary NULL are
+                    # dead-letter; manual re-summarize via the per-item
+                    # "Force re-summarize" action or
                     # /images/backfill-summaries?force=true if needed.
-                    (Image.pending_summary.is_(True))
-                    | (Image.summary.is_(None) & Image.summary_generated_at.is_(None)),
+                    Image.summary.is_(None),
+                    Image.summary_generated_at.is_(None),
                 )
                 .order_by(Image.uploaded_at.desc())
                 .limit(8)
@@ -1574,11 +1598,17 @@ async def bulk_delete(
 ) -> dict:
     """Bulk-soft-delete to Trash. Pass `?purge=true` to skip the trash
     and hard-purge immediately (used by the "Empty Trash" path)."""
+    # When purging, we need to find ALREADY-deleted rows (they sit in
+    # the Trash with deleted_at set). When soft-deleting, only find rows
+    # not yet trashed. Previously this filtered `deleted_at IS NULL`
+    # unconditionally — which meant "Delete forever" from the Trash
+    # view never matched any rows and silently reported "skipped".
     stmt = select(Image).where(
         Image.id.in_(ids),
         Image.user_id == user.id,
-        Image.deleted_at.is_(None),
     )
+    if not purge:
+        stmt = stmt.where(Image.deleted_at.is_(None))
     result = await session.execute(stmt)
     images = list(result.scalars().all())
     if purge:

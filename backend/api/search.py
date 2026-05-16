@@ -179,6 +179,25 @@ def _tokenize_query(q: str) -> list[str]:
     return tokens
 
 
+def _expand_tokens(tokens: list[str]) -> list[str]:
+    """Expand each token with its synonyms so the keyword-overlap gate
+    in `semantic_search` accepts synonym matches too.
+
+    Without this, `_text_search`'s FTS expansion would surface a row
+    on a synonym hit, but then the post-filter would drop it because
+    none of the user's literal tokens appear in `_file_haystack_text`.
+    Net result: zero rank-list change. By expanding here too, the
+    full pipeline honors synonyms end-to-end.
+    """
+    from backend.synonyms import SYNONYMS_INDEX
+
+    out: set[str] = set()
+    for tok in tokens:
+        out.add(tok)
+        out.update(SYNONYMS_INDEX.get(tok, set()))
+    return sorted(out)
+
+
 def _file_haystack_text(image) -> str:
     """Concatenated lowercased text of a single Image — for client-side
     keyword overlap so we can require a query token to appear somewhere
@@ -237,7 +256,7 @@ async def semantic_search(
                 "Semantic search requires the [ml] extras to be installed.",
             )
 
-    tokens = _tokenize_query(q)
+    tokens = _expand_tokens(_tokenize_query(q))
 
     # --- merge ----------------------------------------------------------
     #
@@ -349,7 +368,18 @@ async def _text_search(
     query is below FTS's lexeme threshold, e.g. very short tokens). FTS
     rank is normalized to [0, 1] by dividing by the max rank in the
     result set so the blend with CLIP cosine is fair.
+
+    Query expansion: we build BOTH a strict `plainto_tsquery(q)` AND an
+    OR'd `to_tsquery` of synonyms (e.g. `vibrant` also matches
+    `colorful` / `vivid` / `bright`) — see backend/synonyms.py. The
+    match predicate accepts either, but the rank uses the strict
+    query so exact-token matches still dominate the score. Without
+    the expansion, FTS contributed zero to a `vibrant` search whose
+    only matching row says "colorful pattern" — and the user's
+    intuition that "those words mean the same thing" was right.
     """
+    from backend.synonyms import expand_query_to_tsquery
+
     haystack = _build_haystack()
     # Cast the language literal to `regconfig` so Postgres binds to the
     # `to_tsvector(regconfig, text)` overload. Without the cast we get a
@@ -358,15 +388,31 @@ async def _text_search(
     # not exist`. Same for plainto_tsquery.
     english = cast(literal("english"), postgresql.REGCONFIG)
     tsvec = func.to_tsvector(english, haystack)
-    tsquery = func.plainto_tsquery(english, q)
-    rank = func.ts_rank_cd(tsvec, tsquery).label("rank")
+    tsquery_strict = func.plainto_tsquery(english, q)
+    # Expanded query for the predicate: synonyms OR'd in per token.
+    # If expansion comes back empty (no usable tokens) we fall back to
+    # the strict query everywhere.
+    expanded_str = expand_query_to_tsquery(q)
+    if expanded_str:
+        try:
+            tsquery_expanded = func.to_tsquery(english, expanded_str)
+            match_predicate = tsvec.op("@@")(tsquery_strict) | tsvec.op("@@")(tsquery_expanded)
+        except Exception:
+            # to_tsquery raises on malformed input; fall back to strict.
+            match_predicate = tsvec.op("@@")(tsquery_strict)
+    else:
+        match_predicate = tsvec.op("@@")(tsquery_strict)
+    # Rank uses the STRICT query so exact-token matches outrank
+    # synonym-only matches. The expansion exists to surface rows,
+    # not to rerank them above literal matches.
+    rank = func.ts_rank_cd(tsvec, tsquery_strict).label("rank")
 
     fts_stmt = (
         select(Image, rank)
         .where(
             Image.user_id == user_id,
             Image.deleted_at.is_(None),
-            tsvec.op("@@")(tsquery),
+            match_predicate,
         )
         .order_by(rank.desc())
         .limit(limit)

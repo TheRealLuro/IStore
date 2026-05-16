@@ -104,20 +104,55 @@ async def list_people(
         .correlate(Person)
         .scalar_subquery()
     )
+    # Photo count per person is the DISTINCT number of images linked to
+    # this person via EITHER (a) a face detection that maps to a face
+    # row, OR (b) a manual ImagePerson row from the multi-select tag
+    # flow. Previously this read `Person.face_count` (a denormalized
+    # counter incremented per Face row), which over-counted group
+    # photos with multiple detections of the same person AND missed
+    # manually-tagged photos with no detected face. The user saw e.g.
+    # "29 photos" in the People tab but "16" in the drill-in. Compute
+    # both numbers from the same source so they always match.
+    from backend.models import ImagePerson as _IP
+
+    # Per-person scalar subquery: UNION the two image-id sources, then
+    # count rows. The UNION (not UNION ALL) deduplicates, so an image
+    # that's both face-detected AND manually tagged for this person
+    # counts once.
+    from sqlalchemy import literal_column, union
+
+    union_sq = union(
+        select(FaceDetection.image_id)
+            .join(Face, Face.id == FaceDetection.face_id)
+            .where(Face.user_id == user.id, Face.person_id == Person.id),
+        select(_IP.image_id)
+            .where(_IP.user_id == user.id, _IP.person_id == Person.id),
+    ).alias("person_image_ids")
+    photo_count_sq = (
+        select(func.count(literal_column("image_id")))
+        .select_from(union_sq)
+        .correlate(Person)
+        .scalar_subquery()
+    )
+
     p_stmt = (
-        select(Person, best_face_sq.label("sample_face_id"))
+        select(
+            Person,
+            best_face_sq.label("sample_face_id"),
+            photo_count_sq.label("photo_count"),
+        )
         .where(Person.user_id == user.id)
-        .order_by(Person.face_count.desc())
+        .order_by(photo_count_sq.desc())
     )
     p_rows = (await session.execute(p_stmt)).all()
     persons = [
         PersonRead(
             id=p.id,
             display_name=p.display_name,
-            face_count=p.face_count,
+            face_count=int(photo_count or 0),  # now: distinct image count
             sample_face_id=int(face_id) if face_id is not None else None,
         )
-        for (p, face_id) in p_rows
+        for (p, face_id, photo_count) in p_rows
     ]
 
     # Unlabeled clusters — same logic: highest confidence first,
@@ -315,6 +350,27 @@ async def detect_and_label(
             )
         ).scalars().all()
         return {int(r) for r in rows}
+
+    # The manual ImagePerson row is the user's intent: "this image is
+    # of this person, regardless of whether face detection finds a
+    # face." We INSERT one per selected image up-front so the
+    # per-person photo count matches what the user selected — even
+    # when the cascade detector returns empty. Use ON CONFLICT DO
+    # NOTHING so re-tagging the same image is idempotent.
+    from backend.models import ImagePerson
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    ip_stmt = pg_insert(ImagePerson).values(
+        [
+            {
+                "image_id": image_id,
+                "person_id": target.id,
+                "user_id": user.id,
+                "source": "manual",
+            }
+            for image_id in body.image_ids
+        ]
+    ).on_conflict_do_nothing(index_elements=["image_id", "person_id"])
+    await session.execute(ip_stmt)
 
     images_scanned = 0
     new_faces = 0

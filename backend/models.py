@@ -460,6 +460,49 @@ class Face(Base):
     )
 
 
+class ImagePerson(Base):
+    """Direct image-to-person association independent of face detection.
+
+    The user multi-select tag-as-person flow writes here for every
+    selected image — including ones where face detection fired no
+    detections. Without this table, an image with no detected face
+    has no path back to its owning Person, so the user's "tag these 29
+    photos as Me" surfaced 16 in the drill-in (only the ones with
+    detected faces). The list_images person filter UNIONs face-derived
+    matches with image_persons rows so the per-person count is
+    consistent with what the user intended.
+
+    `source='manual'` means the user explicitly tagged the image.
+    `source='auto'` is the backfill for historical face-derived rows
+    (added in migration 0032) and reserved for future image-level
+    inference paths that bypass per-face rows.
+    """
+
+    __tablename__ = "image_persons"
+
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    person_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("persons.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="manual"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class FaceDetection(Base):
     __tablename__ = "face_detections"
 

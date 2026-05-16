@@ -8,6 +8,7 @@
 import React, { useState as useStateA, useEffect as useEffectA } from "react";
 import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
+import NeuthekMark from "./NeuthekMark.jsx";
 import { TermsModal as TermsModalA, PrivacyModal as PrivacyModalA } from "./policies.jsx";
 import { ConsentsModal } from "./consents.jsx";
 import { login, loginWithTotp, me, register, TotpRequiredError } from "@/api/auth";
@@ -329,7 +330,9 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       <aside className="auth__brand">
         <div className="auth__brand-top">
           <div className="auth__brand-mark">
-            <span className="auth__brand-mark-mark"><Icon name="logo" size={16} strokeWidth={1.8}/></span>
+            <span className="auth__brand-mark-mark" style={{ background: "transparent", padding: 0 }}>
+              <NeuthekMark size={24}/>
+            </span>
             neuthek
           </div>
         </div>

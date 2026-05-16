@@ -197,13 +197,17 @@ async def _mark_done(
     `UPDATE ... WHERE id = :id` on a fresh session sidesteps that
     entirely.
 
-    When `result is None` the dispatch produced nothing usable — the LLM
-    crashed, the model wasn't loadable, the file was corrupt, etc. In
-    that case we deliberately keep `pending_summary=True` so the row
-    stays visible to the regular backfill pass (which targets
-    `pending_summary=true OR summary IS NULL`). Marking it complete
-    would silently drop the row from the queue and leave the user with
-    no summary forever.
+    When `result is None` the dispatch produced nothing usable — the
+    file was corrupt, the model returned no caption, OOM, etc. We
+    dead-letter the row: stamp `summary_generated_at` AND flip
+    `pending_summary=false`. The progress banner stops counting it
+    (otherwise the X/Y meter sticks forever at, say, 58/59); the user
+    can hit "Force re-summarize" in the per-item menu to retry if they
+    think the model would succeed on a second attempt. Previously this
+    function deliberately kept pending_summary=True on failure "so the
+    row gets retried", but the retry never happened on its own and the
+    counter got pinned for hours — net result was a worse UX than
+    making the user retry explicitly.
     """
     from sqlalchemy import update as sa_update
 
@@ -219,8 +223,10 @@ async def _mark_done(
         if signals:
             values["summary_signals"] = signals
     else:
+        # Dead-letter — stop counting toward "pending" so the banner
+        # clears. Force-resummarize is the user-driven retry path.
+        values["pending_summary"] = False
         values["summary_generated_at"] = datetime.now(timezone.utc)
-        # Keep pending_summary alone so the row gets retried.
 
     async with SessionLocal() as fresh:
         await fresh.execute(

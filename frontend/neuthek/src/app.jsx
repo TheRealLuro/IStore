@@ -1526,13 +1526,36 @@ export function App() {
   // (null = root). We only fetch when signed-in to avoid firing a 401 on
   // the auth screen.
   const trimmedQuery = query.trim();
+  // Debounced query — used as the cache key + enabled gate for the
+  // /search request. Lags `query` by 280 ms so each keystroke doesn't
+  // fire a network round-trip. The visible input still updates
+  // immediately; only the network call waits. Pressing Enter
+  // short-circuits via `submitSearch` which sets debouncedQuery
+  // synchronously so the user gets results instantly when they want
+  // them now instead of in a fifth of a second.
+  const [debouncedQuery, setDebouncedQuery] = useStateApp("");
+  useEffectApp(() => {
+    const t = setTimeout(() => setDebouncedQuery(trimmedQuery), 280);
+    return () => clearTimeout(t);
+  }, [trimmedQuery]);
   // Top-level "type" views (Photos, Videos, Documents) ignore the
   // current folder and surface the user's whole library by media kind.
   // Without this, those tabs would silently filter to `folder_id IS
   // NULL` (the root) and miss everything inside Google Drive / synced
   // folders — which surprised users with "where did my files go?"
   const isTypeView = view === "photos" || view === "videos" || view === "docs";
-  const useGlobalScope = trimmedQuery.length > 0 || isTypeView;
+  // Cross-folder scope when:
+  //   - The user is searching (results need to span everything)
+  //   - The user is in a type view (Photos / Videos / Documents are
+  //     conceptually "all of this kind anywhere")
+  //   - The user has any filter chip active (scene / content type /
+  //     indoor-outdoor / has-people / has-location). Without this,
+  //     clicking "Indoor" while sitting at root applied
+  //     indoor_outdoor=indoor AND folder_id IS NULL, which returned
+  //     near-zero on libraries where most content lives inside Google
+  //     Drive subfolders. The facet COUNTS were already cross-folder,
+  //     so the chips invited clicks that produced empty galleries.
+  const useGlobalScope = trimmedQuery.length > 0 || isTypeView || anyFilterActive;
   const filesScope = useGlobalScope ? "ALL" : folderId;
   // Fold the filter chip state into the listFiles query so server-side
   // filtering does the heavy lifting (the gallery only paints what
@@ -1582,9 +1605,9 @@ export function App() {
   // display so the most relevant hits stay on top. Local refinement
   // (sort / type-filter) still applies on top of these results.
   const { data: searchHits } = useQuery({
-    queryKey: ["search", trimmedQuery],
-    queryFn: () => searchSemantic(trimmedQuery, 60),
-    enabled: signedIn && trimmedQuery.length > 0,
+    queryKey: ["search", debouncedQuery],
+    queryFn: () => searchSemantic(debouncedQuery, 60),
+    enabled: signedIn && debouncedQuery.length > 0,
     staleTime: 30_000,
     keepPreviousData: true,
   });
@@ -1843,6 +1866,10 @@ export function App() {
   const submitSearch = (q) => {
     const v = (q ?? query).trim();
     if (!v) return;
+    // Fire the search immediately on Enter — bypass the 280ms debounce
+    // so the user gets results without waiting once they've committed
+    // to the query.
+    setDebouncedQuery(v);
     setHistory(h => [v, ...h.filter(x => x.toLowerCase() !== v.toLowerCase())].slice(0, 8));
     setShowHistory(false);
   };
