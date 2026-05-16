@@ -44,6 +44,7 @@ import {
   listFiles, getImageGeo, servedUrl, renameImage,
   getSummarizeProgress, searchSemantic, getFacets,
   bulkDelete, bulkMove, createFolderWithImages,
+  clearSearchHistory,
 } from "@/api/files";
 import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
 import { eraseImageCaches } from "./cache-eraser.js";
@@ -1592,7 +1593,6 @@ export function App() {
                   <>
                     <div className="search-history__head">
                       <span className="search-history__title">Recent searches</span>
-                      <button className="search-history__clear" onClick={() => setHistory([])}>Clear all</button>
                     </div>
                     {history.map((h, i) => (
                       <button key={i} className="search-history__item"
@@ -1605,6 +1605,33 @@ export function App() {
                         </span>
                       </button>
                     ))}
+                    {/* §C1.4 — Clear history affordance at the dropdown
+                        bottom. Hits `DELETE /search/history` for the
+                        audit trail, then wipes localStorage. The button
+                        used to live in the header but the spec calls
+                        for the bottom position. */}
+                    <button
+                      className="search-history__clear search-history__clear--bottom"
+                      onClick={async () => {
+                        try { await clearSearchHistory(); } catch { /* offline ok */ }
+                        setHistory([]);
+                        setShowHistory(false);
+                      }}
+                      style={{
+                        width: "100%",
+                        marginTop: 4,
+                        padding: "8px 10px",
+                        textAlign: "left",
+                        fontSize: 12,
+                        color: "var(--ink-3)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        borderRadius: 6,
+                      }}
+                    >
+                      <Icon name="trash" size={12}/> Clear history
+                    </button>
                   </>
                 )}
               </div>

@@ -15,10 +15,23 @@ export interface FolderUpdate {
   status_color?: string | null;
 }
 
-/** List folders directly inside `parentId` (null = root view). */
-export async function listFolders(parentId: string | null): Promise<Folder[]> {
+/** §C1.3 — narrow the type-pill filter applied to folder visibility.
+ *  When set, only folders whose entire subtree contains ≥ 1 file of
+ *  this category come back. `"image" | "video" | "document"` — matches
+ *  `Image.category`. */
+export type FolderContainsType = "image" | "video" | "document";
+
+/** List folders directly inside `parentId` (null = root view).
+ *  Pass `containsType` when the gallery's type pill is active so the
+ *  folder grid hides containers that have no matching files anywhere
+ *  in their subtree. */
+export async function listFolders(
+  parentId: string | null,
+  containsType?: FolderContainsType | null,
+): Promise<Folder[]> {
   const params = new URLSearchParams();
   if (parentId) params.set("parent_id", parentId);
+  if (containsType) params.set("contains_type", containsType);
   const qs = params.toString();
   return api.get<Folder[]>(`/folders/${qs ? `?${qs}` : ""}`);
 }

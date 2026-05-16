@@ -1,5 +1,12 @@
 // Rename modal — AI smart-name suggestions based on file content.
 // Naming convention: enforces extension match + safe characters.
+//
+// §C1.2 — for `image`-category files, suggestions come from the real
+// backend endpoint `GET /images/{id}/suggest-names` which reuses the
+// already-computed Florence-2 / Qwen summary signals (topic, summary,
+// scene, captured place, named people). For non-image types or when
+// the API call fails (network blip, image still uploading), the modal
+// falls back to the deterministic client-side suggestions.
 import React, {
   useState as useStateRn,
   useEffect as useEffectRn,
@@ -10,6 +17,7 @@ import {
   Modal as ModalRn,
   ModalClose as ModalCloseRn,
 } from "./primitives.jsx";
+import { suggestNames } from "@/api/files";
 
 const SLUG_RX = /[^A-Za-z0-9._-]+/g;
 
@@ -90,27 +98,73 @@ export function RenameModal({ open, file, onClose, onSave }) {
   const [error, setError] = useStateRn(null);
   const [pickedIdx, setPickedIdx] = useStateRn(-1);
   const [thinking, setThinking] = useStateRn(false);
+  // §C1.2 — when the file is an image we fetch real AI suggestions
+  // from the backend; for other types or when the API isn't reachable
+  // we fall back to the deterministic client suggestions.
+  const [aiSuggestions, setAiSuggestions] = useStateRn([]);
+  const [pendingSummary, setPendingSummary] = useStateRn(false);
   // Held by the Regenerate button so the 500ms "thinking" fake-spinner
   // doesn't fire setState on an unmounted modal when the user closes
   // mid-animation.
   const regenTimerRef = React.useRef(null);
+
+  const fetchAi = React.useCallback(async (f) => {
+    // Only images currently have backend-computed signals to draw on.
+    // Future: videos go through the same path once the keyframe →
+    // summarize pipeline lands.
+    if (!f || (f.type !== "image" && f.type !== "video")) {
+      setAiSuggestions([]);
+      return false;
+    }
+    try {
+      setThinking(true);
+      const resp = await suggestNames(f.id, 3);
+      setAiSuggestions(resp?.suggestions || []);
+      setPendingSummary(!!resp?.pending_summary);
+      return true;
+    } catch {
+      // Network blip / 404 — fall back to client deterministic.
+      setAiSuggestions([]);
+      return false;
+    } finally {
+      setThinking(false);
+    }
+  }, []);
 
   useEffectRn(() => {
     if (!open || !file) return;
     setName(file.name);
     setError(null);
     setPickedIdx(-1);
-    setThinking(true);
-    const t = setTimeout(() => setThinking(false), 700);
-    return () => clearTimeout(t);
-  }, [open, file]);
+    setPendingSummary(false);
+    fetchAi(file);
+  }, [open, file, fetchAi]);
 
   useEffectRn(() => () => {
     if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
   }, []);
 
   const ext = file?.ext?.toLowerCase() || "";
-  const suggestions = useMemoRn(() => generateSuggestions(file), [file]);
+  // Merge order: real AI proposals first (when present), then the
+  // client deterministic fallbacks. `dedupName` keeps duplicates out
+  // when both paths produce the same name.
+  const suggestions = useMemoRn(() => {
+    const seen = new Set();
+    const out = [];
+    for (const s of aiSuggestions) {
+      const k = (s.name || "").toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push({ name: s.name, why: s.why });
+    }
+    for (const s of generateSuggestions(file)) {
+      const k = (s.name || "").toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      out.push(s);
+    }
+    return out.slice(0, 5);
+  }, [aiSuggestions, file]);
 
   const validate = (v) => {
     if (!v || v.trim().length === 0) return "Filename can't be empty.";
@@ -173,19 +227,47 @@ export function RenameModal({ open, file, onClose, onSave }) {
           <div className="kicker"><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px", marginRight: 4 }}/> AI suggestions</div>
           <button
             className="btn btn--ghost btn--sm"
-            onClick={() => {
-              setThinking(true);
-              if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
-              regenTimerRef.current = setTimeout(() => {
+            onClick={async () => {
+              // §C1.2 — real refetch for image/video files; clean
+              // setTimeout-based "thinking" spin for the deterministic
+              // fallback path so the UI still flickers honestly.
+              if (regenTimerRef.current) {
+                clearTimeout(regenTimerRef.current);
                 regenTimerRef.current = null;
-                setThinking(false);
-              }, 500);
+              }
+              const did = await fetchAi(file);
+              if (!did) {
+                setThinking(true);
+                regenTimerRef.current = setTimeout(() => {
+                  regenTimerRef.current = null;
+                  setThinking(false);
+                }, 400);
+              }
             }}
+            title="Re-run AI naming with the latest summary signals"
           >
             <Icon name="refresh" size={12}/> Regenerate
           </button>
         </div>
 
+        {pendingSummary && !thinking && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: "6px 10px",
+              fontSize: 11.5,
+              color: "var(--ink-3)",
+              background: "var(--surface-2)",
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <Icon name="info" size={11}/>
+            AI summary is still running — these suggestions will sharpen once it finishes. Press Regenerate then.
+          </div>
+        )}
         {thinking ? (
           <div className="rename-conv">
             <Icon name="sparkles" size={12}/> Reading content and proposing names…

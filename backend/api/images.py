@@ -16,6 +16,7 @@ from backend.config import settings
 from backend import jobs
 from backend.deletion import hard_delete_images
 from backend.image import fetch_original, fetch_served, store_upload
+from backend.name_suggest import NameSuggestion, suggest_names_for_image
 from backend.models import (
     Face,
     FaceDetection,
@@ -384,7 +385,34 @@ async def list_images(
     stmt = stmt.limit(limit).offset(offset)
 
     result = await session.execute(stmt)
-    return list(result.scalars().all())
+    images = list(result.scalars().all())
+    if not images:
+        return []
+
+    # §C1.6 — attach the per-image tag list. One JOIN keyed on
+    # image_id; we hydrate per-image lists in Python.
+    tag_rows = (
+        await session.execute(
+            select(ImageTag.image_id, Tag.id, Tag.label, Tag.color, ImageTag.confidence)
+            .join(Tag, Tag.id == ImageTag.tag_id)
+            .where(
+                ImageTag.user_id == user.id,
+                ImageTag.image_id.in_([img.id for img in images]),
+            )
+        )
+    ).all()
+    by_image: dict = {}
+    for image_id, tid, label, color, confidence in tag_rows:
+        by_image.setdefault(image_id, []).append({
+            "id": tid, "label": label, "color": color, "confidence": confidence,
+        })
+
+    return [
+        ImageRead.model_validate(img, from_attributes=True).model_copy(
+            update={"tags": by_image.get(img.id, [])},
+        )
+        for img in images
+    ]
 
 
 @router.get("/facets")
@@ -1294,6 +1322,39 @@ async def toggle_image_starred(
     await session.commit()
     await session.refresh(image)
     return image
+
+
+@router.get("/{image_id}/suggest-names")
+async def suggest_names(
+    image_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(default=3, ge=1, le=5),
+) -> dict:
+    """§C1.2 — return ≤ N filename proposals for this image.
+
+    Read-only. Reuses the existing AI summary signals (topic, summary,
+    points, scene, captured place, named people) — we never fire
+    Florence-2 / Qwen from this endpoint, so a rapid-fire "Regenerate"
+    is essentially free. When the image still has `pending_summary=True`,
+    the helper falls back to scene + capture date so the modal isn't
+    empty.
+
+    The caller validates + applies the chosen name via
+    `PATCH /images/{id}/name`. This endpoint NEVER auto-renames.
+    """
+    image = await _load_owned_image(image_id, user, session)
+    suggestions = await suggest_names_for_image(
+        session, image=image, user_id=user.id, limit=limit,
+    )
+    return {
+        "image_id": str(image.id),
+        "current_name": image.original_filename,
+        "pending_summary": bool(image.pending_summary),
+        "suggestions": [
+            {"name": s.name, "why": s.why} for s in suggestions
+        ],
+    }
 
 
 @router.patch("/{image_id}/name", response_model=ImageRead)

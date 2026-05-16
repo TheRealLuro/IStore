@@ -37,7 +37,7 @@ from backend.archive_upload import extract_archive_into_folder
 from backend.auth.users import current_active_user
 from backend.config import settings
 from backend.db import get_session
-from backend.models import Folder, Image, User
+from backend.models import Folder, FolderTag, Image, Tag, User
 from backend.schemas import FolderCreate, FolderRead, FolderUpdate
 from backend.security import enforce_upload_limits
 from backend.upload_validation import UploadValidationError
@@ -46,13 +46,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/folders", tags=["folders"])
 
 
-def _to_read(f: Folder, item_count: int = 0, subfolder_count: int = 0) -> FolderRead:
+def _to_read(
+    f: Folder,
+    item_count: int = 0,
+    subfolder_count: int = 0,
+    tags: list[dict] | None = None,
+) -> FolderRead:
     return FolderRead(
         id=f.id,
         parent_folder_id=f.parent_folder_id,
         name=f.name,
         status=f.status,
         status_color=f.status_color,
+        # §C1.6 — folder-attached tags, hydrated by the caller via a
+        # single JOIN query. Empty list when the folder has no tags.
+        tags=tags or [],
         item_count=item_count,
         subfolder_count=subfolder_count,
         created_at=f.created_at,
@@ -60,18 +68,93 @@ def _to_read(f: Folder, item_count: int = 0, subfolder_count: int = 0) -> Folder
     )
 
 
+# §C1.3 — the category strings the FE type-pill emits. Anything
+# else is rejected at the schema boundary so an attacker can't
+# inject a SQL identifier.
+_VALID_CONTAINS_TYPES = {"image", "video", "document"}
+
+
+async def _folder_ids_containing_type(
+    session: AsyncSession,
+    *,
+    user_id: UUID,
+    contains_type: str,
+) -> set[UUID]:
+    """Return the set of folder ids (across the WHOLE user's tree) that
+    contain at least one image of `contains_type` somewhere in their
+    descendant subtree.
+
+    Implementation: a recursive CTE that climbs from each image's
+    folder up through `parent_folder_id` and collects every ancestor.
+    Cheap-ish on the Postgres side — we deliberately don't materialize
+    a folder→descendants closure table for v1 (premature optimization).
+    """
+    # Inline raw SQL via SQLAlchemy `text()` would also work, but the
+    # ORM builder keeps the predicate readable + parameterized.
+    from sqlalchemy import literal_column, union_all
+
+    # Anchor: every folder that directly holds an image of the matching
+    # category.
+    anchor = (
+        select(
+            Image.folder_id.label("folder_id"),
+        )
+        .where(
+            Image.user_id == user_id,
+            Image.deleted_at.is_(None),
+            Image.folder_id.is_not(None),
+            Image.category == contains_type,
+        )
+        .distinct()
+        .cte("anchor", recursive=True)
+    )
+    # Recursive step: pull each ancestor by joining `folders.id` to the
+    # CTE's `folder_id` and surfacing `parent_folder_id`.
+    parent = (
+        select(Folder.parent_folder_id.label("folder_id"))
+        .join(anchor, Folder.id == anchor.c.folder_id)
+        .where(
+            Folder.user_id == user_id,
+            Folder.deleted_at.is_(None),
+            Folder.parent_folder_id.is_not(None),
+        )
+    )
+    closure = anchor.union(parent)
+    rows = (
+        await session.execute(select(closure.c.folder_id).distinct())
+    ).scalars().all()
+    return {fid for fid in rows if fid is not None}
+
+
 @router.get("/", response_model=list[FolderRead])
 async def list_folders(
     parent_id: UUID | None = None,
     user: Annotated[User, Depends(current_active_user)] = ...,
     session: Annotated[AsyncSession, Depends(get_session)] = ...,
+    # §C1.3 — when the FE has the Images/Videos/Documents type pill
+    # active, hide any folder whose entire subtree contains zero files
+    # of that category. `contains_type=image|video|document` opts into
+    # the recursive-descendant check; omitted returns the legacy
+    # "every folder at this parent" listing.
+    contains_type: str | None = None,
 ):
     """List folders directly under `parent_id` (None = root) for this user.
 
     Each result includes counts of contained images and subfolders so
     the grid can render "12 files · 2 folders" without a follow-up
     request per folder.
+
+    With `?contains_type=image|video|document` the result is filtered
+    so only folders whose subtree holds ≥ 1 file of that category come
+    back. Files at this parent level are not affected — the FE filters
+    those independently via the type pill on the gallery grid.
     """
+    if contains_type is not None and contains_type not in _VALID_CONTAINS_TYPES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"contains_type must be one of {sorted(_VALID_CONTAINS_TYPES)} or omitted.",
+        )
+
     folder_predicate = (
         Folder.parent_folder_id.is_(None)
         if parent_id is None
@@ -91,6 +174,17 @@ async def list_folders(
 
     if not rows:
         return []
+
+    # §C1.3 — apply the descendants-contain filter when requested.
+    # The CTE walks the entire user's tree once; we just intersect the
+    # current parent's children against the result set.
+    if contains_type is not None:
+        allow = await _folder_ids_containing_type(
+            session, user_id=user.id, contains_type=contains_type,
+        )
+        rows = [f for f in rows if f.id in allow]
+        if not rows:
+            return []
 
     folder_ids = [f.id for f in rows]
 
@@ -123,8 +217,30 @@ async def list_folders(
         ).all()
     )
 
+    # §C1.6 — folder tags in one JOIN.
+    tag_rows = (
+        await session.execute(
+            select(FolderTag.folder_id, Tag.id, Tag.label, Tag.color)
+            .join(Tag, Tag.id == FolderTag.tag_id)
+            .where(
+                FolderTag.user_id == user.id,
+                FolderTag.folder_id.in_(folder_ids),
+            )
+        )
+    ).all()
+    tags_by_folder: dict = {}
+    for folder_id_val, tid, label, color in tag_rows:
+        tags_by_folder.setdefault(folder_id_val, []).append({
+            "id": tid, "label": label, "color": color,
+        })
+
     return [
-        _to_read(f, img_counts.get(f.id, 0), sub_counts.get(f.id, 0))
+        _to_read(
+            f,
+            img_counts.get(f.id, 0),
+            sub_counts.get(f.id, 0),
+            tags=tags_by_folder.get(f.id, []),
+        )
         for f in rows
     ]
 

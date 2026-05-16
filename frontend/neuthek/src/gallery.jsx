@@ -20,6 +20,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { RenameFolderModal, DeleteFolderModal } from "./folder-modals.jsx";
 import { EditableName } from "./nameable-chip.jsx";
+import { TagPicker, tagChipStyle } from "./tag-picker.jsx";
 
 // Custom MIME used for HTML5 drag-and-drop of files. The legacy frontend
 // used the same key so we keep it for parity with anything else listening.
@@ -279,6 +280,10 @@ function FileRow({ f, selected, multiSelected, onClick, onMultiSelectToggle, onR
 function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelected, onMultiSelectToggle }) {
   const qc = useQueryClient();
   const [menuOpen, setMenuOpen] = useStateG(false);
+  // §C1.6 — tag picker anchored to the menu's "Tags…" row. We track
+  // visibility separately from `menuOpen` so picking a tag doesn't
+  // collapse the cardmenu under it.
+  const [tagPickerOpen, setTagPickerOpen] = useStateG(false);
   const cardRef = React.useRef(null);
   const handleDelete = async () => {
     if (!window.confirm(`Move "${f.name}" to trash?`)) return;
@@ -374,6 +379,15 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
             </button>
             <button className="cardmenu__item" onClick={() => { setMenuOpen(false); onShare && onShare(f); }}>
               <span className="cardmenu__icon"><Icon name="users" size={14}/></span>Share…
+            </button>
+            <button
+              className="cardmenu__item"
+              onClick={(e) => {
+                e.stopPropagation();
+                setTagPickerOpen(true);
+              }}
+            >
+              <span className="cardmenu__icon"><Icon name="pin" size={14}/></span>Tags…
             </button>
             <button
               className="cardmenu__item"
@@ -644,12 +658,14 @@ export function GalleryView({
   // by the topbar view toggle.
   layoutMode = "grid",
 }) {
-  // Folders are an organizational container — they only make sense in
-  // the all-files view with the "All" type pill. Specific-type pills
-  // (Photos / Videos / Documents) and dedicated views (Starred / People
-  // / Map / Shared / Trash) hide them so the gallery stops mixing
-  // unrelated content.
-  const foldersAllowed = view === "gallery" && typeFilter === "all";
+  // §C1.3 — folders show in the all-files view AND under the
+  // image/video/document type pills (each filtered by
+  // contains_type so only folders carrying that kind survive).
+  // Dedicated views (Starred / People / Map / Shared / Trash) and
+  // mock-only type pills (contact / password / gamesave / iot) still
+  // hide folders so the gallery doesn't mix unrelated content.
+  const REAL_TYPE_FILTERS = new Set(["all", "image", "video", "doc"]);
+  const foldersAllowed = view === "gallery" && REAL_TYPE_FILTERS.has(typeFilter);
   const [renameTarget, setRenameTarget] = useStateG(null);
   const [deleteTarget, setDeleteTarget] = useStateG(null);
   const filtered = useMemoG(() => {
@@ -689,12 +705,22 @@ export function GalleryView({
   }, [files, query, sort, sortDir, typeFilter]);
 
   // Real folders for the current scope (root or inside a folder).
-  // Type-pill cross-filter (C1.3) is backend-side work — for now we just
-  // list whatever the user has at this scope.
+  // §C1.3 — when the type pill is set to a category that matches a
+  // backend `Image.category` value (image / video / document), pass it
+  // as `?contains_type=…` so the backend hides folders whose subtree
+  // doesn't carry any of the selected file type. The mock-only chips
+  // (contact / password / gamesave / iot) currently have no matching
+  // files in storage so we skip the filter for them — the FE-side
+  // empty state surfaces that they're a preview.
+  const FE_TYPE_TO_BACKEND = { image: "image", video: "video", doc: "document" };
+  const containsType = FE_TYPE_TO_BACKEND[typeFilter] || null;
   const { data: realFolders } = useQuery({
-    queryKey: ["folders", folderId ?? null],
-    queryFn: () => listFolders(folderId ?? null),
+    // Cache-key includes the contains_type so flipping the type pill
+    // refetches a fresh listing instead of serving the previous one.
+    queryKey: ["folders", folderId ?? null, containsType],
+    queryFn: () => listFolders(folderId ?? null, containsType),
     staleTime: 30_000,
+    enabled: foldersAllowed,
   });
   const visibleFolders = useMemoG(() => {
     return (realFolders || []).map(fo => ({

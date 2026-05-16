@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from fastapi_users import schemas
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -69,8 +69,13 @@ class UserUpdate(schemas.BaseUserUpdate):
 
 
 class TagRead(BaseModel):
+    """§C1.6 — per-image / per-folder attached tag (label + chip color +
+    db id). Used as the embedded shape on ImageRead / FolderRead; full
+    CRUD has its own response shape in backend/api/tags.py."""
     model_config = ConfigDict(from_attributes=True)
+    id: int
     label: str
+    color: str | None = None
     confidence: float | None = None
 
 
@@ -116,6 +121,15 @@ class ImageRead(BaseModel):
     folder_id: uuid.UUID | None = None
     status: str | None = None
     status_color: str | None = None
+    # §C1.6 — user-attached tags. The default empty list keeps
+    # `from_attributes=True` validation away from `Image.tags` (which
+    # is a list[ImageTag] join row that doesn't match TagRead's shape).
+    # The route handler sets the tags imperatively via
+    # `model_copy(update={"tags": [...]})`.
+    tags: list[TagRead] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("attached_tags"),
+    )
 
     is_starred: bool = False
     starred_at: datetime | None = None
@@ -140,6 +154,14 @@ class FolderRead(BaseModel):
     name: str
     status: str | None = None
     status_color: str | None = None
+    # §C1.6 — folder-attached tags. Same trick as ImageRead.tags: the
+    # route handler sets these imperatively to keep Pydantic's
+    # from_attributes path away from `Folder.folder_tags` (which we
+    # don't have a relationship for; FolderTag joins via tag_id).
+    tags: list[TagRead] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("attached_tags"),
+    )
     # Convenience counts so the card can show "12 files · 2 folders"
     # without the FE needing a second round-trip per folder.
     item_count: int = 0

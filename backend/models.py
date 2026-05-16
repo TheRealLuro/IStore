@@ -257,13 +257,45 @@ class Folder(Base):
 
 
 class Tag(Base):
+    """§C1.6 — per-user, optionally colored label.
+
+    Migration 0028 introduced `user_id` (FK CASCADE on `users.id`),
+    `color` (chip tint key), and `created_at` / `updated_at`. The
+    uniqueness rule is `(user_id, lower(label))` — two users can use
+    the same label, and `tag-folder` vs `Tag-Folder` are the same tag
+    for one user.
+    """
+
     __tablename__ = "tags"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    label: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    label: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(String(8), nullable=False)  # 'clip' | 'user'
+    color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
 
     image_links: Mapped[list["ImageTag"]] = relationship(back_populates="tag")
+    folder_links: Mapped[list["FolderTag"]] = relationship(back_populates="tag")
+
+    __table_args__ = (
+        # NB: the case-folded uniqueness is a functional index created
+        # in migration 0028 (`tags_user_label_idx`). SQLAlchemy can't
+        # express `unique(user_id, lower(label))` directly via UniqueConstraint,
+        # so we declare the regular `Index` here just for ORM
+        # awareness and rely on the DB-level functional index for
+        # enforcement.
+        Index("tags_user_label_orm_idx", "user_id", "label"),
+    )
 
 
 class ImageTag(Base):
@@ -279,6 +311,15 @@ class ImageTag(Base):
         ForeignKey("tags.id", ondelete="CASCADE"),
         primary_key=True,
     )
+    # §C1.6 — denormalized owner so the per-user RLS predicate works
+    # without a join. Always equal to `images.user_id` for the linked
+    # row; we enforce that at the API boundary, and the FK CASCADE on
+    # `users.id` keeps the row from outliving the user.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     image: Mapped[Image] = relationship(back_populates="tags")
@@ -286,6 +327,43 @@ class ImageTag(Base):
 
     __table_args__ = (
         Index("image_tags_tag_idx", "tag_id", "image_id"),
+    )
+
+
+class FolderTag(Base):
+    """§C1.6 — many-to-many folder ↔ tag link.
+
+    Mirrors `image_tags` but on folders. `user_id` is denormalized
+    for the same RLS reason; FK CASCADE on `folders.id` and
+    `tags.id` keeps the table consistent without manual cleanup
+    when the user deletes either side.
+    """
+
+    __tablename__ = "folder_tags"
+
+    folder_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("folders.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("tags.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    tag: Mapped[Tag] = relationship(back_populates="folder_links")
+
+    __table_args__ = (
+        Index("folder_tags_tag_idx", "tag_id", "folder_id"),
     )
 
 

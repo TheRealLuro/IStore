@@ -163,12 +163,20 @@ async def _seed_image_with_full_data(user_id: uuid.UUID, *, email: str) -> dict:
             .values(face_count=Person.face_count + 1)
         )
 
-        # 4. Tag + ImageTag many-to-many. Tag.label is globally
-        # unique so per-test isolation appends the user uuid.
-        tag = Tag(label=f"vacation-{uuid.uuid4().hex[:8]}", source="user")
+        # 4. Tag + ImageTag many-to-many. §C1.6 — tags are now
+        # per-user, so label uniqueness is scoped (user_id, lower(label))
+        # and the unique-per-user is implicit. Random suffix keeps
+        # different parallel test seeds from racing.
+        tag = Tag(
+            user_id=user_id,
+            label=f"vacation-{uuid.uuid4().hex[:8]}",
+            source="user",
+        )
         session.add(tag)
         await session.flush()
-        session.add(ImageTag(image_id=img.id, tag_id=tag.id, confidence=0.99))
+        session.add(ImageTag(
+            image_id=img.id, tag_id=tag.id, user_id=user_id, confidence=0.99,
+        ))
 
         # 5. FeedbackEvent (per-image bandit reward).
         feedback = FeedbackEvent(

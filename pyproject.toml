@@ -116,6 +116,16 @@ cloud = [
     "google-auth-httplib2>=0.2",
     "google-api-python-client>=2.140",
 ]
+archives = [
+    # §C1.5+ — optional 7z + RAR support for the archive uploader.
+    # Pure-Python decoders (py7zr); RAR also needs an `unrar` /
+    # `bsdtar` binary on the host because the RAR format is
+    # proprietary. Operators who don't need these can skip the extra
+    # and the upload endpoint surfaces a clean 415 with the install
+    # instructions in the body.
+    "py7zr>=0.22",
+    "rarfile>=4.2",
+]
 
 [build-system]
 requires = ["hatchling"]

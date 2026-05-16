@@ -16,10 +16,12 @@ Why not stream extract?
   through a tempfile would help only for archives larger than the cap,
   which we reject up-front anyway.
 
-7z / RAR support:
-  Not in scope here — would need optional `py7zr` / `rarfile` extras.
-  The endpoint returns a clear 415 with the supported formats; adding
-  7z / RAR is a follow-up that hooks into `_dispatch_archive`.
+§C1.5+ — 7z / RAR support is opt-in via optional Python extras.
+Install `py7zr` (for 7z) and/or `rarfile` (for RAR) into the
+deployment's runtime; the magic-byte sniffer auto-routes those
+formats through the same per-entry pipeline. When the package isn't
+importable we keep the legacy 415 "repack as .zip or .tar.gz"
+response so the operator still gets a clean error.
 """
 from __future__ import annotations
 
@@ -80,20 +82,33 @@ def _archive_kind(data: bytes) -> str:
     # Plain tar: ustar magic sits at byte 257 within the header.
     if len(data) >= 263 and data[257:262] in (b"ustar", b"ustar\x00"):
         return "tar"
-    # Known-but-unsupported archive shapes: 7z and RAR. Surface a clear
-    # error rather than a generic "unsupported."
+    # §C1.5+ — 7z and RAR routed through optional extras. When the
+    # supporting package isn't installed we fall back to the clear
+    # 415 "repack" message so operators know what to do.
     if head[:6] == b"7z\xbc\xaf\x27\x1c":
-        raise UploadValidationError(
-            "7z archives are not supported yet — repack as .zip or .tar.gz.",
-            415,
-        )
+        try:
+            import py7zr  # noqa: F401, PLC0415 — soft import to detect support
+        except ImportError as exc:
+            raise UploadValidationError(
+                "7z archives need the optional `py7zr` package — install it on "
+                "the server or repack as .zip / .tar.gz.",
+                415,
+            ) from exc
+        return "7z"
     if head[:4] == b"Rar!":
-        raise UploadValidationError(
-            "RAR archives are not supported yet — repack as .zip or .tar.gz.",
-            415,
-        )
+        try:
+            import rarfile  # noqa: F401, PLC0415 — soft import to detect support
+        except ImportError as exc:
+            raise UploadValidationError(
+                "RAR archives need the optional `rarfile` package — install it "
+                "on the server or repack as .zip / .tar.gz.",
+                415,
+            ) from exc
+        return "rar"
     raise UploadValidationError(
-        "Unrecognized archive format. Supported: .zip, .tar, .tar.gz, .tar.bz2, .tar.xz.",
+        "Unrecognized archive format. Supported: .zip, .tar, .tar.gz, "
+        ".tar.bz2, .tar.xz, plus .7z and .rar when the optional "
+        "py7zr / rarfile packages are installed.",
         415,
     )
 
@@ -175,6 +190,136 @@ def _iter_tar_entries(tf: tarfile.TarFile, infos: list[tarfile.TarInfo]) -> Iter
         )
 
 
+def _inspect_generic_member_list(
+    members: list[tuple[str, int, bool]], raw_size: int,
+) -> None:
+    """Shared safety checks for 7z/RAR member lists.
+
+    Tuple shape: `(path, size, is_dir)`. The 7z/rar readers don't share
+    a base class with zipfile/tarfile, so we normalize into this tuple
+    upstream and run the same constants here.
+    """
+    if len(members) > settings.upload_max_archive_entries:
+        raise UploadValidationError("Archive has too many entries.", 415)
+    for path, _size, _is_dir in members:
+        if not _path_is_safe(path):
+            raise UploadValidationError("Archive contains an unsafe path.", 415)
+        parts = [
+            p for p in PurePosixPath(path.replace("\\", "/")).parts
+            if p not in {"", "."}
+        ]
+        if len(parts) > settings.upload_max_archive_depth:
+            raise UploadValidationError("Archive nesting is too deep.", 415)
+    total_uncompressed = sum(int(s or 0) for _p, s, _d in members)
+    if total_uncompressed > max(raw_size, 1) * settings.upload_max_archive_ratio:
+        raise UploadValidationError("Archive expansion ratio is too high.", 415)
+
+
+def _iter_7z_entries(archive, members: list[tuple[str, int, bool]]) -> Iterable[ArchiveEntry]:
+    """Iterate 7z entries. `py7zr.SevenZipFile.read([names])` returns
+    `{name: BytesIO}`; we read one entry at a time to keep peak memory
+    bounded by the existing per-file cap rather than the whole
+    uncompressed archive.
+
+    7z uses a single per-archive index, so we must call `reset()`
+    between reads — the SevenZipFile keeps an internal stream cursor.
+    """
+    for path, size, is_dir in members:
+        if is_dir:
+            continue
+
+        def _read(_p=path, _arch=archive) -> bytes:
+            try:
+                _arch.reset()
+            except Exception:
+                pass
+            extracted = _arch.read(targets=[_p])
+            if not extracted:
+                return b""
+            buf = extracted.get(_p)
+            if buf is None:
+                return b""
+            try:
+                return buf.read()
+            finally:
+                try: buf.close()
+                except Exception: pass
+
+        yield ArchiveEntry(path=path.replace("\\", "/"), size=int(size or 0), data_factory=_read)
+
+
+def _iter_rar_entries(archive, members: list[tuple[str, int, bool]]) -> Iterable[ArchiveEntry]:
+    """Iterate RAR entries. `rarfile.RarFile.read(name)` returns bytes
+    directly — same shape as zipfile.ZipFile.read."""
+    for path, size, is_dir in members:
+        if is_dir:
+            continue
+
+        def _read(_p=path, _arch=archive) -> bytes:
+            return _arch.read(_p)
+
+        yield ArchiveEntry(path=path.replace("\\", "/"), size=int(size or 0), data_factory=_read)
+
+
+def _open_7z(raw: bytes):
+    """Open a 7z archive. Imports `py7zr` lazily so the import error
+    surfaces only when 7z is actually attempted — `_archive_kind`
+    already guarded this branch, but the import is cheap on Linux
+    install paths."""
+    import py7zr  # noqa: PLC0415 — lazy
+
+    try:
+        arch = py7zr.SevenZipFile(io.BytesIO(raw), mode="r")
+    except Exception as exc:
+        raise UploadValidationError(
+            "7z archive could not be opened — it may be corrupted or "
+            "use an unsupported codec.",
+            415,
+        ) from exc
+    try:
+        infos = arch.list()
+    except Exception as exc:
+        arch.close()
+        raise UploadValidationError("7z archive index unreadable.", 415) from exc
+    members = [
+        (str(i.filename), int(getattr(i, "uncompressed", 0) or 0), bool(getattr(i, "is_directory", False)))
+        for i in infos
+    ]
+    try:
+        _inspect_generic_member_list(members, len(raw))
+    except UploadValidationError:
+        arch.close()
+        raise
+    return arch, lambda: _iter_7z_entries(arch, members)
+
+
+def _open_rar(raw: bytes):
+    """Open a RAR archive. `rarfile` shells out to a `unrar` / `bsdtar`
+    binary for decompression; on a system without one, the read calls
+    will raise. We let that surface as a 415 in the dispatch loop."""
+    import rarfile  # noqa: PLC0415 — lazy
+
+    try:
+        arch = rarfile.RarFile(io.BytesIO(raw))
+    except rarfile.Error as exc:
+        raise UploadValidationError(
+            "RAR archive could not be opened — it may be corrupted "
+            "or the server lacks a `unrar`/`bsdtar` binary.",
+            415,
+        ) from exc
+    infos = arch.infolist()
+    members = [
+        (str(i.filename), int(getattr(i, "file_size", 0) or 0), bool(getattr(i, "isdir", lambda: False)()))
+        for i in infos
+    ]
+    try:
+        _inspect_generic_member_list(members, len(raw))
+    except UploadValidationError:
+        arch.close()
+        raise
+    return arch, lambda: _iter_rar_entries(arch, members)
+
+
 def _open_archive(kind: str, raw: bytes):
     """Open the archive for streaming reads + return (handle, entry_iter
     factory, total_uncompressed_bytes_optional). Caller is responsible
@@ -184,6 +329,10 @@ def _open_archive(kind: str, raw: bytes):
         zf = zipfile.ZipFile(io.BytesIO(raw))
         infos = _inspect_zip_safety(zf, error_label="Archive")
         return zf, lambda: _iter_zip_entries(zf, infos)
+    if kind == "7z":
+        return _open_7z(raw)
+    if kind == "rar":
+        return _open_rar(raw)
     # All tar flavors go through tarfile with `r:*` mode autodetect.
     try:
         tf = tarfile.open(fileobj=io.BytesIO(raw), mode="r:*")
@@ -214,7 +363,11 @@ def _stem_from_filename(filename: str | None) -> str:
     if not filename:
         return f"archive-{uuid4().hex[:8]}"
     base = PurePosixPath(filename.replace("\\", "/")).name
-    for suffix in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz"):
+    for suffix in (
+        ".tar.gz", ".tar.bz2", ".tar.xz",
+        ".tgz", ".tbz2", ".txz",
+        ".7z", ".rar",  # §C1.5+
+    ):
         if base.lower().endswith(suffix):
             base = base[: -len(suffix)]
             break

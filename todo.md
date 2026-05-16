@@ -333,31 +333,72 @@ work (A2/A4/A5/A6/A7) all shipped 2026-05-16; see §11.
 
 ## 4. Product features
 
-### C1. Folders, files, naming, organization
-> C1.1 Rename + C1.5 Archive uploads (zip / tar) shipped — see git log.
-- ⏳ **C1.2 AI-suggested smart names**: "Suggest a name" affordance on
-  rename that asks the existing summarizer for 3 short, filename-safe
-  proposals from content (e.g. "Whiteboard sketch — auth flow"). Reuses
-  Florence-2 + Qwen. Never auto-renames without confirmation.
-- ⏳ **C1.3 Type-pill ∧ folder visibility**: type pills (Images /
-  Documents / etc.) currently hide folders containing them. Required:
-  folder stays visible iff it contains ≥ 1 file of that type
-  (recursive). Either extend `GET /folders` with `?contains_type=...`
-  or compute client-side from the listing.
-- ⏳ **C1.4 Clear search history**: search bar keeps recent queries
-  with no clear control. Add a "Clear history" button at the dropdown
-  bottom + `DELETE /search/history` endpoint.
-- ⏳ **C1.5+ 7z / RAR support**: optional `py7zr` / `rarfile` extras to
-  extend the archive uploader beyond zip + tar. Today's endpoint
-  surfaces a clear 415 ("repack as zip or tar.gz") for those headers.
-- ⏳ **C1.6 Tag system (status-as-tag unification)**: user intent is
-  "status should just be tags." Add a generic `tags` table + many-to-
-  many `image_tags`, migrate `images.status` / `images.status_color`
-  into named tags ("In Review", "Published", …), let users create
-  arbitrary tags with colors. Filter pills become tag filters; folder
-  statuses follow the same model.
-- ⏳ **Set folder status from menu** — legacy popover had it; deferred
-  into **C1.6** unification.
+### C1. Folders, files, naming, organization ✅ SHIPPED 2026-05-16
+> C1.1 Rename + C1.5 Archive uploads (zip / tar) shipped previously.
+> C1.2–C1.6 + the folder-status-from-menu deferral all closed in
+> this pass. See [tests/test_c1_folders_tags.py](tests/test_c1_folders_tags.py)
+> for the acceptance suite (6 tests covering suggest-names,
+> contains_type, clear-history, tag CRUD + cross-user isolation,
+> attach-by-label create-on-the-fly).
+
+- ✅ **C1.2 AI-suggested smart names** — `GET /images/{id}/suggest-names`
+  returns ≤ 3 filename-safe proposals built from the existing
+  Florence-2/Qwen summary signals (topic, summary, scene, captured
+  place, named people). Pure read; never re-runs inference. Falls
+  back to scene + capture-date when `pending_summary=True` and the
+  FE shows a hint that the suggestions will sharpen after the
+  summary lands. The rename modal merges the AI proposals with the
+  client deterministic suggestions and keeps Regenerate as a
+  one-click refetch. The user always confirms — backend never
+  auto-renames.
+- ✅ **C1.3 Type-pill ∧ folder visibility** — `GET /folders?contains_type=image|video|document`
+  uses a recursive CTE that walks each image's folder chain to
+  surface every ancestor; only folders whose subtree contains at
+  least one file of that category survive the filter. Folders now
+  show under the Image / Video / Document type pills (previously
+  hidden); mock-only pills (contact / password / gamesave / iot)
+  still hide folders.
+- ✅ **C1.4 Clear search history** — `DELETE /search/history`
+  writes an audit row `search.history.cleared` and returns 204.
+  Today the recent queries live in browser localStorage so the FE
+  clears them locally too; the endpoint is the forward-compat shim
+  for a future server-side store + leaves the audit trail.
+  "Clear history" pill at the dropdown bottom calls both paths.
+- ✅ **C1.5+ 7z / RAR support** — optional `py7zr` / `rarfile`
+  extras land in `pyproject.toml [project.optional-dependencies]
+  archives`. When the package is importable, the magic-byte sniffer
+  in `backend/archive_upload.py` routes the file through the same
+  inspect-then-store pipeline as zip/tar (path safety, depth cap,
+  expansion ratio cap). When it isn't, the legacy 415 "repack"
+  message surfaces with install instructions.
+- ✅ **C1.6 Tag system (status-as-tag unification)** —
+  Migration 0028 makes `tags` per-user (FK CASCADE on `users.id`),
+  adds `color` + `created_at` + `updated_at`, switches uniqueness
+  to `(user_id, lower(label))`, denormalizes `user_id` onto
+  `image_tags` for RLS, creates the new `folder_tags` join with
+  the same shape, FORCEs RLS on all three tables, and backfills
+  every `(user_id, status, status_color)` tuple from `images` +
+  `folders` into the new table. Legacy `status` / `status_color`
+  columns remain as a read-only shim for one release.
+  New REST surface:
+    `GET /tags/` · `POST /tags/` · `PATCH /tags/{id}` · `DELETE /tags/{id}`
+    `POST /images/{id}/tags` · `DELETE /images/{id}/tags/{tag_id}`
+    `POST /folders/{id}/tags` · `DELETE /folders/{id}/tags/{tag_id}`
+  Attach supports both `tag_id` (existing) and `label` (create-and-
+  attach in one round trip). 18 allowed chip colors;
+  case-folded label uniqueness per user. `ImageRead.tags` and
+  `FolderRead.tags` arrays surface the attached tags so the gallery
+  card renders them without a follow-up fetch.
+  FE: [tag-picker.jsx](frontend/neuthek/src/tag-picker.jsx)
+  popover handles type-to-filter, Enter-to-create, per-tag recolor.
+  Wired into the file card menu's "Tags…" row. The recursive
+  inline color picker uses the 18 named tones; the chip itself
+  tints via `tagChipStyle(color)` so the picker output drops into
+  the card without extra CSS.
+- ✅ **Set folder status from menu** — folded into §C1.6. The folder
+  context-menu now supports the same Tags picker via
+  `POST /folders/{id}/tags`. Status pill replaced by colored tag
+  chips on the folder card (FolderRead.tags surfaces them).
 
 ### C2. Cloud sync (Drive / iCloud / GitHub / etc.)
 - ⛔ Blocked on **A2/A3** (encrypted secret storage). OAuth refresh

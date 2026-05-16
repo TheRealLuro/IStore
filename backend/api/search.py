@@ -29,6 +29,7 @@ from sqlalchemy import cast, func, literal, or_, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.audit import add_audit
 from backend.auth.users import current_active_user
 from backend.db import get_session
 from backend.models import Image, User
@@ -36,6 +37,47 @@ from backend.schemas import ImageRead, ImageSearchHit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["search"])
+
+
+# §C1.4 — clear search history.
+#
+# Today the recent-searches dropdown is hydrated from the user's
+# browser `localStorage` (`neuthek.recentSearches`), so the FE can
+# clear it without a round-trip. The DELETE endpoint exists for two
+# reasons:
+#
+#   1. **Audit-log trail.** When a user clicks "Clear history," that
+#      action should leave a row in the consent/activity audit so a
+#      data-subject access request later can show "user cleared their
+#      search history on $date."
+#   2. **Forward-compat.** When the recent searches move to a server-
+#      side store (per-user, cross-device sync), the FE call site
+#      already exists and the contract doesn't break.
+#
+# Returns 204 unconditionally — no payload, no count, no leaked
+# information about whether the user had history to begin with.
+
+
+@router.delete("/history", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_search_history(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Clear the calling user's recent-search history.
+
+    Today this is a server-side audit write; the actual entries live
+    in browser localStorage, which the FE clears in the same handler.
+    A future server-side history table can be wiped here without the
+    FE caller having to change.
+    """
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="search.history.cleared",
+        details={},
+    )
+    await session.commit()
+    return None
 
 
 # Score blend weights. Tuned for the case where CLIP returns a top-30 list

@@ -131,6 +131,15 @@ export async function createFolderWithImages(
   );
 }
 
+/** §C1.4 — clear the user's search history. Today the recent
+ *  queries live in browser localStorage so the FE clears them
+ *  locally too; this call writes an audit row + is the hook for the
+ *  future server-side recent-queries store. Returns 204; safe to
+ *  catch + ignore for offline operation. */
+export async function clearSearchHistory(): Promise<void> {
+  await api.delete("/search/history");
+}
+
 export async function searchSemantic(q: string, limit = 30): Promise<(FileItem & { score: number })[]> {
   const params = new URLSearchParams({ q, limit: String(limit) });
   return api.get<(FileItem & { score: number })[]>(`/search/?${params.toString()}`);
@@ -175,6 +184,29 @@ export async function toggleStar(id: string): Promise<FileItem> {
  *  Windows-reserved names, extension preservation, and 255-byte cap. */
 export async function renameImage(id: string, name: string): Promise<FileItem> {
   return api.patch<FileItem>(`/images/${id}/name`, { name });
+}
+
+/** §C1.2 — fetch ≤ N AI-suggested filename proposals. Read-only;
+ *  reuses the cached summary signals on the image row, so a rapid
+ *  "Regenerate" press is cheap. The user picks one and the existing
+ *  `renameImage()` path validates + persists. */
+export interface NameSuggestion {
+  name: string;
+  why: string;
+}
+export interface SuggestNamesResponse {
+  image_id: string;
+  current_name: string | null;
+  pending_summary: boolean;
+  suggestions: NameSuggestion[];
+}
+export async function suggestNames(
+  id: string,
+  limit = 3,
+): Promise<SuggestNamesResponse> {
+  return api.get<SuggestNamesResponse>(
+    `/images/${id}/suggest-names?limit=${limit}`,
+  );
 }
 
 /** URL for image cards / preview (compressed served variant). Includes auth via fetch wrapper. */

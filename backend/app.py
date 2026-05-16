@@ -17,6 +17,9 @@ from backend.api.people import router as people_router
 from backend.api.search import router as search_router
 from backend.api.shares import router as shares_router
 from backend.api.storage import router as storage_router
+from backend.api.tags import folder_attach_router as tag_folder_attach_router
+from backend.api.tags import image_attach_router as tag_image_attach_router
+from backend.api.tags import router as tags_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
 from backend.auth.users import auth_backend, fastapi_users
@@ -124,6 +127,10 @@ def create_app() -> FastAPI:
     app.include_router(cloud_router)
     app.include_router(feedback_router)
     app.include_router(billing_router)
+    # §C1.6 — tags CRUD + image/folder attach.
+    app.include_router(tags_router)
+    app.include_router(tag_image_attach_router)
+    app.include_router(tag_folder_attach_router)
 
     return app
 
