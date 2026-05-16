@@ -31,9 +31,23 @@ export function UploadModal({ open, onClose }) {
   const [hover, setHover] = useStateU(false);
   const [queue, setQueue] = useStateU([]);
   const fileInputRef = useRef(null);
+  // Track active XHRs so we can abort on user-requested cancel. Keeps the
+  // map outside of React state — we never re-render based on it; it's
+  // just a side-channel for cleanup. Using a ref means stale closures in
+  // success/error handlers can still reach the latest map.
+  const xhrsRef = useRef(new Map());
 
+  // Reset queue only when the user transitions to closed AND no uploads
+  // are still in-flight. Closing mid-upload retains the queue so it
+  // reappears on reopen — otherwise users lost visibility of an upload
+  // they meant to monitor.
   useEffectU(() => {
-    if (!open) { setQueue([]); return; }
+    if (open) return;
+    // If nothing in flight, safe to wipe.
+    setQueue((q) => {
+      const stillRunning = q.some((it) => it.phase === "uploading" || it.phase === "processing");
+      return stillRunning ? q : [];
+    });
   }, [open]);
 
   // Drives a real upload for every queued file. Each row's `progress` is the
@@ -56,7 +70,7 @@ export function UploadModal({ open, onClose }) {
     }));
     setQueue((q) => [...q, ...rows]);
     rows.forEach((row) => {
-      const { promise } = uploadFileWithProgress(row._file, (p) => {
+      const handles = uploadFileWithProgress(row._file, (p) => {
         const pct = Math.round((p.uploadedBytes / Math.max(1, p.totalBytes)) * 100);
         setQueue((q) =>
           q.map((it) =>
@@ -66,8 +80,10 @@ export function UploadModal({ open, onClose }) {
           ),
         );
       });
-      promise
+      xhrsRef.current.set(row.id, handles.xhr);
+      handles.promise
         .then(() => {
+          xhrsRef.current.delete(row.id);
           setQueue((q) =>
             q.map((it) =>
               it.id === row.id
@@ -80,6 +96,7 @@ export function UploadModal({ open, onClose }) {
           qc.invalidateQueries({ queryKey: ["facets"] });
         })
         .catch((err) => {
+          xhrsRef.current.delete(row.id);
           setQueue((q) =>
             q.map((it) =>
               it.id === row.id
@@ -87,9 +104,37 @@ export function UploadModal({ open, onClose }) {
                 : it,
             ),
           );
-          toast.error(`${row.name}: ${err.message || "upload failed"}`);
+          if (err.message !== "Upload cancelled") {
+            toast.error(`${row.name}: ${err.message || "upload failed"}`, { id: `upload-err-${row.id}` });
+          }
         });
     });
+  };
+
+  // Abort all in-flight uploads + clear queue. Used by the explicit
+  // "Cancel all" footer button. We don't abort silently on modal close —
+  // users often close mid-upload meaning "let it run in the background."
+  const cancelAll = () => {
+    for (const xhr of xhrsRef.current.values()) {
+      try { xhr.abort(); } catch { /* ignore */ }
+    }
+    xhrsRef.current.clear();
+    setQueue([]);
+  };
+
+  const inFlightCount = queue.filter((q) => q.phase === "uploading" || q.phase === "processing").length;
+
+  const handleClose = () => {
+    // Confirm before closing while uploads are mid-flight. They keep
+    // running in the background, but we want the user to know that.
+    if (inFlightCount > 0) {
+      const ok = window.confirm(
+        `${inFlightCount} upload${inFlightCount === 1 ? "" : "s"} still in progress. ` +
+        "Close the dialog and let them run in the background?"
+      );
+      if (!ok) return;
+    }
+    onClose?.();
   };
 
   const onPick = () => fileInputRef.current?.click();
@@ -97,14 +142,14 @@ export function UploadModal({ open, onClose }) {
   const allDone = queue.length > 0 && queue.every(q => q.done || q.error);
 
   return (
-    <ModalU open={open} onClose={onClose} size="lg" labelledBy="upl-title">
+    <ModalU open={open} onClose={handleClose} size="lg" labelledBy="upl-title">
       <div className="modal__head">
         <h2 id="upl-title">
           <span className="modal__head-icon"><Icon name="upload" size={16}/></span>
           Upload files
         </h2>
         <p>Drop files here, or pick from your device. Originals are kept at full resolution.</p>
-        <ModalCloseU onClose={onClose}/>
+        <ModalCloseU onClose={handleClose}/>
       </div>
       <div className="modal__body">
         <div className="dropzone" data-active={hover}
@@ -176,9 +221,13 @@ export function UploadModal({ open, onClose }) {
            `${queue.filter(q => q.done).length} of ${queue.length} done`}
         </span>
         <div className="modal__foot-actions">
-          <button className="btn btn--secondary" onClick={onClose}>{allDone ? "Close" : "Cancel"}</button>
-          {!allDone && queue.length > 0 && <button className="btn btn--ghost">Pause all</button>}
-          {allDone && <button className="btn btn--primary" onClick={onClose}>Done</button>}
+          <button className="btn btn--secondary" onClick={handleClose}>
+            {inFlightCount > 0 ? "Close (keep running)" : "Close"}
+          </button>
+          {inFlightCount > 0 && (
+            <button className="btn btn--ghost" onClick={cancelAll}>Cancel all</button>
+          )}
+          {allDone && <button className="btn btn--primary" onClick={handleClose}>Done</button>}
         </div>
       </div>
     </ModalU>

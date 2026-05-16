@@ -49,6 +49,7 @@ from backend.models import (
     Face,
     FaceDetection,
     Image,
+    ImageGeo,
     NotificationPref,
     Person,
     RecoveryCode,
@@ -166,11 +167,16 @@ async def delete_account(
     ).all()
 
     image_ids = [row[0].id for row in images_count]
+    # §A5 — full account delete: drop the user's learned bandit state
+    # along with the image rows. For per-image bulk-delete the
+    # caller leaves `reset_bandit` at its False default since
+    # per-(user, arm) weights survive the loss of one image.
     image_delete = await hard_delete_images(
         session,
         user_id=user_id,
         image_ids=image_ids,
         audit_action="account.images.delete",
+        reset_bandit=True,
     )
     await add_audit(
         session,
@@ -437,6 +443,25 @@ async def _build_export_zip(
     for img_id, label in image_tag_rows:
         tags_by_image.setdefault(str(img_id), []).append(label)
 
+    # §B3 — GDPR Article 20 completeness: GPS retention rows are user
+    # data and must be included in the portability export when the
+    # user holds the corresponding `gps_retention` consent. The
+    # in-app map view reads from this table, so omitting it from the
+    # export was a portability gap.
+    geo_rows = (
+        await session.execute(
+            select(ImageGeo).where(ImageGeo.user_id == user.id)
+        )
+    ).scalars().all()
+    geo_by_image: dict = {}
+    for g in geo_rows:
+        geo_by_image[str(g.image_id)] = {
+            "lat": g.lat,
+            "lng": g.lng,
+            "taken_at": g.taken_at.isoformat() if g.taken_at else None,
+            "captured_with": g.captured_with,
+        }
+
     metadata = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "user": {
@@ -477,8 +502,19 @@ async def _build_export_zip(
                 "summary": i.summary,
                 "summary_topic": i.summary_topic,
                 "summary_points": i.summary_points,
+                "geo": geo_by_image.get(str(i.id)),
             }
             for i in images
+        ],
+        "geo": [
+            {
+                "image_id": str(g.image_id),
+                "lat": g.lat,
+                "lng": g.lng,
+                "taken_at": g.taken_at.isoformat() if g.taken_at else None,
+                "captured_with": g.captured_with,
+            }
+            for g in geo_rows
         ],
         "persons": [
             {
@@ -646,13 +682,22 @@ async def empty_account_trash(
     ).scalars().all()
     if not rows:
         return {"deleted": 0}
-    result = await hard_delete_images(session, user.id, list(rows))
+    result = await hard_delete_images(
+        session,
+        user_id=user.id,
+        image_ids=list(rows),
+        audit_action="account.trash.empty.image",
+    )
     await add_audit(
         session, user.id, "account.trash.empty",
-        details={"count": result.get("image_delete", len(rows))},
+        details={
+            "count": len(result.image_ids),
+            "blobs_deleted": result.blobs_deleted,
+            "faces_deleted": result.faces_deleted,
+        },
     )
     await session.commit()
-    return {"deleted": len(rows)}
+    return {"deleted": len(result.image_ids)}
 
 
 async def _enforce_export_rate_limit(
@@ -1073,12 +1118,31 @@ async def recovery_login(
     if matched is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid recovery code")
 
-    matched.used_at = datetime.now(timezone.utc)
+    # Lock the matched row and re-read it. Without this, two concurrent
+    # POSTs with the same valid code can both find it unused (step 1),
+    # both verify it (step 2), and both set used_at + return a JWT —
+    # turning a "single-use" recovery code into a multi-use credential.
+    locked = (
+        await session.execute(
+            select(RecoveryCode)
+            .where(
+                RecoveryCode.id == matched.id,
+                RecoveryCode.used_at.is_(None),
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if locked is None:
+        # Another concurrent request consumed the code between our
+        # candidate fetch and the lock acquisition. Treat as invalid.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid recovery code")
+
+    locked.used_at = datetime.now(timezone.utc)
     session.add(
         AuditLog(
             user_id=user.id,
             action="account.recovery_codes.login",
-            details={"recovery_code_id": matched.id},
+            details={"recovery_code_id": locked.id},
         )
     )
     await session.commit()

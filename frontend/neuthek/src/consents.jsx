@@ -51,6 +51,12 @@ function StepFrame({ stepKey, children }) {
 export function ConsentsModal({ open, onClose, onComplete, requireFace = false, allowEarlyAI = true }) {
   const [stepIdx, setStepIdx] = useStateC(0);
   const [terms, setTerms] = useStateC(false);
+  // §A6 — age gate. Required at signup; under-13 users are prohibited
+  // because neuthek does not implement the COPPA verifiable-parental-
+  // consent flow. The backend `UserCreate._require_age_gate` validator
+  // refuses any registration with `age_confirmed != true`, so this
+  // checkbox isn't decorative — unchecking it blocks signup.
+  const [age13, setAge13] = useStateC(false);
   const [privacyRead, setPrivacyRead] = useStateC(false);
   const [bipa, setBipa] = useStateC(false);
   const [scopes, setScopes] = useStateC({ gps: true, aiSummary: allowEarlyAI, semanticSearch: false, telemetry: true });
@@ -59,13 +65,14 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
 
   useEffectC(() => {
     if (!open) return;
-    setStepIdx(0); setTerms(false); setPrivacyRead(false); setBipa(false);
+    setStepIdx(0); setTerms(false); setAge13(false); setPrivacyRead(false); setBipa(false);
     setScopes({ gps: true, aiSummary: allowEarlyAI, semanticSearch: false, telemetry: true });
     setCookies("all"); setSignature("");
   }, [open, allowEarlyAI]);
 
   const completed = {
-    terms, privacy: privacyRead,
+    terms: terms && age13,
+    privacy: privacyRead,
     bipa: !requireFace || bipa, // optional unless required
     scopes: true,                // user can leave defaults
     cookies: !!cookies,
@@ -74,7 +81,7 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
 
   const stepId = STEPS[stepIdx].id;
   const canAdvance = (() => {
-    if (stepId === "terms") return terms;
+    if (stepId === "terms") return terms && age13;
     if (stepId === "privacy") return privacyRead;
     if (stepId === "bipa") return !requireFace || true; // optional
     if (stepId === "scopes") return true;
@@ -87,7 +94,7 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
   const next = () => {
     if (!canAdvance) return;
     if (isLast) {
-      onComplete && onComplete({ scopes, cookies, bipa, signature });
+      onComplete && onComplete({ scopes, cookies, bipa, signature, age13 });
     } else {
       setStepIdx(i => Math.min(STEPS.length - 1, i + 1));
     }
@@ -128,6 +135,26 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
           <button type="button" className="check cs-check" data-checked={terms} onClick={() => setTerms(v => !v)}>
             <span className="check__box"><Icon name="check" size={11} strokeWidth={2.6}/></span>
             <span className="check__label">I agree to the Terms of Use</span>
+          </button>
+          {/* §A6 age gate — required by COPPA: neuthek does not run
+              the verifiable-parental-consent flow, so under-13 users
+              are prohibited. Refusing this check blocks signup. */}
+          <button
+            type="button"
+            className="check cs-check"
+            data-checked={age13}
+            onClick={() => setAge13(v => !v)}
+            style={{ marginTop: 8 }}
+          >
+            <span className="check__box"><Icon name="check" size={11} strokeWidth={2.6}/></span>
+            <span className="check__label">
+              I confirm I am <strong>at least 13 years old</strong>
+              <div className="check__sub" style={{ marginTop: 2 }}>
+                neuthek isn't built for children under 13. If you're a parent
+                signing up on behalf of a child, please don't — use a service
+                that's COPPA-compliant.
+              </div>
+            </span>
           </button>
         </StepFrame>}
 

@@ -28,6 +28,7 @@ from backend.auth.users import current_active_user
 from backend.cloud_sync import (
     CloudSyncNotConfigured,
     PROVIDER_SCOPES,
+    _verify_state,
     complete_oauth,
     connect_provider,
     sync_user_provider,
@@ -134,8 +135,12 @@ async def oauth_callback(
             url=f"{fe_root}/?cloud_error=unsupported_provider", status_code=302
         )
 
+    # Verify the HMAC-signed state we issued in connect_provider. This
+    # is the OAuth CSRF defense: without it, an attacker could craft a
+    # callback URL with `state=<victim_uuid>&code=<attacker_code>` and
+    # bind their own Google Drive to the victim's neuthek account.
     try:
-        user_id = UUID(state)
+        user_id = _verify_state(state)
     except ValueError:
         return RedirectResponse(
             url=f"{fe_root}/?cloud_error=bad_state", status_code=302

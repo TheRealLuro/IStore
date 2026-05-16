@@ -1,0 +1,54 @@
+# §A7 — pre-commit hook chain.
+#
+# Install once per checkout:
+#     pip install pre-commit
+#     pre-commit install
+#
+# Then every `git commit` runs the hooks below against the staged
+# files. The same gitleaks check that runs in CI runs here, so
+# operators catch a leaked secret BEFORE it hits the remote — vs.
+# the CI pass which catches it after, when the secret is already
+# permanent in the remote's history.
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        name: gitleaks (scan staged changes for secrets)
+
+  # Block real-PII filename patterns from being staged. Doesn't read
+  # file contents — purely a filename gate so an operator who has a
+  # real "passport.jpg" locally can't accidentally `git add` it. The
+  # main defense is the `.gitignore` block in §A7; this is the
+  # belt-and-braces second pass.
+  - repo: local
+    hooks:
+      - id: forbid-real-pii-filenames
+        name: forbid real-PII filename patterns
+        entry: bash -c 'for f in "$@"; do case "$f" in
+            *passport*|*driver*license*|*ssn*|*ssn.*|*social*security*|*tax_return*|
+            *bank_statement*|*credit_card*|*selfie*|*headshot_real*|
+            *prod_*.dump|*prod_*.sql|*production_*.dump|*production_*.sql)
+              echo "Refusing to commit $f (looks like real PII)."; exit 1 ;;
+          esac; done' --
+        language: system
+        types: [file]
+
+      - id: forbid-tracked-node-modules-additions
+        name: refuse new node_modules paths in the diff
+        # New files under node_modules should never be added — they
+        # come from `npm install` and belong only on the developer's
+        # local disk. The historically-tracked tree (8.6k files) is
+        # documented as a known-debt issue in `docs/REPO_HYGIENE.md`;
+        # this hook prevents the situation from getting worse.
+        entry: bash -c 'for f in "$@"; do case "$f" in
+            node_modules/*|*/node_modules/*)
+              # Only fail when the file is genuinely NEW to git.
+              if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+                echo "Refusing to add new tracked path $f. Run `git rm --cached -r node_modules` to clean up historical entries."
+                exit 1
+              fi ;;
+          esac; done' --
+        language: system
+        types: [file]

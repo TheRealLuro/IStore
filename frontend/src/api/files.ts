@@ -86,8 +86,18 @@ export async function deleteFile(id: string): Promise<void> {
   await api.delete(`/images/${id}`);
 }
 
-export async function bulkDelete(ids: string[]): Promise<{ count: number }> {
-  return api.post<{ count: number }>("/images/bulk-delete", ids);
+export async function bulkDelete(ids: string[]): Promise<{
+  count: number;
+  deleted: string[];
+  skipped: string[];
+  skipped_count: number;
+}> {
+  return api.post<{
+    count: number;
+    deleted: string[];
+    skipped: string[];
+    skipped_count: number;
+  }>("/images/bulk-delete", ids);
 }
 
 export async function bulkRestore(ids: string[]): Promise<{ count: number }> {
@@ -95,12 +105,13 @@ export async function bulkRestore(ids: string[]): Promise<{ count: number }> {
 }
 
 /** Move N images to a folder (or back to root with `folderId=null`).
- *  Owner-scoped server-side — silently skips ids that don't belong. */
+ *  Owner-scoped server-side — backend reports `skipped` for ids it
+ *  refused (foreign-owned, in trash, or not found). */
 export async function bulkMove(
   ids: string[],
   folderId: string | null,
-): Promise<{ moved: number; folder_id: string | null }> {
-  return api.post<{ moved: number; folder_id: string | null }>(
+): Promise<{ moved: number; skipped: number; folder_id: string | null }> {
+  return api.post<{ moved: number; skipped: number; folder_id: string | null }>(
     "/images/bulk-move",
     { ids, folder_id: folderId },
   );

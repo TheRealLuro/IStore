@@ -185,7 +185,7 @@ export function SharedView({ token }) {
             I already have an account
           </a>
         </div>
-        <div style={{ fontSize: 11, color: "var(--ink-4)", marginTop: 14, textAlign: "center" }}>
+        <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 14, textAlign: "center", lineHeight: 1.5 }}>
           neuthek never shares files with anyone except the email the
           sender chose.
         </div>

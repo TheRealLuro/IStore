@@ -183,6 +183,54 @@ docker compose -f docker-compose.yml -f docker-compose.backup.yml \
 
 Verify by hitting `GET /health/db` and spot-checking a recent share.
 
+### Retention + GDPR Article 17 ("right to erasure")
+
+Backups capture state at a point in time, so a user who hard-deletes
+their account or an image will still have their bytes present in
+backup files written before the deletion. §A5 ("Deletion that
+actually deletes") accepts two paths for honoring an erasure
+request against the backup set; pick one and document which one
+applies to your deployment:
+
+1. **Time-bound retention** — set a fixed retention window for
+   encrypted backups (default recommended: **30 days**). After that
+   window, prune the oldest dumps; any user-data the deletion
+   covered is now unrecoverable everywhere. This is the path most
+   operators choose: a backup older than 30 days is rarely useful
+   for restore anyway, and it bounds the GDPR exposure surface.
+   Cron / scheduled task example:
+
+   ```cron
+   # Daily — prune backups older than 30 days, both local + offsite
+   30 4 * * * cd /opt/neuthek && \
+     find data/backups -name 'neuthek-*.dump.age' -mtime +30 -delete
+   # If BACKUP_DEST_URL is set, also prune offsite:
+   30 4 * * * docker compose -f docker-compose.yml -f docker-compose.backup.yml \
+                  --profile backup run --rm backup-runner \
+                  /usr/local/bin/prune-backups.sh 30
+   ```
+
+2. **Active backup re-write** — for incidents where the data is
+   highly sensitive and the user has explicitly asked for accelerated
+   erasure, restore the most recent backup, replay the deletion(s),
+   and overwrite the file. This is operator-grade work — document
+   in your incident-response runbook which engineers can execute it
+   and which key-holder hands them the off-host age private key.
+
+Whichever you choose, **state the chosen path in your privacy
+policy** so users have an answer to "when does my data leave the
+backup set?" The neuthek-published PRIVACY.md template (see
+`PRIVACY.md`) calls this out under "How long we keep your data."
+
+### Operator quick-checklist
+
+- ☐ `BACKUP_AGE_RECIPIENT` set; private key stored off-host.
+- ☐ `BACKUP_DEST_URL` configured (or document the local-only choice).
+- ☐ Nightly backup scheduled (cron / Task Scheduler).
+- ☐ Retention policy chosen + scheduled pruning (option 1 above).
+- ☐ Restore tested at least once per quarter.
+- ☐ Privacy-policy states backup retention window + erasure procedure.
+
 ---
 
 ## Secret-box rotation

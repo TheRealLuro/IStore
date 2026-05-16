@@ -10,6 +10,7 @@ import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files
 import { listShares } from "@/api/shares";
 import { PdfPageStack } from "./pdf-stack.jsx";
 import { ShareModal } from "./share-modal.jsx";
+import { eraseImageCaches } from "./cache-eraser.js";
 
 function fmtBytes(n) {
   if (n == null) return "—";
@@ -138,10 +139,8 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     try {
       await deleteFile(file.id);
       toast.success(`Deleted "${file.name}"`);
-      qc.invalidateQueries({ queryKey: ["files"] });
-      qc.invalidateQueries({ queryKey: ["storage"] });
-      qc.invalidateQueries({ queryKey: ["geo"] });
-      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      // §A5 — full FE cache purge for the deleted id.
+      await eraseImageCaches(qc, [file.id]);
       onClose && onClose();
     } catch (e) {
       toast.error(e?.detail || "Could not delete file");

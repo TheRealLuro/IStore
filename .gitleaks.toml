@@ -1,8 +1,34 @@
 title = "neuthek gitleaks config"
 
+# §A7 — `gitleaks` defaults scan every file in the repo. We exclude a
+# narrow allowlist for the placeholders that are deliberately
+# secret-shaped (.env.example documents the format; SECURITY_REVIEW.md
+# may quote dummy values when documenting historical fixes). Anything
+# else flagged should be treated as a real finding.
+
 [allowlist]
 description = "Synthetic fixtures and placeholders"
 paths = [
+  # Placeholder secrets (rotated values that are deliberately
+  # exposed). Adding to this list requires a comment explaining why
+  # in the same PR.
   '''\.env\.example$''',
   '''SECURITY_REVIEW\.md$''',
+  # SQL migration files contain placeholder Argon2 hashes used in the
+  # test fixtures — they're never valid against a real password.
+  '''migrations/versions/.*\.py$''',
+  # Test fixtures may contain dummy JWTs / dummy argon2 hashes used
+  # solely to exercise the constant-time-fail path in auth code.
+  '''tests/.*\.py$''',
+  # The CI workflow itself documents secret-shaped env names; that's
+  # the contract, not a secret.
+  '''\.github/workflows/.*\.yml$''',
+  # The gitleaks config is allowed to reference patterns (meta).
+  '''\.gitleaks\.toml$''',
+]
+regexes = [
+  # Dummy Argon2 hashes used as constant-time-fail probes.
+  '''\$argon2id\$v=19\$m=65536,t=3,p=4\$AAAAAAAAAAAAAAAAAAAAAA\$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA''',
+  # Literal sentinel that the prod-config validator rejects on boot.
+  '''dev-only-jwt-secret-CHANGE-IN-PROD''',
 ]

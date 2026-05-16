@@ -760,8 +760,8 @@ function RealUsersTab({ open }) {
             >
               <Icon name="trash" size={10}/> Delete
             </button>
-            <button type="button" className="btn-icon" onClick={clearSelection} title="Clear">
-              <Icon name="x" size={11}/>
+            <button type="button" className="btn-icon" onClick={clearSelection} title="Clear selection" aria-label="Clear selection">
+              <Icon name="x" size={12}/>
             </button>
           </div>
         )}
@@ -996,7 +996,7 @@ function RealModelsTab({ open }) {
             style={{ width: "100%", accentColor: "var(--ink)" }}
             aria-label="Concurrent users to estimate"
           />
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--ink-4)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>
             <span>1</span><span>5</span><span>10</span><span>15</span><span>20</span>
           </div>
         </div>
@@ -1025,7 +1025,7 @@ function RealModelsTab({ open }) {
                 <td>
                   <strong>{m.label}</strong>
                   <div style={{ color: "var(--ink-3)", fontSize: 11 }}>{m.role}</div>
-                  <div style={{ color: "var(--ink-4)", fontSize: 10, fontFamily: "monospace" }}>{m.name}</div>
+                  <div style={{ color: "var(--ink-3)", fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>{m.name}</div>
                 </td>
                 <td className="mono" style={{ color: "var(--ink-3)" }}>{m.variant || "—"}</td>
                 <td>

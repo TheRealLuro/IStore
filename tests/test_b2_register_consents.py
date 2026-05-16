@@ -27,7 +27,7 @@ from sqlalchemy import select
 from tests.conftest import fetch_user_id
 
 
-PASSWORD = "Aa1!aaaaa"
+PASSWORD = "Aa1!aaaaaa"
 
 
 async def _register(client, email: str, *, consents=None, signature: str | None = None):

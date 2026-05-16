@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 from uuid import UUID
@@ -86,7 +87,30 @@ _DUMMY_ARGON2_HASH = (
 
 
 def _normalize_email(value: str) -> str:
-    return value.strip().lower()
+    """Normalize an email for case-insensitive equality on the recipient pin.
+
+    Beyond `.strip().lower()`:
+    - Apply NFKC unicode normalization so zero-width / compatibility
+      variants don't sneak past the pin.
+    - Strip control chars (CR / LF / NUL / zero-width spaces) that some
+      mail clients tolerate but which would never appear in a legitimate
+      pin and could be used to create lookalike addresses.
+    - `.casefold()` (not `.lower()`) so the comparison is correct for
+      non-ASCII scripts where Unicode has special casing rules.
+    """
+    if value is None:
+        return ""
+    s = unicodedata.normalize("NFKC", str(value)).strip().casefold()
+    # Drop control chars + zero-width chars commonly used in spoofing.
+    s = "".join(
+        ch for ch in s
+        if not (
+            0x00 <= ord(ch) <= 0x1F
+            or ord(ch) == 0x7F
+            or ch in "​‌‍﻿⁠"
+        )
+    )
+    return s
 
 
 def _generate_token() -> str:
@@ -98,11 +122,39 @@ def _generate_token() -> str:
 async def _resolve_recipient_user(
     session: AsyncSession, email: str
 ) -> User | None:
-    return (
+    """Resolve a recipient by email. `email` must already be the output
+    of `_normalize_email`. We compare `lower(users.email)` in SQL — for
+    plain ASCII this matches `.casefold()`. For unicode-heavy emails the
+    SQL `lower()` and Python `.casefold()` can diverge; we therefore
+    fall back to a candidate sweep when the direct comparison misses
+    and the input contains non-ASCII bytes.
+    """
+    normalized = _normalize_email(email)
+    direct = (
         await session.execute(
-            select(User).where(sa_func.lower(User.email) == email)
+            select(User).where(sa_func.lower(User.email) == normalized)
         )
     ).scalar_one_or_none()
+    if direct is not None:
+        return direct
+    if normalized.isascii():
+        return None
+    # Non-ASCII path: scan a narrow window of candidates whose lowercased
+    # email shares the local part with the query, then casefold-compare
+    # in Python. The cardinality is bounded by users in the deployment;
+    # this stays cheap and only fires on the unicode-spoof path.
+    local = normalized.split("@", 1)[0][:32]
+    if not local:
+        return None
+    candidates = (
+        await session.execute(
+            select(User).where(sa_func.lower(User.email).like(f"{local}%"))
+        )
+    ).scalars().all()
+    for candidate in candidates:
+        if _normalize_email(candidate.email) == normalized:
+            return candidate
+    return None
 
 
 async def _grant_to_read(
@@ -410,10 +462,31 @@ async def claim_share(
             status.HTTP_404_NOT_FOUND, "Invalid or expired share link."
         )
 
+    # Take a row lock + re-read so two concurrent claims for the same
+    # grant (same user, two tabs, ~simultaneous POSTs) don't both flip
+    # was_pending=True. Without the lock, both flows audit-log a "new
+    # claim" and racily set expires_at — only one wins the write but
+    # both saw was_pending=True at evaluation time.
+    locked = (
+        await session.execute(
+            select(ShareGrant).where(ShareGrant.id == matched.id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if locked is None:
+        # Grant was revoked between candidate fetch and lock acquisition.
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "Invalid or expired share link."
+        )
+    matched = locked
+
     # Re-check expiry on a row that *was* already bound to this user.
     if matched.expires_at is not None and matched.expires_at <= datetime.now(
         timezone.utc
     ):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "Invalid or expired share link."
+        )
+    if matched.revoked_at is not None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "Invalid or expired share link."
         )

@@ -26,12 +26,28 @@ _LOCK = asyncio.Lock()
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    real = request.headers.get("x-real-ip")
-    if real:
-        return real.strip()
+    """Resolve the client IP for rate-limit / lockout / audit keying.
+
+    We only trust `X-Forwarded-For` / `X-Real-IP` headers when the
+    deployment opts in via `TRUST_PROXY_HEADERS`. Otherwise, any
+    attacker can spoof those headers when the API is reachable
+    directly (misconfigured ingress, internal port exposed) and
+    bypass every per-IP control — auth lockout, upload count cap,
+    share-claim throttle. The default is "off"; operators behind a
+    real reverse proxy (Caddy, nginx, CDN) flip it on knowing the
+    proxy strips and re-sets the header.
+    """
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            # First entry in the comma-separated chain is the original
+            # client (per RFC 7239). Strip any port suffix some proxies
+            # append (`1.2.3.4:5678`).
+            first = forwarded.split(",", 1)[0].strip()
+            return first.rsplit(":", 1)[0] if first.count(":") == 1 and "." in first else first
+        real = request.headers.get("x-real-ip")
+        if real:
+            return real.strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -267,10 +283,15 @@ async def _tier_limits_for(user_id: str) -> tuple[int, int]:
 async def enforce_upload_limits(user_id: str, request: Request, byte_count: int) -> None:
     if not settings.security_rate_limits_enabled:
         return
-    ip = client_ip(request)
     count_cap, byte_cap = await _tier_limits_for(user_id)
+    # Count-per-hour limit is keyed on user_id ONLY so it caps the
+    # CPU/processing budget per account. Keying on (user_id, ip) let
+    # a single user rotate IPs (VPN, mobile data, Tor) and get N×
+    # the budget — defeating the throttle for the exact case it's
+    # designed for. Per-IP throttling for anonymous abuse is handled
+    # separately by the auth lockout + claim-share rate limiters.
     await enforce_rate_limit(
-        key=f"upload:count:{user_id}:{ip}",
+        key=f"upload:count:{user_id}",
         limit=count_cap,
         window_seconds=3600,
         detail="Upload rate limit exceeded for your plan",
@@ -394,9 +415,16 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
         # a credential-guess that should count toward lockout, not just
         # /login. Share-claim and share-preview both take a secret in
         # the request and need the same brute-force pressure relief.
+        # NOTE: `.endswith("/login")` previously excluded `/login-totp`,
+        # which meant failed 6-digit TOTP attempts didn't increment the
+        # lockout counter — a real brute-force loophole. The explicit
+        # path check covers it now.
         is_credential_attempt = (
-            request.url.path.endswith("/login") or is_get_share_preview or
-            request.url.path == "/shares/claim"
+            request.url.path.endswith("/login")
+            or request.url.path == "/auth/jwt/login-totp"
+            or request.url.path == "/account/recovery-codes/login"
+            or is_get_share_preview
+            or request.url.path == "/shares/claim"
         )
         if is_credential_attempt and response.status_code >= 400:
             await _audit_auth_event(

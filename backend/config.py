@@ -112,14 +112,32 @@ class Settings(BaseSettings):
     # per user (24h = once a day per §B3).
     account_export_min_hours_between: int = Field(default=24)
 
+    # §A4 — signed-URL lifetime cap. The TTL knob lets operators set a
+    # shorter value (e.g. 60s for very sensitive deployments) but the
+    # absolute upper bound is **300 seconds (5 minutes)**, enforced in
+    # `signed_urls.make_signed_*`. Anything longer would be a regression
+    # against the A4 spec, which mandates "expire ≤ 5 min" on every
+    # signed download.
     download_url_ttl_seconds: int = Field(default=300)
     require_signed_downloads: bool = Field(default=False)
+    # The compile-time cap on `download_url_ttl_seconds`. Exposing it as
+    # a constant means tests + `verify_download` can reason about the
+    # ceiling without hard-coding 300 in three places.
+    download_url_ttl_max_seconds: int = Field(default=300)
 
     security_rate_limits_enabled: bool = Field(default=True)
     auth_rate_limit_per_minute: int = Field(default=5)
     auth_lockout_failures: int = Field(default=5)
     auth_lockout_base_seconds: int = Field(default=60)
     auth_lockout_max_seconds: int = Field(default=15 * 60)
+
+    # Trust `X-Forwarded-For` / `X-Real-IP` for client_ip resolution.
+    # Flip ON only when the API sits behind a reverse proxy that strips
+    # and re-sets these headers (Caddy, nginx, Cloudflare). Default
+    # OFF: when the API is reachable directly, any attacker can spoof
+    # the header and bypass every per-IP control (rate-limits, auth
+    # lockout, audit `details.ip`).
+    trust_proxy_headers: bool = Field(default=False)
 
     secret_manager: str = Field(default="env_file")
     postgres_at_rest_encryption: str = Field(default="")

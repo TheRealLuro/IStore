@@ -296,6 +296,7 @@ function TotpDisableForm({ onDone }) {
         placeholder="Account password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
+        autoComplete="current-password"
         style={{
           padding: "8px 10px", borderRadius: 6, fontSize: 13,
           border: "1px solid var(--line)", background: "var(--surface-2)",

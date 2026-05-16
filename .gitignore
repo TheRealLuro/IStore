@@ -89,3 +89,58 @@ frontend/vite.config.d.ts
 marketing/vite.config.js
 marketing/vite.config.d.ts
 *.tsbuildinfo
+
+# §A7 — sensitive payload patterns. None of these should ever land in
+# a public commit; the gitleaks CI step in `.github/workflows/security.yml`
+# fails the build if a secret-shaped string slips past these patterns.
+*.age              # age-encrypted ciphertext (backup files)
+*.gpg              # legacy gpg ciphertext
+*.enc              # generic encrypted blob
+*.kdbx             # KeePass DB
+id_rsa             # SSH private keys (rare, but blocklisted)
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.ovpn             # OpenVPN config (carries inline keys)
+.netrc             # carries cleartext credentials
+.npmrc             # often carries npm tokens
+.pypirc            # carries PyPI tokens
+.cargo/credentials
+.docker/config.json
+
+# Real user content — refuse to track anything that looks like it
+# could be production data. Tests use synthetic byte-arrays generated
+# in-process (see `_png_bytes`, `_docx_bytes` in tests/) — fixtures
+# belong in tests/fixtures/synthetic/ if anywhere.
+data/originals/
+data/served/
+data/faces/
+data/quarantine/
+data/exports/
+fixtures/real/
+samples/real/
+**/personal_*
+
+# Local dev databases that sometimes get dumped to the worktree
+neuthek.db
+istore.db
+postgres-data/
+pgdata/
+
+# AI model weight caches — multi-GB, never tracked
+.cache/
+.hf_cache/
+.transformers_cache/
+~/.cache/huggingface/
+
+# Coverage + profiling outputs
+coverage.xml
+*.coverage
+.nyc_output/
+
+# Local AI model artifacts that operators sometimes copy in
+*.safetensors
+*.onnx
+*.gguf
+*.bin
+!frontend/node_modules/**/*.bin   # node_modules .bin shims are exec, not weights

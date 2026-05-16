@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.users import current_active_user
 from backend.db import get_session
+from backend.security import client_ip
 from backend.models import (
     AuditLog,
     ConsentRecord,
@@ -186,7 +187,7 @@ async def grant(
         policy_version=POLICY_VERSION,
         policy_text_sha256=_policy_sha256(),
         signature_text=payload.signature_text.strip(),
-        ip=str(request.client.host) if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
         granted_at=now,
         expires_at=expires,
@@ -264,7 +265,7 @@ async def withdraw(
         policy_version=POLICY_VERSION,
         policy_text_sha256=_policy_sha256(),
         signature_text=None,
-        ip=str(request.client.host) if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
         granted_at=datetime.now(timezone.utc),
         expires_at=None,
@@ -401,7 +402,7 @@ async def grant_scope(
         policy_version=POLICY_VERSION,
         policy_text_sha256=_policy_sha256(),
         signature_text=None,
-        ip=str(request.client.host) if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
         granted_at=now,
         expires_at=expires,
@@ -461,7 +462,7 @@ async def withdraw_scope(
         policy_version=POLICY_VERSION,
         policy_text_sha256=_policy_sha256(),
         signature_text=None,
-        ip=str(request.client.host) if request.client else None,
+        ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
         granted_at=datetime.now(timezone.utc),
         expires_at=None,

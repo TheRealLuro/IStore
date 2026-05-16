@@ -285,19 +285,30 @@ export function PrivacyScopesModal({ open, onClose }) {
 /* ============================================================
    5. Cookie / first-visit notice (corner card, not banner)
    ============================================================ */
+// §A6 — Storage notice (not a cookie banner). neuthek doesn't set
+// cookies at all (the CI test `test_backend_does_not_set_cookies`
+// keeps that property honest). The frontend uses `localStorage`
+// for theme, recent searches, and the auth JWT. We still surface
+// this notice because users often expect a "storage notice" of some
+// kind — but the language reflects what we actually do, and there's
+// no Accept/Decline because nothing toggles based on the answer.
 export function CookieBanner({ open, onAcceptAll, onEssentialOnly, onCustomize }) {
   if (!open) return null;
   return (
     <div className="cookie" role="dialog" aria-labelledby="cookie-title">
       <div className="cookie__icon"><Icon name="cookie" size={18}/></div>
       <div className="cookie__body">
-        <h3 id="cookie-title" style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600 }}>Just a quick note</h3>
+        <h3 id="cookie-title" style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600 }}>How we store data in your browser</h3>
         <p>
-          We use a few cookies to keep you signed in and to spot bugs. Optional ones — like remembering your last view — only run if you say yes. <a href="#" onClick={(e) => { e.preventDefault(); onCustomize && onCustomize(); }}>Manage preferences</a>.
+          neuthek <strong>does not set any cookies</strong>. Your
+          sign-in token, theme choice, and recent searches live in
+          your browser's <strong>localStorage</strong> — same scope as
+          cookies but never sent on cross-site requests. No tracking,
+          no third-party analytics. <a href="#" onClick={(e) => { e.preventDefault(); onCustomize && onCustomize(); }}>Read the privacy notice</a>.
         </p>
         <div className="cookie__actions">
-          <button className="btn btn--secondary btn--sm" onClick={onEssentialOnly}>Essentials only</button>
-          <button className="btn btn--primary btn--sm" onClick={onAcceptAll}>Accept all</button>
+          <button className="btn btn--secondary btn--sm" onClick={onEssentialOnly}>Got it</button>
+          <button className="btn btn--primary btn--sm" onClick={onAcceptAll}>OK, dismiss</button>
         </div>
       </div>
     </div>
@@ -356,7 +367,14 @@ export function DeleteAccountModal({ open, onClose, onConfirm, email = "you@exam
               </div>
               <div className="label-block">
                 <div className="label-block__label">Re-enter your password</div>
-                <input type="password" className="input" value={pwd} onChange={e => setPwd(e.target.value)} placeholder="••••••••"/>
+                <input
+                  type="password"
+                  className="input"
+                  value={pwd}
+                  onChange={e => setPwd(e.target.value)}
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                />
               </div>
               <div style={{
                 marginTop: 16, padding: "12px 14px",

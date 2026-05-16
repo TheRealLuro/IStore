@@ -9,6 +9,9 @@ permissions:
   contents: read
 
 jobs:
+  # §A7 — secret scan. Full git history (fetch-depth: 0) so a commit
+  # that landed a secret three branches ago still gets caught when
+  # rebased onto main.
   gitleaks:
     runs-on: ubuntu-latest
     steps:
@@ -18,3 +21,69 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Redact match values from the public Action log so a found
+          # secret isn't itself leaked by the CI run.
+          GITLEAKS_NOTIFY_USER_LIST: ${{ vars.GITLEAKS_NOTIFY_USER_LIST }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
+          GITLEAKS_ENABLE_SUMMARY: "true"
+
+  # §A7 — filename heuristic for real PII fixtures.
+  # Catches the class of mistake gitleaks doesn't (a file named
+  # `prod_users.dump` or `real_passport.jpg` is suspicious by name
+  # alone, regardless of contents). Fails fast — exit 1 if any
+  # matching path is in the diff.
+  forbid-real-pii-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan tracked tree for real-PII filename patterns
+        run: |
+          set -euo pipefail
+          bad=""
+          # We deliberately scan the full tracked tree, not just the
+          # diff — a file added in a prior commit and missed by the
+          # human reviewer should still fail today's run.
+          while IFS= read -r f; do
+            case "$f" in
+              # Strict PII shapes.
+              *passport*|*driver*license*|*ssn*|*ssn.*|*social*security*|\
+              *tax_return*|*bank_statement*|*credit_card*|*selfie*|\
+              *headshot_real*|*real_user*|*production_*.dump|*production_*.sql|\
+              *prod_*.dump|*prod_*.sql)
+                # node_modules / vendored test data exempt — historical noise.
+                case "$f" in
+                  node_modules/*|*/node_modules/*) continue ;;
+                esac
+                bad="$bad\n$f" ;;
+            esac
+          done < <(git ls-files)
+          if [ -n "$bad" ]; then
+            echo "Real-PII filename patterns detected:"
+            echo -e "$bad"
+            exit 1
+          fi
+          echo "No real-PII filename patterns in tracked tree."
+
+  # §A7 — synthetic-fixtures invariant. Asserts that the tests still
+  # only use byte-arrays generated in-process, never real files.
+  synthetic-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse real fixtures under tests/
+        run: |
+          set -euo pipefail
+          violations=$(find tests/ -type f \( \
+              -name '*.jpg' -o -name '*.jpeg' -o -name '*.png' -o \
+              -name '*.heic' -o -name '*.gif' -o -name '*.mp4' -o \
+              -name '*.mov' -o -name '*.pdf' -o -name '*.dump' -o \
+              -name '*.sql' \
+            \) 2>/dev/null || true)
+          if [ -n "$violations" ]; then
+            echo "tests/ contains binary fixtures — they must be generated in-process:"
+            echo "$violations"
+            exit 1
+          fi
+          echo "tests/ is binary-fixture-free."

@@ -12,7 +12,9 @@ import { TAGS } from "./data.jsx";
 import { getStorageUsage } from "@/api/storage";
 import { listPeople, faceCropUrl } from "@/api/people";
 import { listFolders, moveImageToFolder } from "@/api/folders";
-import { deleteFile } from "@/api/files";
+import { deleteFile, originalUrl } from "@/api/files";
+import { tokens } from "@/api/client";
+import { eraseImageCaches } from "./cache-eraser.js";
 import { AuthedThumb } from "./auth-image.jsx";
 import { useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
@@ -283,10 +285,9 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
     try {
       await deleteFile(f.id);
       toast.success(`Deleted "${f.name}"`);
-      qc.invalidateQueries({ queryKey: ["files"] });
-      qc.invalidateQueries({ queryKey: ["storage"] });
-      qc.invalidateQueries({ queryKey: ["geo"] });
-      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      // §A5 — purge every FE cache + blob handle for the deleted id
+      // so a stale-while-revalidate render can't briefly show it.
+      await eraseImageCaches(qc, [f.id]);
     } catch (e) {
       toast.error(e?.detail || "Could not delete file");
     }
@@ -374,10 +375,34 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
             <button className="cardmenu__item" onClick={() => { setMenuOpen(false); onShare && onShare(f); }}>
               <span className="cardmenu__icon"><Icon name="users" size={14}/></span>Share…
             </button>
-            <button className="cardmenu__item" onClick={() => setMenuOpen(false)}>
-              <span className="cardmenu__icon"><Icon name="folder" size={14}/></span>Move to…
-            </button>
-            <button className="cardmenu__item" onClick={() => setMenuOpen(false)}>
+            <button
+              className="cardmenu__item"
+              onClick={async () => {
+                setMenuOpen(false);
+                // Wire Download to the real /images/:id/original endpoint.
+                // JWT is required, so we fetch the bytes via authed XHR and
+                // hand the user a blob: URL on an <a download>. Avoids the
+                // need for a query-param token + signed-URL handshake.
+                try {
+                  const token = tokens.get();
+                  const res = await fetch(originalUrl(f.id), {
+                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                  });
+                  if (!res.ok) throw new Error(await res.text() || "download failed");
+                  const blob = await res.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = f.name || `file-${f.id}`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } catch (err) {
+                  toast.error(err?.message || "Could not download");
+                }
+              }}
+            >
               <span className="cardmenu__icon"><Icon name="download" size={14}/></span>Download
             </button>
           </div>

@@ -877,7 +877,12 @@ async def download_original(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Response:
-    if settings.require_signed_downloads and settings.is_production:
+    # The `is_production` gate used to bypass the require_signed_downloads
+    # setting in dev/staging — that meant operators couldn't actually
+    # test their signed-URL flow before going to prod. The setting now
+    # honors itself regardless of env; the dev default stays False so
+    # nothing changes for fresh installs.
+    if settings.require_signed_downloads:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Use a signed download URL")
     image = await _load_owned_image(image_id, user, session)
     if image.original_blob_key is None:
@@ -900,7 +905,7 @@ async def download_served(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Response:
-    if settings.require_signed_downloads and settings.is_production:
+    if settings.require_signed_downloads:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Use a signed download URL")
     image = await _load_owned_image(image_id, user, session)
     blob, mime = await fetch_served(image)
@@ -1360,7 +1365,19 @@ async def bulk_delete(
         audit_action="image.bulk_delete",
     )
     await session.commit()
-    return {"deleted": [str(i) for i in res.image_ids], "count": len(res.image_ids)}
+    requested = {str(i) for i in ids}
+    deleted = {str(i) for i in res.image_ids}
+    # Tell the caller which ids it asked for were ignored — either
+    # foreign-owned (silently dropped by the user_id filter), already
+    # in the trash, or simply not in the DB. The caller can surface a
+    # "1 of 3 deleted" toast instead of a misleading success.
+    skipped = sorted(requested - deleted)
+    return {
+        "deleted": sorted(deleted),
+        "count": len(res.image_ids),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+    }
 
 
 @router.post("/bulk-move")
@@ -1415,8 +1432,14 @@ async def bulk_move(
         )
         .values(folder_id=folder_id)
     )
+    moved = int(res.rowcount or 0)
     await session.commit()
-    return {"moved": int(res.rowcount or 0), "folder_id": str(folder_id) if folder_id else None}
+    skipped = max(0, len(image_ids) - moved)
+    return {
+        "moved": moved,
+        "skipped": skipped,
+        "folder_id": str(folder_id) if folder_id else None,
+    }
 
 
 @router.post("/bulk-restore")

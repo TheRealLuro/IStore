@@ -21,6 +21,20 @@ def sign_download(image_id: UUID, user_id: UUID, variant: str, expires: int) -> 
     ).hexdigest()
 
 
+def _capped_ttl() -> int:
+    """Return the effective signed-URL TTL, capped by the A4 ceiling.
+
+    Operators can tune `download_url_ttl_seconds` *downward* (e.g. to
+    60s for high-security deployments) but never above the A4 spec's
+    "≤ 5 min" requirement. Centralized so a config bump can't accidentally
+    issue a long-lived link.
+    """
+    return max(
+        1,
+        min(settings.download_url_ttl_seconds, settings.download_url_ttl_max_seconds),
+    )
+
+
 def make_signed_download(
     *,
     base_url: str,
@@ -28,7 +42,7 @@ def make_signed_download(
     user_id: UUID,
     variant: str,
 ) -> dict[str, str]:
-    ttl = min(settings.download_url_ttl_seconds, 300)
+    ttl = _capped_ttl()
     expires = int(time.time()) + ttl
     sig = sign_download(image_id, user_id, variant, expires)
     root = base_url.rstrip("/")
@@ -48,7 +62,14 @@ def verify_download(
 ) -> bool:
     if variant not in {"original", "served"}:
         return False
-    if expires < int(time.time()):
+    now = int(time.time())
+    if expires < now:
+        return False
+    # Defense-in-depth: even if `make_signed_download` ever drifts above
+    # the cap, the verifier rejects any URL that would still be valid
+    # more than `download_url_ttl_max_seconds` from now. So a stale
+    # config that issued a 24h link gets rejected here, not served.
+    if expires - now > settings.download_url_ttl_max_seconds:
         return False
     expected = sign_download(image_id, user_id, variant, expires)
     return hmac.compare_digest(expected, sig)
@@ -81,7 +102,7 @@ def make_signed_share_download(
     share_id: UUID,
     variant: str,
 ) -> dict[str, str]:
-    ttl = min(settings.download_url_ttl_seconds, 300)
+    ttl = _capped_ttl()
     expires = int(time.time()) + ttl
     sig = sign_share_download(share_id, variant, expires)
     root = base_url.rstrip("/")
@@ -100,7 +121,10 @@ def verify_share_download(
 ) -> bool:
     if variant not in {"original", "served"}:
         return False
-    if expires < int(time.time()):
+    now = int(time.time())
+    if expires < now:
+        return False
+    if expires - now > settings.download_url_ttl_max_seconds:
         return False
     expected = sign_share_download(share_id, variant, expires)
     return hmac.compare_digest(expected, sig)

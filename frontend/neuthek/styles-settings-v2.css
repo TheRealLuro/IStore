@@ -75,6 +75,16 @@ html[data-theme="dark"] .appset__sidebar {
   transition: background 140ms ease, color 140ms ease;
 }
 .appset__navitem:hover { background: var(--surface-3) !important; color: var(--ink); }
+.appset__navitem:focus { outline: none; }
+.appset__navitem:focus-visible {
+  outline: 2px solid var(--ink) !important;
+  outline-offset: 2px;
+  background: var(--surface-3) !important;
+  color: var(--ink) !important;
+}
+html[data-theme="dark"] .appset__navitem:focus-visible {
+  outline-color: rgba(255,255,255,0.7) !important;
+}
 .appset__navitem[data-active="true"] {
   background: var(--surface) !important;
   color: var(--ink) !important;

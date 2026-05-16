@@ -176,7 +176,7 @@ async def db_client(_test_db, monkeypatch) -> AsyncClient:
 
 
 async def register_and_login(
-    ac: AsyncClient, email: str | None = None, password: str = "Aa1!aaaaa"
+    ac: AsyncClient, email: str | None = None, password: str = "Aa1!aaaaaa"
 ) -> tuple[str, dict]:
     """Register a user, log in, return (jwt, auth_headers)."""
     email = email or f"u{uuid.uuid4().hex[:10]}@example.com"

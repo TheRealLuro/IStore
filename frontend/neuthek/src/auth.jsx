@@ -218,6 +218,18 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   const handleConsentsComplete = async (payload) => {
     setShowConsents(false);
     setAuthError(null);
+    // §A6 age gate — the consents modal must have collected an
+    // explicit 13+ confirmation. The server's `_require_age_gate`
+    // validator rejects the registration if this is false, but we
+    // also check here so the user sees a clean error instead of
+    // a 400 response.
+    if (!payload?.age13) {
+      const msg = "You must confirm you are at least 13 years old to use neuthek.";
+      setAuthError(msg);
+      toast.error(msg);
+      setShowConsents(true);
+      return;
+    }
     try {
       setSubmitting(true);
       // §B2 — bundle the consents INTO the register call so the
@@ -226,7 +238,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       // ConsentRecord rows in the same transaction.
       const consents = consentBundleFromPayload(payload);
       const signature = name.trim() || email;
-      await register(email, pwd, true, consents, signature);
+      await register(email, pwd, payload.age13 === true, consents, signature);
       const u = await login(email, pwd);
       setUser(u);
       if (redirectIfNext()) return;

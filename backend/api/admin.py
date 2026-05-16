@@ -275,13 +275,36 @@ async def admin_update_role(
     target = await session.get(User, user_id)
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    # §A4 — "last-superuser" guard. If demoting the *only* remaining
+    # superuser to admin or user, the deployment locks itself out of
+    # role-mutation (which requires `current_superuser`) and out of
+    # /admin/users/bulk-delete. Refuse and instruct the operator to
+    # promote a second account first.
+    if target.is_superuser and body.role != "superuser":
+        remaining_superusers = (
+            await session.execute(
+                select(func.count())
+                .select_from(User)
+                .where(User.is_superuser.is_(True), User.id != target.id)
+            )
+        ).scalar_one()
+        if int(remaining_superusers or 0) == 0:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Refusing to demote the last remaining superuser. Promote "
+                "another account to superuser first, then retry.",
+            )
     target.role = body.role
     target.is_superuser = body.role == "superuser"
     session.add(
         AuditLog(
             user_id=admin.id,
             action="admin.user.role.update",
-            details={"target_user_id": str(target.id), "role": body.role},
+            details={
+                "target_user_id": str(target.id),
+                "role": body.role,
+                "previous_role": target.role if target.role != body.role else None,
+            },
         )
     )
     await session.commit()
@@ -756,9 +779,19 @@ async def admin_bulk_quota(
 ) -> dict:
     """Set a per-user quota override on every listed user in one shot.
     Skips IDs that don't resolve. Writes one audit row per change so
-    the trail stays granular."""
+    the trail stays granular.
+
+    Privilege-escalation guard: a non-superuser admin cannot raise
+    their own quota — otherwise the `admin` role becomes a free
+    "unlimited storage" upgrade. Superusers can.
+    """
     if body.quota_bytes is not None and body.quota_bytes < 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "quota_bytes must be >= 0")
+    if not admin.is_superuser and admin.id in body.user_ids:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Non-superuser admins cannot change their own quota. Ask a superuser.",
+        )
     rows = (
         await session.execute(select(User).where(User.id.in_(body.user_ids)))
     ).scalars().all()
@@ -874,7 +907,7 @@ async def admin_bulk_revoke_consent(
 
 @router.get("/search")
 async def admin_search(
-    _: Annotated[User, Depends(current_admin_user)],
+    admin: Annotated[User, Depends(current_admin_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     q: str = Query(..., min_length=2, max_length=200),
     limit: int = Query(default=10, ge=1, le=50),
@@ -884,8 +917,18 @@ async def admin_search(
     Three sections, each capped at `limit`. Operator-side only — never
     exposed to regular users. Substring match against the obvious
     fields (email, display_name, action, filename, summary_topic).
-    Designed for the header search box, not a fanout API."""
+    Designed for the header search box, not a fanout API.
+
+    Every call is audit-logged with the query — admin browsing across
+    user data must leave a trail so a compromised admin account doesn't
+    pillage the dataset silently.
+    """
     pattern = f"%{q.lower()}%"
+    session.add(AuditLog(
+        user_id=admin.id,
+        action="admin.search",
+        details={"query": q[:200], "limit": limit},
+    ))
 
     users = (
         await session.execute(
@@ -924,7 +967,7 @@ async def admin_search(
         )
     ).scalars().all()
 
-    return {
+    result_payload = {
         "query": q,
         "users": [
             {
@@ -961,6 +1004,8 @@ async def admin_search(
             for img in images
         ],
     }
+    await session.commit()
+    return result_payload
 
 
 @router.get("/logs")

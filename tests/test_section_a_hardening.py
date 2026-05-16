@@ -40,7 +40,7 @@ def _no_background_jobs(monkeypatch):
 
 
 async def test_registration_requires_age_gate(client):
-    body = {"email": "age@example.com", "password": "Aa1!aaaaa"}
+    body = {"email": "age@example.com", "password": "Aa1!aaaaaa"}
     r = await client.post("/auth/register", json=body)
     assert r.status_code == 422
 

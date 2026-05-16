@@ -102,8 +102,11 @@ export function ShareModal({ imageId, imageName, onClose }) {
     }
   };
 
+  const [revoking, setRevoking] = React.useState(() => new Set());
   const handleRevoke = async (grantId, recipientLabel) => {
+    if (revoking.has(grantId)) return;
     if (!window.confirm(`Revoke this share with ${recipientLabel}?`)) return;
+    setRevoking((s) => new Set(s).add(grantId));
     try {
       await revokeShare(imageId, grantId);
       toast.success("Share revoked");
@@ -111,15 +114,18 @@ export function ShareModal({ imageId, imageName, onClose }) {
       qc.invalidateQueries({ queryKey: ["incoming-shares"] });
     } catch (err) {
       toast.error(err?.detail || "Could not revoke");
+    } finally {
+      setRevoking((s) => {
+        const next = new Set(s);
+        next.delete(grantId);
+        return next;
+      });
     }
   };
 
   return (
     <div
       className="share-modal__overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Share file"
       onClick={onClose}
       style={{
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
@@ -128,6 +134,9 @@ export function ShareModal({ imageId, imageName, onClose }) {
     >
       <div
         className="share-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="share-modal-title"
         onClick={(e) => e.stopPropagation()}
         style={{
           width: "min(540px, 92vw)", background: "var(--surface, #fff)",
@@ -139,7 +148,7 @@ export function ShareModal({ imageId, imageName, onClose }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-3)" }}>Share</div>
-            <div style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>{imageName || "this file"}</div>
+            <div id="share-modal-title" style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>{imageName || "this file"}</div>
           </div>
           <button className="btn-icon" onClick={onClose} aria-label="Close share dialog">
             <Icon name="x" size={15}/>
@@ -262,9 +271,10 @@ export function ShareModal({ imageId, imageName, onClose }) {
                       type="button"
                       className="btn btn--ghost btn--sm"
                       onClick={() => handleRevoke(g.id, label)}
+                      disabled={revoking.has(g.id)}
                       title="Revoke this share"
                     >
-                      Revoke
+                      {revoking.has(g.id) ? "Revoking…" : "Revoke"}
                     </button>
                   </li>
                 );

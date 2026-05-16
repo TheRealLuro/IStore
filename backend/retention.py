@@ -417,17 +417,37 @@ async def sweep_scheduled_account_deletes(
     deleted = 0
     for user in due_users:
         user_id = user.id
+        # Lock the user row and RE-CHECK scheduled_delete_at before
+        # deleting. Without this, a cancel-delete request that lands
+        # between the outer SELECT and this iteration's UPDATE would
+        # still result in the account being hard-deleted — losing the
+        # user's data after they explicitly asked to abort the deletion.
+        locked_row = (
+            await session.execute(
+                sa_select(User)
+                .where(User.id == user_id)
+                .with_for_update()
+            )
+        ).scalars().first()
+        if locked_row is None:
+            continue
+        if locked_row.scheduled_delete_at is None or locked_row.scheduled_delete_at > now:
+            # User cancelled (NULL) or pushed the timestamp out while we
+            # were iterating. Honor the cancel and skip.
+            continue
         image_ids = (
             await session.execute(
                 sa_select(Image.id).where(Image.user_id == user_id)
             )
         ).scalars().all()
         try:
+            # §A5 — scheduled account delete also wipes bandit state.
             await hard_delete_images(
                 session,
                 user_id=user_id,
                 image_ids=list(image_ids),
                 audit_action="account.images.delete",
+                reset_bandit=True,
             )
             await session.execute(sa_delete(User).where(User.id == user_id))
             await session.flush()

@@ -96,7 +96,7 @@ export function EditableName({
         aria-label="Name this person"
         style={{
           padding: "2px 6px",
-          border: "1px solid var(--ink-4)",
+          border: "1px solid var(--ink-3)",
           borderRadius: 6,
           font: "inherit",
           background: "var(--surface)",

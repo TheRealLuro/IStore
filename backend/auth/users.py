@@ -93,12 +93,28 @@ async def _persist_registration_consents(
 
 
 PASSWORD_RULES = [
-    ("at least 8 characters", lambda p: len(p) >= 8),
+    # Length floor matches the frontend signup validator (auth.jsx
+    # `pwd.length >= 10`). Anything below 10 is rejected at the API
+    # boundary so a non-browser client can't sneak a weaker password
+    # past the floor.
+    ("at least 10 characters", lambda p: len(p) >= 10),
     ("a lowercase letter", lambda p: bool(re.search(r"[a-z]", p))),
     ("an uppercase letter", lambda p: bool(re.search(r"[A-Z]", p))),
     ("a number", lambda p: bool(re.search(r"\d", p))),
     ("a special character", lambda p: bool(re.search(r"[^A-Za-z0-9]", p))),
 ]
+
+# Tiny denylist of obvious passwords. Not a full breach list — we don't
+# want to ship one in the repo — but catches the "Password1!" /
+# "Welcome123!" class that satisfies every rule above and is the first
+# thing a credential-stuffer tries.
+_COMMON_PASSWORDS = {
+    "password1!", "password123!", "welcome1!", "welcome123!",
+    "qwerty12!", "qwerty123!", "asdf1234!", "letmein1!", "letmein123!",
+    "admin1234!", "admin12345!", "iloveyou1!", "monkey123!", "dragon123!",
+    "abc12345!", "1q2w3e4r!", "1qaz2wsx!", "p@ssw0rd1", "p@ssw0rd!",
+    "trustno1!", "sunshine1!", "princess1!", "football1!",
+}
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
@@ -115,8 +131,21 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
             raise InvalidPasswordException(
                 reason="Password is missing: " + ", ".join(missing)
             )
-        if user is not None and password.lower() == (user.email or "").lower():
-            raise InvalidPasswordException(reason="Password cannot match your email")
+        if password.casefold() in _COMMON_PASSWORDS:
+            raise InvalidPasswordException(
+                reason="Password is in a list of commonly used passwords. Pick something less guessable."
+            )
+        if user is not None and user.email:
+            email = user.email.casefold()
+            pwd = password.casefold()
+            # Reject the email verbatim OR the email's local part — many
+            # users default to "[localpart]123!" which is trivial.
+            if pwd == email or pwd == email.split("@", 1)[0]:
+                raise InvalidPasswordException(reason="Password cannot match your email")
+            # And reject "email + small suffix" up to 4 chars — covers
+            # the `User@Example.com1` / `User@Example.com!!` class.
+            if pwd.startswith(email) and len(pwd) - len(email) <= 4:
+                raise InvalidPasswordException(reason="Password is too close to your email")
 
     # ---- Phase 13 (C6) transactional email hooks ----
     #

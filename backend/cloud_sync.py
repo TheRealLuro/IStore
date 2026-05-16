@@ -51,7 +51,10 @@ Privacy / compliance notes
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Literal
@@ -67,6 +70,42 @@ from backend.secret_box import (
     decrypt as decrypt_token,
     encrypt as encrypt_token,
 )
+
+
+def _build_state(user_id: UUID) -> str:
+    """HMAC-signed OAuth state: `<user_id>.<nonce>.<hex_mac>`.
+
+    The state parameter is the only thing tying the callback back to a
+    specific user. Without a signature, an attacker could craft a
+    callback URL with `state=<victim_uuid>&code=<attacker_code>` and
+    bind their own Google Drive to the victim's neuthek account —
+    OAuth CSRF. The HMAC ensures the state truly originated from a
+    /cloud/links/{provider} call we authorized.
+    """
+    nonce = secrets.token_urlsafe(16)
+    payload = f"{user_id}.{nonce}"
+    mac = hmac.new(
+        settings.jwt_secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}.{mac}"
+
+
+def _verify_state(state: str) -> UUID:
+    """Return the user_id encoded in a signed state, or raise ValueError."""
+    if not isinstance(state, str) or state.count(".") != 2:
+        raise ValueError("Malformed state")
+    user_id_str, nonce, mac = state.split(".", 2)
+    payload = f"{user_id_str}.{nonce}"
+    expected = hmac.new(
+        settings.jwt_secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, mac):
+        raise ValueError("State signature mismatch")
+    return UUID(user_id_str)
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +207,12 @@ def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHandoff:
     # `access_type=offline` is what makes Google return a refresh token.
     # `prompt=consent` forces a refresh-token grant even on re-auth so
     # we never end up with a link row missing its refresh token.
+    signed_state = _build_state(user_id)
     auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
-        state=str(user_id),
+        state=signed_state,
     )
     logger.info(
         "cloud_sync: connect_provider user=%s provider=%s state=%s",

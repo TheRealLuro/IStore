@@ -134,7 +134,12 @@ export function BillingPage() {
 
   const onUpgrade = async (tier) => {
     if (!user) {
-      window.location.href = `/?next=/billing/checkout?tier=${tier}&interval=${interval}`;
+      // Encode the inner URL so its `?` and `&` stay part of the
+      // `next` value rather than reading as outer query separators
+      // — without this, `tier` and `interval` evaporated on the
+      // bounce back from auth.
+      const dest = `/billing/checkout?tier=${encodeURIComponent(tier)}&interval=${encodeURIComponent(interval)}`;
+      window.location.href = `/?next=${encodeURIComponent(dest)}`;
       return;
     }
     try {
@@ -424,10 +429,17 @@ export function BillingCheckoutPage() {
   const [clientSecret, setClientSecret] = React.useState(null);
   const [publishableKey, setPublishableKey] = React.useState(null);
   const [error, setError] = React.useState(null);
+  // After 12s with no client_secret, surface a "still working" banner so
+  // the user sees there's a problem rather than staring at
+  // "Preparing secure checkout…" forever. The Stripe SDK can hang
+  // indefinitely on flaky networks or blocked third-party content.
+  const [slow, setSlow] = React.useState(false);
 
   React.useEffect(() => {
     if (loading || !user) return;
     let cancelled = false;
+    setSlow(false);
+    const slowTimer = setTimeout(() => { if (!cancelled) setSlow(true); }, 12_000);
     createCheckout(tier, interval)
       .then((r) => {
         if (cancelled) return;
@@ -438,7 +450,7 @@ export function BillingCheckoutPage() {
         if (cancelled) return;
         setError(e?.detail || e?.message || "Could not start checkout");
       });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(slowTimer); };
   }, [loading, user, tier, interval]);
 
   React.useEffect(() => {
@@ -449,6 +461,32 @@ export function BillingCheckoutPage() {
     () => (publishableKey ? loadStripe(publishableKey) : null),
     [publishableKey],
   );
+
+  // Theme-aware Stripe Appearance options so the iframe doesn't read
+  // white-on-light-grey in dark mode. We read the live CSS variables
+  // from <html data-theme>; Stripe doesn't see our CSS, so we marshal
+  // the resolved colors at render time.
+  const appearance = React.useMemo(() => {
+    if (typeof document === "undefined") return undefined;
+    const root = document.documentElement;
+    const styles = getComputedStyle(root);
+    const isDark = root.getAttribute("data-theme") === "dark";
+    const getVar = (name, fallback) => {
+      const v = styles.getPropertyValue(name).trim();
+      return v || fallback;
+    };
+    return {
+      theme: isDark ? "night" : "stripe",
+      variables: {
+        colorPrimary:    getVar("--ink", isDark ? "#f5f5f5" : "#0a0a0a"),
+        colorBackground: getVar("--surface", isDark ? "#161616" : "#ffffff"),
+        colorText:       getVar("--ink", isDark ? "#f5f5f5" : "#0a0a0a"),
+        colorDanger:     getVar("--danger", "#b91c1c"),
+        fontFamily: '"Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        borderRadius: "10px",
+      },
+    };
+  }, [publishableKey, clientSecret]);
 
   return (
     <Shell
@@ -487,7 +525,44 @@ export function BillingCheckoutPage() {
             borderRadius: 16,
           }}
         >
-          Preparing secure checkout…
+          {slow ? (
+            <>
+              <div style={{ fontSize: 15, color: "var(--ink)", fontWeight: 500 }}>
+                Stripe is taking longer than usual.
+              </div>
+              <div style={{ marginTop: 8, fontSize: 13 }}>
+                Check your connection — if you have a script blocker or
+                strict tracking-protection enabled, Stripe's checkout
+                iframe can be blocked. Refresh, or head back to plans and
+                try again in a moment.
+              </div>
+              <div style={{ marginTop: 16, display: "flex", gap: 10, justifyContent: "center" }}>
+                <button
+                  onClick={() => window.location.reload()}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 8,
+                    background: "var(--ink)",
+                    color: "var(--surface)",
+                    fontWeight: 600,
+                    fontSize: 13,
+                    border: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  Try again
+                </button>
+                <a
+                  href="/billing"
+                  style={{ alignSelf: "center", fontSize: 13, color: "var(--ink-3)" }}
+                >
+                  ← Back to plans
+                </a>
+              </div>
+            </>
+          ) : (
+            "Preparing secure checkout…"
+          )}
         </div>
       )}
       {!error && clientSecret && stripePromise && (
@@ -500,7 +575,7 @@ export function BillingCheckoutPage() {
             boxShadow: "var(--shadow-1)",
           }}
         >
-          <EmbeddedCheckoutProvider stripe={stripePromise} options={{ clientSecret }}>
+          <EmbeddedCheckoutProvider stripe={stripePromise} options={{ clientSecret, appearance }}>
             <EmbeddedCheckout />
           </EmbeddedCheckoutProvider>
         </div>
@@ -521,6 +596,12 @@ export function BillingReturnPage() {
   React.useEffect(() => {
     if (loading || !user) return;
     let stop = false;
+    let pending = null;
+    // Track ticks in a ref so the recursive `poll` reads the live value
+    // (the previous code closed over `ticks` from the effect-creation
+    // moment, leaving the 30-tick safety cap permanently at 0 → the
+    // /billing/subscription poll never stopped).
+    let tickCount = 0;
     const poll = async () => {
       try {
         const sub = await getSubscription();
@@ -529,11 +610,17 @@ export function BillingReturnPage() {
         if (sub.tier && sub.tier !== "free") return;
       } catch {}
       if (stop) return;
-      setTicks((t) => t + 1);
-      if (ticks < 30) setTimeout(poll, 1500);
+      tickCount += 1;
+      setTicks(tickCount);
+      if (tickCount < 30) {
+        pending = setTimeout(poll, 1500);
+      }
     };
     poll();
-    return () => { stop = true; };
+    return () => {
+      stop = true;
+      if (pending) clearTimeout(pending);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user]);
 

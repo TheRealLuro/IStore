@@ -46,6 +46,7 @@ import {
   bulkDelete, bulkMove, createFolderWithImages,
 } from "@/api/files";
 import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
+import { eraseImageCaches } from "./cache-eraser.js";
 import { listFolders } from "@/api/folders";
 import { listPeople, faceCropUrl } from "@/api/people";
 import { AuthedThumb } from "./auth-image.jsx";
@@ -268,11 +269,11 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
     setBusy("move");
     try {
       const r = await bulkMove(selectedIds, folderId);
-      toast.success(
-        folderId
-          ? `Moved ${r.moved} to "${folders.find(f => f.id === folderId)?.name || "folder"}"`
-          : `Moved ${r.moved} to root`
-      );
+      const where = folderId
+        ? `"${folders.find(f => f.id === folderId)?.name || "folder"}"`
+        : "root";
+      const skipNote = r.skipped > 0 ? ` (${r.skipped} skipped)` : "";
+      toast.success(`Moved ${r.moved} to ${where}${skipNote}`);
       invalidateAll();
       onClear();
     } catch (e) {
@@ -308,9 +309,12 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
     setBusy("delete");
     try {
       const r = await bulkDelete(selectedIds);
-      toast.success(`Moved ${r.count} to trash`);
-      invalidateAll();
-      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      const skipNote = r.skipped_count > 0 ? ` (${r.skipped_count} skipped)` : "";
+      toast.success(`Moved ${r.count} to trash${skipNote}`);
+      // §A5 — purge per-id FE caches in addition to the list-level
+      // invalidations from invalidateAll(). The backend has already
+      // dropped every row + blob; the FE follows.
+      await eraseImageCaches(qc, selectedIds);
       onClear();
     } catch (e) {
       toast.error(e?.detail || "Delete failed");
@@ -556,7 +560,7 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
         title="Clear selection"
         aria-label="Clear selection"
       >
-        <Icon name="x" size={13}/>
+        <Icon name="x" size={12}/>
       </button>
     </div>
   );
@@ -1142,6 +1146,13 @@ export function App() {
     });
   };
   const [showHistory, setShowHistory] = useStateApp(false);
+  // Held by the search input's onBlur so we can cancel the pending
+  // hide-history setTimeout on unmount — otherwise it fires a setState
+  // on an unmounted component when the user navigates away mid-blur.
+  const searchBlurTimer = useRefApp(null);
+  useEffectApp(() => () => {
+    if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
+  }, []);
 
   // FAB scroll-to-top — the actual scroll container is .gallery, not .main
   const mainRef = useRefApp(null);
@@ -1556,11 +1567,19 @@ export function App() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => setShowHistory(true)}
-              onBlur={() => setTimeout(() => setShowHistory(false), 160)}
+              onBlur={() => { searchBlurTimer.current = setTimeout(() => setShowHistory(false), 160); }}
               onKeyDown={(e) => { if (e.key === "Enter") submitSearch(); if (e.key === "Escape") { setQuery(""); setShowHistory(false); } }}
             />
             {query
-              ? <button className="btn-icon" style={{ width: 24, height: 24 }} onClick={() => setQuery("")}><Icon name="x" size={12}/></button>
+              ? <button
+                  className="btn-icon"
+                  style={{ width: 24, height: 24 }}
+                  onClick={() => setQuery("")}
+                  aria-label="Clear search"
+                  title="Clear search"
+                >
+                  <Icon name="x" size={12}/>
+                </button>
               : <span className="search__hint">⌘ K</span>}
 
             {showHistory && (history.length > 0 || query) && (
@@ -1594,7 +1613,7 @@ export function App() {
           <button className="btn-icon" onClick={() => setTheme(theme === "light" ? "dark" : "light")}
                   aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
                   title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}>
-            <Icon name={theme === "light" ? "moon" : "sun"} size={15}/>
+            <Icon name={theme === "light" ? "moon" : "sun"} size={14}/>
           </button>
           <button className="btn btn--secondary" onClick={() => setShowUpload(true)}>
             <Icon name="upload" size={14}/> Upload
@@ -1606,12 +1625,12 @@ export function App() {
               title="Admin console"
               aria-label="Admin console"
             >
-              <Icon name="shield" size={15}/>
+              <Icon name="shield" size={14}/>
             </button>
           )}
           {t.showLogout && (
             <button className="logout-btn" onClick={realSignOut} title="Sign out">
-              <Icon name="log_out" size={13}/> Sign out
+              <Icon name="log_out" size={14}/> Sign out
             </button>
           )}
         </div>
@@ -1694,7 +1713,7 @@ export function App() {
                     style={{ background: "none", border: 0, padding: "2px 4px",
                              color: "var(--ink-2)", cursor: "pointer",
                              display: "inline-flex", alignItems: "center" }}>
-              <Icon name="chevronLeft" size={14}/>
+              <Icon name="chevronLeft" size={12}/>
             </button>
             <button onClick={() => navigateToCrumb(-1)}
                     style={{ background: "none", border: 0, padding: 0, color: "var(--ink-2)", cursor: "pointer" }}>
@@ -1702,7 +1721,7 @@ export function App() {
             </button>
             {folderPath.map((c, i) => (
               <React.Fragment key={c.id}>
-                <Icon name="chevronRight" size={11} style={{ color: "var(--ink-4)" }}/>
+                <Icon name="chevronRight" size={12} style={{ color: "var(--ink-3)" }}/>
                 <button onClick={() => navigateToCrumb(i)}
                         style={{ background: "none", border: 0, padding: 0, color: i === folderPath.length - 1 ? "var(--ink)" : "var(--ink-2)", fontWeight: i === folderPath.length - 1 ? 600 : 400, cursor: "pointer" }}>
                   {c.name}

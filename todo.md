@@ -7,7 +7,8 @@
 This file tracks **what's still open** — broken, partial, or planned.
 Shipped work isn't listed here; read `git log` for that.
 
-**Next up:** Sprint C (compliance + ship-blocking work). See §11.
+**Next up:** Sprint D (sharing + onboarding). Sprint C compliance
+work (A2/A4/A5/A6/A7) all shipped 2026-05-16; see §11.
 
 ---
 
@@ -57,68 +58,205 @@ Shipped work isn't listed here; read `git log` for that.
 > - **Secret rotation worker** (§A3) — currently a key change
 >   orphans existing ciphertext until the migration tool ships.
 
-### A3. Secret management ⏳
-- No `.env` in git; commit `.env.example` with placeholders only.
-- Rotate `JWT_SECRET`, MinIO root creds, DB passwords on a schedule.
-- Move secrets out of compose files into a secret manager (Vault,
-  Docker secrets, platform-native).
-- Audit log every secret access (who read, when, from where).
-- **Secret-box rotation worker** — currently rotating
-  `CLOUD_ENCRYPTION_KEY` invalidates all existing ciphertext
+### A3. Secret management 🟡
+> Partial — `.env` hygiene + gitleaks coverage shipped under §A7,
+> `SECRET_MANAGER` prod-boot validator + `TRUST_PROXY_HEADERS`
+> shipped under §A4. Rotation worker + secret-access audit are
+> the remaining open pieces.
+
+**Shipped:**
+- ✅ No `.env` in git; `.env.example` is the only env-shaped file
+  tracked. `.gitignore` blocks `.env`, `.env.local`, `.env.*.local`;
+  gitleaks CI + pre-commit hook keep it honest (§A7).
+- ✅ Move secrets out of compose files into a secret manager —
+  `SECRET_MANAGER=docker_secrets` (or a platform-native manager) is
+  required by the `validate_production_settings` boot check (§A2).
+- ✅ Auth-event audit (login, role mutation, share, consent grant)
+  via `add_audit()` covers every endpoint that *uses* a secret.
+- ✅ XFF-aware `client_ip()` so audit `details.ip` is real per
+  `TRUST_PROXY_HEADERS` (§A4).
+
+**Open:**
+- ⏳ Rotate `JWT_SECRET`, MinIO root creds, DB passwords on a
+  schedule. Document the rotation cadence in SECURITY.md and wire
+  a scheduled task on the operator side.
+- ⏳ Audit log every secret *access* (who read, when, from where) —
+  currently we audit secret-bearing actions, not raw secret reads
+  out of the secret manager.
+- ⏳ **Secret-box rotation worker** — rotating
+  `CLOUD_ENCRYPTION_KEY` today invalidates all existing ciphertext
   (TOTP secrets + cloud-OAuth refresh tokens). Ship a migration
   tool that reads with `CLOUD_ENCRYPTION_KEY`, writes with
   `CLOUD_ENCRYPTION_KEY_NEXT`, then promotes — the rotation flow
-  documented in [SECURITY.md](SECURITY.md) "Secret-box rotation."
+  is documented in [SECURITY.md](SECURITY.md) "Secret-box rotation."
 
-### A4. Access control + audit ⏳
-- RBAC on top of per-user filtering — admin/superuser/user roles.
-- Signed download URLs for `originals` + `served`; expire ≤ 5 min.
-- Rate-limit auth endpoints (5/min per IP, exponential backoff after
-  lockout).
-- Brute-force protection (account lock after N failed attempts).
-- Append-only audit log: auth events, deletes, consent changes, admin
-  actions.
-- Postgres RLS policies for biometric tables (currently app-layer
-  enforced).
+### A4. Access control + audit ✅ SHIPPED 2026-05-16
+> RBAC, audit, RLS, signed-URL TTL cap, brute-force lockout — all in.
+>
+> - **RBAC** (`backend/auth/users.py`): `users.role` column with check
+>   constraint `IN ('user', 'admin', 'superuser')` (migration 0016).
+>   Three dependencies: `current_active_user` (everyone),
+>   `current_admin_user` (role admin or superuser), `current_superuser`
+>   (fastapi-users `is_superuser=True`). Role-mutation endpoint
+>   `PATCH /admin/users/{id}/role` is superuser-only AND refuses to
+>   demote the **last remaining** superuser (new in this pass).
+> - **Signed download URLs** (`backend/signed_urls.py`):
+>   `make_signed_download` clamps to `download_url_ttl_max_seconds`
+>   (default 300 = 5 min); `verify_download` rejects any URL whose
+>   `expires` is more than the cap from `now()`. Defense in depth
+>   against a config drift that would issue long-lived links.
+> - **Auth rate limit + exponential backoff**
+>   (`backend/security.py::SecurityControlsMiddleware`): 5/min per IP,
+>   24h fail-counter, lockout window
+>   `min(base * 2^(failures - threshold), max)` with base=60s, max=15m.
+>   Applied to `/auth/jwt/login`, `/auth/jwt/login-totp`,
+>   `/auth/forgot-password`, `/auth/reset-password`,
+>   `/auth/request-verify-token`, `/account/recovery-codes/login`,
+>   `/shares/claim`, and `/shares/preview/{token}`.
+> - **Append-only audit log** (migration 0016 + refined 0026): trigger
+>   `prevent_audit_mutation` raises on every UPDATE except the one
+>   permitted transition (`user_id IS NOT NULL → NULL` for the
+>   anonymization sweeper, every other column unchanged) and on every
+>   DELETE. Auth events, deletes, consent changes, admin actions, share
+>   ops, and the new `admin.search` row all go through `add_audit()`.
+> - **Postgres RLS** (migrations 0016 + 0027): FORCE ROW LEVEL SECURITY
+>   on biometric tables (`faces`, `face_detections`, `persons`) plus
+>   `image_geo`, `feedback_events`, `consent_records`, `recovery_codes`,
+>   `bandit_state` (`user_id::text = current_setting('app.current_user_id')`)
+>   and `share_grants` (dual-perspective predicate covering both
+>   `sharer_user_id` and `recipient_user_id`). RLS context is set
+>   via `set_current_user_id()` in every auth dependency; dev/test
+>   uses `app.rls_bypass=on`.
 
-### A5. Deletion that actually deletes ⏳
-The single most-skipped feature. When a user deletes an image *or* the
-account, all of the following must go:
-- `originals` object, `served` variant
-- Thumbnail caches (FE IndexedDB + BE caches)
-- CLIP embedding row, AI summary text/topic/points
-- EXIF row, GPS row
-- Detected face crops in `faces` bucket
-- Face embeddings (`faces.embedding`), face detections
-  (`face_detections`)
-- Person rows that have no remaining faces
-- Bandit reward / arm history (or anonymized)
-- Audit log entries: referenced but NOT deleted (legal retention)
-- Backup invalidation eventually (document the retention)
-- Once **E** lands: contacts, password vault items, save blobs, IoT
-  telemetry — each with its own eraser worker.
+### A5. Deletion that actually deletes ✅ SHIPPED 2026-05-16
+> `backend/deletion.py::hard_delete_images` is the single source of
+> truth; called from `/images/{id}` DELETE, `/images/bulk-delete`,
+> `/account/trash/empty`, `/account/delete`, and
+> `retention.sweep_scheduled_account_deletes`. The function covers
+> every artifact from the A5 checklist:
+>
+> | Artifact | Path |
+> |----------|------|
+> | `originals` blob | Phase 2 — explicit `storage.delete` |
+> | `served` blob | Phase 2 — explicit `storage.delete` |
+> | thumbnail blob | Phase 2 — explicit `storage.delete` |
+> | CLIP embedding row | Column on `images`; cascades with row delete |
+> | AI summary text/topic/points | Columns on `images`; cascade |
+> | EXIF / GPS row (`image_geo`) | FK CASCADE on `image_id` |
+> | face crops (`faces` bucket) | Phase 2 — explicit `storage.delete` per `FaceDetection.crop_blob_key` |
+> | face embeddings (`faces.embedding`) | Phase 5 — explicit delete of orphan faces |
+> | face detections (`face_detections`) | FK CASCADE on `image_id` |
+> | orphan persons (`persons.face_count == 0`) | Phase 6 — explicit |
+> | image_tags m2m | FK CASCADE on `image_id` |
+> | share_grants on these images | FK CASCADE on `image_id` |
+> | feedback_events for these images | FK CASCADE on `image_id` |
+> | cloud_files pointers | Phase 3 — explicit delete |
+> | bandit reward / arm history | Phase 8 — opt-in via `reset_bandit=True` (account-delete only) |
+> | audit_log | NOT deleted; append-only trigger preserves chain of custody |
+>
+> **FE cache eraser** (`frontend/neuthek/src/cache-eraser.js`):
+> `eraseImageCaches(qc, [imageId, ...])` invalidates every list-level
+> query, `removeQueries` per id, revokes any registered blob URLs,
+> and clears matching `CacheStorage` entries (no-op today; forward-
+> compat for a future service worker). Called from gallery card
+> delete, preview-panel delete, and the bulk-bar delete.
+>
+> **Backup retention**: SECURITY.md "Encrypted backups → Retention +
+> GDPR Article 17" documents the two acceptable paths (30-day
+> rolling pruning or active backup re-write) and provides an
+> operator checklist.
+>
+> **Integration test**: `tests/test_a5_full_deletion.py` —
+> seeds an image with every sibling row + bucket object, asserts
+> per-image delete leaves 0 rows / 0 objects, preserves bandit
+> state + consent records + the audit row referencing the image_id;
+> account-level delete additionally wipes bandit_state. A signed-URL
+> TTL-cap test asserts a 1-hour forged signature fails verification.
 
-Add an integration test that uploads, deletes, and asserts every
-table + bucket returns 0 rows / 0 objects for the target.
+### A6. Compliance scaffolding ✅ SHIPPED 2026-05-16
+> - **PRIVACY.md** rewritten end-to-end: 12 sections covering what
+>   we collect / why / retention / deletion / consent log /
+>   cookies-vs-localStorage / age gate / sharing / embeddings &
+>   biometrics / data-subject rights / children / international
+>   transfers / change-control. Mirrors the model layer 1:1.
+> - **SECURITY.md** — disclosure email `security@neuthek.app` +
+>   "Supported versions" section already shipped (verified by the
+>   §A7 hygiene test `test_security_doc_contains_disclosure_email`).
+> - **DATA_PROCESSING.md** expanded to a proper DPA template with
+>   12 sections (definitions, scope, processing purposes, security
+>   TOMs, sub-processors, data-subject rights, retention, breach
+>   notification, international transfers, audits, liability, term).
+>   Operator-placeholder fields marked `[Operator: …]` for
+>   customization before signing.
+> - **Cookie banner copy** rewritten — neuthek doesn't set cookies
+>   (`test_backend_does_not_set_cookies` keeps that true). Banner
+>   now describes what we actually do: `localStorage` for theme,
+>   recent searches, and the JWT. PRIVACY.md §4 carries the full
+>   storage inventory.
+> - **Age gate** — explicit "I am at least 13 years old" checkbox
+>   added to the consents flow ([consents.jsx](frontend/neuthek/src/consents.jsx)).
+>   Required to advance past the Terms step. Wired through to the
+>   `register()` call (`age13` payload → `age_confirmed` flag);
+>   FE blocks with a clean error before submission, backend
+>   `UserCreate._require_age_gate` validator backstops at the API
+>   boundary.
+> - **Consent log** — every grant/withdraw writes a `consent_records`
+>   row with `granted_at` (UTC), `ip`, `user_agent`, `consent_kind`,
+>   `state`, `policy_version`, `policy_text_sha256`, `signature_text`.
+>   IP capture standardized to use `client_ip(request)` in
+>   [backend/consent.py](backend/consent.py) so it honors the
+>   `TRUST_PROXY_HEADERS` setting (matches every other per-IP
+>   surface). RLS forces row-level isolation on `consent_records`
+>   (migration 0027).
 
-### A6. Compliance scaffolding 🟡
-- ⏳ **PRIVACY.md** — what we collect, why, retention, deletion
-  process, embedding handling, biometric handling.
-- ⏳ **SECURITY.md** — disclosure email, supported versions.
-- ⏳ **DATA_PROCESSING.md** — for B2B users (DPA template).
-- ⏳ Cookie banner if any cookies are set; document `Set-Cookie` for
-  every cookie.
-- ⏳ Age gate (under-13 prohibited unless full COPPA flow is built).
-- ⏳ Consent log: every grant/revoke gets a row with timestamp, IP,
-  user-agent, scope.
-
-### A7. Repo hygiene ⏳
-- Audit git history for: real user images, real EXIF, real
-  embeddings, prod credentials, DB dumps. Use `git log --stat -p` and
-  `git filter-repo` if anything sensitive surfaces.
-- `.gitignore` everything that could leak (`.env`, `data/`, `*.dump`).
-- Tests use synthetic fixtures only.
-- CI step that fails on committed secrets (gitleaks / trufflehog).
+### A7. Repo hygiene ✅ SHIPPED 2026-05-16
+> - **`.gitignore`** tightened: added `*.age`, `*.gpg`, `*.enc`,
+>   `*.kdbx`, `id_rsa*`, `id_ed25519*`, `*.ovpn`, `.netrc`,
+>   `.npmrc`, `.pypirc`, `.cargo/credentials`,
+>   `.docker/config.json`, real-PII-shaped filenames (`*passport*`,
+>   `*ssn*`, `*production_*.dump`), AI weight caches
+>   (`*.safetensors`, `*.onnx`, `*.gguf`, `*.bin` + node_modules
+>   `.bin` shim exemption), and local DB files (`neuthek.db`,
+>   `postgres-data/`, `pgdata/`).
+> - **CI** — three security jobs in
+>   [.github/workflows/security.yml](.github/workflows/security.yml):
+>   - `gitleaks` — full-history secret scan, runs on every PR + push
+>     to main. Output redacted so a found secret isn't itself leaked
+>     by the CI log.
+>   - `forbid-real-pii-fixtures` — filename heuristic that fails the
+>     build if a real-PII-shaped path (passport, SSN, prod dump, etc.)
+>     is in the tracked tree.
+>   - `synthetic-fixtures` — fails the build if any binary file
+>     (`*.jpg/*.png/*.pdf/*.dump/*.sql/…`) lands under `tests/`.
+>     Test bytes are generated in-process via `_png_bytes()` /
+>     `_docx_bytes()` / `insert_face()` helpers.
+> - **Pre-commit** — [.pre-commit-config.yaml](.pre-commit-config.yaml)
+>   runs the same gitleaks scan locally before commit + blocks
+>   real-PII-shaped filenames + refuses NEW `node_modules/` paths
+>   in the staged diff.
+> - **gitleaks config** ([.gitleaks.toml](.gitleaks.toml)) — narrow
+>   allowlist (`env.example`, `SECURITY_REVIEW.md`, migrations,
+>   tests, CI workflows) + regex allowlist for the constant-time
+>   dummy Argon2 hash and the `dev-only-jwt-secret-CHANGE-IN-PROD`
+>   sentinel. Real findings remain real.
+> - **Pytest invariants** — [tests/test_a7_repo_hygiene.py](tests/test_a7_repo_hygiene.py)
+>   asserts the 8 hygiene contracts inside the normal test run so
+>   a regression shows up in the dev loop before CI:
+>   (1) no binary fixtures under `tests/`,
+>   (2) compliance docs exist + non-empty,
+>   (3) SECURITY.md disclosure email + supported versions,
+>   (4) PRIVACY.md covers required A6 topics,
+>   (5) CI runs gitleaks against full history,
+>   (6) `.gitignore` blocks the canonical sensitive patterns,
+>   (7) no `real_*` / `prod_*` path literals in tests,
+>   (8) append-only audit-log trigger migration still present.
+> - **Repo hygiene doc** —
+>   [REPO_HYGIENE.md](REPO_HYGIENE.md) captures the full A7
+>   posture + the documented `node_modules/` historical-debt
+>   cleanup procedure (the .gitignore covers it but ~8.6k files
+>   from before the rule still sit in the index — operators can
+>   run the documented `git rm --cached` cleanup at their
+>   discretion).
 
 ---
 
@@ -633,53 +771,71 @@ in its own commit so blame stays useful and reverts are cheap.
 
 ## 11. Recommended priority order
 
-### Sprint C — compliance (next, ship-blocking; ~1 week)
+### Sprint C — compliance (✅ shipped 2026-05-16)
 
-1. **A6** audit existing PRIVACY.md / SECURITY.md /
-   DATA_PROCESSING.md; fill gaps; wire consent log row per grant.
-2. **A5** deletion integration test (uses fixtures in
-   `tests/conftest.py`).
-3. **A2** SSE/TLS posture confirmation in prod compose.
+All compliance items now closed:
 
-### Sprint D — sharing + onboarding (~2 weeks)
+1. **A2** Encryption at rest + in transit — ✅ shipped (boot validator,
+   SSE-KMS dual-key, age-encrypted backups, posture in `/admin/system`).
+2. **A4** Access control + audit — ✅ shipped (RBAC roles, signed-URL
+   TTL cap ≤ 5 min, append-only audit trigger, RLS extended in
+   migration 0027, last-superuser guard).
+3. **A5** Deletion that actually deletes — ✅ shipped
+   (`backend/deletion.py` covers every checklist row;
+   `tests/test_a5_full_deletion.py` is the integration test that
+   uploads + deletes + asserts 0 rows / 0 objects).
+4. **A6** Compliance scaffolding — ✅ shipped (PRIVACY.md +
+   DATA_PROCESSING.md rewritten, age gate enforced both ends, consent
+   log carries ts + IP + UA + scope + sig, cookie banner reflects
+   `localStorage` reality).
+5. **A7** Repo hygiene — ✅ shipped (tightened `.gitignore`, three CI
+   security jobs, pre-commit gitleaks chain,
+   `tests/test_a7_repo_hygiene.py` asserts the invariants in the
+   dev loop, REPO_HYGIENE.md documents posture + `node_modules/`
+   historical-debt cleanup procedure).
 
-4. **G2** comments — `comments` table + pin overlay + thread panel.
-5. **C5.1** setup script — platform detect, GPU probe, `.env`
+### Sprint D — sharing + onboarding (next, ~2 weeks)
+
+1. **G2** comments — `comments` table + pin overlay + thread panel.
+2. **C5.1** setup script — platform detect, GPU probe, `.env`
    generation, `docker compose` or native install.
-6. **C5.2** B2B migration — bulk import + per-source scopes +
+3. **C5.2** B2B migration — bulk import + per-source scopes +
    dry-run + provider plugins.
-7. **C2** Drive cloud sync — pull-only, AI-off by default per
+4. **C2** Drive cloud sync — pull-only, AI-off by default per
    Limited Use.
 
 ### Sprint E — multi-axis filters + UX polish (~1 week)
 
-8. **C9** multi-axis image filtering — backend params + chip UI +
+5. **C9** multi-axis image filtering — backend params + chip UI +
    URL persistence.
-9. **C3** map refinements — supercluster migration once > 2 000 pins
+6. **C3** map refinements — supercluster migration once > 2 000 pins
    (reverse-geocode fill already shipped).
-10. **C4.2** "Me" → display-name binding.
+7. **C4.2** "Me" → display-name binding.
 
 ### Sprint F — multi-data-type platform (months)
 
-20. **E1** promote `images` → `assets(data_kind)`.
-21. **E2** Contacts (vCard/CSV).
-22. **E3** Passwords vault (E2E encryption, Argon2id).
-23. **E4** Game saves (versioned blobs).
-24. **E5** IoT data (time-series, partitioned).
-25. **E6** cross-type search + tagging + retention.
+8. **E1** promote `images` → `assets(data_kind)`.
+9. **E2** Contacts (vCard/CSV).
+10. **E3** Passwords vault (E2E encryption, Argon2id).
+11. **E4** Game saves (versioned blobs).
+12. **E5** IoT data (time-series, partitioned).
+13. **E6** cross-type search + tagging + retention.
 
-### Sprint G — hardware + collab + hygiene (longest tail)
+### Sprint G — hardware + collab + tail (longest tail)
 
-11. **F1** tail — ROCm wheels, OpenVINO inference path (NPU), AMD
+14. **F1** tail — ROCm wheels, OpenVINO inference path (NPU), AMD
     quant variants.
-12. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
+15. **F2** quantization (Florence-2 8/4-bit, Qwen 4-bit GGUF,
     CLIP / RetinaFace INT8).
-13. **F3** Lite profile.
-14. **G3** real-time team editing (y.js + WebSocket).
-15. **D6** fine-tune from search (once C8.2 training telemetry ships).
-16. **D7** best-of-set picker.
-17. **H1–H4** repo hygiene + CI tightening.
-18. **I.bis** project rename — admin churn, parallelizable.
+16. **F3** Lite profile.
+17. **G3** real-time team editing (y.js + WebSocket).
+18. **D6** fine-tune from search (once C8.2 training telemetry ships).
+19. **D7** best-of-set picker.
+20. **H1–H4** README rewrite + comment sweep + GitHub-ready .md
+    polish + CI lint tightening (the §A7 secret-scanning piece
+    already landed; H4 here refers to `ruff` / `mypy --strict` /
+    `tsc --noEmit` gates).
+21. **I.bis** project rename — admin churn, parallelizable.
 
 ---
 
@@ -763,25 +919,55 @@ credentials, DB dumps, biometric data, vault ciphertext, real
 contacts, real IoT logs. Use synthetic fixtures only.
 
 ### Pre-launch checklist
-1. Security audit (auth/authz/JWT/upload/storage/secrets/rate-limit/
-   deps).
-2. Privacy audit (every stored field — why, how long, can users delete
-   it).
-3. Compliance checklist (Privacy + Terms + deletion + export + consent
-   + cookies + biometric opt-in + age gate).
-4. Infra hardening (HTTPS, encrypted backups, private object storage,
-   firewall, monitoring, malware scanning).
-5. AI/ML review (no cross-user leakage, no hidden biometric processing,
-   no accidental training on user data).
-6. Deletion testing (every table + bucket + cache + backup eventually).
-7. Threat modeling (image leakage, metadata leakage, biometric misuse,
-   bucket misconfig, search isolation failures, vault key extraction).
-8. External review (another dev + a security person + a privacy person).
+1. ✅ Security audit (auth/authz/JWT/upload/storage/secrets/rate-limit/
+   deps) — A4 covers auth/authz/rate-limit/lockout; A1 covers upload
+   validation + quarantine; A2 covers storage + secrets posture.
+   See [AUDIT.md](AUDIT.md) and [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
+2. ✅ Privacy audit (every stored field — why, how long, can users
+   delete it) — [PRIVACY.md](PRIVACY.md) §2 lists every field with
+   the why; A5 + B4 prove deletion + retention.
+3. ✅ Compliance checklist (Privacy + Terms + deletion + export +
+   consent + cookies + biometric opt-in + age gate) — A6 closed:
+   PRIVACY.md, [TERMS.md](TERMS.md), A5 deletion, B3 export, B2
+   consent-before-signup, A6 cookie banner accuracy, B1/face consent
+   gate, A6 age gate.
+4. 🟡 Infra hardening (HTTPS, encrypted backups, private object
+   storage, firewall, monitoring, malware scanning) — HTTPS via
+   `docker-compose.tls.yml`, encrypted backups via §A2 age sidecar,
+   private buckets via SSE. **Operator-specific bits remain:**
+   firewall configuration, monitoring/alerting wiring, and
+   anti-malware integration on the upload path beyond MIME + re-decode.
+5. ✅ AI/ML review (no cross-user leakage, no hidden biometric
+   processing, no accidental training on user data) —
+   `test_cross_user_leak.py`, RLS on biometric tables (§A4 + 0027),
+   PRIVACY.md §8 documents the "no shared global training" stance.
+6. ✅ Deletion testing (every table + bucket + cache + backup
+   eventually) — `tests/test_a5_full_deletion.py` asserts every
+   row + bucket; SECURITY.md "Encrypted backups → Retention" covers
+   the backup expiry path.
+7. ⏳ Threat modeling (image leakage, metadata leakage, biometric
+   misuse, bucket misconfig, search isolation failures, vault key
+   extraction) — security review pass shipped (see AUDIT.md), but a
+   formal STRIDE-style threat-model document is still owed.
+8. ⏳ External review (another dev + a security person + a privacy
+   person) — book before public launch.
 
 ### Required minimums before public release
-Privacy Policy · Terms of Service · License · Security policy · Contact
-email · Documented deletion process · Backup strategy · HTTPS · Strong
-secrets · Pre-signup consent popup flow.
+
+All in. Cross-references for the auditor:
+
+| Required | Where |
+|---|---|
+| Privacy Policy | [PRIVACY.md](PRIVACY.md) — 12 sections, A6-shipped |
+| Terms of Service | [TERMS.md](TERMS.md) |
+| License | [LICENSE](LICENSE) |
+| Security policy | [SECURITY.md](SECURITY.md) — disclosure email + supported versions + prod checklist |
+| Contact email | `security@neuthek.app` (SECURITY.md), `[Operator: privacy@…]` (PRIVACY.md) |
+| Documented deletion process | PRIVACY.md §7 + `tests/test_a5_full_deletion.py` proof |
+| Backup strategy | SECURITY.md "Encrypted backups" + retention path under GDPR Art. 17 |
+| HTTPS | `docker-compose.tls.yml` + Caddyfile, boot-validated |
+| Strong secrets | `validate_production_settings` rejects unsafe deployments at boot |
+| Pre-signup consent popup flow | [consents.jsx](frontend/neuthek/src/consents.jsx) + B2 register-bundle backend path |
 
 ---
 

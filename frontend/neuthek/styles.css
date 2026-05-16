@@ -79,6 +79,36 @@ html, body, #root {
 button { font-family: inherit; cursor: pointer; border: 0; background: transparent; color: inherit; padding: 0; }
 input, textarea { font-family: inherit; }
 
+/* Global keyboard-focus ring. Outline is suppressed on mouse focus and
+   only painted on :focus-visible so it doesn't bleed into mouse clicks
+   but keyboard navigation always has a visible affordance. */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+html[data-theme="dark"] :focus-visible { outline-color: rgba(255,255,255,0.78); }
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+html[data-theme="dark"] a:focus-visible,
+html[data-theme="dark"] button:focus-visible,
+html[data-theme="dark"] [role="button"]:focus-visible,
+html[data-theme="dark"] [role="tab"]:focus-visible,
+html[data-theme="dark"] input:focus-visible,
+html[data-theme="dark"] textarea:focus-visible,
+html[data-theme="dark"] select:focus-visible,
+html[data-theme="dark"] summary:focus-visible { outline-color: rgba(255,255,255,0.78); }
+
 /* ---- typography helpers ---- */
 .mono { font-family: "Geist Mono", ui-monospace, monospace; }
 .tnum { font-variant-numeric: tabular-nums; }

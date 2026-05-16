@@ -90,6 +90,10 @@ export function RenameModal({ open, file, onClose, onSave }) {
   const [error, setError] = useStateRn(null);
   const [pickedIdx, setPickedIdx] = useStateRn(-1);
   const [thinking, setThinking] = useStateRn(false);
+  // Held by the Regenerate button so the 500ms "thinking" fake-spinner
+  // doesn't fire setState on an unmounted modal when the user closes
+  // mid-animation.
+  const regenTimerRef = React.useRef(null);
 
   useEffectRn(() => {
     if (!open || !file) return;
@@ -100,6 +104,10 @@ export function RenameModal({ open, file, onClose, onSave }) {
     const t = setTimeout(() => setThinking(false), 700);
     return () => clearTimeout(t);
   }, [open, file]);
+
+  useEffectRn(() => () => {
+    if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
+  }, []);
 
   const ext = file?.ext?.toLowerCase() || "";
   const suggestions = useMemoRn(() => generateSuggestions(file), [file]);
@@ -163,7 +171,17 @@ export function RenameModal({ open, file, onClose, onSave }) {
 
         <div style={{ marginTop: 22, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div className="kicker"><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px", marginRight: 4 }}/> AI suggestions</div>
-          <button className="btn btn--ghost btn--sm" onClick={() => { setThinking(true); setTimeout(() => setThinking(false), 500); }}>
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => {
+              setThinking(true);
+              if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
+              regenTimerRef.current = setTimeout(() => {
+                regenTimerRef.current = null;
+                setThinking(false);
+              }, 500);
+            }}
+          >
             <Icon name="refresh" size={12}/> Regenerate
           </button>
         </div>
