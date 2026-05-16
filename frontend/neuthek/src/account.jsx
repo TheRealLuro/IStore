@@ -22,7 +22,7 @@ import { CloudSyncPanel } from "./cloud-sync-panel.jsx";
 import { AboutPanel } from "./about-panel.jsx";
 import toast from "react-hot-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { updateMe } from "@/api/auth";
+import { updateMe, linkGoogleAccount, unlinkGoogleAccount } from "@/api/auth";
 import { useAuthStore } from "@/stores/authStore";
 import {
   getConsentScopes,
@@ -143,6 +143,103 @@ function initialsAcc(name) {
     .slice(0, 2)
     .map(p => p[0]?.toUpperCase() || "")
     .join("") || "?";
+}
+
+// Sign-in-with-Google link/unlink row for Settings → Account.
+//
+// When the user hasn't connected Google yet, the row shows a button
+// that POSTs to /auth/google/link and hard-navigates the browser to
+// the returned consent URL. After Google bounces back, the callback
+// stamps `google_sub` on the user row and redirects to the FE with
+// `#sso_linked=1`, which `app.jsx` reads to invalidate the user
+// query so this row flips to "Linked" without a manual refresh.
+//
+// When already linked, the row offers an Unlink button that DELETEs
+// /auth/google/link and clears the column.
+function GoogleLinkRow({ user }) {
+  const qc = useQueryClient();
+  const linked = !!user?.google_linked;
+  const [busy, setBusy] = useStateAcc(false);
+
+  const onLink = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await linkGoogleAccount();
+      window.location.href = r.auth_url;
+    } catch (e) {
+      toast.error(e?.detail || "Could not start the Google link flow");
+      setBusy(false);
+    }
+  };
+  const onUnlink = async () => {
+    if (busy) return;
+    if (!window.confirm("Unlink Google? You'll still be able to sign in with your email and password.")) return;
+    setBusy(true);
+    try {
+      await unlinkGoogleAccount();
+      toast.success("Google account unlinked.");
+      qc.invalidateQueries({ queryKey: ["me"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not unlink");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 14px",
+        borderTop: "1px solid var(--line-soft, var(--line))",
+      }}
+    >
+      <div style={{
+        width: 28, height: 28, borderRadius: 8,
+        display: "grid", placeItems: "center",
+        background: "color-mix(in oklab, #4285F4 14%, transparent)",
+        color: "#4285F4",
+        flexShrink: 0,
+      }}>
+        <svg width="14" height="14" viewBox="0 0 18 18" aria-hidden="true">
+          <path fill="currentColor" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62z"/>
+          <path fill="currentColor" d="M9 18c2.43 0 4.47-.81 5.96-2.18l-2.91-2.26c-.8.54-1.83.86-3.05.86-2.34 0-4.33-1.58-5.04-3.7H.96v2.33A9 9 0 0 0 9 18z" opacity="0.85"/>
+          <path fill="currentColor" d="M3.96 10.71c-.18-.54-.28-1.12-.28-1.71 0-.6.1-1.17.28-1.71V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.04l3-2.33z" opacity="0.6"/>
+          <path fill="currentColor" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 9 0 9 9 0 0 0 .96 4.96l3 2.33C4.67 5.16 6.66 3.58 9 3.58z" opacity="0.45"/>
+        </svg>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>Google account</div>
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+          {linked
+            ? "Sign in with Google lands in this account."
+            : "Link so you can Sign in with Google."}
+        </div>
+      </div>
+      {linked ? (
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={onUnlink}
+          disabled={busy}
+        >
+          {busy ? "Working…" : "Unlink"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="btn btn--secondary btn--sm"
+          onClick={onLink}
+          disabled={busy}
+        >
+          {busy ? "Redirecting…" : "Link Google"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 // Settings rail. Notifications was previously hidden because the
@@ -527,6 +624,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                               title="Password" desc="Last changed 4 months ago"
                               tailExtra={<span style={{ color: "var(--ink-3)", marginRight: 8 }}>•••••••••</span>}
                               panel={<PasswordChangePanel onSaved={() => tog("pwd")}/>}/>
+                  <GoogleLinkRow user={user}/>
                   {/* 2FA TOTP isn't wired yet (todo.md C6.4). The real
                       lockout-recovery flow lives in the Security tab as
                       "Recovery codes" (wired to /account/recovery-codes).

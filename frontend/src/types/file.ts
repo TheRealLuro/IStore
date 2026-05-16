@@ -78,6 +78,11 @@ export interface User {
   // §1.2.2 — flipped after the user verifies their first TOTP code.
   // Drives the Security tab's Enable/Disable affordance.
   totp_enabled: boolean;
+  // True when this neuthek user has a Google account attached — set
+  // by Settings → Account → Link Google, or by connecting Drive
+  // (which now also asks for openid/email/profile). Drives the
+  // Link/Unlink button copy in the Account tab.
+  google_linked: boolean;
 }
 
 // Sharing (todo §1.1 / G1). Backend: backend/api/shares.py.
