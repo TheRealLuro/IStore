@@ -925,51 +925,89 @@ async def sample_redis() -> dict[str, Any]:
 # ---------- MinIO ----------
 
 
+_MINIO_SAMPLE_CACHE: dict[str, Any] = {"at": 0.0, "value": None}
+_MINIO_SAMPLE_TTL = 60.0  # seconds — the admin overlay polls every 6s
+_MINIO_OBJECT_CAP = 20_000  # per-bucket counting cap (see notes below)
+
+
 async def sample_minio() -> dict[str, Any]:
-    """Per-bucket object count + total byte size. List-and-sum is O(N)
-    over the bucket — fine for a hundred thousand objects but if usage
-    explodes we'd switch to a usage-cache table."""
+    """Per-bucket object count + total byte size.
+
+    Previously this walked every object in every bucket synchronously,
+    on the event loop, on every admin-overlay poll. With a few
+    thousand objects per bucket that was a 20-30 second blocker that
+    made the entire admin console feel frozen on first paint.
+
+    Three changes:
+      1. Cache the result for 60 s — admin polls every 6 s, but
+         "how many bytes in the served bucket" doesn't change at
+         the second granularity that justifies re-listing.
+      2. Cap per-bucket iteration at 20 000 objects; report
+         `objects: 20000` + `capped: true` past that so the dashboard
+         shows ">= 20000" instead of stalling on a runaway bucket.
+      3. Run the actual sync `client.list_objects` work in a worker
+         thread so the event loop stays responsive.
+    """
+    import time
+    now = time.monotonic()
+    cached = _MINIO_SAMPLE_CACHE.get("value")
+    if cached and now - _MINIO_SAMPLE_CACHE.get("at", 0.0) < _MINIO_SAMPLE_TTL:
+        return cached
+
     try:
         from backend.storage import storage
     except Exception:
         return {"reachable": False, "error": "storage module unavailable"}
-    try:
-        client = storage.client  # the underlying minio.Minio handle
-        buckets = []
-        bucket_names = [
-            settings.minio_bucket_originals,
-            settings.minio_bucket_served,
-            settings.minio_bucket_faces,
-            settings.minio_bucket_quarantine,
-        ]
-        # Models bucket arrived with C8.2 — older settings instances
-        # don't have it, so probe defensively.
-        models_bucket = getattr(settings, "minio_bucket_models", None)
-        if models_bucket:
-            bucket_names.append(models_bucket)
-        for name in bucket_names:
-            try:
-                if not client.bucket_exists(name):
-                    buckets.append({"name": name, "exists": False, "objects": 0, "size_bytes": 0})
-                    continue
-                count = 0
-                size = 0
-                for obj in client.list_objects(name, recursive=True):
-                    count += 1
-                    size += int(obj.size or 0)
-                buckets.append({
-                    "name": name, "exists": True,
-                    "objects": count, "size_bytes": size,
-                })
-            except Exception as e:
-                buckets.append({"name": name, "exists": None, "error": str(e)[:160]})
-        return {
-            "reachable": True,
-            "endpoint": settings.minio_endpoint,
-            "buckets": buckets,
-        }
-    except Exception as e:
-        return {"reachable": False, "error": str(e)[:160]}
+
+    def _sample_sync():
+        try:
+            client = storage.client
+            buckets = []
+            bucket_names = [
+                settings.minio_bucket_originals,
+                settings.minio_bucket_served,
+                settings.minio_bucket_faces,
+                settings.minio_bucket_quarantine,
+            ]
+            models_bucket = getattr(settings, "minio_bucket_models", None)
+            if models_bucket:
+                bucket_names.append(models_bucket)
+            for name in bucket_names:
+                try:
+                    if not client.bucket_exists(name):
+                        buckets.append({
+                            "name": name, "exists": False,
+                            "objects": 0, "size_bytes": 0, "capped": False,
+                        })
+                        continue
+                    count = 0
+                    size = 0
+                    capped = False
+                    for obj in client.list_objects(name, recursive=True):
+                        count += 1
+                        size += int(obj.size or 0)
+                        if count >= _MINIO_OBJECT_CAP:
+                            capped = True
+                            break
+                    buckets.append({
+                        "name": name, "exists": True,
+                        "objects": count, "size_bytes": size, "capped": capped,
+                    })
+                except Exception as e:
+                    buckets.append({"name": name, "exists": None, "error": str(e)[:160]})
+            return {
+                "reachable": True,
+                "endpoint": settings.minio_endpoint,
+                "buckets": buckets,
+            }
+        except Exception as e:
+            return {"reachable": False, "error": str(e)[:160]}
+
+    import asyncio
+    result = await asyncio.to_thread(_sample_sync)
+    _MINIO_SAMPLE_CACHE["value"] = result
+    _MINIO_SAMPLE_CACHE["at"] = now
+    return result
 
 
 # ---------- DB pool ----------

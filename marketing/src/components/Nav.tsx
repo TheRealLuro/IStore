@@ -7,6 +7,7 @@ const links = [
   { to: "/hosting",    label: "Hosting" },
   { to: "/developers", label: "Developers" },
   { to: "/roadmap",    label: "Roadmap" },
+  { to: "/updates",    label: "Updates" },
   { to: "/compare",    label: "Compare" },
 ];
 

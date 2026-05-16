@@ -1243,11 +1243,15 @@ export function App() {
   useEffectApp(() => { bootstrap(); }, [bootstrap]);
 
   const signedIn = !!realUser;
+  // Pass the *full* user record through to children — the previous
+  // shape stripped away `google_linked`, `is_verified`, `totp_enabled`,
+  // `role`, `age_confirmed`, which left the Settings rows reading
+  // stale-undefined values. `name` is kept as the friendly display so
+  // consumers that already read it don't have to fall back per-site.
   const user = realUser
     ? {
+        ...realUser,
         name: realUser.display_name || realUser.email.split("@")[0],
-        email: realUser.email,
-        is_superuser: realUser.is_superuser,
       }
     : { name: "—", email: "" };
   const setUser = () => {/* no-op: source of truth is authStore */};
