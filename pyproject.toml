@@ -16,7 +16,7 @@ dependencies = [
     "argon2-cffi==23.1.0",
     "python-multipart==0.0.20",
     "minio==7.2.10",
-    "pillow==11.0.0",
+    "pillow==12.2.0",
     "pillow-heif==0.18.0",
     "imagecodecs==2024.9.22",
     # rawpy — LibRaw wrapper for camera RAW formats (NEF, CR2, CR3, ARW,
