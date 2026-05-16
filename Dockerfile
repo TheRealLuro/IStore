@@ -25,11 +25,18 @@ COPY pyproject.toml README.md /app/
 
 # Install order: base deps first (smaller layer that rarely changes),
 # then [ml] on top so a hotfix to base deps doesn't invalidate the
-# multi-GB torch download. INSTALL_ML can be flipped to 0 at build time
-# for a much smaller image when vision features aren't needed.
+# multi-GB torch download. [cloud] is tiny (google-api + google-auth
+# wheels, a few MB) so we bake it into the base image — without it,
+# §C2 Drive/GitHub sync raises CloudSyncNotConfigured. INSTALL_ML can
+# be flipped to 0 at build time for a much smaller image when vision
+# features aren't needed.
 ARG INSTALL_ML=1
+ARG INSTALL_CLOUD=1
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir . \
+    && if [ "$INSTALL_CLOUD" = "1" ]; then \
+         pip install --no-cache-dir ".[cloud]" ; \
+       fi \
     && if [ "$INSTALL_ML" = "1" ]; then \
          pip install --no-cache-dir ".[ml]" ; \
        fi
