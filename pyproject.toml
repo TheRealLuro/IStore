@@ -19,6 +19,13 @@ dependencies = [
     "pillow==11.0.0",
     "pillow-heif==0.18.0",
     "imagecodecs==2024.9.22",
+    # rawpy — LibRaw wrapper for camera RAW formats (NEF, CR2, CR3, ARW,
+    # DNG, RAF, ORF, RW2, PEF, …). Pillow alone only reads the small
+    # embedded JPEG preview inside a RAW file, so the served image is
+    # the preview re-encoded — quality tanks. rawpy decodes the full
+    # sensor data into a 16-bit RGB array; we then encode at quality
+    # 95. Manylinux wheels ship LibRaw bundled, so no extra apt deps.
+    "rawpy==0.24.0",
     "numpy==2.1.3",
     "pgvector==0.3.6",
     "redis>=5.2.0",

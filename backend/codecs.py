@@ -29,13 +29,20 @@ except ImportError:
     JXL_AVAILABLE = False
 
 
-Codec = Literal["webp", "mozjpeg", "avif", "jxl"]
+# `passthrough` is intentionally NOT in ARM_GRID_CODECS — the bandit must
+# never choose it. It exists only for inputs we refuse to re-encode at all
+# (animated GIFs would lose every frame after the first under any of the
+# other codecs). The served bytes are the original bytes, byte-for-byte.
+Codec = Literal["webp", "mozjpeg", "avif", "jxl", "passthrough"]
 
 MIME_BY_CODEC: dict[Codec, str] = {
     "webp": "image/webp",
     "mozjpeg": "image/jpeg",
     "avif": "image/avif",
     "jxl": "image/jxl",
+    # Filled in dynamically for passthrough — see `CompressionPlan.mime`
+    # which special-cases it via `passthrough_mime`.
+    "passthrough": "application/octet-stream",
 }
 
 EXT_BY_CODEC: dict[Codec, str] = {
@@ -43,6 +50,7 @@ EXT_BY_CODEC: dict[Codec, str] = {
     "mozjpeg": "jpg",
     "avif": "avif",
     "jxl": "jxl",
+    "passthrough": "bin",  # overridden by `passthrough_ext` per-call
 }
 
 ARM_GRID_CODECS: tuple[Codec, ...] = ("mozjpeg", "webp", "avif", "jxl")
@@ -56,13 +64,22 @@ class CompressionPlan:
     quality: int
     max_dim: int | None
     lossless: bool = False
+    # For `codec=="passthrough"` only — carries the original file's
+    # mime + extension through so the served blob keeps its real type
+    # (e.g. animated GIF stays as image/gif, not octet-stream).
+    passthrough_mime: str | None = None
+    passthrough_ext: str | None = None
 
     @property
     def mime(self) -> str:
+        if self.codec == "passthrough" and self.passthrough_mime:
+            return self.passthrough_mime
         return MIME_BY_CODEC[self.codec]
 
     @property
     def extension(self) -> str:
+        if self.codec == "passthrough" and self.passthrough_ext:
+            return self.passthrough_ext
         return EXT_BY_CODEC[self.codec]
 
 
@@ -180,6 +197,11 @@ def encode_jxl(raw: bytes, quality: int, max_dim: int | None) -> bytes:
 
 
 def compress(raw: bytes, plan: CompressionPlan) -> bytes:
+    if plan.codec == "passthrough":
+        # The served bytes are the input bytes unchanged. Used for animated
+        # GIFs (single-frame re-encoding would discard every frame after
+        # the first) and any other format we'd rather not lossily mangle.
+        return raw
     if plan.codec == "webp":
         return encode_webp(raw, plan.quality, plan.max_dim, lossless=plan.lossless)
     if plan.codec == "mozjpeg":
