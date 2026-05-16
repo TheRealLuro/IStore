@@ -82,11 +82,15 @@ export async function uploadFile(file: File): Promise<FileItem> {
   return api.post<FileItem>("/images/", fd);
 }
 
-export async function deleteFile(id: string): Promise<void> {
-  await api.delete(`/images/${id}`);
+export async function deleteFile(id: string, { purge = false }: { purge?: boolean } = {}): Promise<void> {
+  // Default = soft delete → row lands in Trash with deleted_at set,
+  // user can restore. purge=true bypasses the trash and hard-deletes
+  // immediately, used by the per-row "Permanently delete" action in
+  // the trash view.
+  await api.delete(`/images/${id}${purge ? "?purge=true" : ""}`);
 }
 
-export async function bulkDelete(ids: string[]): Promise<{
+export async function bulkDelete(ids: string[], { purge = false }: { purge?: boolean } = {}): Promise<{
   count: number;
   deleted: string[];
   skipped: string[];
@@ -97,7 +101,7 @@ export async function bulkDelete(ids: string[]): Promise<{
     deleted: string[];
     skipped: string[];
     skipped_count: number;
-  }>("/images/bulk-delete", ids);
+  }>(`/images/bulk-delete${purge ? "?purge=true" : ""}`, ids);
 }
 
 export async function bulkRestore(ids: string[]): Promise<{ count: number }> {

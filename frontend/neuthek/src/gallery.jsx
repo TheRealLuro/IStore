@@ -225,7 +225,7 @@ function PeopleStrip({ onPerson }) {
 
 // icon for non-image file types
 const TYPE_ICON = {
-  image: "image", video: "video", doc: "document",
+  image: "image", video: "video", doc: "document", code: "code",
   contact: "users", password: "shield", gamesave: "game", iot: "wifi",
 };
 

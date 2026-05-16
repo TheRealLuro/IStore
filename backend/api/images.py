@@ -1392,17 +1392,29 @@ async def delete_image(
     image_id: UUID,
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    purge: Annotated[bool, Query()] = False,
 ) -> None:
-    # Allow hard-purging rows that are already soft-deleted (the user
-    # may be cleaning up the Trash view manually). Default lookup would
-    # 404 on those because of the deleted_at filter.
+    """Soft-delete by default: mark `deleted_at` so the row moves to
+    Trash, and the user can restore it from there. Pass `?purge=true`
+    to bypass the trash and hard-delete immediately — used by the
+    "Empty Trash" / "Permanently delete" flows.
+
+    Previously this hard-deleted on every call, which is why nothing
+    ever appeared in the Trash view.
+    """
     image = await _load_owned_image(image_id, user, session, include_deleted=True)
-    await hard_delete_images(
-        session,
-        user_id=user.id,
-        image_ids=[image.id],
-        audit_action="image.delete",
-    )
+    if purge or image.deleted_at is not None:
+        # Already trashed → user is asking for the final purge. Or the
+        # caller explicitly opted in via ?purge=true.
+        await hard_delete_images(
+            session,
+            user_id=user.id,
+            image_ids=[image.id],
+            audit_action="image.purge" if purge else "image.delete",
+        )
+    else:
+        from datetime import datetime, timezone
+        image.deleted_at = datetime.now(timezone.utc)
     await session.commit()
 
 
@@ -1411,7 +1423,10 @@ async def bulk_delete(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     ids: list[UUID],
+    purge: Annotated[bool, Query()] = False,
 ) -> dict:
+    """Bulk-soft-delete to Trash. Pass `?purge=true` to skip the trash
+    and hard-purge immediately (used by the "Empty Trash" path)."""
     stmt = select(Image).where(
         Image.id.in_(ids),
         Image.user_id == user.id,
@@ -1419,23 +1434,30 @@ async def bulk_delete(
     )
     result = await session.execute(stmt)
     images = list(result.scalars().all())
-    res = await hard_delete_images(
-        session,
-        user_id=user.id,
-        image_ids=[img.id for img in images],
-        audit_action="image.bulk_delete",
-    )
+    if purge:
+        res = await hard_delete_images(
+            session,
+            user_id=user.id,
+            image_ids=[img.id for img in images],
+            audit_action="image.bulk_purge",
+        )
+        moved_ids = res.image_ids
+    else:
+        # Soft delete — set deleted_at on each selected row. Stays
+        # listable via /images/?trashed=true so the Trash view can
+        # render + restore.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        for img in images:
+            img.deleted_at = now
+        moved_ids = [img.id for img in images]
     await session.commit()
     requested = {str(i) for i in ids}
-    deleted = {str(i) for i in res.image_ids}
-    # Tell the caller which ids it asked for were ignored — either
-    # foreign-owned (silently dropped by the user_id filter), already
-    # in the trash, or simply not in the DB. The caller can surface a
-    # "1 of 3 deleted" toast instead of a misleading success.
-    skipped = sorted(requested - deleted)
+    moved = {str(i) for i in moved_ids}
+    skipped = sorted(requested - moved)
     return {
-        "deleted": sorted(deleted),
-        "count": len(res.image_ids),
+        "deleted": sorted(moved),
+        "count": len(moved_ids),
         "skipped": skipped,
         "skipped_count": len(skipped),
     }

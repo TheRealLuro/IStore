@@ -81,6 +81,9 @@ export const Icon = ({ name, size = 16, strokeWidth = 1.6, ...props }) => {
     device: <><rect x="3" y="4" width="18" height="11" rx="2"/><path d="M2 19h20"/><path d="M9 19v-4"/><path d="M15 19v-4"/></>,
     laptop: <><rect x="3" y="4" width="18" height="11" rx="2"/><path d="M2 19h20"/></>,
     logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></>,
+    // `code` is the angle-brackets glyph used on the gallery card +
+    // preview hero whenever the file is a source-code text type.
+    code: <><polyline points="8 6 2 12 8 18"/><polyline points="16 6 22 12 16 18"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"

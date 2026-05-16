@@ -118,7 +118,11 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
     # the user's files. We deliberately avoid `drive` (full r/w) so we
     # can never silently corrupt the user's source.
     "google_drive": ["https://www.googleapis.com/auth/drive.readonly"],
-    "github": ["repo", "read:user"],
+    # GitHub support was removed by user request — repos turned out to
+    # not be a natural fit for a personal storage app (every public
+    # repo turns the gallery into a dumping ground of READMEs and
+    # build configs). Dropbox / OneDrive scopes are kept here so the
+    # OAuth shape is recorded if we ever turn them on.
     "dropbox": ["files.content.read"],
     "onedrive": ["Files.Read.All", "offline_access"],
 }
@@ -252,7 +256,7 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     callback can retrieve it; without this, Google rejects the token
     exchange with "invalid_grant: Missing code verifier."
     """
-    if provider not in ("google_drive", "github"):
+    if provider != "google_drive":
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -321,7 +325,7 @@ async def complete_oauth(
     state: str,  # noqa: ARG001 — caller already verified state HMAC
 ) -> int:
     """Exchange `code` for tokens, encrypt + store, return cloud_links.id."""
-    if provider not in ("google_drive", "github"):
+    if provider != "google_drive":
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -452,7 +456,7 @@ async def sync_user_provider(
     Returns a summary dict: `{seen, pulled, skipped_unchanged,
     conflicts, provider}`.
     """
-    if provider not in ("google_drive", "github"):
+    if provider != "google_drive":
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -825,16 +829,57 @@ def _github_collect_entries_sync(refresh_token: str) -> list[dict]:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp", ".tiff"}
+    # Authorise the whole repo. Images, source code, structured-text
+    # configs, markdown, and PDFs are all valid — `validate_upload`
+    # decides the per-file fate downstream. We deliberately keep a
+    # broad allowlist (not a blocklist) so a `.deb` or `.tar.gz`
+    # doesn't slip in: those would just blow up validation and
+    # eat the worker thread.
+    SYNCABLE_EXTS = {
+        # Images (existing)
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp", ".tiff",
+        # PDFs + documents
+        ".pdf",
+        # Plain text + markup + configs
+        ".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml",
+        ".toml", ".ini", ".cfg", ".conf", ".properties",
+        ".xml", ".plist", ".rst", ".adoc", ".tex",
+        # Code (kept in sync with backend/upload_validation.py:_CODE_EXTS)
+        ".html", ".htm", ".css", ".scss", ".sass", ".less", ".svg",
+        ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte",
+        ".py", ".pyi", ".rb", ".php", ".java", ".kt", ".kts", ".scala",
+        ".swift", ".go", ".rs", ".c", ".h", ".cpp", ".cc", ".cxx",
+        ".hpp", ".cs", ".dart", ".lua", ".r", ".pl",
+        ".sh", ".bash", ".zsh", ".fish", ".ps1", ".sql",
+        ".clj", ".ex", ".exs", ".elm", ".erl", ".hs", ".ml", ".mli",
+        ".nim", ".zig", ".v",
+        ".graphql", ".gql", ".proto", ".diff", ".patch",
+        ".ipynb",
+    }
+    # Basenames worth syncing even without an extension (Dockerfile,
+    # Makefile, etc).
+    SYNCABLE_BASENAMES = {
+        "dockerfile", "makefile", "gnumakefile",
+        "rakefile", "gemfile", "podfile", "vagrantfile", "procfile",
+        "readme",
+    }
     SECRET_PATTERNS = (
         ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519",
         "credentials.json", "service_account.json",
     )
-    SECRET_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".kdbx", ".dump", ".sql")
+    SECRET_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".kdbx", ".dump")
+    # Per-file size cap: GitHub blobs over this get skipped so a single
+    # huge JSON dataset doesn't soak a sync run. 25 MB matches GitHub's
+    # web-UI render cap so anything bigger isn't meaningfully viewable
+    # anyway.
+    MAX_BLOB_SIZE = 25 * 1024 * 1024
 
     def _is_secret(path: str) -> bool:
         base = path.rsplit("/", 1)[-1].lower()
         if base in SECRET_PATTERNS:
+            return True
+        # Hidden directory entries like `.git/config` or `secrets/...`.
+        if base.startswith(".env"):
             return True
         if any(base.endswith(s) for s in SECRET_SUFFIXES):
             return True
@@ -859,8 +904,18 @@ def _github_collect_entries_sync(refresh_token: str) -> list[dict]:
             path = node.get("path") or ""
             if _is_secret(path):
                 continue
-            ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
-            if ext not in IMAGE_EXTS:
+            base = path.rsplit("/", 1)[-1]
+            ext = "." + base.rsplit(".", 1)[-1].lower() if "." in base else ""
+            base_lower = base.lower()
+            # Match by extension OR by recognized basename (Dockerfile,
+            # Makefile, etc). Without the basename fallback the user
+            # would get all the code but none of the build configs that
+            # tie a repo together.
+            if ext not in SYNCABLE_EXTS and base_lower not in SYNCABLE_BASENAMES:
+                continue
+            # Skip blobs over the per-file cap. `size` is reported in
+            # bytes by the git/trees API. Missing field → assume small.
+            if (node.get("size") or 0) > MAX_BLOB_SIZE:
                 continue
             parent_path = repo_full_name
             if "/" in path:

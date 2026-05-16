@@ -12,16 +12,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.audit import add_audit
 from backend.auth.users import current_active_user
-from backend.consent import is_consent_active
+from backend.consent import is_consent_active, is_scope_active
 from backend.db import SessionLocal, get_session
 from backend.faces_pipeline import process_image_for_faces, update_person_centroid
+from backend.image import fetch_original
 from backend.models import AuditLog, Face, FaceDetection, Image, Person, User
 from backend.storage import storage
 
@@ -227,6 +231,145 @@ async def name_cluster(
     await session.commit()
     await session.refresh(person)
     return person
+
+
+class DetectAndLabelBody(BaseModel):
+    """Body for `POST /people/detect-and-label`.
+
+    Triggers face detection on the listed images (synchronously, in a
+    worker thread per image) and assigns every newly-detected face to a
+    Person with `display_name`. Existing detections on those images are
+    left alone — this is purely additive.
+    """
+    image_ids: list[UUID] = Field(..., min_length=1, max_length=50)
+    display_name: str = Field(..., min_length=1, max_length=120)
+
+
+@router.post("/detect-and-label")
+async def detect_and_label(
+    body: DetectAndLabelBody,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Multi-select bulk action: run face detection on the selected
+    images and label every detected face with `display_name`.
+
+    The user picks photos that share one person, clicks "Detect person",
+    types a name. We run the detector on each image, then assign every
+    *newly-created* face to the named Person. Re-uses an existing
+    Person row with the same display_name if one is already there, so
+    the user doesn't end up with "Alice (2)" / "Alice (3)" after a
+    couple of bulk passes.
+
+    Requires the user to have granted `face_recognition` consent —
+    same gate as the per-image face scan worker.
+    """
+    if not await is_scope_active(session, user.id, "face_recognition"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Grant face recognition consent first (Settings → Privacy).",
+        )
+
+    name = body.display_name.strip()
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "display_name is required")
+
+    # Find or create the target person.
+    target = (
+        await session.execute(
+            select(Person).where(
+                Person.user_id == user.id, Person.display_name == name
+            )
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        target = Person(user_id=user.id, display_name=name)
+        session.add(target)
+        await session.flush()
+
+    # Capture the existing Face ids per image BEFORE running the scan
+    # so we can identify the new ones afterwards.
+    pre_existing: dict[UUID, set[int]] = {}
+    for image_id in body.image_ids:
+        rows = (
+            await session.execute(
+                select(FaceDetection.face_id).where(
+                    FaceDetection.image_id == image_id,
+                    FaceDetection.user_id == user.id,
+                    FaceDetection.face_id.is_not(None),
+                )
+            )
+        ).scalars().all()
+        pre_existing[image_id] = {int(r) for r in rows}
+
+    from backend.faces_pipeline import process_image_for_faces
+
+    images_scanned = 0
+    new_faces = 0
+    for image_id in body.image_ids:
+        image = (
+            await session.execute(
+                select(Image).where(
+                    Image.id == image_id,
+                    Image.user_id == user.id,
+                    Image.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if image is None:
+            continue
+        try:
+            raw, _ = await fetch_original(image)
+        except Exception:
+            logger.exception("detect_and_label: failed to fetch %s", image_id)
+            continue
+        try:
+            await process_image_for_faces(session, user, image, raw)
+            images_scanned += 1
+        except Exception:
+            logger.exception("detect_and_label: face pipeline failed on %s", image_id)
+            continue
+
+        # Find face ids that didn't exist on this image before the scan.
+        post = (
+            await session.execute(
+                select(FaceDetection.face_id).where(
+                    FaceDetection.image_id == image_id,
+                    FaceDetection.user_id == user.id,
+                    FaceDetection.face_id.is_not(None),
+                )
+            )
+        ).scalars().all()
+        post_ids = {int(r) for r in post}
+        delta = post_ids - pre_existing.get(image_id, set())
+        if not delta:
+            continue
+        # Assign the new Face rows to the target Person.
+        await session.execute(
+            sa_update(Face)
+            .where(Face.user_id == user.id, Face.id.in_(delta))
+            .values(person_id=target.id)
+        )
+        new_faces += len(delta)
+
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="people.detect_and_label",
+        details={
+            "image_count": images_scanned,
+            "new_faces": new_faces,
+            "person_id": target.id,
+            "display_name": name,
+        },
+    )
+    await session.commit()
+    return {
+        "person_id": target.id,
+        "display_name": name,
+        "images_scanned": images_scanned,
+        "new_faces": new_faces,
+    }
 
 
 @router.patch("/{person_id}", response_model=PersonRead)
