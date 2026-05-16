@@ -117,17 +117,38 @@ export function CloudSyncPanel() {
     }
   };
 
+  // Track the AI opt-in state per link in the panel so the user sees
+  // which button is "active" right after they click. The server returns
+  // `affected` (rows flipped just now), but that's zero until files
+  // have been synced, so we keep our own boolean per link.
+  const [aiOptedByLink, setAiOptedByLink] = useState({});
   const onToggleAi = async (link, opted) => {
+    setAiOptedByLink((m) => ({ ...m, [link.id]: opted }));
     try {
       const r = await setCloudAiOptIn(link.id, opted);
-      toast.success(
-        opted
-          ? `AI features enabled for ${r.affected} ${PROVIDER_META[link.provider]?.label} files`
-          : `AI features paused for ${r.affected} files`,
-      );
+      const label = PROVIDER_META[link.provider]?.label || link.provider;
+      if (opted) {
+        toast.success(
+          r.affected
+            ? `AI features enabled for ${r.affected} ${label} file${r.affected === 1 ? "" : "s"}`
+            : `AI features enabled. They'll run on every new ${label} file as it's synced.`,
+        );
+      } else {
+        toast.success(
+          r.affected
+            ? `AI features paused for ${r.affected} ${label} file${r.affected === 1 ? "" : "s"}`
+            : `AI features paused. Future ${label} files won't be processed.`,
+        );
+      }
       qc.invalidateQueries({ queryKey: ["cloud-links"] });
       qc.invalidateQueries({ queryKey: ["files"] });
     } catch (e) {
+      // Rollback the optimistic flip so the active-button indicator
+      // doesn't lie about the server state.
+      setAiOptedByLink((m) => {
+        const { [link.id]: _, ...rest } = m;
+        return rest;
+      });
       toast.error(e?.detail || e?.message || "Could not change AI opt-in");
     }
   };
@@ -253,22 +274,31 @@ export function CloudSyncPanel() {
                   face scan on every file synced from this source.
                 </div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked="false"
-                onClick={() => onToggleAi(link, true)}
-                className="btn btn--secondary btn--sm"
-              >
-                Enable
-              </button>
-              <button
-                type="button"
-                onClick={() => onToggleAi(link, false)}
-                className="btn btn--ghost btn--sm"
-              >
-                Pause
-              </button>
+              {(() => {
+                const opted = aiOptedByLink[link.id];
+                return (
+                  <>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={opted === true}
+                      onClick={() => onToggleAi(link, true)}
+                      className={opted === true ? "btn btn--primary btn--sm" : "btn btn--secondary btn--sm"}
+                    >
+                      {opted === true ? "Enabled ✓" : "Enable"}
+                    </button>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={opted === false}
+                      onClick={() => onToggleAi(link, false)}
+                      className={opted === false ? "btn btn--secondary btn--sm" : "btn btn--ghost btn--sm"}
+                    >
+                      {opted === false ? "Paused ✓" : "Pause"}
+                    </button>
+                  </>
+                );
+              })()}
             </div>
           </div>
         );
