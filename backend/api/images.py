@@ -646,6 +646,35 @@ async def summarize_progress(
     # — the counter stuck at N-1/N forever. _mark_done now sets
     # pending_summary=False on failure too, but this predicate is the
     # belt-and-suspenders for any historical rows that pre-date that fix.
+    # SELF-HEAL: rows can get stuck in `pending_summary=True AND
+    # summary_generated_at IS NULL` forever when the worker crashes
+    # before _mark_done (OOM kill, container restart, Redis hiccup).
+    # If a row's been sitting in that state for > 10 minutes, we
+    # force-dead-letter it the same way an explicit failure would —
+    # stamp summary_generated_at + clear pending_summary so the
+    # banner counter clears. The user can still "Force re-summarize"
+    # any specific row from the per-item menu. Run this BEFORE we
+    # compute the pending count so the cleanup is reflected in the
+    # same response.
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import update as sa_update
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    await session.execute(
+        sa_update(Image)
+        .where(
+            Image.user_id == user.id,
+            Image.deleted_at.is_(None),
+            Image.summary.is_(None),
+            Image.summary_generated_at.is_(None),
+            Image.uploaded_at < cutoff,
+        )
+        .values(
+            summary_generated_at=datetime.now(timezone.utc),
+            pending_summary=False,
+        )
+    )
+    await session.commit()
+
     pending_predicate = (
         Image.summary.is_(None) & Image.summary_generated_at.is_(None)
     )
@@ -1353,6 +1382,99 @@ async def backfill_summaries(
             inline=lambda iid=image_id: _run_summarize_one(iid),
         )
     return {"queued": len(ids), "limit": limit, "force": force}
+
+
+@router.post("/backfill-vision", status_code=status.HTTP_202_ACCEPTED)
+async def backfill_vision(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    background: BackgroundTasks,
+    limit: int = 500,
+) -> dict:
+    """Re-run the vision classification pass on images that don't have a
+    scene label / content type set.
+
+    Mostly fills in the gap for cloud-synced images: the Drive sync path
+    intentionally skips vision at upload (Limited Use policy
+    interpretation) so those rows have NULL `scene_label`,
+    `content_type`, `indoor_outdoor`. Without those columns set, the
+    gallery's filter chips show no choices because the facets query
+    returns empty lists for everything except `with_faces`.
+
+    Hits the vision pipeline inline rather than dispatching to the
+    worker — the work is lighter than full summarization and the user
+    is usually waiting in the maintenance UI. Skips rows the
+    pipeline already covered (`vision_processed_at IS NOT NULL`) so
+    repeated calls are cheap.
+    """
+    from sqlalchemy import or_, update as sa_update
+    from backend.image import _maybe_run_vision, fetch_original
+    from backend.image import _upsert_tags
+
+    candidate_ids = (
+        await session.execute(
+            select(Image.id)
+            .where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+                Image.category == "image",
+                Image.vision_processed_at.is_(None),
+                or_(
+                    Image.scene_label.is_(None),
+                    Image.content_type.is_(None),
+                ),
+            )
+            .order_by(Image.uploaded_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    processed = 0
+    failed = 0
+    for image_id in candidate_ids:
+        try:
+            image = await session.get(Image, image_id)
+            if image is None or image.deleted_at is not None:
+                continue
+            raw, _ = await fetch_original(image)
+            vision = await _maybe_run_vision(raw)
+            if vision is None:
+                failed += 1
+                continue
+            await session.execute(
+                sa_update(Image)
+                .where(Image.id == image_id)
+                .values(
+                    clip_embedding=vision.clip_embedding,
+                    content_type=vision.content_type,
+                    content_confidence=vision.content_confidence,
+                    scene_label=vision.scene_label,
+                    scene_confidence=vision.scene_confidence,
+                    face_likelihood=vision.face_likelihood,
+                    indoor_outdoor=vision.indoor_outdoor,
+                    vision_processed_at=datetime.now(timezone.utc),
+                )
+            )
+            # Tags are written per-image and depend on the live Image row.
+            await session.refresh(image)
+            try:
+                await _upsert_tags(session, image, vision.tags)
+            except Exception:
+                logger.exception("backfill_vision: tag upsert failed for %s", image_id)
+            await session.commit()
+            processed += 1
+        except Exception:
+            logger.exception("backfill_vision: failed on %s", image_id)
+            failed += 1
+            try: await session.rollback()
+            except Exception: pass
+
+    return {
+        "examined": len(candidate_ids),
+        "processed": processed,
+        "failed": failed,
+        "limit": limit,
+    }
 
 
 @router.post("/{image_id}/resummarize", status_code=status.HTTP_202_ACCEPTED)

@@ -12,7 +12,7 @@ import {
   getTwoFactorStatus, setupTwoFactor, verifyTwoFactor, disableTwoFactor,
   getNotificationPrefs, updateNotificationPrefs,
 } from "@/api/auth";
-import { backfillSummaries } from "@/api/files";
+import { backfillSummaries, backfillVision } from "@/api/files";
 import { API_BASE_URL, tokens } from "@/api/client";
 
 // Small helper for raw fetch() calls that need an Authorization header
@@ -890,6 +890,7 @@ function ModelsPage() {
 function AIUsagePage() {
   const qc = useQueryClient();
   const [busy, setBusy] = useStateSP(false);
+  const [visionBusy, setVisionBusy] = useStateSP(false);
   const reprocess = async () => {
     if (busy) return;
     if (!window.confirm("Re-run summarization on every image in your library? This uses your local Florence-2 + Qwen2.5 models and can take several minutes.")) return;
@@ -906,6 +907,29 @@ function AIUsagePage() {
       setBusy(false);
     }
   };
+  const reclassify = async () => {
+    if (visionBusy) return;
+    setVisionBusy(true);
+    try {
+      const r = await backfillVision(500);
+      if (r.processed > 0) {
+        toast.success(`Reclassified ${r.processed} image${r.processed === 1 ? "" : "s"} — gallery filters should populate now.`);
+      } else if (r.examined === 0) {
+        toast.success("Every image already has scene + content metadata.");
+      } else {
+        toast.error("Reclassification ran but produced no results. Check server logs.");
+      }
+      // Facets feed the filter chip choices — invalidate so new
+      // scene_label / content_type / indoor_outdoor values render
+      // immediately.
+      qc.invalidateQueries({ queryKey: ["facets"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not reclassify.");
+    } finally {
+      setVisionBusy(false);
+    }
+  };
   return (
     <>
       <DetSection title="How AI is used">
@@ -916,11 +940,14 @@ function AIUsagePage() {
 
       <DetSection
         title="Library maintenance"
-        desc="Re-run the summarizer over every image — useful after upgrading the captioning models or fixing a model that previously crashed."
+        desc="Re-run the summarizer or scene/content classifier over your library. Cloud-synced (Google Drive) images skip vision at upload — reclassifying populates scene labels so the gallery filter chips become useful."
       >
-        <div className="det-card" style={{ display: "flex", gap: 8 }}>
+        <div className="det-card" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="btn btn--secondary" onClick={reprocess} disabled={busy}>
-            <Icon name="refresh" size={12}/> {busy ? "Queueing…" : "Reprocess entire library"}
+            <Icon name="refresh" size={12}/> {busy ? "Queueing…" : "Reprocess summaries"}
+          </button>
+          <button className="btn btn--secondary" onClick={reclassify} disabled={visionBusy}>
+            <Icon name="sparkles" size={12}/> {visionBusy ? "Classifying…" : "Reclassify images (filters)"}
           </button>
         </div>
       </DetSection>

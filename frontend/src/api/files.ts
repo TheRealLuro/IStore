@@ -162,6 +162,22 @@ export async function backfillSummaries(
   );
 }
 
+/** Re-run the vision classification pass on images missing scene/content_type.
+ *  Mainly used to populate filter-chip metadata on cloud-synced (Drive)
+ *  images, since the cloud-sync ingest path intentionally skips vision at
+ *  upload. Without this, gallery filters except "Has people" show no
+ *  choices because the facets query returns empty lists for everything
+ *  except face counts.
+ */
+export async function backfillVision(
+  limit = 500,
+): Promise<{ examined: number; processed: number; failed: number; limit: number }> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return api.post<{ examined: number; processed: number; failed: number; limit: number }>(
+    `/images/backfill-vision?${params.toString()}`,
+  );
+}
+
 export interface SummarizeProgress {
   total: number;
   pending: number;
