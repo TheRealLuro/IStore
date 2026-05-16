@@ -89,19 +89,38 @@ export function CloudSyncPanel() {
 
   const onSync = async (link) => {
     setBusy(link.id);
+    // backend.image.store_upload commits each file inside the sync
+    // loop, so a 2s poll of the files/folders/storage queries lets the
+    // gallery + sidebar counters update *while* the sync is still
+    // running, instead of a single big jump when the request finally
+    // returns. Bound the interval to the in-flight request — we clear
+    // it in `finally` so it never leaks past the sync.
+    const livePoll = setInterval(() => {
+      qc.invalidateQueries({ queryKey: ["files"] });
+      qc.invalidateQueries({ queryKey: ["folders"] });
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      qc.invalidateQueries({ queryKey: ["cloud-links"] });
+    }, 2000);
+    let toastId;
     try {
+      toastId = toast.loading(
+        `Syncing ${PROVIDER_META[link.provider]?.label || link.provider}…`,
+      );
       const r = await syncCloudLink(link.id);
       const skipped = r.skipped_unchanged ? `, ${r.skipped_unchanged} unchanged` : "";
       const conflicts = r.conflicts ? `, ${r.conflicts} conflicts` : "";
       toast.success(
         `${r.pulled} pulled from ${PROVIDER_META[r.provider]?.label || r.provider}${skipped}${conflicts}`,
+        { id: toastId },
       );
       qc.invalidateQueries({ queryKey: ["cloud-links"] });
       qc.invalidateQueries({ queryKey: ["files"] });
       qc.invalidateQueries({ queryKey: ["folders"] });
+      qc.invalidateQueries({ queryKey: ["storage"] });
     } catch (e) {
-      toast.error(e?.detail || e?.message || "Sync failed");
+      toast.error(e?.detail || e?.message || "Sync failed", { id: toastId });
     } finally {
+      clearInterval(livePoll);
       setBusy(null);
     }
   };
