@@ -1184,6 +1184,42 @@ export function App() {
     setAccountTab(tab);
     setShowAccount(true);
   };
+
+  // §C2 — post-OAuth landing handling. The backend's
+  // `/cloud/callback/{provider}` redirects back to
+  // `/?cloud_connected=<provider>` on success or `/?cloud_error=<reason>`
+  // on failure. We surface a toast + auto-open Account → Cloud sync
+  // so the user can hit "Sync now" without hunting for it. Runs once
+  // per sign-in (the cleanup strips the param so a refresh doesn't
+  // re-fire it).
+  useEffectApp(() => {
+    if (!signedIn || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("cloud_connected");
+    const failed = params.get("cloud_error");
+    if (!connected && !failed) return;
+    if (connected) {
+      const label = connected === "google_drive"
+        ? "Google Drive"
+        : connected === "github" ? "GitHub" : connected;
+      toast.success(`Connected to ${label}. Open Cloud sync to pull your files.`);
+      setAccountTab("cloud");
+      setShowAccount(true);
+    } else if (failed) {
+      const msg = failed === "not_configured"
+        ? "Cloud sync isn't configured on this deployment yet. The operator needs to set the OAuth credentials in .env."
+        : failed === "bad_state"
+          ? "OAuth handshake failed (state signature mismatch). Try connecting again."
+          : `Could not finish connecting (${failed}). Try again.`;
+      toast.error(msg);
+    }
+    // Strip the params so a refresh doesn't replay the toast / modal.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("cloud_connected");
+    url.searchParams.delete("cloud_error");
+    window.history.replaceState({}, "", url.pathname + (url.search || ""));
+  }, [signedIn]);
+
   const [showTerms, setShowTerms] = useStateApp(false);
   const [showPrivacy, setShowPrivacy] = useStateApp(false);
   const [showFace, setShowFace] = useStateApp(false);
