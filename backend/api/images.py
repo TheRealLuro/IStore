@@ -469,6 +469,33 @@ async def list_facets(
         )
     ).scalar_one()
 
+    # Cross-folder per-category counts for the sidebar pills. Previously
+    # the FE derived these from `baseFiles`, which is folder-scoped, so
+    # Photos / Videos / Documents counts read low any time the user was
+    # inside a folder. Pull them straight from the DB so the count is
+    # what the user expects: "every image in my library".
+    cat_rows = (
+        await session.execute(
+            select(Image.category, func.count(Image.id))
+            .where(*base)
+            .group_by(Image.category)
+        )
+    ).all()
+    by_category = {row[0]: int(row[1] or 0) for row in cat_rows if row[0]}
+
+    # Trash count — also cross-folder. The /account/trash endpoint
+    # returns this too but the sidebar uses /images/facets for the
+    # rest, so co-locate the count here to skip a round trip.
+    trash_count = (
+        await session.execute(
+            select(func.count(Image.id))
+            .where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_not(None),
+            )
+        )
+    ).scalar_one()
+
     return {
         "total": int(total or 0),
         "scenes": scenes,
@@ -476,6 +503,8 @@ async def list_facets(
         "indoor_outdoor": indoor_outdoor,
         "with_gps": int(with_gps or 0),
         "with_faces": int(with_faces or 0),
+        "by_category": by_category,
+        "trash_count": int(trash_count or 0),
     }
 
 
@@ -606,14 +635,34 @@ async def summarize_progress(
     pending = int(row.pending or 0)
     with_summary = int(row.with_summary or 0)
 
-    # NB: this endpoint used to auto-enqueue a fresh summarize job on
-    # every poll. With the FE polling every 2 s and the worker taking
-    # 30-90 s per image, that pushed dozens of duplicate jobs into the
-    # Redis queue per minute — same image processed over and over,
-    # wasting hours of Florence compute and pinning Postgres under a
-    # constant write load that made the rest of the API feel frozen.
-    # The ml-worker container drains the queue on its own; we don't
-    # need the API to bump it.
+    # Drain a few pending rows per poll. We rely on the Redis SADD
+    # dedupe inside `enqueue_summarize` to drop duplicates, so the
+    # earlier "100 duplicate jobs per minute" pathology doesn't happen
+    # — a row already in-flight is silently skipped here. Without this
+    # path, cloud-sync + AI-opt-in flips `pending_summary=True` but
+    # nothing ever queues the work; users see the counter stuck at
+    # "0 of 58 summarized" forever.
+    if pending > 0:
+        from backend import jobs as job_q
+
+        candidate_ids = (
+            await session.execute(
+                select(Image.id)
+                .where(
+                    Image.user_id == user.id,
+                    Image.deleted_at.is_(None),
+                    Image.skip_ai_training.is_(False),
+                    (Image.pending_summary.is_(True)) | (Image.summary.is_(None)),
+                )
+                .order_by(Image.uploaded_at.desc())
+                .limit(8)
+            )
+        ).scalars().all()
+        for img_id in candidate_ids:
+            try:
+                await job_q.enqueue_summarize(img_id)
+            except Exception:
+                logger.exception("summarize-progress: enqueue failed for %s", img_id)
 
     return {
         "total": total,

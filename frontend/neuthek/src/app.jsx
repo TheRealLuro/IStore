@@ -1732,12 +1732,23 @@ export function App() {
   // from /shares/incoming (todo §1.1 / G1). Trash is 0 until the
   // trash-view endpoint surfaces a count.
   const sideCounts = useMemoApp(() => {
-    const c = { all: baseFiles.length, image: 0, video: 0, document: 0, geo: 0, starred: 0, people: 0, shared: 0, trash: 0 };
-    for (const f of baseFiles) {
-      if (f.category === "image") c.image += 1;
-      else if (f.category === "video") c.video += 1;
-      else if (f.category === "document") c.document += 1;
-    }
+    // Sidebar pills are *library-wide* counts, not folder-scoped. Pull
+    // them from /images/facets (which we already fetch) rather than
+    // deriving from `baseFiles` (which IS folder-scoped) — otherwise
+    // Photos / Videos / Documents undercount whenever the user is
+    // inside a folder, and Trash reads 0 outside the trash view.
+    const byCat = facets?.by_category || {};
+    const c = {
+      all: facets?.total ?? baseFiles.length,
+      image: byCat.image ?? 0,
+      video: byCat.video ?? 0,
+      document: byCat.document ?? 0,
+      geo: 0,
+      starred: 0,
+      people: 0,
+      shared: 0,
+      trash: facets?.trash_count ?? 0,
+    };
     c.geo = (geoResp?.points || []).length;
     c.starred = isStarredView
       ? starredRaw.length
@@ -1745,10 +1756,9 @@ export function App() {
     c.people =
       (peopleResp?.persons || []).length
       + (peopleResp?.unlabeled_clusters || []).length;
-    c.trash = trashSummary?.count ?? 0;
     c.shared = incomingShares.length;
     return c;
-  }, [baseFiles, geoResp, isStarredView, starredRaw, peopleResp, trashSummary, incomingShares]);
+  }, [facets, baseFiles, geoResp, isStarredView, starredRaw, peopleResp, incomingShares]);
 
   const filesByView = useMemoApp(() => ({
     gallery: baseFiles,
