@@ -28,6 +28,18 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || "5181", 10);
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
+
+// Updates index used by the per-route prerender (see bottom of file).
+// Loaded once at boot; if the file is missing or malformed we just
+// fall through to the plain SPA shell.
+let UPDATE_INDEX = [];
+try {
+  const updatesJsonPath = path.join(__dirname, "src", "data", "updates-index.json");
+  const raw = JSON.parse(fs.readFileSync(updatesJsonPath, "utf8"));
+  UPDATE_INDEX = Array.isArray(raw.updates) ? raw.updates : [];
+} catch (e) {
+  console.warn("[neuthek-marketing] updates index not loaded:", e?.message);
+}
 const ADMIN_PASS = process.env.ADMIN_PASS || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
 
@@ -76,28 +88,57 @@ if (DATABASE_URL) {
           user_agent   TEXT,
           notified     BOOLEAN NOT NULL DEFAULT false,
           notified_at  TIMESTAMPTZ,
+          newsletter_opt_in BOOLEAN NOT NULL DEFAULT false,
+          newsletter_consent_at TIMESTAMPTZ,
           created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
         )
+      `);
+      // Forward-migrate older deployments that don't have the
+      // newsletter columns yet. ADD COLUMN IF NOT EXISTS is idempotent.
+      await pool.query(`
+        ALTER TABLE waitlist_signups
+          ADD COLUMN IF NOT EXISTS newsletter_opt_in BOOLEAN NOT NULL DEFAULT false
+      `);
+      await pool.query(`
+        ALTER TABLE waitlist_signups
+          ADD COLUMN IF NOT EXISTS newsletter_consent_at TIMESTAMPTZ
       `);
       await pool.query(`
         CREATE INDEX IF NOT EXISTS ix_waitlist_signups_created_at_desc
         ON waitlist_signups (created_at DESC)
       `);
     },
-    async upsertSignup({ email, use_case, ip, user_agent }) {
+    async upsertSignup({ email, use_case, ip, user_agent, newsletter_opt_in }) {
+      const flag = !!newsletter_opt_in;
+      // When the user opts IN, stamp the consent timestamp so we keep
+      // a chain-of-custody record (required by GDPR/CCPA-shaped
+      // disclosures). When they're already opted in, we don't reset
+      // the timestamp on a duplicate signup — first consent wins.
+      // Opting back OUT clears the timestamp.
       await pool.query(
-        `INSERT INTO waitlist_signups (email, use_case, ip, user_agent)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO waitlist_signups
+           (email, use_case, ip, user_agent, newsletter_opt_in, newsletter_consent_at)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 THEN now() ELSE NULL END)
          ON CONFLICT (email) DO UPDATE
            SET use_case = EXCLUDED.use_case,
+               newsletter_opt_in = EXCLUDED.newsletter_opt_in,
+               newsletter_consent_at = CASE
+                 WHEN EXCLUDED.newsletter_opt_in AND waitlist_signups.newsletter_consent_at IS NULL
+                   THEN now()
+                 WHEN NOT EXCLUDED.newsletter_opt_in
+                   THEN NULL
+                 ELSE waitlist_signups.newsletter_consent_at
+               END,
                created_at = now()`,
-        [email, use_case, ip || null, user_agent || null]
+        [email, use_case, ip || null, user_agent || null, flag]
       );
     },
     async listSignups(limit = 500) {
       const { rows } = await pool.query(
         `SELECT id, email, use_case, source, ip, user_agent,
-                notified, notified_at, created_at
+                notified, notified_at,
+                newsletter_opt_in, newsletter_consent_at,
+                created_at
          FROM waitlist_signups
          ORDER BY created_at DESC
          LIMIT $1`,
@@ -140,34 +181,65 @@ if (DATABASE_URL) {
           user_agent   TEXT,
           notified     INTEGER NOT NULL DEFAULT 0,
           notified_at  TEXT,
+          newsletter_opt_in INTEGER NOT NULL DEFAULT 0,
+          newsletter_consent_at TEXT,
           created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS ix_waitlist_signups_created_at_desc
           ON waitlist_signups (created_at DESC);
       `);
+      // Forward-migrate the columns for any existing dev/sqlite file
+      // that predates this schema. SQLite doesn't support
+      // `ADD COLUMN IF NOT EXISTS`, so we check pragma + run if missing.
+      const cols = db.prepare("PRAGMA table_info(waitlist_signups)").all();
+      const names = new Set(cols.map((c) => c.name));
+      if (!names.has("newsletter_opt_in")) {
+        db.exec("ALTER TABLE waitlist_signups ADD COLUMN newsletter_opt_in INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!names.has("newsletter_consent_at")) {
+        db.exec("ALTER TABLE waitlist_signups ADD COLUMN newsletter_consent_at TEXT");
+      }
     },
-    async upsertSignup({ email, use_case, ip, user_agent }) {
-      // SQLite upsert: INSERT OR REPLACE keeps the same id when email matches.
+    async upsertSignup({ email, use_case, ip, user_agent, newsletter_opt_in }) {
+      const flag = newsletter_opt_in ? 1 : 0;
       const existing = db.prepare(
-        "SELECT id FROM waitlist_signups WHERE email = ?"
+        "SELECT id, newsletter_consent_at FROM waitlist_signups WHERE email = ?"
       ).get(email);
       if (existing) {
+        // First-consent-wins for the timestamp; opting back out clears it.
+        let nextStamp;
+        if (flag && !existing.newsletter_consent_at) {
+          nextStamp = new Date().toISOString();
+        } else if (!flag) {
+          nextStamp = null;
+        } else {
+          nextStamp = existing.newsletter_consent_at;
+        }
         db.prepare(
           `UPDATE waitlist_signups
-           SET use_case = ?, created_at = CURRENT_TIMESTAMP
+           SET use_case = ?,
+               newsletter_opt_in = ?,
+               newsletter_consent_at = ?,
+               created_at = CURRENT_TIMESTAMP
            WHERE email = ?`
-        ).run(use_case, email);
+        ).run(use_case, flag, nextStamp, email);
       } else {
         db.prepare(
-          `INSERT INTO waitlist_signups (email, use_case, ip, user_agent)
-           VALUES (?, ?, ?, ?)`
-        ).run(email, use_case, ip || null, user_agent || null);
+          `INSERT INTO waitlist_signups
+             (email, use_case, ip, user_agent, newsletter_opt_in, newsletter_consent_at)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          email, use_case, ip || null, user_agent || null,
+          flag, flag ? new Date().toISOString() : null,
+        );
       }
     },
     async listSignups(limit = 500) {
       const rows = db.prepare(
         `SELECT id, email, use_case, source, ip, user_agent,
-                notified, notified_at, created_at
+                notified, notified_at,
+                newsletter_opt_in, newsletter_consent_at,
+                created_at
          FROM waitlist_signups
          ORDER BY datetime(created_at) DESC
          LIMIT ?`
@@ -260,6 +332,11 @@ app.post("/api/waitlist/signup", async (req, res) => {
   const email = String(body.email || "").trim().toLowerCase();
   let use_case = String(body.use_case || "personal").toLowerCase();
   if (!ALLOWED_USE_CASES.has(use_case)) use_case = "other";
+  // Coerce the checkbox value defensively — accept boolean true or
+  // the string "true"; anything else (undefined, "off", "false", 0)
+  // counts as a no.
+  const newsletter_opt_in =
+    body.newsletter_opt_in === true || body.newsletter_opt_in === "true";
 
   if (!EMAIL_RE.test(email) || email.length > 254) {
     return res.status(422).json({
@@ -276,6 +353,7 @@ app.post("/api/waitlist/signup", async (req, res) => {
       use_case,
       ip: ip !== "unknown" ? ip : null,
       user_agent: user_agent || null,
+      newsletter_opt_in,
     });
     // Anti-enumeration: never reveal whether this was new or duplicate.
     return res.json({ ok: true, already_signed_up: false });
@@ -349,9 +427,214 @@ if (fs.existsSync(distDir)) {
       }
     },
   }));
+  // Crawler-friendly per-route meta + content injection.
+  //
+  // The big "ChatGPT can't find this" problem with SPAs is that the
+  // initial HTML response is just `<div id="root"></div>` — no real
+  // content for the crawler to read. We solve this by injecting a
+  // page-specific <title>, meta description, and an HTML body
+  // fragment (rendered into a hidden `<noscript>` block AND as a
+  // visible-but-overwritten fallback) directly into the static
+  // index.html before sending. React then hydrates over it on
+  // client load — same UX as before, but now crawlers and AI
+  // answer engines see the real text immediately.
+  const INDEX_HTML_PATH = path.join(distDir, "index.html");
+  let cachedShell = null;
+  function readShell() {
+    if (cachedShell === null) {
+      try { cachedShell = fs.readFileSync(INDEX_HTML_PATH, "utf8"); }
+      catch { cachedShell = ""; }
+    }
+    return cachedShell;
+  }
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+  function renderShell(meta) {
+    let html = readShell();
+    if (!html) return null;
+    if (meta.title) {
+      html = html.replace(
+        /<title>[^<]*<\/title>/,
+        `<title>${escapeHtml(meta.title)}</title>`,
+      );
+    }
+    if (meta.description) {
+      html = html.replace(
+        /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/,
+        `<meta name="description" content="${escapeHtml(meta.description)}" />`,
+      );
+    }
+    if (meta.canonical) {
+      html = html.replace(
+        /<link\s+rel="canonical"\s+href="[^"]*"\s*\/?>/,
+        `<link rel="canonical" href="${escapeHtml(meta.canonical)}" />`,
+      );
+    }
+    if (meta.bodyHtml || meta.jsonLd) {
+      // Drop in a static-text fallback so AI crawlers + search engines
+      // see real content. React hydrates over it. We mark it
+      // `data-prerender` so the React mount knows to overwrite the
+      // contents rather than appending to them.
+      const blob = `<div id="root" data-prerender="1">${meta.bodyHtml || ""}</div>` +
+        (meta.jsonLd
+          ? `<script type="application/ld+json">${meta.jsonLd}</script>`
+          : "");
+      html = html.replace(/<div id="root"><\/div>/, blob);
+    }
+    return html;
+  }
+
+  // Map paths → meta + prerender content. Adding a new route here is
+  // additive; unknown paths fall through to the plain SPA shell.
+  function metaForPath(reqPath) {
+    if (reqPath === "/" || reqPath === "") {
+      return {
+        title: "neuthek — the next best cloud storage solution",
+        description:
+          "neuthek is an AI-aware personal cloud storage product in active development. Semantic search by what you remember, content-aware compression, privacy-first design. Self-host or hosted — join the waitlist.",
+        canonical: "https://neuthek.com/",
+        bodyHtml: `
+          <header>
+            <h1>neuthek — the next best cloud storage solution</h1>
+            <p>
+              neuthek is an AI-aware personal cloud storage product in
+              active development. It pairs S3-compatible object
+              storage with a Postgres + pgvector index so users can
+              search their photos, videos, and documents by natural
+              language — "snowy roof at sunset", "whiteboard photos
+              from last week" — instead of remembering filenames.
+            </p>
+          </header>
+          <section>
+            <h2>Your data isn't ours. We never train on it. We never sell it.</h2>
+            <p>
+              neuthek runs on a server you control (self-hosted) or in
+              your own tenant fenced behind Postgres row-level security
+              (managed hosted). Your photos, videos, documents, face
+              embeddings, summaries, and search history are not
+              exported to third parties, are not used to train AI
+              models — ours or anyone else's — and are not sold to ad
+              networks, brokers, or partners.
+            </p>
+          </section>
+          <section>
+            <h2>What we're building</h2>
+            <ul>
+              <li>Search by meaning — CLIP-class embeddings, vector index, hybrid CLIP-cosine + Postgres-FTS ranker.</li>
+              <li>Content-aware compression — LinUCB bandit picks per-image codec (WebP / MozJPEG / AVIF / JXL).</li>
+              <li>Open source self-host (free) or managed hosted (waitlist).</li>
+              <li>Stack: FastAPI, PostgreSQL, pgvector, Redis, MinIO, OpenCLIP, Florence-2.</li>
+            </ul>
+          </section>
+          <p>
+            <a href="/waitlist">Join the waitlist</a> ·
+            <a href="/features">Features</a> ·
+            <a href="/hosting">Hosting</a> ·
+            <a href="/updates">Weekly updates</a>
+          </p>
+        `,
+      };
+    }
+    if (reqPath === "/updates" || reqPath === "/updates/") {
+      const items = UPDATE_INDEX;
+      const summaries = items.map((u) =>
+        `<article><h3><a href="/updates/${escapeHtml(u.slug)}">${escapeHtml(u.title)}</a></h3>` +
+        `<time datetime="${escapeHtml(u.published)}">${escapeHtml(u.week)}</time>` +
+        `<p>${escapeHtml(u.summary)}</p></article>`,
+      ).join("");
+      return {
+        title: "Updates — neuthek changelog & weekly release notes",
+        description:
+          "Weekly release notes for neuthek, the AI-aware personal cloud. Browse what shipped each week — features, performance fixes, security updates, roadmap progress.",
+        canonical: "https://neuthek.com/updates",
+        bodyHtml: `
+          <header><h1>What's new in neuthek</h1>
+            <p>A weekly log of what we shipped, fixed, and changed. Pulled straight from the release notes — no marketing fluff.</p>
+          </header>
+          ${summaries}
+        `,
+      };
+    }
+    const m = reqPath.match(/^\/updates\/([a-z0-9-]+)\/?$/);
+    if (m) {
+      const slug = m[1];
+      const entry = UPDATE_INDEX.find((u) => u.slug === slug);
+      if (entry) {
+        const bucketHtml = (label, items, intro) =>
+          `<section><h2>${escapeHtml(label)}</h2>` +
+          `<p>${escapeHtml(intro)}</p>` +
+          `<ul>${items.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ul></section>`;
+        const articleHtml = [
+          `<article>`,
+          `<header><time datetime="${escapeHtml(entry.published)}">${escapeHtml(entry.week)}</time>`,
+          `<h1>${escapeHtml(entry.title)}</h1>`,
+          `<p>${escapeHtml(entry.summary)}</p></header>`,
+          bucketHtml("Problems we found", entry.body.found, "What wasn't working as well as it should have."),
+          bucketHtml("How we fixed them", entry.body.fixed, "What changed in this release to fix the issues above."),
+          bucketHtml("New features", entry.body.newFeatures, "Brand-new capabilities that weren't there last week."),
+          `<section><h2>Why this matters</h2><p>${escapeHtml(entry.body.why)}</p></section>`,
+          bucketHtml("What this means for you", entry.body.whatTheyDo, "How the changes actually show up when you use neuthek."),
+          `</article>`,
+        ].join("");
+        // Article-shape JSON-LD with the full text the crawler / AI
+        // engine can lift verbatim.
+        const articleBody = [
+          entry.summary, "",
+          "Problems we found:",
+          ...entry.body.found.map((s) => `- ${s}`), "",
+          "How we fixed them:",
+          ...entry.body.fixed.map((s) => `- ${s}`), "",
+          "New features in this release:",
+          ...entry.body.newFeatures.map((s) => `- ${s}`), "",
+          "Why this matters:",
+          entry.body.why, "",
+          "What this means for you:",
+          ...entry.body.whatTheyDo.map((s) => `- ${s}`),
+        ].join("\n");
+        const jsonLd = JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "BlogPosting",
+          headline: entry.title,
+          description: entry.summary,
+          articleBody,
+          datePublished: entry.published,
+          dateModified: entry.published,
+          author: { "@type": "Organization", name: "neuthek", url: "https://neuthek.com/" },
+          publisher: { "@type": "Organization", name: "neuthek", url: "https://neuthek.com/" },
+          mainEntityOfPage: `https://neuthek.com/updates/${entry.slug}`,
+          keywords: entry.tags.join(", "),
+          inLanguage: "en",
+        });
+        return {
+          title: `${entry.title} — neuthek updates`,
+          description: entry.summary,
+          canonical: `https://neuthek.com/updates/${entry.slug}`,
+          bodyHtml: articleHtml,
+          jsonLd,
+        };
+      }
+    }
+    return null;
+  }
+
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api/")) return next();
-    res.sendFile(path.join(distDir, "index.html"));
+    const meta = metaForPath(req.path);
+    if (meta) {
+      const rendered = renderShell(meta);
+      if (rendered) {
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        return res.status(200).send(rendered);
+      }
+    }
+    res.sendFile(INDEX_HTML_PATH);
   });
 } else {
   console.log("[neuthek-marketing] no dist/ yet — run `npm run build` to enable static serve.");

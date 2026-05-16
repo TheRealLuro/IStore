@@ -1,128 +1,127 @@
 // Weekly update entries shown on /updates and /updates/:slug.
 //
-// Each entry is a self-contained article-ish summary of what shipped
-// in a given week. The list is rendered newest-first on /updates;
-// /updates/:slug renders the body markdown-ish content as a long-read
-// page with an SEO + AI-crawler-friendly Article JSON-LD block.
+// Each entry has the SAME five-section shape so the layout reads
+// predictably for non-technical visitors:
 //
-// Adding an entry:
-//   1. Append a new object at the top of UPDATES below.
-//   2. `slug` must be unique and URL-safe (lowercased, dashes).
-//   3. Keep `title` under ~70 chars so it fits in SERP previews.
-//   4. `summary` shows on the index list AND becomes the meta
-//      description on the detail page — write it for both humans
-//      and Google AI Overview / Perplexity snippets.
-//   5. `tags` group entries on the index page; the sitemap also
-//      surfaces them as keywords.
+//   - found:        problems we hit this week — what was broken or
+//                   limiting users.
+//   - fixed:        what we changed to fix them.
+//   - newFeatures:  brand-new capabilities that didn't exist before.
+//   - why:          the reason this work mattered, in plain English.
+//   - whatTheyDo:   how the new stuff actually shows up for the user.
 //
-// We deliberately keep the entries inline (not a CMS) so the marketing
-// site stays fully static — Render / Cloudflare Pages can serve it as
-// a CDN'd bundle with no DB lookup at request time.
+// Each section is `string[]` so the article page can render bullet
+// lists. Keep bullets short (one sentence each) and avoid the
+// engineering jargon — "asyncpg event loop" turns into "the app froze
+// while looking at storage usage", "BrowserRouter" turns into "we
+// fixed the share-link URLs so Google can find them".
+//
+// Article-level fields:
+//   - slug:      URL-safe id (lowercase, dashes). Must be unique.
+//   - title:     under ~70 chars; shows in SERP previews.
+//   - published: ISO date, used for the JSON-LD datePublished tag.
+//   - week:      friendly label.
+//   - summary:   one-paragraph hook. Becomes the meta description on
+//                the detail page; write for both humans AND AI
+//                answer-engine snippets.
+//   - tags:      chip labels on the index page; also become Article
+//                keywords for SEO.
 
-export type UpdateSection =
-  | { kind: "para"; text: string }
-  | { kind: "heading"; text: string }
-  | { kind: "bullets"; items: string[] }
-  | { kind: "code"; language?: string; body: string };
-
-export interface UpdateEntry {
-  slug: string;            // URL slug, e.g. "2026-w20-search-and-faces"
-  title: string;           // article title (under ~70 chars)
-  published: string;       // ISO date, e.g. "2026-05-16"
-  week: string;            // human label, e.g. "Week of May 16, 2026"
-  summary: string;         // one-paragraph summary (SEO description)
-  author?: string;
-  tags: string[];          // e.g. ["search", "faces", "performance"]
-  sections: UpdateSection[];
+export interface UpdateBuckets {
+  found: string[];
+  fixed: string[];
+  newFeatures: string[];
+  why: string;
+  whatTheyDo: string[];
 }
 
+export interface UpdateEntry {
+  slug: string;
+  title: string;
+  published: string; // ISO date
+  week: string;
+  summary: string;
+  author?: string;
+  tags: string[];
+  body: UpdateBuckets;
+}
+
+// Newest first.
 export const UPDATES: UpdateEntry[] = [
   {
     slug: "2026-w20-google-link-marquee-perf",
-    title: "Link Google to an existing account, faster marquee select, AI summary drain",
+    title: "Link your Google account, faster selection, fewer broken settings",
     published: "2026-05-16",
     week: "Week of May 16, 2026",
     summary:
-      "Settings → Account now has a Link Google button so you can attach Google sign-in to an account you originally created with email + password. The gallery's drag-rectangle select is rewritten for smoother scroll on 200+ card grids, AI summaries now actually drain (cloud-synced files were stranded), and code-file previews open in a PDF-style modal with syntax highlighting.",
+      "You can now connect a Google account to a neuthek profile you originally made with email + password, the drag-to-select rectangle in the gallery is much smoother, AI summaries finally finish processing instead of getting stuck, and a handful of Settings pages stopped showing fake data.",
     author: "neuthek team",
-    tags: ["accounts", "performance", "ai", "ui"],
-    sections: [
-      { kind: "heading", text: "Link your Google account from Settings" },
-      {
-        kind: "para",
-        text:
-          "If you signed up with email and a password, you couldn't use Sign-in-with-Google to land in the same account — the SSO flow would create a fresh user. New row in Settings → Account → Sign-in & security: 'Link Google'. Click → consent screen → your existing account picks up the Google identity. Future Sign-in-with-Google lands you back here. Unlink any time.",
-      },
-      { kind: "heading", text: "Marquee select, but smooth" },
-      {
-        kind: "para",
-        text:
-          "Drag a rectangle across the gallery to multi-select. Previously this measured every card on every pointermove (1000 Hz on some hardware) and forced React re-renders per id toggled — visibly lagged on 100+ card grids. The rewrite measures cards once at dragstart, throttles to one rAF tick, and paints the rubber-band via direct DOM transform. Per-frame cost dropped from ~12 ms to ~0.5 ms on a 200-card grid.",
-      },
-      { kind: "heading", text: "AI summaries finally drain" },
-      {
-        kind: "para",
-        text:
-          "Cloud-synced photos were marked pending_summary=true but nothing was pushing them into the ml-worker queue. The summarize-progress endpoint now drains up to 8 pending rows per poll (Redis dedupe keeps a stalled image from being re-enqueued forever), and the cloud-sync AI opt-in toggle enqueues every newly-eligible image at the moment you flip it on. The counter moves the moment you click.",
-      },
-      { kind: "heading", text: "Code previews as a PDF-style modal" },
-      {
-        kind: "para",
-        text:
-          "GitHub repos used to ingest images only. They now pull source code, configs, and markdown too — and when you open one in the preview, you get a dedicated viewer with syntax highlighting (Prism, ~40 grammars eagerly loaded), line numbers, and a 5 MB render cap so a 100 MB JSON dump doesn't freeze the tab.",
-      },
-      { kind: "heading", text: "Camera RAW + animated GIFs" },
-      {
-        kind: "para",
-        text:
-          "NEF / CR2 / ARW / DNG / RAF / ORF / RW2 / PEF now decode through rawpy (LibRaw) at quality 95 instead of Pillow's tiny embedded preview re-encoded at WebP 82. Original RAW lives in the originals bucket; served version is full sensor data. Animated GIFs are passthrough end-to-end — neither validation nor compression collapse them to single frames anymore.",
-      },
-      { kind: "heading", text: "Smaller fixes" },
-      {
-        kind: "bullets",
-        items: [
-          "Trash actually populates: DELETE /images/{id} soft-deletes by default; ?purge=true permanently removes.",
-          "Photos / Videos / Documents sidebar tabs are now cross-folder, not folder-scoped. Counts updated to match.",
-          "Face relabel no longer cascades: changing one detection clones the Face row instead of renaming the whole Person.",
-          "Gallery cards request a max_dim=600 thumbnail variant (server-cached LRU) instead of the full 4 MB served WebP.",
-        ],
-      },
-    ],
+    tags: ["accounts", "gallery", "ai", "settings"],
+    body: {
+      found: [
+        "If you signed up with an email and password, there was no way to also use Sign in with Google for the same account — it would just create a brand-new profile.",
+        "Drag-selecting many photos at once felt sluggish: the box lagged behind your mouse, and the gallery sometimes stuttered while you were dragging.",
+        "AI summaries got stuck at, say, 58 of 59 done — the last one or two would never finish, and the progress number wouldn't budge.",
+        "The Settings panels for face data and locations were showing made-up numbers (\"1,284 faces detected\") instead of your actual library counts.",
+        "Settings didn't reflect whether you had a Google account linked, even after you linked it.",
+      ],
+      fixed: [
+        "Settings → Account → Sign-in & security now has a Link Google button. One click sends you to Google's consent screen and brings you back into the same neuthek account.",
+        "The drag-to-select rectangle is now smooth on libraries with hundreds of photos. We rebuilt how it tracks your mouse so it stays in step.",
+        "AI summaries no longer get stuck on photos the AI can't read. After one failed try we stop retrying that specific file so the counter moves on, and the rest of your library keeps processing.",
+        "The Face data and Location panels in Settings now show your real numbers — how many photos have GPS, how many faces were detected, how many people you've named.",
+        "Settings now reflects everything that's actually true about your account: email verified, 2FA on/off, Google linked, admin, age confirmed.",
+      ],
+      newFeatures: [
+        "Link Google to an existing account — Settings → Account → \"Link Google\".",
+        "A read-only \"Account state\" grid in Settings that summarises everything about your profile in one place.",
+        "Code files synced from Google Drive open in a syntax-highlighted reader with line numbers, similar to how PDFs open in a viewer.",
+        "Camera RAW formats (Nikon NEF, Canon CR2, Sony ARW, Fuji RAF, etc.) decode at full quality instead of as a tiny embedded preview.",
+        "Animated GIFs stay animated end-to-end — they're no longer flattened to a single frame on upload.",
+      ],
+      why:
+        "Two themes this week: making your account feel like one account no matter how you sign in, and stopping things from looking broken when they're actually working. Stuck progress bars and fake numbers in Settings erode trust even when the underlying system is fine, so we went through the panels and made sure each number you see is real and each loop has a way to finish.",
+      whatTheyDo: [
+        "Open Settings → Account. The new badges under your name show your real status, and the Link Google row attaches Google sign-in to this account so you can use either path next time.",
+        "On a desktop, click on empty space in the gallery and drag — every photo your rectangle touches gets selected. Hold Shift to add to what you already have selected.",
+        "The AI summary banner at the top of the gallery will now actually reach \"all done\" instead of camping at 58/59 forever.",
+        "Open a RAW photo from your camera and it shows up at the full resolution your camera captured, not a soft thumbnail.",
+        "Open Settings → Privacy. The Face data and Location detail panels show real counts from your library and explain that embeddings stay on your server.",
+      ],
+    },
   },
   {
     slug: "2026-w19-drive-sync-and-rls",
-    title: "Google Drive sync, row-level security, EXIF strip on upload",
+    title: "Pull your Google Drive in, lock down the database, strip GPS by default",
     published: "2026-05-09",
     week: "Week of May 9, 2026",
     summary:
-      "End-to-end Google Drive sync with OAuth 2.0, PKCE, encrypted refresh tokens, hourly background sweep, and conflict detection. Postgres row-level security now fences every per-user query at the database layer. EXIF metadata is stripped on upload by default (opt-in to keep camera GPS or make/model).",
+      "Connect your Google Drive in Settings and your photos + documents flow into neuthek without you uploading anything by hand. We hardened the database so a bug in one place can't leak someone else's files. And photos you upload no longer carry hidden GPS coordinates unless you explicitly opt in.",
     tags: ["cloud-sync", "security", "privacy"],
-    sections: [
-      { kind: "heading", text: "Pull-only Drive sync" },
-      {
-        kind: "para",
-        text:
-          "Connect a Google Drive in Settings → Cloud sync. We request only drive.readonly — we never write to your Drive. Files mirror into a Google Drive folder in neuthek; folder structure is preserved. Refresh tokens are encrypted with Fernet before they hit the database, conflict detection (local edited after sync) shows a banner instead of overwriting, and an hourly sweeper keeps the link warm.",
-      },
-      { kind: "heading", text: "Limited Use compliance" },
-      {
-        kind: "para",
-        text:
-          "Per Google's Limited Use policy, Drive content cannot be used to train AI models. The summarize + face-scan pipelines skip cloud-synced rows by default (skip_ai_training=true). The cloud-sync panel exposes a per-source AI Enable/Pause toggle so you can opt in explicitly — that flip both stamps the link's ai_opted_in column and re-queues every image.",
-      },
-      { kind: "heading", text: "Postgres RLS" },
-      {
-        kind: "para",
-        text:
-          "Migration 0027 turned on FORCE row-level security across the tables that hold user content: images, image_geo, image_tags, folders, folder_tags, tags, face_detections, faces, persons, audit_log. Every query runs under SET LOCAL app.current_user_id, and policies pin reads/writes to that user. A leaked query that forgot the user_id WHERE clause now returns zero rows instead of cross-tenant data.",
-      },
-      { kind: "heading", text: "EXIF privacy" },
-      {
-        kind: "para",
-        text:
-          "Uploads strip the EXIF block by default. We re-encode JPEG / WebP / TIFF through Pillow without the APP1 marker — no embedded GPS, no camera fingerprint. Two consent scopes let you opt back in: gps_retention (location stays for map view) and exif_retention (camera/lens stays for export). PNG and GIF don't carry EXIF, so nothing changes there.",
-      },
-    ],
+    body: {
+      found: [
+        "Getting your existing photos into neuthek meant uploading them by hand, which is fine for ten photos and miserable for ten thousand.",
+        "A bug in any query could, in theory, leak one user's files to another — we wanted the database itself to refuse that even if the code asked the wrong thing.",
+        "Most phones embed your exact GPS coordinates in every photo. If you shared a photo, the location went with it whether you wanted it to or not.",
+      ],
+      fixed: [
+        "Built a one-click Google Drive connection. We never write back to your Drive (it's read-only); we just pull copies in.",
+        "Turned on Postgres row-level security across every table that holds your stuff (photos, folders, tags, faces, summaries, audit log). Even a buggy query physically can't see another user's rows.",
+        "Photos uploaded to neuthek now have their GPS stripped on the way in. The toggle to keep GPS is in Settings → Privacy → Photo metadata if you want it.",
+      ],
+      newFeatures: [
+        "Google Drive sync with a per-source AI opt-in toggle, so cloud photos stay outside the training pipeline by default.",
+        "An hourly background sweep that pulls in new files automatically once you're connected, plus conflict detection if you edit a photo locally after it synced.",
+        "EXIF strip-on-upload, with separate consent toggles for keeping GPS data and keeping camera-make/lens metadata.",
+      ],
+      why:
+        "Two things matter most for a personal cloud: getting your stuff in, and trusting that it stays yours. Drive sync removes the friction of \"how do I move my existing photos here?\". Row-level security and EXIF strip make the system fail-safe — even if something goes wrong, your data and your location stay where they should.",
+      whatTheyDo: [
+        "Open Settings → Cloud sync → Connect Google Drive. After the consent screen, files start arriving in a \"Google Drive\" folder in your gallery. You can sync manually or let the hourly sweep handle it.",
+        "Nothing changes visually from the row-level-security work, but a buggy or hacked query in the future literally cannot return another user's data.",
+        "Every photo you upload from your phone or camera now lands without an embedded location, so if you share it, you're not also sharing where you were standing.",
+      ],
+    },
   },
 ];
 
