@@ -22,6 +22,7 @@ from backend.api.tags import image_attach_router as tag_image_attach_router
 from backend.api.tags import router as tags_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
+from backend.auth.google_sso import router as google_sso_router
 from backend.auth.users import auth_backend, fastapi_users
 from backend.config import settings
 from backend.consent import router as consent_router
@@ -128,6 +129,9 @@ def create_app() -> FastAPI:
         prefix="/auth",
         tags=["auth"],
     )
+    # Google Sign-In: /auth/google/login → consent screen,
+    # /auth/google/callback → JWT in URL fragment.
+    app.include_router(google_sso_router)
     app.include_router(
         fastapi_users.get_users_router(UserRead, UserUpdate),
         prefix="/users",
