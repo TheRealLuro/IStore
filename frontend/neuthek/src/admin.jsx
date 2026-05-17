@@ -27,6 +27,8 @@ import {
   getAdminSystem,
   getAdminHardware,
   getAdminProcesses,
+  getAdminQueue,
+  adminDrainUserQueue,
   getAdminModels,
   getAdminTasks,
   getAdminLogs,
@@ -429,6 +431,7 @@ export function AdminOverlay({ open, onClose }) {
           { id: "system",    label: "System" },
           { id: "processes", label: "Processes" },
           { id: "hardware",  label: "Hardware" },
+          { id: "queue",     label: "Queue" },
         ].map(t => (
           <button key={t.id} className="admin__tab" data-active={tab === t.id} onClick={() => setTab(t.id)}>
             {t.label}
@@ -446,6 +449,7 @@ export function AdminOverlay({ open, onClose }) {
         {tab === "system"    && <RealSystemTab open={open} snap={systemSnap}/>}
         {tab === "processes" && <RealProcessesTab open={open}/>}
         {tab === "hardware"  && <RealHardwareTab open={open}/>}
+        {tab === "queue"     && <RealQueueTab open={open}/>}
       </div>
 
       <div className="modal__foot">
@@ -1395,6 +1399,194 @@ function RealProcessesTab({ open }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ---------- Queue (per-user ML jobs + rate limits) ----------
+
+function RealQueueTab({ open }) {
+  const qc = useQueryClient();
+  const [busyDrainId, setBusyDrainId] = useStateAd(null);
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-queue"],
+    queryFn: () => getAdminQueue(50),
+    enabled: open,
+    staleTime: 2_000,
+    // Poll every 3 s — the queue moves fast under backfills, so a
+    // looser cadence would feel laggy. The endpoint is cheap (one
+    // ZRANGE + pipeline of LLENs / GETs).
+    refetchInterval: open ? 3_000 : false,
+  });
+  if (isLoading) return <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>;
+  if (!data) return null;
+
+  const drainUser = async (uid, email) => {
+    if (!window.confirm(`Drop every pending job for ${email || uid}? In-flight work is unaffected.`)) return;
+    setBusyDrainId(uid);
+    try {
+      const r = await adminDrainUserQueue(uid);
+      toast.success(`Removed ${r.removed} pending job(s) for ${email || uid}.`);
+      qc.invalidateQueries({ queryKey: ["admin-queue"] });
+    } catch (e) {
+      toast.error(e?.detail || "Drain failed.");
+    } finally {
+      setBusyDrainId(null);
+    }
+  };
+
+  const cfg = data.config;
+  const totals = data.totals;
+  const limitActions = Object.keys(cfg.rate_limits);
+
+  return (
+    <div>
+      {/* ---------- Top stats strip ---------- */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+        <StatPill label="Pending jobs (all users)" value={totals.pending}/>
+        <StatPill label="Users with work in queue" value={totals.active_users}/>
+        <StatPill label="Users at in-flight cap" value={totals.users_at_inflight_cap}
+                  tone={totals.users_at_inflight_cap > 0 ? "amber" : undefined}/>
+        <StatPill label="Users at queue cap" value={totals.users_at_queue_cap}
+                  tone={totals.users_at_queue_cap > 0 ? "red" : undefined}/>
+      </div>
+
+      {/* ---------- Config rollup ---------- */}
+      <div style={{
+        padding: "10px 14px",
+        background: "var(--surface-2)",
+        border: "1px solid var(--line)",
+        borderRadius: 10,
+        fontSize: 12,
+        color: "var(--ink-2)",
+        marginBottom: 18,
+      }}>
+        <strong style={{ color: "var(--ink)" }}>Scheduler:</strong>{" "}
+        per-user FIFO &middot; round-robin across active users &middot;{" "}
+        <code>{cfg.per_user_inflight_cap}</code> in-flight cap per user &middot;{" "}
+        <code>{cfg.per_user_queue_limit}</code> max pending per user.{" "}
+        <strong style={{ color: "var(--ink)" }}>Rate limits (per user per hour):</strong>{" "}
+        {limitActions.map((a, i) => (
+          <span key={a}>
+            {i > 0 && " · "}
+            <code>{a}</code>{" "}<strong className="mono">{cfg.rate_limits[a].limit}</strong>
+          </span>
+        ))}
+      </div>
+
+      {/* ---------- ML worker status ---------- */}
+      {data.workers.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            ML workers ({data.workers.length})
+          </div>
+          <div className="admin-system">
+            {data.workers.map((w) => <WorkerCard key={w.worker_id} w={w}/>)}
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Per-user table ---------- */}
+      {data.users.length === 0 ? (
+        <div style={{ padding: 24, color: "var(--ink-3)", textAlign: "center", border: "1px dashed var(--line)", borderRadius: 8 }}>
+          Queue is empty — no users currently have pending ML jobs.
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            Per-user queue ({data.users.length} active)
+          </div>
+          <table className="admin-table admin-table--compact">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th style={{ textAlign: "right" }}>Pending</th>
+                <th style={{ textAlign: "right" }}>In-flight</th>
+                {limitActions.map((a) => (
+                  <th key={a} style={{ textAlign: "right", fontSize: 10, whiteSpace: "nowrap" }}>
+                    {a}
+                  </th>
+                ))}
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.users.map((u) => (
+                <tr key={u.user_id}>
+                  <td>
+                    <div style={{ fontWeight: 500, color: "var(--ink)" }}>
+                      {u.email || u.display_name || u.user_id.slice(0, 8)}
+                    </div>
+                    <div className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>
+                      {u.user_id.slice(0, 13)}…
+                    </div>
+                  </td>
+                  <td className="mono" style={{
+                    textAlign: "right",
+                    color: u.pending >= cfg.per_user_queue_limit ? "var(--bad)" : "var(--ink)",
+                    fontWeight: u.pending > 0 ? 600 : 400,
+                  }}>{u.pending}</td>
+                  <td className="mono" style={{
+                    textAlign: "right",
+                    color: u.inflight >= cfg.per_user_inflight_cap ? "var(--warn-ink)" : "var(--ink-2)",
+                  }}>{u.inflight}</td>
+                  {limitActions.map((a) => {
+                    const rl = u.rate_limits[a];
+                    const exhausted = rl && rl.remaining === 0;
+                    return (
+                      <td key={a} className="mono" style={{
+                        textAlign: "right",
+                        fontSize: 11,
+                        color: exhausted ? "var(--bad)" : (rl && rl.used > 0 ? "var(--ink)" : "var(--ink-3)"),
+                        fontWeight: exhausted ? 600 : 400,
+                      }}
+                          title={rl ? `${rl.used} of ${rl.limit} used this hour` : ""}>
+                        {rl ? `${rl.used}/${rl.limit}` : "—"}
+                      </td>
+                    );
+                  })}
+                  <td style={{ textAlign: "right" }}>
+                    {u.pending > 0 && (
+                      <button
+                        className="admin-proc__filter"
+                        onClick={() => drainUser(u.user_id, u.email)}
+                        disabled={busyDrainId === u.user_id}
+                        style={{ fontSize: 11 }}
+                      >
+                        {busyDrainId === u.user_id ? "…" : "Drain"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatPill({ label, value, tone }) {
+  const toneColor = {
+    amber: "var(--warn-ink)",
+    red:   "var(--bad)",
+  }[tone] || "var(--ink)";
+  return (
+    <div style={{
+      flex: "1 1 180px",
+      minWidth: 180,
+      padding: "12px 14px",
+      border: "1px solid var(--line)",
+      borderRadius: 10,
+      background: "var(--surface)",
+    }}>
+      <div style={{ fontSize: 10, color: "var(--ink-3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+        {label}
+      </div>
+      <div className="mono" style={{ fontSize: 22, fontWeight: 600, marginTop: 4, color: toneColor }}>
+        {value}
+      </div>
     </div>
   );
 }

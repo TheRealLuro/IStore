@@ -610,6 +610,113 @@ async def admin_processes(
     return {"processes": rows, "totals": totals, "workers": workers}
 
 
+@router.get("/queue")
+async def admin_queue(
+    _: Annotated[User, Depends(current_admin_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    top: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """ML job queue snapshot — per-user pending + rate-limit headroom.
+
+    Replaces ad-hoc grepping of worker logs with a single endpoint
+    that surfaces:
+      - global queue depth + scheduler config (caps, cadence)
+      - top-N users by pending work, with inflight counters + email
+      - per-user rate-limit usage for every ML trigger endpoint
+      - a quick "active workers / last heartbeat / model state" rollup
+
+    The fair-queue is per-user round-robin (one in-flight per user on
+    the single ML thread), so a long backfill from one user can no
+    longer starve the queue for everyone else. This endpoint lets the
+    operator confirm that's actually happening + spot-check whether
+    any user is at their rate-limit ceiling.
+    """
+    from backend.jobs import (
+        ACTIVE_USERS_KEY,
+        PER_USER_INFLIGHT_CAP,
+        PER_USER_QUEUE_LIMIT,
+        per_user_queue_depths,
+        total_queue_depth,
+    )
+    from backend.security import get_counter
+    from backend.system_probes import list_workers
+
+    # Snapshot — sorted by pending desc inside the helper.
+    rows = await per_user_queue_depths(limit=top)
+    user_ids = [r["user_id"] for r in rows]
+    emails = await _user_lookup([UUID(u) for u in user_ids]) if user_ids else {}
+
+    # Pull rate-limit headroom for every ML-gated endpoint in one pass.
+    # Reads the same `enforce_rate_limit` counter keys so what you see
+    # here is exactly what the gate is checking.
+    LIMITS = {
+        "backfill-summaries": (3, 3600),
+        "backfill-vision":    (3, 3600),
+        "resummarize":        (30, 3600),
+        "redetect-faces":     (30, 3600),
+        "detect-and-label":   (10, 3600),
+    }
+    enriched = []
+    for r in rows:
+        uid = r["user_id"]
+        info = emails.get(uid, {})
+        usage = {}
+        for action, (limit, window) in LIMITS.items():
+            used = await get_counter(f"ml:{action}:{uid}")
+            usage[action] = {
+                "used": int(used),
+                "limit": limit,
+                "window_seconds": window,
+                "remaining": max(0, limit - int(used)),
+            }
+        enriched.append({
+            **r,
+            "email": info.get("email"),
+            "display_name": info.get("display_name"),
+            "rate_limits": usage,
+        })
+
+    workers = await list_workers()
+    ml_workers = [w for w in workers if w.get("kind") == "ml-worker"]
+
+    return {
+        "totals": {
+            "pending": await total_queue_depth(),
+            "active_users": len(rows),
+            "users_at_inflight_cap": sum(
+                1 for r in rows if r["inflight"] >= PER_USER_INFLIGHT_CAP
+            ),
+            "users_at_queue_cap": sum(
+                1 for r in rows if r["pending"] >= PER_USER_QUEUE_LIMIT
+            ),
+        },
+        "config": {
+            "per_user_queue_limit": PER_USER_QUEUE_LIMIT,
+            "per_user_inflight_cap": PER_USER_INFLIGHT_CAP,
+            "rate_limits": {
+                action: {"limit": limit, "window_seconds": window}
+                for action, (limit, window) in LIMITS.items()
+            },
+        },
+        "users": enriched,
+        "workers": ml_workers,
+    }
+
+
+class DrainUserBody(BaseModel):
+    user_id: UUID
+
+
+@router.post("/queue/drain-user", status_code=status.HTTP_200_OK)
+async def admin_queue_drain_user(
+    body: DrainUserBody,
+    _: Annotated[User, Depends(current_admin_user)],
+) -> dict:
+    """Remove every pending job for one user (in-flight unaffected)."""
+    from backend.jobs import drain_user_queue
+    return await drain_user_queue(body.user_id)
+
+
 @router.get("/models")
 async def admin_models(
     _: Annotated[User, Depends(current_admin_user)],

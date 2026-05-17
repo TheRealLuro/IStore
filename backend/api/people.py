@@ -298,12 +298,25 @@ async def detect_and_label(
 
     Requires the user to have granted `face_recognition` consent —
     same gate as the per-image face scan worker.
+
+    Rate-limited to 10 calls per hour per user. The body is already
+    capped at 50 image_ids per call (Pydantic Field max_length), so
+    the effective ceiling is 500 detector runs per user per hour —
+    plenty for the legitimate "label this batch as Me" flow without
+    letting a script DOS the shared GPU thread.
     """
     if not await is_scope_active(session, user.id, "face_recognition"):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "Grant face recognition consent first (Settings → Privacy).",
         )
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"ml:detect-and-label:{user.id}",
+        limit=10,
+        window_seconds=3600,
+        detail="Too many bulk tag requests. Try again in a few minutes.",
+    )
 
     name = body.display_name.strip()
     if not name:

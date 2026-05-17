@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.config import settings
-from backend.jobs import JOB_QUEUE_KEY
+from backend.jobs import JOB_QUEUE_KEY, fair_dequeue, total_queue_depth
 
 logger = logging.getLogger(__name__)
 
@@ -87,39 +87,41 @@ async def _process_job(session_factory, job: dict) -> None:
 
     kind = job.get("kind")
     image_id_s = job.get("image_id")
-    if not kind or not image_id_s:
+    user_id_s = job.get("user_id")
+    if not kind or not image_id_s or not user_id_s:
+        # The fair-queue enqueue always stamps user_id; a missing one
+        # means a legacy job from the pre-rewrite queue. We still need
+        # to clear the dedup set so the image can be re-enqueued, but
+        # without a user_id we can't decrement the per-user inflight
+        # counter (it was never incremented either, since the legacy
+        # path didn't go through fair_dequeue).
         logger.warning("worker: skipping malformed job %s", job)
         return
     image_id = UUID(image_id_s)
-    user_id = UUID(job["user_id"]) if job.get("user_id") else None
+    user_id = UUID(user_id_s)
 
     try:
         if kind == "summarize":
             await _process_summarize(session_factory, image_id)
         elif kind == "face_scan":
-            if user_id is None:
-                logger.warning("worker: face_scan missing user_id %s", job)
-                return
             await _process_face_scan(session_factory, user_id, image_id)
         elif kind == "face_scan_then_summarize":
-            if user_id is None:
-                logger.warning("worker: face_scan_then_summarize missing user_id %s", job)
-                return
             await _process_face_scan(session_factory, user_id, image_id)
             await _process_summarize(session_factory, image_id)
         else:
             logger.warning("worker: unknown job kind %s", kind)
     finally:
-        # Always remove the dedupe key so a new request for the same
-        # image can re-enqueue. We pop in `finally` rather than after
-        # the try-block so a job that crashes mid-process doesn't
-        # permanently lock that image out of being re-summarized.
-        await mark_done(kind, image_id_s)
+        # Always run cleanup — clears the dedupe key AND decrements the
+        # user's inflight counter so the round-robin scheduler picks
+        # them again next time. In `finally` so a crashing job still
+        # frees its slot rather than wedging the user's queue.
+        await mark_done(user_id_s, kind, image_id_s)
 
 
 async def _queue_depth_safe(redis_client: aioredis.Redis) -> int:
+    # Sum across per-user queues now that we round-robin.
     try:
-        return int(await redis_client.llen(JOB_QUEUE_KEY))
+        return int(await total_queue_depth())
     except Exception:
         return -1
 
@@ -170,25 +172,25 @@ async def main() -> None:
         )
     )
 
-    logger.info("worker: ready, polling %s", JOB_QUEUE_KEY)
+    logger.info("worker: ready, polling per-user fair queue")
     while _RUNNING:
         try:
-            payload = await redis_client.blpop(JOB_QUEUE_KEY, timeout=5)
+            # Replaces the old BLPOP on the single list with a
+            # round-robin dequeue across per-user queues. Returns None
+            # after the timeout if nothing is eligible; we just loop.
+            job = await fair_dequeue(timeout=5.0)
         except asyncio.CancelledError:
             break
         except Exception:
-            logger.exception("worker: redis poll failed (sleeping 2s)")
+            logger.exception("worker: fair_dequeue failed (sleeping 2s)")
             await asyncio.sleep(2)
             continue
-        if payload is None:
+        if job is None:
             continue
-        _key, raw = payload
-        try:
-            job = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("worker: invalid json on queue: %r", raw[:200])
-            continue
-        logger.info("worker: processing %s/%s", job.get("kind"), job.get("image_id"))
+        logger.info(
+            "worker: processing %s/%s for user %s",
+            job.get("kind"), job.get("image_id"), job.get("user_id"),
+        )
         try:
             await _process_job(Session, job)
         except Exception:

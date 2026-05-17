@@ -351,7 +351,9 @@ async def set_ai_opt_in(
         ).scalars().all()
         for img_id in ids:
             try:
-                if await job_q.enqueue_summarize(img_id):
+                # Fair-queue requires user_id so jobs land in this
+                # user's per-user list (round-robin between users).
+                if await job_q.enqueue_summarize(user.id, img_id):
                     enqueued += 1
             except Exception:
                 logger.exception("ai-opt-in: enqueue failed for %s", img_id)

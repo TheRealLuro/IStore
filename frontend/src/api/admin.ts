@@ -295,6 +295,49 @@ export const getAdminHardware = () =>
 export const getAdminProcesses = (top = 12) =>
   api.get<ProcessSnapshot>(`/admin/processes?top=${top}`);
 
+// ML job queue snapshot — per-user pending depth, inflight counters,
+// rate-limit headroom for every ML-gated endpoint. Returned by
+// /admin/queue. Drives the admin "Queue" tab.
+export interface QueueRateLimit {
+  used: number;
+  limit: number;
+  window_seconds: number;
+  remaining: number;
+}
+export interface QueueUserRow {
+  user_id: string;
+  email: string | null;
+  display_name: string | null;
+  pending: number;
+  inflight: number;
+  last_dequeue_score: number;
+  rate_limits: Record<string, QueueRateLimit>;
+}
+export interface QueueSnapshot {
+  totals: {
+    pending: number;
+    active_users: number;
+    users_at_inflight_cap: number;
+    users_at_queue_cap: number;
+  };
+  config: {
+    per_user_queue_limit: number;
+    per_user_inflight_cap: number;
+    rate_limits: Record<string, { limit: number; window_seconds: number }>;
+  };
+  users: QueueUserRow[];
+  workers: WorkerRow[];
+}
+
+export const getAdminQueue = (top = 50) =>
+  api.get<QueueSnapshot>(`/admin/queue?top=${top}`);
+
+export const adminDrainUserQueue = (user_id: string) =>
+  api.post<{ user_id: string; removed: number }>(
+    "/admin/queue/drain-user",
+    { user_id },
+  );
+
 export const getAdminModels = () =>
   api.get<ModelsSnapshot>("/admin/models");
 

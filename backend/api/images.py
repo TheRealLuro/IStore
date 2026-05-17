@@ -200,7 +200,7 @@ async def upload_image(
         )
     elif needs_summary:
         await _enqueue_or_inline_fallback(
-            jobs.enqueue_summarize, image.id,
+            jobs.enqueue_summarize, user.id, image.id,
             inline=lambda: _run_summarize_one(image.id),
         )
     return image
@@ -725,7 +725,10 @@ async def summarize_progress(
         ).scalars().all()
         for img_id in candidate_ids:
             try:
-                await job_q.enqueue_summarize(img_id)
+                # user_id is required by the fair scheduler so this row
+                # lands in this user's per-user queue. We're inside
+                # `summarize_progress` which is already user-scoped.
+                await job_q.enqueue_summarize(user.id, img_id)
             except Exception:
                 logger.exception("summarize-progress: enqueue failed for %s", img_id)
 
@@ -1341,12 +1344,27 @@ async def backfill_summaries(
 ) -> dict:
     """Queue summarize jobs for owned images.
 
+    Rate-limited to 3 calls per hour per user — a full backfill of
+    500 images takes several minutes of GPU time and a script that
+    hammers this would starve every other user behind it on the
+    shared ML worker. The fair-queue's per-user inflight cap already
+    spreads execution; this gate also stops a user from filling
+    Redis with thousands of pending jobs in one click.
+
     Default mode picks up images still missing a summary (`pending_summary=true`).
     `force=true` regenerates every image — useful after switching captioning
     models or fixing a model that previously crashed and left fallback
     summaries on every row. Capped at `limit` so a 10k-image library
     doesn't overload the worker in one request.
     """
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"ml:backfill-summaries:{user.id}",
+        limit=3,
+        window_seconds=3600,
+        detail="Too many summary backfills. Try again in an hour.",
+    )
+
     from sqlalchemy import or_
 
     stmt = (
@@ -1378,7 +1396,7 @@ async def backfill_summaries(
 
     for image_id in ids:
         await _enqueue_or_inline_fallback(
-            jobs.enqueue_summarize, image_id,
+            jobs.enqueue_summarize, user.id, image_id,
             inline=lambda iid=image_id: _run_summarize_one(iid),
         )
     return {"queued": len(ids), "limit": limit, "force": force}
@@ -1406,7 +1424,19 @@ async def backfill_vision(
     is usually waiting in the maintenance UI. Skips rows the
     pipeline already covered (`vision_processed_at IS NOT NULL`) so
     repeated calls are cheap.
+
+    Rate-limited to 3 calls per hour per user. Each call runs CLIP +
+    scene-classify on up to 500 images inline (no queue), so a script
+    spamming this would tie up the ML thread for tens of minutes.
     """
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"ml:backfill-vision:{user.id}",
+        limit=3,
+        window_seconds=3600,
+        detail="Too many vision backfills. Try again in an hour.",
+    )
+
     from sqlalchemy import or_, update as sa_update
     from backend.image import _maybe_run_vision, fetch_original
     from backend.image import _upsert_tags
@@ -1487,7 +1517,19 @@ async def resummarize_image(
 
     Useful after upgrading models or when a summary came back empty/wrong.
     Owner-scoped via `_load_owned_image`.
+
+    Rate-limited to 30 per hour per user — allows occasional manual
+    retries on photos where the caption came back useless without
+    letting a script hit it 1000 times in a row.
     """
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"ml:resummarize:{user.id}",
+        limit=30,
+        window_seconds=3600,
+        detail="Too many re-summarize requests. Try again in a few minutes.",
+    )
+
     image = await _load_owned_image(image_id, user, session)
     image.summary = None
     image.summary_topic = None
@@ -1497,7 +1539,7 @@ async def resummarize_image(
     await session.commit()
 
     await _enqueue_or_inline_fallback(
-        jobs.enqueue_summarize, image.id,
+        jobs.enqueue_summarize, user.id, image.id,
         inline=lambda: _run_summarize_one(image.id),
     )
     return {"image_id": str(image.id), "pending_summary": True}
@@ -1530,6 +1572,17 @@ async def redetect_faces(
             status_code=403,
             detail="Face recognition consent is not active. Enable it in Settings → Privacy first.",
         )
+
+    # Rate limit: 30/hour per user. The cascade detector runs three
+    # passes per call (~1-2 s extra each); without this gate a script
+    # could pin the GPU thread on a single user's library.
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"ml:redetect-faces:{user.id}",
+        limit=30,
+        window_seconds=3600,
+        detail="Too many face re-detection requests. Try again in a few minutes.",
+    )
 
     image = await _load_owned_image(image_id, user, session)
     try:
