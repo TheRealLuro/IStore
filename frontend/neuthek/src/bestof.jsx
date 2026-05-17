@@ -1,23 +1,25 @@
 // Best-of-N picker.
 //
-// When opened from the gallery multi-select bar with `imageIds`
-// populated, calls the real /images/best-of backend endpoint. The
-// score breakdown rendered on each card (sharpness / exposure / face
-// / use_case) comes from the server's measurements — not the seeded
-// mock that lived here before.
+// User multi-selects 2+ photos in the gallery, hits "Pick best of
+// burst" → this modal calls POST /images/best-of, renders the
+// per-criterion measured scores from the backend, and on "Keep this
+// one" trashes every other selected photo via /images/bulk-delete.
 //
-// When opened with no `imageIds` (legacy / marketing-screenshot
-// path), falls back to the upload-or-sample-burst flow so a user can
-// try the feature before they have a multi-select.
+// Image rendering goes through AuthedThumb / useAuthedBlobUrl
+// (auth-image.jsx). The served-variant endpoint requires a Bearer
+// token on every request, which a CSS `background-image: url(...)`
+// can't carry — without the blob wrapper the modal would render
+// empty tiles even though the API call succeeded.
 //
-// "Keep this one" closes the modal AND trashes every other selected
-// photo via the existing bulk-delete endpoint. Soft delete — they
-// land in Trash and can be restored within 30 days.
+// Opening this modal with no selection drops the user on a friendly
+// empty state pointing them at the multi-select bar. The old
+// upload-a-burst / try-a-sample mock that lived here was a marketing
+// demo, not a useful in-app flow — removed so users don't think the
+// feature operates on uploads instead of their library.
 import React, {
   useState as useStateBo,
   useEffect as useEffectBo,
   useMemo as useMemoBo,
-  useRef as useRefBo,
 } from "react";
 import toast from "react-hot-toast";
 import { useQueryClient } from "@tanstack/react-query";
@@ -26,9 +28,10 @@ import {
   Modal as ModalBo,
   ModalClose as ModalCloseBo,
 } from "./primitives.jsx";
+import { AuthedThumb, useAuthedBlobUrl } from "./auth-image.jsx";
 import { pickBestOf, bulkDelete, servedUrl } from "@/api/files";
 
-// Use-case prompts. Keep aligned with backend/best_of.py USE_CASE_PROMPTS.
+// Use-case prompts — keep aligned with backend/best_of.py USE_CASE_PROMPTS.
 const USE_CASES = [
   { id: "portrait",  label: "Portrait" },
   { id: "landscape", label: "Landscape" },
@@ -44,34 +47,6 @@ const MODES = [
   { id: "use_case", label: "For a use case", hint: "Match against a specific purpose" },
 ];
 
-// Sample bursts kept for the no-imageIds fallback path. Unsplash URLs
-// stay outside the user's library — pure demo.
-const SAMPLE_BURSTS = {
-  portraits: [
-    "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=900",
-    "https://images.unsplash.com/photo-1517423440428-a5a00ad493e8?w=900",
-    "https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=900",
-    "https://images.unsplash.com/photo-1547425260-76bcadfb4f2c?w=900",
-    "https://images.unsplash.com/photo-1495216875107-c6c043eb703f?w=900",
-    "https://images.unsplash.com/photo-1502323777036-f29e3972d82f?w=900",
-  ],
-  pets: [
-    "https://images.unsplash.com/photo-1517849845537-4d257902454a?w=900",
-    "https://images.unsplash.com/photo-1583511655826-05700d52f4d9?w=900",
-    "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=900",
-    "https://images.unsplash.com/photo-1561037404-61cd46aa615b?w=900",
-    "https://images.unsplash.com/photo-1518717758536-85ae29035b6d?w=900",
-    "https://images.unsplash.com/photo-1591946614720-90a587da4a36?w=900",
-  ],
-};
-
-function seededScore(seed, criterion) {
-  let h = 2166136261;
-  const s = seed + criterion;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return Math.abs(h % 100);
-}
-
 // Friendly criterion labels for the breakdown bars.
 const CRIT_LABELS = {
   sharpness: "Sharpness",
@@ -85,47 +60,45 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
   const haveSelection = imageIds && imageIds.length >= 2;
 
   const [step, setStep] = useStateBo("idle");
-  // shots[i] = { id, src, name, breakdown?, score?, cluster_id?, reasons? }
+  // shots[i] = { id, url, breakdown?, score?, cluster_id?, reasons? }
   const [shots, setShots] = useStateBo([]);
   const [pickedIdx, setPickedIdx] = useStateBo(null);
   const [progress, setProgress] = useStateBo(0);
-  const [drag, setDrag] = useStateBo(false);
   const [mode, setMode] = useStateBo("overall");
   const [useCase, setUseCase] = useStateBo("portrait");
   const [error, setError] = useStateBo("");
   const [busyKeep, setBusyKeep] = useStateBo(false);
-  const fileInput = useRefBo(null);
 
-  // Auto-route on open. If we have a real multi-selection, jump
-  // straight to analyze; otherwise the legacy upload-or-sample path.
+  // Route on open: empty state if no selection, otherwise jump
+  // straight into the scoring pass.
   useEffectBo(() => {
     if (!open) return;
     setError("");
     setPickedIdx(null);
     setProgress(0);
     if (haveSelection) {
-      const shotsFromIds = imageIds.map((id) => ({
+      const initial = imageIds.map((id) => ({
         id,
-        src: servedUrl(id, { maxDim: 900 }),
-        name: id.slice(0, 8),
+        url: servedUrl(id, { maxDim: 900 }),
       }));
-      setShots(shotsFromIds);
+      setShots(initial);
       setStep("analyze");
     } else {
       setShots([]);
-      setStep("upload");
+      setStep("empty");
     }
   }, [open, haveSelection, imageIds.join(",")]);
 
-  // Real scoring pass — runs when we have a real selection.
+  // Real scoring pass — runs every time we re-enter analyze
+  // (mode/use-case toggle re-triggers it).
   useEffectBo(() => {
     if (step !== "analyze" || !haveSelection) return;
     let cancelled = false;
     setProgress(0);
     setError("");
 
-    // Animate the progress bar to ~80% while the request is in flight;
-    // jump to 100% when it returns. Average call is ~0.5-2 s for N=10.
+    // Animate up to ~80% while the request is in flight; jump to
+    // 100% on response. Typical call ~0.5-2 s for N=10.
     const ticker = setInterval(() => {
       if (cancelled) return;
       setProgress((p) => Math.min(80, p + 6 + Math.random() * 6));
@@ -137,16 +110,14 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
         if (mode === "use_case") opts.useCase = useCase;
         const resp = await pickBestOf(imageIds, opts);
         if (cancelled) return;
-        // Merge scores back onto shots by image_id (preserve order
-        // from the user's selection, NOT the backend ranking — we want
-        // the displayed strip to match what they had selected).
+        // Merge scores back by image_id; preserve the user's original
+        // selection order in the display, not the backend ranking.
         const byId = new Map(resp.results.map((r) => [r.image_id, r]));
-        const enriched = imageIds.map((id, i) => {
+        const enriched = imageIds.map((id) => {
           const r = byId.get(id);
           return {
             id,
-            src: servedUrl(id, { maxDim: 900 }),
-            name: id.slice(0, 8),
+            url: servedUrl(id, { maxDim: 900 }),
             breakdown: r?.breakdown || {},
             score: r?.score ?? 0,
             cluster_id: r?.cluster_id ?? 0,
@@ -155,7 +126,6 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
         });
         setShots(enriched);
         setProgress(100);
-        // Default pick = backend's top result.
         const top = resp.results[0];
         const topIdx = top ? imageIds.indexOf(top.image_id) : 0;
         setPickedIdx(topIdx >= 0 ? topIdx : 0);
@@ -173,53 +143,7 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
     return () => { cancelled = true; clearInterval(ticker); };
   }, [step, haveSelection, mode, useCase, imageIds.join(",")]);
 
-  // Legacy mock path — only runs in the no-selection / sample / upload flow.
-  // We keep the seeded scoring there so the marketing demo still works
-  // without hitting the backend.
-  useEffectBo(() => {
-    if (step !== "analyze" || haveSelection) return;
-    setProgress(0);
-    const ticker = setInterval(() => setProgress((p) => Math.min(100, p + 7 + Math.random() * 6)), 70);
-    const t = setTimeout(() => {
-      clearInterval(ticker);
-      setProgress(100);
-      // Seed mock scores so the review UI renders.
-      const enriched = shots.map((s) => ({
-        ...s,
-        breakdown: {
-          sharpness: 60 + (seededScore(s.id, "sharp")  % 38),
-          exposure:  60 + (seededScore(s.id, "expr")   % 38),
-          face:      60 + (seededScore(s.id, "eyes")   % 38),
-        },
-        score: 60 + (seededScore(s.id, "ovr") % 38),
-        reasons: [],
-        cluster_id: 0,
-      }));
-      setShots(enriched);
-      setPickedIdx(0);
-      setStep("review");
-    }, 1300);
-    return () => { clearInterval(ticker); clearTimeout(t); };
-  }, [step, haveSelection]);
-
-  const loadSample = (key) => {
-    const items = SAMPLE_BURSTS[key].map((src, i) => ({
-      id: key + "-" + i, src, name: `${key}_${String(i + 1).padStart(2, "0")}.jpg`,
-    }));
-    setShots(items);
-    setStep("analyze");
-  };
-  const onFiles = (fileList) => {
-    const arr = Array.from(fileList || []).filter((f) => f.type.startsWith("image/")).slice(0, 12);
-    if (!arr.length) return;
-    Promise.all(arr.map((f, i) => new Promise((res) => {
-      const r = new FileReader();
-      r.onload = () => res({ id: "u-" + i + "-" + f.name, src: r.result, name: f.name });
-      r.readAsDataURL(f);
-    }))).then((items) => { setShots(items); setStep("analyze"); });
-  };
-
-  // Sorted-by-score view (winners first) for the analytics bits.
+  // Score-sorted view (winners first) for the "N of M" counter on the stage.
   const sorted = useMemoBo(
     () => [...shots].map((s, i) => ({ ...s, idx: i })).sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
     [shots]
@@ -229,21 +153,19 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
   const finalCard = shots[finalIdx];
   const losers = shots.filter((_, i) => i !== finalIdx);
 
+  // Auth'd URL for the big stage. Hook stays at top level — only
+  // resolves the URL when we have a final card; null URL is a no-op.
+  const stageBlob = useAuthedBlobUrl(finalCard?.url || null);
+
   const doKeep = async () => {
-    if (busyKeep || finalCard == null) return;
-    // Only the real-selection path actually deletes anything — the
-    // mock/sample path just closes the modal (no real photos involved).
-    if (!haveSelection) {
-      onClose?.();
-      return;
-    }
+    if (busyKeep || finalCard == null || !haveSelection) return;
     const loserIds = losers.map((s) => s.id);
     if (loserIds.length === 0) {
       onClose?.();
       return;
     }
     const ok = window.confirm(
-      `Keep "${finalCard.name}" and move ${loserIds.length} other photo${loserIds.length === 1 ? "" : "s"} to Trash?`
+      `Keep this photo and move ${loserIds.length} other${loserIds.length === 1 ? "" : "s"} to Trash?`,
     );
     if (!ok) return;
     setBusyKeep(true);
@@ -272,10 +194,8 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
             : "Pick the best shot"}
         </h2>
         <p>
-          {step === "upload"  && "Drop a burst of similar photos. We'll score each frame and recommend a keeper."}
-          {step === "analyze" && (haveSelection
-            ? `Scoring ${imageIds.length} photos on the server (sharpness, exposure, face, use-case match)…`
-            : "Scoring frames…")}
+          {step === "empty"   && "Multi-select 2+ similar photos in the gallery, then come back here."}
+          {step === "analyze" && `Scoring ${imageIds.length} photos on the server (sharpness, exposure, face, use-case match)…`}
           {step === "review"  && "Top pick is highlighted. Tap any frame to override. \"Keep this one\" moves the others to Trash."}
           {step === "error"   && "Something went wrong scoring this batch."}
         </p>
@@ -284,47 +204,49 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
 
       <div className="modal__body">
         <div className="bo2-shell">
-          {step === "upload" && (
-            <>
-              <div
-                className="bo-drop"
-                data-drag={drag}
-                onClick={() => fileInput.current?.click()}
-                onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-                onDragLeave={() => setDrag(false)}
-                onDrop={(e) => { e.preventDefault(); setDrag(false); onFiles(e.dataTransfer.files); }}
-              >
-                <div className="bo-drop__icon"><Icon name="upload" size={26} strokeWidth={1.4}/></div>
-                <div className="bo-drop__title">Drop a burst here</div>
-                <div className="bo-drop__sub">Up to 12 similar photos · JPG, PNG, HEIC</div>
-                <button className="btn btn--secondary btn--sm" onClick={(e) => { e.stopPropagation(); fileInput.current?.click(); }}>
-                  <Icon name="folder" size={12}/> Choose files
-                </button>
-                <input ref={fileInput} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={(e) => onFiles(e.target.files)}/>
+          {step === "empty" && (
+            <div style={{
+              padding: "48px 32px",
+              textAlign: "center",
+              border: "1px dashed var(--line)",
+              borderRadius: 14,
+              background: "var(--surface)",
+            }}>
+              <div style={{
+                width: 56, height: 56,
+                margin: "0 auto 18px",
+                borderRadius: 14,
+                background: "var(--surface-2)",
+                display: "grid",
+                placeItems: "center",
+                color: "var(--ink-3)",
+              }}>
+                <Icon name="wand" size={26} strokeWidth={1.4}/>
               </div>
-              <div className="bo-or"><span>or try a sample</span></div>
-              <div className="bo-samples">
-                <button className="bo-sample" onClick={() => loadSample("portraits")}>
-                  <div className="bo-sample__cover" style={{ backgroundImage: `url(${SAMPLE_BURSTS.portraits[0]})` }}/>
-                  <div className="bo-sample__label"><strong>Portraits</strong><span>6 frames · group selfie</span></div>
-                </button>
-                <button className="bo-sample" onClick={() => loadSample("pets")}>
-                  <div className="bo-sample__cover" style={{ backgroundImage: `url(${SAMPLE_BURSTS.pets[0]})` }}/>
-                  <div className="bo-sample__label"><strong>Pets</strong><span>6 frames · dog portraits</span></div>
-                </button>
+              <div style={{ fontSize: 18, fontWeight: 600, color: "var(--ink)", marginBottom: 8 }}>
+                Select photos to compare
               </div>
-              <div style={{ marginTop: 18, fontSize: 12, color: "var(--ink-3)", textAlign: "center" }}>
-                Tip: in the gallery, multi-select photos and click <strong style={{ color: "var(--ink-2)" }}>Pick best of burst</strong> to score your real library.
+              <div style={{ fontSize: 13.5, color: "var(--ink-2)", lineHeight: 1.6, maxWidth: 420, margin: "0 auto" }}>
+                Multi-select <strong style={{ color: "var(--ink)" }}>2 to 30</strong> similar photos in the gallery
+                (Cmd/Ctrl-click to add, or drag-rectangle), then click{" "}
+                <strong style={{ color: "var(--ink)" }}>Pick best of burst</strong> in the action bar.
+                We'll score each one on sharpness, exposure, face quality, and an optional use-case
+                match — then keep your pick and move the rest to Trash.
               </div>
-            </>
+            </div>
           )}
 
           {step === "analyze" && (
             <div className="bo-analyzing">
               <div className="bo-analyzing__hero">
                 {shots.slice(0, 6).map((s, i) => (
-                  <div key={s.id} className="bo-analyzing__tile"
-                       style={{ backgroundImage: `url(${s.src})`, animationDelay: (i * 80) + "ms" }}/>
+                  <AuthedThumb
+                    key={s.id}
+                    url={s.url}
+                    className="bo-analyzing__tile"
+                    style={{ animationDelay: (i * 80) + "ms" }}
+                    placeholder={{ background: "var(--surface-2)" }}
+                  />
                 ))}
                 <div className="bo-analyzing__scan"/>
               </div>
@@ -351,7 +273,13 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
           {step === "review" && finalCard && (
             <>
               <div className="bo2-stage">
-                <div className="bo2-stage__img" style={{ backgroundImage: `url(${finalCard.src})` }}/>
+                <div
+                  className="bo2-stage__img"
+                  style={{
+                    backgroundImage: stageBlob ? `url(${stageBlob})` : undefined,
+                    background: stageBlob ? undefined : "var(--surface-2)",
+                  }}
+                />
                 <div className="bo2-stage__overlay"/>
                 <div className="bo2-stage__top">
                   <span className="bo2-toppick">
@@ -365,7 +293,7 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
                 </div>
                 <div className="bo2-stage__bottom">
                   <span className="bo2-stage__filename">
-                    {finalCard.name}
+                    {finalCard.id.slice(0, 8)}
                     {finalCard.reasons?.length > 0 && (
                       <span style={{ marginLeft: 8, opacity: 0.7, fontSize: 12 }}>
                         · {finalCard.reasons.join(" · ")}
@@ -378,40 +306,36 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
                 </div>
               </div>
 
-              {haveSelection && (
-                <>
-                  <div className="bo2-criteria-label">Scoring mode</div>
-                  <div className="bo2-criteria">
-                    {MODES.map((m) => (
-                      <button
-                        key={m.id}
-                        className="bo2-crit"
-                        data-active={mode === m.id}
-                        onClick={() => { setMode(m.id); setStep("analyze"); }}
-                        title={m.hint}
-                      >
-                        {mode === m.id && <Icon name="check" size={10} strokeWidth={2.6}/>}
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                  {mode === "use_case" && (
-                    <div className="bo2-criteria" style={{ marginTop: 6 }}>
-                      {USE_CASES.map((u) => (
-                        <button
-                          key={u.id}
-                          className="bo2-crit"
-                          data-active={useCase === u.id}
-                          onClick={() => { setUseCase(u.id); setStep("analyze"); }}
-                          style={{ fontSize: 11 }}
-                        >
-                          {useCase === u.id && <Icon name="check" size={9} strokeWidth={2.6}/>}
-                          {u.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </>
+              <div className="bo2-criteria-label">Scoring mode</div>
+              <div className="bo2-criteria">
+                {MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    className="bo2-crit"
+                    data-active={mode === m.id}
+                    onClick={() => { setMode(m.id); setStep("analyze"); }}
+                    title={m.hint}
+                  >
+                    {mode === m.id && <Icon name="check" size={10} strokeWidth={2.6}/>}
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              {mode === "use_case" && (
+                <div className="bo2-criteria" style={{ marginTop: 6 }}>
+                  {USE_CASES.map((u) => (
+                    <button
+                      key={u.id}
+                      className="bo2-crit"
+                      data-active={useCase === u.id}
+                      onClick={() => { setUseCase(u.id); setStep("analyze"); }}
+                      style={{ fontSize: 11 }}
+                    >
+                      {useCase === u.id && <Icon name="check" size={9} strokeWidth={2.6}/>}
+                      {u.label}
+                    </button>
+                  ))}
+                </div>
               )}
 
               <div className="bo2-breakdown">
@@ -435,18 +359,19 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
                 {shots.map((shot, i) => {
                   const isFinal = i === finalIdx;
                   return (
-                    <button
+                    <AuthedThumb
                       key={shot.id}
+                      url={shot.url}
                       className="bo2-frame"
                       data-pick={isFinal ? "winner" : ""}
-                      style={{ backgroundImage: `url(${shot.src})` }}
                       onClick={() => setPickedIdx(i)}
-                      title={shot.name + " · score " + (shot.score != null ? Math.round(shot.score) : "—")}
+                      title={shot.id.slice(0, 8) + " · score " + (shot.score != null ? Math.round(shot.score) : "—")}
+                      placeholder={{ background: "var(--surface-2)" }}
                     >
                       <span className="bo2-frame__num">#{i + 1}</span>
                       {isFinal && <span className="bo2-frame__check"><Icon name="check" size={11} strokeWidth={2.8}/></span>}
                       <span className="bo2-frame__score">{shot.score != null ? Math.round(shot.score) : "—"}</span>
-                    </button>
+                    </AuthedThumb>
                   );
                 })}
               </div>
@@ -457,24 +382,17 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
 
       <div className="modal__foot">
         <span className="modal__foot-left mono">
-          {step === "upload"  && "Step 1 of 3 · Upload"}
-          {step === "analyze" && "Step 2 of 3 · Analyze"}
-          {step === "review"  && finalCard && (
-            haveSelection
-              ? `Keeping ${finalCard.name} · ${losers.length} moved to Trash`
-              : `Keeping frame ${finalIdx + 1} · ${shots.length - 1} moved to trash`
-          )}
+          {step === "empty"   && "Waiting for selection"}
+          {step === "analyze" && "Scoring…"}
+          {step === "review"  && finalCard && haveSelection &&
+            `Keeping ${finalCard.id.slice(0, 8)} · ${losers.length} moved to Trash`}
+          {step === "error"   && "Something went wrong"}
         </span>
         <div className="modal__foot-actions">
-          {step === "review" && !haveSelection && (
-            <button className="btn btn--ghost" onClick={() => { setStep("upload"); setShots([]); setPickedIdx(null); }}>
-              <Icon name="arrowLeft" size={12}/> Start over
-            </button>
-          )}
           <button className="btn btn--secondary" onClick={onClose} disabled={busyKeep}>Cancel</button>
-          {step === "review" && finalCard && (
+          {step === "review" && finalCard && haveSelection && (
             <button className="btn btn--primary" onClick={doKeep} disabled={busyKeep}>
-              {busyKeep ? "Working…" : (haveSelection ? `Keep this one (trash ${losers.length})` : `Keep frame ${finalIdx + 1}`)}
+              {busyKeep ? "Working…" : `Keep this one (trash ${losers.length})`}
             </button>
           )}
         </div>

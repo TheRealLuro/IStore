@@ -2096,9 +2096,12 @@ export function App() {
             <button className="btn btn--ghost btn--sm" onClick={() => setShowNewFolder(true)}>
               <Icon name="folderPlus" size={12}/> New folder
             </button>
-            <button className="btn btn--ghost btn--sm" onClick={() => setShowBestOf(true)}>
-              <Icon name="wand" size={12}/> Pick best of burst
-            </button>
+            {/* "Pick best of burst" used to live here too but it opened the
+                modal with no selection — which dropped users on the
+                upload/sample mock instead of scoring their actual photos.
+                The action now only appears inside BulkActionBar (visible
+                only when 2+ photos are selected), which is the only place
+                the flow makes sense. */}
             <button
               className="btn-icon"
               aria-label={layoutMode === "grid" ? "Switch to list view" : "Switch to grid view"}
