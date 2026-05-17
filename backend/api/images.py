@@ -305,6 +305,17 @@ async def list_images(
     has_faces: Annotated[bool | None, Query()] = None,
     has_gps: Annotated[bool | None, Query()] = None,
     min_face_likelihood: Annotated[float | None, Query(ge=0.0, le=1.0)] = None,
+    # C9 multi-axis filtering:
+    # `near="lat,lng,radius_km"` — restrict to images whose image_geo
+    #   coords fall inside a Haversine-approx bounding box of the
+    #   given radius. Cheap: no PostGIS needed, just lat/lng bands.
+    #   Requires `gps_retention` consent (same gate as has_gps below).
+    # `taken_between="ISO,ISO"` — date range filter. Match either
+    #   `image_geo.taken_at` (EXIF capture date when GPS consent is on
+    #   and EXIF carried it) OR `images.uploaded_at` as a fallback.
+    #   Both ends inclusive; either side can be empty ("," = open).
+    near: Annotated[str | None, Query(max_length=64)] = None,
+    taken_between: Annotated[str | None, Query(max_length=80)] = None,
 ) -> list[Image]:
     stmt = select(Image).where(Image.user_id == user.id)
     if trashed:
