@@ -1807,13 +1807,38 @@ const STACK_CARDS = [
   { title: "Testing",      body: "pytest + pytest-asyncio covering codec dispatch, resize behavior, bandit decisions, upload validation, consent gates, RLS enforcement, and end-to-end auth flows. Migrations have idempotency + downgrade tests." },
 ];
 
-const DEPLOYMENT_SHAPES = [
-  { scale: "Self-host (solo)",   users: "1",      cpu: "4 vCPU",      ram: "8 GB",       storage: "20 GB OS + your library", gpu: "Optional",        notes: "CPU is fine; vision runs in batches overnight. Docker compose on a NUC works." },
-  { scale: "Self-host (family)", users: "2–5",    cpu: "6 vCPU",      ram: "16 GB",      storage: "100 GB OS + libraries",   gpu: "Recommended",     notes: "GPU cuts summary backfill from days to hours. Shared RLS keeps libraries isolated." },
-  { scale: "Hosted (small)",     users: "100",    cpu: "8 vCPU",      ram: "32 GB",      storage: "S3-class object storage", gpu: "Single GPU node", notes: "Single-tenant fenced behind Postgres RLS. Pub/sub via Redis." },
-  { scale: "Hosted (medium)",    users: "1,000",  cpu: "16 vCPU",     ram: "64 GB",      storage: "Object storage tier",     gpu: "1–2 GPU nodes",   notes: "Vision workers scale independently; bandit telemetry per arm." },
-  { scale: "Hosted (large)",     users: "10,000", cpu: "Cluster (autoscaled)", ram: "256+ GB across nodes", storage: "S3 + Postgres HA",        gpu: "GPU pool",        notes: "Postgres read-replicas for /search; pgvector IVFFlat tuned for the embedding count." },
-];
+// Capacity model constants. The calculator below feeds inputs through
+// these to produce a single "for N users you need X TB / Y GB / Z GB
+// VRAM / M workers" answer. Numbers derive from the perf benchmarks
+// below + the same storage breakdown the marketing /developers page
+// uses, just rolled into bottom-line totals instead of per-component
+// bars.
+const CAP = {
+  // RAM floors (constant regardless of user count):
+  ramBaseGb: 2,              // OS, init, Redis, Caddy
+  ramPostgresGb: 4,          // shared_buffers + working set
+  ramModelWeightsGb: 5.5,    // Florence-2 + CLIP + insightface in the ML worker
+  ramFsCacheGb: 1.5,         // hot blob page cache
+  ramPerConcurrentUserMb: 30, // queryset state per concurrent user
+  concurrentUserFraction: 0.1, // assume 10% of users are active at once
+
+  // VRAM per ML worker. Florence-2-large is the dominant block.
+  vramPerWorkerGb: 10,       // CLIP 2 + Florence 4.6 + insightface 0.5 + activations + slack
+
+  // Throughput per worker. Florence-2 caption is the bottleneck;
+  // CLIP embedding compute is ~10x cheaper so it's never the binding
+  // constraint at our worker counts.
+  secondsPerJob: 10,         // avg Florence-2 caption time on a mid-tier GPU
+  uploadsPerUserPerDay: 5,   // amortized — adjustable knob if needed
+
+  // Reference latencies for the "what speed" question. These are
+  // floor → ceiling for a warm, single-tenant deployment. Match
+  // PERF_BENCHMARKS below.
+  searchLatency: "40–80 ms",
+  uploadLatency: "120–250 ms",
+  clipEmbedGpu: "65 ms",
+  florenceCaption: "5–15 s",
+};
 
 const PERF_BENCHMARKS = [
   { metric: "Image upload (single)",                dev: "120–250 ms",      prod: "80–150 ms",       note: "End-to-end: validate, EXIF strip, compress, MinIO put, DB row." },
@@ -1919,40 +1944,58 @@ function fmtBytes(n) {
   return `${(n / 1024 ** 4).toFixed(2)} TB`;
 }
 
-function computeSizing(users, photos, avgMb) {
-  const totalPhotos = users * photos;
-  const originals = totalPhotos * avgMb * 1024 ** 2;
-  const served = originals * SZ.servedRatio;
-  const embeddings = totalPhotos * SZ.embeddingBytes;
-  const postgres = totalPhotos * SZ.metadataKbPerFile * 1024;
-  const faces = totalPhotos * SZ.avgFacesPerPhoto * SZ.faceTemplateBytes;
-  const weights = SZ.modelWeightsBytes;
-  return {
-    originals, served, postgres, embeddings, faces, weights,
-    total: originals + served + postgres + embeddings + faces + weights,
-  };
-}
+function computeCapacity(users, photosPerUser, avgPhotoMb) {
+  // Total storage in TB — the bottom-line answer for "how big do I
+  // need the disk". Aggregates originals + served + Postgres + CLIP
+  // embeddings + face templates + constant ML model weights, then
+  // adds 20% headroom for WAL + backups + growth.
+  const totalPhotos = users * photosPerUser;
+  const originalsB = totalPhotos * avgPhotoMb * 1024 ** 2;
+  const servedB = originalsB * SZ.servedRatio;
+  const embeddingsB = totalPhotos * SZ.embeddingBytes;
+  const postgresB = totalPhotos * SZ.metadataKbPerFile * 1024;
+  const facesB = totalPhotos * SZ.avgFacesPerPhoto * SZ.faceTemplateBytes;
+  const weightsB = SZ.modelWeightsBytes;
+  const storageRawB = originalsB + servedB + embeddingsB + postgresB + facesB + weightsB;
+  const storageTb = (storageRawB * 1.20) / (1024 ** 4);
 
-function SizeBar({ label, bytes, of, color }) {
-  const pct = of > 0 ? Math.max(1, Math.min(100, (bytes / of) * 100)) : 0;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--ink-2)" }}>
-        <span>{label}</span>
-        <strong className="mono" style={{ color: "var(--ink)" }}>{fmtBytes(bytes)}</strong>
-      </div>
-      <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 999, transition: "width 200ms ease-out" }}/>
-      </div>
-    </div>
-  );
+  // Concurrent active users → RAM. We assume 10% concurrent which is
+  // generous for a personal-cloud workload; bump if you expect lots
+  // of simultaneous syncs.
+  const concurrentUsers = Math.max(1, Math.ceil(users * CAP.concurrentUserFraction));
+  const ramFloorGb =
+    CAP.ramBaseGb + CAP.ramPostgresGb + CAP.ramModelWeightsGb + CAP.ramFsCacheGb;
+  const ramConcurrentGb = (concurrentUsers * CAP.ramPerConcurrentUserMb) / 1024;
+  const ramGb = ramFloorGb + ramConcurrentGb;
+
+  // Workers needed = daily ML jobs / single-worker daily capacity.
+  // One Florence run per upload + cushion for retries.
+  const uploadsPerSecond = (users * CAP.uploadsPerUserPerDay) / 86400;
+  const jobsPerWorkerPerSecond = 1 / CAP.secondsPerJob;
+  const workers = Math.max(1, Math.ceil(uploadsPerSecond / jobsPerWorkerPerSecond));
+
+  // VRAM scales with worker count; each worker loads its own copy of
+  // the model weights.
+  const vramGb = workers * CAP.vramPerWorkerGb;
+
+  // ML throughput at the recommended worker count.
+  const throughputPhotosPerHour = workers * (3600 / CAP.secondsPerJob);
+
+  return {
+    storageTb,
+    ramGb,
+    vramGb,
+    workers,
+    concurrentUsers,
+    throughputPhotosPerHour,
+  };
 }
 
 function RealDeveloperTab() {
   const [users, setUsers] = useStateAd(100);
   const [photos, setPhotos] = useStateAd(5000);
   const [avgMb, setAvgMb] = useStateAd(2.0);
-  const sz = computeSizing(users, photos, avgMb);
+  const cap = computeCapacity(users, photos, avgMb);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
@@ -1981,11 +2024,11 @@ function RealDeveloperTab() {
         </div>
       </section>
 
-      {/* ===== Sizing calculator ===== */}
+      {/* ===== Capacity estimate ===== */}
       <section>
-        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Resource sizing calculator</h3>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Capacity estimate</h3>
         <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
-          Three knobs. Storage is the binding constraint on most deployments; CPU/RAM scales with concurrent active users.
+          Plug in a user count → get the storage, RAM, VRAM, worker count, and predicted speeds you need. Numbers include 20% headroom on storage and assume 10% concurrent users on a typical personal-cloud workload.
         </p>
         <div style={{
           display: "grid",
@@ -2001,54 +2044,22 @@ function RealDeveloperTab() {
             <NumInput label="Photos per user (avg)" value={photos} onChange={setPhotos} min={100} max={500_000} step={100} hint="iPhone users 5–10k. Power photographers 50k+." />
             <NumInput label="Original photo size (MB, avg)" value={avgMb} onChange={setAvgMb} min={0.1} max={50} step={0.1} hint="HEIC ~1.5, 24MP JPEG ~6, 50MP RAW ~25." />
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <SizeBar label="Originals (object storage)"   bytes={sz.originals}  of={sz.total} color="#0a0a0a"/>
-            <SizeBar label="Served (compressed)"          bytes={sz.served}     of={sz.total} color="#2563eb"/>
-            <SizeBar label="Postgres rows + indexes"      bytes={sz.postgres}   of={sz.total} color="#16a34a"/>
-            <SizeBar label="CLIP embeddings (pgvector)"   bytes={sz.embeddings} of={sz.total} color="#7c3aed"/>
-            <SizeBar label="Face templates (ArcFace 512-d)" bytes={sz.faces}    of={sz.total} color="#d97706"/>
-            <SizeBar label="ML model weights (constant)"  bytes={sz.weights}    of={sz.total} color="#8a8a8a"/>
-            <div style={{
-              display: "flex", justifyContent: "space-between", alignItems: "baseline",
-              marginTop: 6, paddingTop: 10, borderTop: "1px solid var(--line)",
-              fontSize: 15,
-            }}>
-              <strong>Total storage</strong>
-              <span className="mono" style={{ fontSize: 18, fontWeight: 600 }}>{fmtBytes(sz.total)}</span>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: -2 }}>
-              Add ~20% headroom for WAL, backups, and growth between scaling events.
-            </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+            <BigStat label="Storage"   value={`${cap.storageTb.toFixed(2)} TB`} note="Originals + served + Postgres + embeddings + weights, +20% headroom" tone="ink"/>
+            <BigStat label="RAM"       value={`${cap.ramGb.toFixed(1)} GB`}    note={`Base + ML weights + ${cap.concurrentUsers} concurrent active users`} tone="green"/>
+            <BigStat label="VRAM"      value={`${cap.vramGb} GB`}               note={`${CAP.vramPerWorkerGb} GB per ML worker × ${cap.workers} worker${cap.workers > 1 ? "s" : ""}`} tone="purple"/>
+            <BigStat label="ML workers" value={cap.workers}                     note={`Each handles ~${Math.round(3600 / CAP.secondsPerJob)} photos/hour`} tone="amber"/>
+
+            <BigStat label="Search latency"   value={CAP.searchLatency}        note="Warm CLIP encoder, p50–p95" tone="blue"/>
+            <BigStat label="Upload latency"   value={CAP.uploadLatency}        note="Validate + EXIF strip + compress + put + DB" tone="blue"/>
+            <BigStat label="CLIP embed (GPU)" value={CAP.clipEmbedGpu}         note="Per image; CPU fallback ~1.5 s" tone="blue"/>
+            <BigStat label="Florence caption" value={CAP.florenceCaption}      note={`Per image; total throughput ${cap.throughputPhotosPerHour.toLocaleString()} photos/hour`} tone="blue"/>
           </div>
         </div>
-      </section>
-
-      {/* ===== Deployment shapes ===== */}
-      <section>
-        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Deployment shapes</h3>
-        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
-          Recommended floor per scale. You can run leaner but expect higher tail latency under burst upload.
-        </p>
-        <table className="admin-table admin-table--compact">
-          <thead>
-            <tr>
-              <th>Shape</th><th>Users</th><th>vCPU</th><th>RAM</th><th>Storage</th><th>GPU</th><th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {DEPLOYMENT_SHAPES.map((r) => (
-              <tr key={r.scale}>
-                <td style={{ fontWeight: 600 }}>{r.scale}</td>
-                <td className="mono">{r.users}</td>
-                <td className="mono">{r.cpu}</td>
-                <td className="mono">{r.ram}</td>
-                <td>{r.storage}</td>
-                <td>{r.gpu}</td>
-                <td style={{ color: "var(--ink-2)", fontSize: 11 }}>{r.notes}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8 }}>
+          Math is bytes-exact. Assumptions: 10% concurrent active users, {CAP.uploadsPerUserPerDay} new uploads per user per day, single ML worker handles {Math.round(3600 / CAP.secondsPerJob)} jobs/hour. Tune the inputs to match your actual mix.
+        </div>
       </section>
 
       {/* ===== Performance benchmarks ===== */}
@@ -2107,6 +2118,43 @@ function RealDeveloperTab() {
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+function BigStat({ label, value, note, tone }) {
+  const accent = {
+    ink:    "#0a0a0a",
+    blue:   "#2563eb",
+    green:  "#16a34a",
+    purple: "#7c3aed",
+    amber:  "#d97706",
+  }[tone] || "#0a0a0a";
+  return (
+    <div style={{
+      padding: "10px 12px",
+      border: "1px solid var(--line)",
+      borderRadius: 8,
+      background: "var(--surface)",
+      borderLeft: `3px solid ${accent}`,
+    }}>
+      <div style={{
+        fontSize: 10, color: "var(--ink-3)",
+        textTransform: "uppercase", letterSpacing: "0.08em",
+      }}>
+        {label}
+      </div>
+      <div className="mono" style={{
+        fontSize: 20, fontWeight: 600,
+        color: "var(--ink)", marginTop: 4, lineHeight: 1.15,
+      }}>
+        {value}
+      </div>
+      {note && (
+        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 4, lineHeight: 1.45 }}>
+          {note}
+        </div>
+      )}
     </div>
   );
 }
