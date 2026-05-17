@@ -13,13 +13,19 @@ const engineComplete = [
   { t: "Content-aware compression", d: "Photos at WebP q=82 (max 4096px); screenshots, documents, illustrations, icons fall to WebP lossless." },
   { t: "Semantic search", d: "768-dim OpenCLIP ViT-L-14 embeddings with pgvector cosine similarity, scoped per user." },
   { t: "Bulk-action toolbar", d: "Move to / new folder with selection / delete / pick-best-of in the gallery." },
+  { t: "Google Drive sync", d: "PKCE OAuth, read-only scope, Fernet-encrypted refresh tokens, hourly auto-sync, conflict banner; AI fenced out per source by default." },
+  { t: "Google SSO", d: "Sign in with Google for both new accounts and link-to-existing, with verified-email handling." },
+  { t: "Face clustering", d: "Opt-in face detection + clustering (Me + tagged people); manual link table guarantees count parity across views." },
+  { t: "Trash + soft delete", d: "30-day recovery window for deleted items; bulk Delete-forever path purges originals + derived metadata." },
+  { t: "Inline preview surface", d: "Image lightbox, multi-page PDF stack, syntax-highlighted code preview for ~40 languages, GPS pin in-panel — all JWT-gated." },
+  { t: "Compliance pass", d: "Encryption at rest + in transit, secret management, append-only audit log, hard account deletion, repo hygiene — shipped 2026-05-16." },
+  { t: "EXIF / GPS handling", d: "GPS + camera EXIF stripped at upload by default; opt-in toggle to keep location or camera data, with the original blob untouched." },
+  { t: "Consent before signup", d: "Explicit consent gates at sign-up for ToS, privacy posture, AI features, and any biometric surface — all per-scope and revocable." },
 ];
 
 const activeWork = [
-  { t: "Compliance scaffolding", d: "Encryption at rest + in transit, secret management, real audit log, full deletion, pre-launch compliance, repo hygiene." },
-  { t: "EXIF / GPS handling", d: "Strip or surface location/device metadata before public sharing or hosted launch." },
-  { t: "Consent before signup", d: "Explicit consent gates ahead of account creation, ahead of biometric features." },
   { t: "Cross-vendor accelerator support", d: "CUDA / Intel XPU / Apple MPS dispatch is in place; widening hardware coverage and probe accuracy." },
+  { t: "Hardware capacity tooling", d: "Live operator calculator (users / photos / RAM / VRAM / workers) and per-user fair-queue dashboards in admin for self-hosters planning capacity." },
 ];
 
 const designed = [

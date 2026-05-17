@@ -14,8 +14,8 @@ export default function Home() {
             neuthek is the AI-aware personal cloud we're building from
             scratch — semantic search by what you remember,
             content-aware compression, and a privacy-first design.
-            Nothing is released yet. The waitlist is where you find
-            out first.
+            The product isn't released yet — the marketing site is
+            public, and the waitlist tells you when the app launches.
           </p>
           <div className="hero__ctas">
             <Link to="/waitlist" className="btn btn--primary btn--lg">
@@ -125,7 +125,7 @@ export default function Home() {
               <dt>Embeddings</dt><dd>OpenCLIP ViT-L-14, 768 dims</dd>
               <dt>Compression</dt><dd>WebP / WebP lossless / AVIF / JPEG XL</dd>
               <dt>Originals</dt><dd>Configurable retention window</dd>
-              <dt>Goal</dt><dd>Open-source on launch, hosted shortly after</dd>
+              <dt>Goal</dt><dd>Hosted launches first; open-source self-host planned</dd>
             </dl>
           </div>
         </div>
@@ -143,10 +143,10 @@ export default function Home() {
               <div className="card__icon">SH</div>
               <h3>Self-host (planned)</h3>
               <p>
-                When the open-source build is released, you'll be
-                able to clone the repo, boot the stack with Docker
-                Compose, and run everything on hardware you own.
-                Free, forever, for personal use.
+                When the self-host build launches, you'll be able
+                to boot the stack with Docker Compose and run
+                everything on hardware you own. Free, forever, for
+                personal use.
               </p>
               <p style={{ marginTop: 16 }}>
                 <Link to="/hosting" className="btn btn--ghost">Learn more</Link>

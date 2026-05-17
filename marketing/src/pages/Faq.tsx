@@ -34,7 +34,7 @@ const FAQS: FaqItem[] = [
     topic: "About",
     id: "is-neuthek-open-source",
     q: "Is neuthek open source?",
-    a: "Yes — the self-host build will be released under an open-source license. The same engine powers both the self-host distribution and the managed hosted version, so there is no \"open core\" lockout. Self-host is free and runs via docker-compose; hosted exists for users who'd rather not run their own server.",
+    a: "Yes — the self-host build will be released under an open-source license. The same engine powers both the self-host distribution and the managed hosted version, so there is no \"open core\" lockout. Self-host is free and runs via docker-compose; hosted exists for users who'd rather not run their own server. No committed date for the public source drop — the codebase isn't fully cleaned up for public release yet, and we'd rather get that right than rush. Hosted launches first.",
   },
   {
     topic: "About",

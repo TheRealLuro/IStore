@@ -218,7 +218,8 @@ export default function Developers() {
             today — the dependencies, the API surface, performance
             numbers measured in the dev environment, and a calculator
             for sizing a deployment for any user count. The source
-            isn't published yet; the public repo lands at GA.
+            isn't published publicly yet — we're cleaning up the tree
+            before a public release.
           </p>
         </div>
       </section>
@@ -584,11 +585,11 @@ export default function Developers() {
         <div className="container">
           <h2>Want to contribute when it opens?</h2>
           <p style={{ marginTop: 12, maxWidth: 640 }}>
-            When the public repository lands, pull requests will be
-            welcome. We aim to keep changes small, prefer adding
-            tests alongside behavior changes, and call out privacy
-            impact in every PR that touches user data, embeddings,
-            or face workflows.
+            When source is published, pull requests will be welcome.
+            We aim to keep changes small, prefer adding tests
+            alongside behavior changes, and call out privacy impact
+            in every PR that touches user data, embeddings, or face
+            workflows.
           </p>
           <p style={{ marginTop: 24 }}>
             <Link

@@ -66,7 +66,7 @@ const EXPERIENCE: Row[] = [
   {
     feature: "Face / people grouping",
     cells: [
-      { label: "Planned — consent-first", tone: "mid" },
+      { label: "Shipped — opt-in, consent-first", tone: "good" },
       { label: "Yes" },
       { label: "Yes" },
       { label: "Yes" },
