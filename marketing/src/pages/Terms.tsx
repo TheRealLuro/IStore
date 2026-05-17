@@ -96,7 +96,7 @@ export default function Terms() {
           <h3 style={{ marginTop: 32 }}>7. Contact</h3>
           <p style={{ marginTop: 8 }}>
             Security vulnerabilities go to{" "}
-            <a href="mailto:security@neuthek.app">security@neuthek.app</a>{" "}
+            <a href="mailto:security@neuthek.com">security@neuthek.com</a>{" "}
             — see the <a href="/privacy">Privacy</a> page for the
             disclosure norms. Questions about these terms or the
             site itself can be sent to the address listed in the

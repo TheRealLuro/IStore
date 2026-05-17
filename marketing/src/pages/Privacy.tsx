@@ -144,7 +144,7 @@ export default function Privacy() {
           <h2>Reporting a security issue.</h2>
           <p style={{ marginTop: 12, maxWidth: 760 }}>
             If you find a security vulnerability, email{" "}
-            <a href="mailto:security@neuthek.app">security@neuthek.app</a>{" "}
+            <a href="mailto:security@neuthek.com">security@neuthek.com</a>{" "}
             with the details. Please don't post real secrets, private
             images, EXIF data, embeddings, or face data in public
             issues or pull requests — we treat any such posting as
