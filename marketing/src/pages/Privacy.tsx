@@ -143,13 +143,11 @@ export default function Privacy() {
         <div className="container">
           <h2>Reporting a security issue.</h2>
           <p style={{ marginTop: 12, maxWidth: 760 }}>
-            If you find a security vulnerability, email{" "}
-            <a href="mailto:security@neuthek.com">security@neuthek.com</a>{" "}
-            with the details. Please don't post real secrets, private
-            images, EXIF data, embeddings, or face data in public
-            issues or pull requests — we treat any such posting as
-            its own incident. A formal disclosure process gets
-            published alongside the hosted launch.
+            There's no public disclosure channel yet — the product
+            isn't released and we don't accept inbound mail. A
+            formal security disclosure address and process get
+            published alongside the hosted launch. Until then,
+            please hold any reports.
           </p>
         </div>
       </section>

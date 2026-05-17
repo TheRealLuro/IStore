@@ -35,7 +35,6 @@ export default function Footer() {
           <ul className="footer__links">
             <li><Link to="/privacy">Privacy</Link></li>
             <li><Link to="/terms">Terms</Link></li>
-            <li><a href="mailto:hello@neuthek.com">Contact</a></li>
           </ul>
         </div>
       </div>

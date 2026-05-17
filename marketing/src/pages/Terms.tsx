@@ -90,17 +90,10 @@ export default function Terms() {
             kind. Use it at your own risk. We try to keep the
             roadmap and feature claims accurate, but the product is
             in active development and details may change between
-            today and launch.
-          </p>
-
-          <h3 style={{ marginTop: 32 }}>7. Contact</h3>
-          <p style={{ marginTop: 8 }}>
-            Security vulnerabilities go to{" "}
-            <a href="mailto:security@neuthek.com">security@neuthek.com</a>{" "}
-            — see the <a href="/privacy">Privacy</a> page for the
-            disclosure norms. Questions about these terms or the
-            site itself can be sent to the address listed in the
-            footer.
+            today and launch. A formal contact and security
+            disclosure channel will be published alongside the
+            hosted launch — until then there's no public inbound
+            mail address.
           </p>
         </div>
       </section>
