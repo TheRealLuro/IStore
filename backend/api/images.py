@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy import func, nulls_last, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1400,6 +1401,69 @@ async def backfill_summaries(
             inline=lambda iid=image_id: _run_summarize_one(iid),
         )
     return {"queued": len(ids), "limit": limit, "force": force}
+
+
+class BestOfBody(BaseModel):
+    """Body for POST /images/best-of.
+
+    `mode`:
+      - overall:  single ranked list — top result is the keeper.
+      - burst:    cluster by CLIP cosine sim, return best per cluster.
+      - use_case: composite quality × CLIP cosine to a use-case prompt.
+    """
+    image_ids: list[UUID] = Field(..., min_length=2, max_length=30)
+    mode: str = Field(default="overall", pattern="^(overall|burst|use_case)$")
+    use_case: str | None = Field(default=None, max_length=32)
+
+
+@router.post("/best-of")
+async def images_best_of(
+    body: BestOfBody,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Score N user-selected images, return them ranked best-first.
+
+    Per-criterion breakdown (sharpness / exposure / face / use_case)
+    drives the bars in the BestOfModal UI. The user can override the
+    AI's pick by clicking any other frame; the modal's "Keep this one"
+    button trashes the rest via /images/bulk-delete.
+
+    Rate-limited to 30 calls per hour per user. Each call runs OpenCV
+    Laplacian + (optional) CLIP text-encode against up to 30 photos —
+    a script hammering this would pin the ML thread.
+    """
+    from backend.best_of import best_of
+    from backend.security import enforce_rate_limit
+
+    await enforce_rate_limit(
+        key=f"ml:best-of:{user.id}",
+        limit=30,
+        window_seconds=3600,
+        detail="Too many best-of requests. Try again in a few minutes.",
+    )
+
+    results = await best_of(
+        session=session,
+        user_id=user.id,
+        image_ids=body.image_ids,
+        mode=body.mode,
+        use_case=body.use_case,
+    )
+    return {
+        "mode": body.mode,
+        "use_case": body.use_case,
+        "results": [
+            {
+                "image_id": str(r.image_id),
+                "score": r.score,
+                "breakdown": r.breakdown,
+                "cluster_id": r.cluster_id,
+                "reasons": r.reasons,
+            }
+            for r in results
+        ],
+    }
 
 
 @router.post("/backfill-vision", status_code=status.HTTP_202_ACCEPTED)

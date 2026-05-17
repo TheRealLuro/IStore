@@ -162,6 +162,35 @@ export async function backfillSummaries(
   );
 }
 
+/** Best-of-N: score a multi-selection and return them ranked. The modal
+ *  uses the returned breakdown to render per-criterion bars; the top
+ *  result is the recommended keeper. `mode='burst'` returns one
+ *  winner per detected cluster; `mode='use_case'` tilts the composite
+ *  toward CLIP-cosine similarity to the named prompt
+ *  ("portrait" / "landscape" / "social" / "print" / "candid" / "pet"). */
+export interface BestOfScore {
+  image_id: string;
+  score: number;
+  breakdown: Record<string, number>;
+  cluster_id: number;
+  reasons: string[];
+}
+export interface BestOfResponse {
+  mode: "overall" | "burst" | "use_case";
+  use_case: string | null;
+  results: BestOfScore[];
+}
+export async function pickBestOf(
+  imageIds: string[],
+  opts: { mode?: "overall" | "burst" | "use_case"; useCase?: string } = {},
+): Promise<BestOfResponse> {
+  return api.post<BestOfResponse>("/images/best-of", {
+    image_ids: imageIds,
+    mode: opts.mode || "overall",
+    use_case: opts.useCase || null,
+  });
+}
+
 /** Re-run the vision classification pass on images missing scene/content_type.
  *  Mainly used to populate filter-chip metadata on cloud-synced (Drive)
  *  images, since the cloud-sync ingest path intentionally skips vision at

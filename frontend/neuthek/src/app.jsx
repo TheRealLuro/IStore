@@ -2218,7 +2218,17 @@ export function App() {
       <DeleteAccountModal open={showDelete} onClose={() => setShowDelete(false)} email={user.email}/>
       <ExportModal open={showExport} onClose={() => setShowExport(false)}/>
       <RenameModal open={showRename} file={renameFile} onClose={() => setShowRename(false)} onSave={saveRename}/>
-      <BestOfModal open={showBestOf} onClose={() => setShowBestOf(false)}/>
+      <BestOfModal
+        open={showBestOf}
+        onClose={() => setShowBestOf(false)}
+        // When the user opens this from the multi-select bar, hand
+        // the modal the actual selection so it can call the real
+        // /images/best-of endpoint instead of the upload/sample demo.
+        imageIds={Array.from(multiSelected)}
+        // After a successful keep, the losers are already in Trash —
+        // clear the gallery's multi-select so the bar reflects reality.
+        onAfterKeep={() => clearMultiSelected()}
+      />
       <React.Suspense fallback={null}>
         {showAdmin && <AdminOverlay open={showAdmin} onClose={() => setShowAdmin(false)}/>}
       </React.Suspense>
