@@ -77,7 +77,7 @@ const SHIPPED: Item[] = [
   },
   {
     t: "Real folders, real tags, real renaming",
-    d: "Drag-and-drop reorganisation, multi-select moves, AI-suggested smart filenames, per-user colour-coded tags. Status and tags are unified — same chip everywhere.",
+    d: "Drag-and-drop reorganization, multi-select moves, AI-suggested smart filenames, per-user color-coded tags. Status and tags are unified — same chip everywhere.",
   },
   {
     t: "Bulk actions from the gallery",
@@ -166,7 +166,7 @@ const ACTIVE: Item[] = [
   },
   {
     t: "Document summaries with jump-to-section",
-    d: "Today we summarise the whole document. Adding per-section embeddings so search jumps you straight to the passage you wanted, plus OCR for scanned PDFs.",
+    d: "Today we summarize the whole document. Adding per-section embeddings so search jumps you straight to the passage you wanted, plus OCR for scanned PDFs.",
   },
   {
     t: "Use your name, not your email",

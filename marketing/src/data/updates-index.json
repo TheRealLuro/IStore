@@ -12,7 +12,7 @@
         "found": [
           "Getting an existing photo library into neuthek meant uploading by hand — fine for ten photos, miserable for ten thousand.",
           "If you signed up with email + password, there was no way to also use Sign in with Google for the same account: clicking 'Continue with Google' would create a separate, empty profile.",
-          "Signing in with Google failed when you'd previously authorised the app for Drive — Google adds the Drive scope back on subsequent flows and our token exchange refused the response.",
+          "Signing in with Google failed when you'd previously authorized the app for Drive — Google adds the Drive scope back on subsequent flows and our token exchange refused the response.",
           "Once Drive was connected, photos and documents synced but nothing ever auto-grouped them into folders that matched your Drive layout.",
           "After connecting Drive, the AI summary counter would sometimes camp at, say, 58 of 59 forever because one image returned no caption and got requeued in a loop."
         ],

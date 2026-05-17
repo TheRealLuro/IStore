@@ -109,19 +109,19 @@ const CATEGORIES: CategorySection[] = [
       "signed URLs with a TTL you control.",
   },
   {
-    id: "organise",
+    id: "organize",
     eyebrow: "Organise",
-    heading: "Stay organised without effort",
+    heading: "Stay organized without effort",
     tiles: [
       { title: "Drag-rectangle select", body: "Click empty space and drag across the gallery to select a batch. Faster than ctrl-clicking each card." },
       { title: "Create a folder from selection", body: "Pick files, click \"New folder from selection\", and they're moved into it in one atomic operation." },
       { title: "Bulk move + delete + restore", body: "Same multi-select bar handles every bulk operation. Confirms before anything destructive." },
       { title: "Soft Trash, 30-day restore", body: "Deletes go to Trash for 30 days. Restore individually or bulk; permanent purge when you mean it." },
       { title: "Folder hierarchy", body: "Nest folders as deep as you want. Breadcrumbs always show the way back." },
-      { title: "Tags with colour chips", body: "Per-user tags with 18 named colours. Filter by tag, attach via popover, recolour anytime." },
+      { title: "Tags with color chips", body: "Per-user tags with 18 named colors. Filter by tag, attach via popover, recolor anytime." },
       { title: "Archive uploads extracted", body: "Drop a .zip, .tar, .7z, or .rar and we extract it into a folder for you. Path traversal blocked at the gate." },
       { title: "Smart rename", body: "Path separators rejected, Windows-reserved names rejected, 255-byte cap. Safe filenames every time." },
-      { title: "Star favourites", body: "Quick ★ for anything you want pinned. Starred view is library-wide." },
+      { title: "Star favorites", body: "Quick ★ for anything you want pinned. Starred view is library-wide." },
       { title: "Detect Person batch flow", body: "Multi-select photos, type a name, and we auto-cluster every detected face into that person." },
     ],
     securityNote:
@@ -142,7 +142,7 @@ const CATEGORIES: CategorySection[] = [
       { title: "Scene + content classification", body: "Indoor/outdoor, screenshot vs photo, scene labels — all populated at upload, all filter-chip ready." },
       { title: "Content-aware compression", body: "Lossless WebP on screenshots and documents (text matters); high-quality WebP on photos." },
       { title: "Reclassify on demand", body: "Library Maintenance → Reclassify re-runs the classifier on photos that skipped vision at upload." },
-      { title: "Re-summarise the library", body: "After a model upgrade, regenerate every summary in one click." },
+      { title: "Re-summarize the library", body: "After a model upgrade, regenerate every summary in one click." },
       { title: "Summarising banner with self-heal", body: "Live \"Summarising N of M\" counter at the top while AI catches up — auto-clears stuck rows." },
     ],
     securityNote:
@@ -477,7 +477,7 @@ export default function Features() {
       <section className="section">
         <div className="container">
           <span className="eyebrow">Full inventory</span>
-          <h2>Everything else, organised.</h2>
+          <h2>Everything else, organized.</h2>
           <p className="lead" style={{ marginTop: 12, marginBottom: 24 }}>
             Tap a category to expand. Each one ends with the security
             stance specific to those features — we don't bury this.

@@ -1,6 +1,6 @@
 // /updates — weekly changelog index page.
 //
-// Renders UPDATES newest-first, each entry summarised as a card the
+// Renders UPDATES newest-first, each entry summarized as a card the
 // user can click into for the full body. Doubles as the canonical
 // "what shipped this week" page for AI answer engines: the
 // CollectionPage + ItemList JSON-LD block at the bottom lets Google's
