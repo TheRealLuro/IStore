@@ -31,7 +31,7 @@ import {
   withdrawConsent,
   rescanAllFaces,
 } from "@/api/consent";
-import { backfillSummaries, getSummarizeProgress, backfillDocThumbs } from "@/api/files";
+import { backfillSummaries, backfillVision, getSummarizeProgress, backfillDocThumbs } from "@/api/files";
 import {
   getAccountActivity,
   getAccountTrash,
@@ -578,6 +578,31 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   const [busyResummarize, setBusyResummarize] = useStateAcc(false);
   const [busyRescan, setBusyRescan] = useStateAcc(false);
   const [busyDocThumbs, setBusyDocThumbs] = useStateAcc(false);
+  const [busyReclassify, setBusyReclassify] = useStateAcc(false);
+
+  const reclassifyImages = async () => {
+    if (busyReclassify) return;
+    setBusyReclassify(true);
+    try {
+      const r = await backfillVision(500);
+      if (r.processed > 0) {
+        toast.success(`Reclassified ${r.processed} image${r.processed === 1 ? "" : "s"} — gallery filter chips should populate now.`);
+      } else if (r.examined === 0) {
+        toast("Every image already has scene + content metadata.");
+      } else {
+        toast.error("Reclassification ran but produced no results. Check the server logs.");
+      }
+      // Facets feed the filter chip choices — invalidate so new
+      // scene_label / content_type / indoor_outdoor values render
+      // immediately in the gallery.
+      qc.invalidateQueries({ queryKey: ["facets"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not reclassify.");
+    } finally {
+      setBusyReclassify(false);
+    }
+  };
 
   const generateDocThumbs = async () => {
     if (busyDocThumbs) return;
@@ -978,6 +1003,14 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                        tail={<button className="btn btn--secondary btn--sm" onClick={generateDocThumbs}
                                      disabled={busyDocThumbs}>
                          {busyDocThumbs ? "Working…" : "Run"}
+                       </button>}/>
+                  <Row icon="sparkles" tone="blue" title="Reclassify images (populates filter chips)"
+                       desc={busyReclassify
+                         ? "Running CLIP scene + content classifier on each image…"
+                         : "Re-run scene / content_type / indoor-outdoor classification on every image that's missing those columns. Cloud-synced (Google Drive) images skip vision at upload — without this they have no scene labels, so the gallery filter chips show nothing but \"Has people\". Safe to re-run."}
+                       tail={<button className="btn btn--secondary btn--sm" onClick={reclassifyImages}
+                                     disabled={busyReclassify}>
+                         {busyReclassify ? "Working…" : "Run"}
                        </button>}/>
                 </div>
               </>
