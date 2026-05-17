@@ -223,45 +223,53 @@ export default function Faq() {
           </nav>
 
           {byTopic.map((g) => (
-            <section
+            // Each topic is a <details> collapsible. Answers stay in
+            // the DOM regardless of open/closed state so AI answer
+            // engines and crawlers see every answer inline — only
+            // visual display is gated by the open attribute.
+            <details
               key={g.topic}
               id={`topic-${slugify(g.topic)}`}
-              className="faq-topic"
+              className="cat-disclosure faq-topic-disclosure"
             >
-              <h2 className="faq-topic__title">{g.topic}</h2>
-              <div className="faq-list">
-                {g.items.map((f) => (
-                  // Use <details> for collapsible UX but render the
-                  // answer text inline so crawlers + AI engines see
-                  // it without expanding. JS-free progressive
-                  // enhancement.
-                  <article
-                    key={f.id}
-                    id={f.id}
-                    className="faq-item"
-                    itemScope
-                    itemProp="mainEntity"
-                    itemType="https://schema.org/Question"
-                  >
-                    <h3 className="faq-item__q" itemProp="name">
-                      <a href={`#${f.id}`} className="faq-item__anchor"
-                        aria-label={`Link to: ${f.q}`}>
-                        #
-                      </a>
-                      {f.q}
-                    </h3>
-                    <div
-                      className="faq-item__a"
+              <summary className="cat-disclosure__summary">
+                <span className="cat-disclosure__heading">{g.topic}</span>
+                <span className="cat-disclosure__count">{g.items.length}</span>
+                <span className="cat-disclosure__chevron" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 6 7 9 10 6"/></svg>
+                </span>
+              </summary>
+              <div className="cat-disclosure__body">
+                <div className="faq-list">
+                  {g.items.map((f) => (
+                    <article
+                      key={f.id}
+                      id={f.id}
+                      className="faq-item"
                       itemScope
-                      itemProp="acceptedAnswer"
-                      itemType="https://schema.org/Answer"
+                      itemProp="mainEntity"
+                      itemType="https://schema.org/Question"
                     >
-                      <p itemProp="text">{f.a}</p>
-                    </div>
-                  </article>
-                ))}
+                      <h3 className="faq-item__q" itemProp="name">
+                        <a href={`#${f.id}`} className="faq-item__anchor"
+                          aria-label={`Link to: ${f.q}`}>
+                          #
+                        </a>
+                        {f.q}
+                      </h3>
+                      <div
+                        className="faq-item__a"
+                        itemScope
+                        itemProp="acceptedAnswer"
+                        itemType="https://schema.org/Answer"
+                      >
+                        <p itemProp="text">{f.a}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
               </div>
-            </section>
+            </details>
           ))}
 
           <div className="faq-foot">

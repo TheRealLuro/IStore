@@ -478,27 +478,33 @@ export default function Features() {
         <div className="container">
           <span className="eyebrow">Full inventory</span>
           <h2>Everything else, organised.</h2>
-          <p className="lead" style={{ marginTop: 12, marginBottom: 32 }}>
-            Each section ends with the security stance specific to
-            those features. We don't bury this.
+          <p className="lead" style={{ marginTop: 12, marginBottom: 24 }}>
+            Tap a category to expand. Each one ends with the security
+            stance specific to those features — we don't bury this.
           </p>
 
           {CATEGORIES.map((cat) => (
-            <div key={cat.id} id={cat.id} style={{ marginBottom: 24 }}>
-              <span className="eyebrow">{cat.eyebrow}</span>
-              <h3 style={{ marginTop: 4, marginBottom: 12, fontSize: 22 }}>
-                {cat.heading}
-              </h3>
-              <div className="features-grid">
-                {cat.tiles.map((t) => (
-                  <div key={t.title} className="feature-tile">
-                    <div className="feature-tile__title">{t.title}</div>
-                    <div className="feature-tile__body">{t.body}</div>
-                  </div>
-                ))}
+            <details key={cat.id} id={cat.id} className="cat-disclosure">
+              <summary className="cat-disclosure__summary">
+                <span className="cat-disclosure__eyebrow">{cat.eyebrow}</span>
+                <span className="cat-disclosure__heading">{cat.heading}</span>
+                <span className="cat-disclosure__count">{cat.tiles.length}</span>
+                <span className="cat-disclosure__chevron" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 6 7 9 10 6"/></svg>
+                </span>
+              </summary>
+              <div className="cat-disclosure__body">
+                <div className="features-grid">
+                  {cat.tiles.map((t) => (
+                    <div key={t.title} className="feature-tile">
+                      <div className="feature-tile__title">{t.title}</div>
+                      <div className="feature-tile__body">{t.body}</div>
+                    </div>
+                  ))}
+                </div>
+                <p className="security-note">{cat.securityNote}</p>
               </div>
-              <p className="security-note">{cat.securityNote}</p>
-            </div>
+            </details>
           ))}
         </div>
       </section>

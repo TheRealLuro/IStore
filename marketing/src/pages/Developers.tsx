@@ -1,225 +1,30 @@
 import { Link } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
-
-// All the resource numbers below derive from the dev environment +
-// docker-compose stack we run on a single 16-core / 32 GB box with a
-// single mid-tier NVIDIA GPU. Treat these as "good first guesses for
-// production capacity planning" — actual numbers will vary with
-// upload size mix, percentage of users with face recognition on, GPU
-// vs CPU for embedding compute, etc. Conservative side of the
-// envelope where possible.
-
-// Per-user storage assumptions for the sizing calculator. Tunable
-// from the UI so a power-photographer running 50k photos can see
-// realistic numbers without us hardcoding a "typical" load.
-const DEFAULT_AVG_PHOTOS = 5000;
-const DEFAULT_AVG_PHOTO_MB = 2.0; // average original size
-const SERVED_RATIO = 0.25;        // ratio of served (compressed) to original
-const EMBEDDING_BYTES = 3072;     // 768-dim float32 vector
-const METADATA_KB_PER_FILE = 5;   // Postgres row + indexes per file
-const FACE_TEMPLATE_BYTES = 2048; // 512-dim ArcFace template + overhead
-const AVG_FACES_PER_PHOTO = 0.6;  // mixed photo libraries average <1 face/photo
-
-// Performance benchmarks observed in the dev environment. The
-// "production" column projects roughly what a tuned deployment on
-// dedicated hardware should hit. Both columns are evidence-based:
-// dev figures from local logs, prod figures from the same code on
-// a 16-core box without other tenants competing for the GIL.
-const PERF_ROWS: { metric: string; dev: string; prod: string; note?: string }[] = [
-  {
-    metric: "Image upload (single)",
-    dev: "120–250 ms",
-    prod: "80–150 ms",
-    note: "End-to-end: validate, EXIF strip, compress, MinIO put, DB row.",
-  },
-  {
-    metric: "CLIP embedding (ViT-L-14, GPU)",
-    dev: "65 ms",
-    prod: "40–90 ms",
-    note: "Per image. Florence-2 caption is a separate ~5–15 s pass.",
-  },
-  {
-    metric: "CLIP embedding (CPU fallback)",
-    dev: "1.2–2.0 s",
-    prod: "0.8–1.5 s",
-    note: "Use for solo self-host without GPU; consider batch backfill overnight.",
-  },
-  {
-    metric: "Florence-2 caption (GPU)",
-    dev: "5–15 s",
-    prod: "3–8 s",
-    note: "Per image; runs in a dedicated ML worker thread to keep the API loop free.",
-  },
-  {
-    metric: "Semantic search (warm CLIP encoder)",
-    dev: "40–80 ms",
-    prod: "20–50 ms",
-    note: "FTS pass + CLIP cosine, hybrid scored. WordNet expansion adds <1 ms.",
-  },
-  {
-    metric: "Gallery list (100 rows)",
-    dev: "30–60 ms",
-    prod: "10–30 ms",
-    note: "Indexed read; cross-folder + filters use the same path.",
-  },
-  {
-    metric: "Admin dashboard (cached bucket walk)",
-    dev: "86 ms",
-    prod: "60–120 ms",
-    note: "60-second LRU + worker thread + 20k-object cap (W19 fix).",
-  },
-  {
-    metric: "Face detection (RetinaFace, per image)",
-    dev: "150–400 ms",
-    prod: "80–250 ms",
-    note: "Includes ArcFace embedding per detected face.",
-  },
-  {
-    metric: "API median latency (warm cache)",
-    dev: "< 80 ms",
-    prod: "< 40 ms",
-    note: "Excludes upload + summary endpoints — those run on background workers.",
-  },
-];
-
-// Coarse production-shape recommendations. Numbers are the
-// recommended floor for a smooth experience; you can run leaner but
-// expect higher tail latency under burst load. CPU / RAM columns
-// don't include the host OS overhead — add ~2 GB / 2 vCPUs.
-const SHAPE_ROWS: {
-  scale: string;
-  users: string;
-  cpu: string;
-  ram: string;
-  storage: string;
-  gpu: string;
-  notes: string;
-}[] = [
-  {
-    scale: "Self-host (solo)",
-    users: "1",
-    cpu: "4 vCPU",
-    ram: "8 GB",
-    storage: "20 GB OS + your library",
-    gpu: "Optional",
-    notes: "CPU is fine; vision runs in batches overnight. Docker compose on a NUC works.",
-  },
-  {
-    scale: "Self-host (family)",
-    users: "2–5",
-    cpu: "6 vCPU",
-    ram: "16 GB",
-    storage: "100 GB OS + libraries",
-    gpu: "Recommended",
-    notes: "GPU cuts summary backfill from days to hours. Shared RLS keeps libraries isolated.",
-  },
-  {
-    scale: "Hosted (small)",
-    users: "100",
-    cpu: "8 vCPU",
-    ram: "32 GB",
-    storage: "S3-class object storage",
-    gpu: "Single GPU node",
-    notes: "Single-tenant fenced behind Postgres RLS. Pub/sub via Redis.",
-  },
-  {
-    scale: "Hosted (medium)",
-    users: "1,000",
-    cpu: "16 vCPU",
-    ram: "64 GB",
-    storage: "Object storage tier",
-    gpu: "1–2 GPU nodes",
-    notes: "Vision workers scale independently; bandit telemetry per arm.",
-  },
-  {
-    scale: "Hosted (large)",
-    users: "10,000",
-    cpu: "Cluster (autoscaled)",
-    ram: "256+ GB across nodes",
-    storage: "S3 + Postgres HA",
-    gpu: "GPU pool",
-    notes: "Postgres read-replicas for /search; pgvector IVFFlat tuned for the embedding count.",
-  },
-];
-
-function fmtBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes.toFixed(0)} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  if (bytes < 1024 ** 4) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  return `${(bytes / 1024 ** 4).toFixed(2)} TB`;
-}
-
-interface Sizing {
-  users: number;
-  photosPerUser: number;
-  avgPhotoMb: number;
-  originals: number;
-  served: number;
-  postgres: number;
-  embeddings: number;
-  faces: number;
-  modelWeights: number;
-  totalStorage: number;
-}
-
-function computeSizing(users: number, photosPerUser: number, avgPhotoMb: number): Sizing {
-  const totalPhotos = users * photosPerUser;
-  const originals = totalPhotos * avgPhotoMb * 1024 ** 2;
-  const served = originals * SERVED_RATIO;
-  const embeddings = totalPhotos * EMBEDDING_BYTES;
-  const postgres = totalPhotos * METADATA_KB_PER_FILE * 1024;
-  const faceCount = totalPhotos * AVG_FACES_PER_PHOTO;
-  const faces = faceCount * FACE_TEMPLATE_BYTES;
-  // Florence-2 + OpenCLIP + RetinaFace + ArcFace weights live in the
-  // ML worker container; constant across user count.
-  const modelWeights = 5.5 * 1024 ** 3;
-  return {
-    users,
-    photosPerUser,
-    avgPhotoMb,
-    originals,
-    served,
-    postgres,
-    embeddings,
-    faces,
-    modelWeights,
-    totalStorage: originals + served + postgres + embeddings + faces + modelWeights,
-  };
-}
+import { useEffect } from "react";
 
 export default function Developers() {
   useEffect(() => {
-    document.title = "Developers — neuthek stack, sizing, performance";
+    document.title = "Developers — neuthek stack & model choices";
     setMeta(
       "description",
-      "Developer documentation for neuthek: full stack inventory (FastAPI, PostgreSQL + pgvector, OpenCLIP, Florence-2, RetinaFace), a resource-sizing calculator for self-host and hosted deployments, and benchmarked performance numbers per endpoint."
+      "Developer documentation for neuthek: the dependencies we picked and why (FastAPI, PostgreSQL + pgvector, Redis, MinIO, Caddy), the AI/ML models we run and why (OpenCLIP ViT-L-14, Florence-2-large, Qwen2.5, RetinaFace + ArcFace, rawpy/LibRaw, LinUCB bandit), and the public API surface."
     );
     setLink("canonical", "https://neuthek.com/developers");
   }, []);
-
-  // Calculator state — defaults to the assumptions documented above.
-  const [users, setUsers] = useState<number>(100);
-  const [photosPerUser, setPhotosPerUser] = useState<number>(DEFAULT_AVG_PHOTOS);
-  const [avgPhotoMb, setAvgPhotoMb] = useState<number>(DEFAULT_AVG_PHOTO_MB);
-  const sizing = useMemo(
-    () => computeSizing(users, photosPerUser, avgPhotoMb),
-    [users, photosPerUser, avgPhotoMb]
-  );
 
   return (
     <>
       <section className="page-head">
         <div className="container fade-in">
           <span className="eyebrow">Developers</span>
-          <h1>Open. Auditable. Sized for whatever you run.</h1>
+          <h1>What we built it with, and why.</h1>
           <p className="lead">
-            Everything below describes what's actually in the engine
-            today — the dependencies, the API surface, performance
-            numbers measured in the dev environment, and a calculator
-            for sizing a deployment for any user count. The source
-            isn't published publicly yet — we're cleaning up the tree
-            before a public release.
+            Two questions worth answering up front: which dependencies
+            we picked and what each one earns its place doing, and
+            which AI/ML models we run and why those over the
+            alternatives. Both lists are real — every name below is in
+            our development tree today. The source isn't published
+            publicly yet; we're cleaning up the tree before a public
+            release.
           </p>
         </div>
       </section>
@@ -227,264 +32,396 @@ export default function Developers() {
       {/* ===================== Stack ===================== */}
       <section className="section">
         <div className="container">
-          <h2>The stack we're building on.</h2>
-          <p className="lead" style={{ marginTop: 12 }}>
-            Every name below is a real dependency in our development
-            tree. No placeholder vendors, no aspirational integrations.
+          <span className="eyebrow">The stack</span>
+          <h2>What it runs on, and why.</h2>
+          <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
+            One short paragraph per dependency: what it does for us +
+            why we picked it over the obvious alternative.
           </p>
-          <div className="cards">
+          <div className="cards" style={{ marginTop: 24 }}>
             <div className="card">
-              <h3>API</h3>
+              <h3>FastAPI + Python 3.12</h3>
               <p>
-                FastAPI on Python 3.12, async SQLAlchemy + asyncpg,
-                Alembic migrations, fastapi-users for JWT auth,
-                Argon2 password hashing, TOTP 2FA via pyotp, Fernet
-                for at-rest encryption of OAuth refresh tokens.
+                <strong>What:</strong> the HTTP layer + every business
+                endpoint, with async SQLAlchemy + asyncpg under the
+                hood and Alembic for migrations.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> async by default (none of the
+                Flask/WSGI dance with greenlets), automatic OpenAPI
+                docs at <code>/docs</code>, and Pydantic v2 gives us
+                request/response validation that doubles as the
+                published schema. Python because the ML side is
+                already PyTorch — same runtime as the inference
+                workers means no IPC layer between API and models.
               </p>
             </div>
+
             <div className="card">
-              <h3>Database</h3>
+              <h3>PostgreSQL 16 + pgvector</h3>
               <p>
-                PostgreSQL 16 with the pgvector extension — 512-dim
-                face templates + 768-dim CLIP embeddings indexed for
-                cosine similarity. FORCE Row-Level Security per user
-                on every multi-tenant table, enforced at the DB layer.
+                <strong>What:</strong> the source of truth for every
+                user row, plus the cosine-similarity index over
+                CLIP + face embeddings.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> we wanted vectors and ACID in
+                the same transaction — no separate Pinecone or Qdrant
+                to keep in sync with the row that owns the embedding.
+                pgvector does HNSW or IVFFlat indexing in-database;
+                deleting a row deletes its vector atomically. Postgres
+                also gives us <strong>FORCE Row-Level Security</strong>{" "}
+                per user on every multi-tenant table — a bug in an
+                app handler still can't return another user's row.
               </p>
             </div>
+
             <div className="card">
-              <h3>Object storage</h3>
+              <h3>Redis 7</h3>
               <p>
-                MinIO (S3 API) with optional SSE-S3 / SSE-KMS. Three
-                buckets: originals, served (compressed for delivery),
-                and face crops. Signed URLs with TTL for client
-                downloads; redirect proxy preserves auth in dev.
+                <strong>What:</strong> per-user job queues for the ML
+                pipeline (summarize, face-scan, vision backfill), plus
+                rate-limit counters for every gated endpoint.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> the per-user fair scheduler
+                needs cheap atomic list operations (LPUSH / BRPOP) and
+                cheap atomic counters (INCR with EXPIRE). Postgres can
+                do both but pays a transaction cost we don't need for
+                ephemeral state. Single-purpose, single-process,
+                trivially backed up by skipping the backup.
               </p>
             </div>
+
             <div className="card">
-              <h3>Vision</h3>
+              <h3>MinIO (S3 API)</h3>
               <p>
-                open-clip-torch (ViT-L-14), microsoft/Florence-2-large
-                via transformers for image captions, insightface
-                (RetinaFace detection + ArcFace embeddings) for the
-                opt-in face pipeline, rawpy / LibRaw for camera RAW
-                decoding (NEF / CR2 / ARW / DNG / RAF / ORF / RW2 / PEF).
+                <strong>What:</strong> object storage for originals,
+                served (compressed) variants, and face crops — three
+                logical buckets with SSE-S3 or SSE-KMS encryption at
+                rest.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> the S3 wire protocol means we
+                can swap MinIO out for real AWS / R2 / Backblaze
+                without changing a single line of application code.
+                MinIO itself runs anywhere — a NUC, a Raspberry Pi,
+                or a Kubernetes cluster — same binary.
               </p>
             </div>
+
             <div className="card">
-              <h3>Compression</h3>
+              <h3>Caddy (TLS edge)</h3>
               <p>
-                LinUCB contextual bandit picks per-image codec
-                (WebP / MozJPEG / AVIF / JXL) and quality (55–92)
-                from a 32-dim feature vector. Per-user telemetry
-                feeds reward back to the arm; screenshots route to
-                lossless WebP, animated GIFs are passthrough.
+                <strong>What:</strong> reverse proxy + automatic
+                Let's Encrypt for TLS, HSTS, HTTP/3, and the security
+                headers the app expects to find on inbound requests.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> nginx + certbot is two tools to
+                configure and one cron job to forget. Caddy is one
+                config file, certificates auto-renew, and the defaults
+                are already tighter than most hand-rolled nginx
+                blocks. Saves operators from having to know HTTPS to
+                run the stack.
               </p>
             </div>
+
             <div className="card">
-              <h3>Workers & queue</h3>
+              <h3>fastapi-users + JWT + TOTP</h3>
               <p>
-                Redis 7 for rate limiting + summarize/face-scan job
-                queues. A dedicated ML worker container holds the
-                CLIP + Florence + face weights so the API container
-                never blocks on GPU inference.
+                <strong>What:</strong> account creation, password
+                reset, email verification, JWT issuance, TOTP 2FA via
+                pyotp, and Argon2id password hashing — all from one
+                pluggable library.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> rolling your own auth is the
+                fastest way to ship a security bug. fastapi-users is
+                production-tested, plugs into FastAPI's dependency
+                system natively, and lets us layer our own
+                consent-bundle hook on top of the user-create path
+                without forking.
               </p>
             </div>
+
             <div className="card">
-              <h3>Search</h3>
+              <h3>Fernet for at-rest secrets</h3>
               <p>
-                Hybrid scorer: CLIP cosine via pgvector + Postgres
-                FTS over summary + topic + filename + signals. Query
-                expansion via WordNet (NLTK) so "vibrant" matches
-                summaries that say "colorful" / "vivid". Strict-rank
-                stays on the literal query so exact tokens win.
+                <strong>What:</strong> AES-128-CBC + HMAC-SHA-256
+                envelope for OAuth refresh tokens, TOTP secrets, and
+                anything else the server holds that an attacker
+                shouldn't be able to read straight out of a database
+                dump.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> Fernet is the boring-correct
+                choice — authenticated encryption, no nonce reuse
+                footguns, key rotation built in. The key itself comes
+                from <code>CLOUD_ENCRYPTION_KEY</code> in the
+                operator environment; a boot-time validator refuses
+                to start in prod without it.
               </p>
             </div>
+
             <div className="card">
-              <h3>Cloud sync</h3>
+              <h3>React 18 + Vite + TanStack Query</h3>
               <p>
-                Google Drive sync via OAuth 2.0 with PKCE, read-only
-                <code> drive.readonly</code> scope, Fernet-encrypted
-                refresh tokens. Hourly background sweep mirrors the
-                Drive folder tree under a top-level "Google Drive"
-                folder. AI off by default per Drive's Limited Use
-                policy; per-source opt-in.
+                <strong>What:</strong> the SPA you actually use. Vite
+                for dev + build, TanStack Query for every server-state
+                fetch (caching, retries, optimistic updates), Zustand
+                for the small slice of client state that isn't
+                server-derived.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> TanStack Query removes most of
+                the reasons people reach for Redux. Vite's HMR is the
+                fastest dev loop we've used. React 18 because the
+                concurrent features (transitions for the gallery
+                filter chips, Suspense for the lightbox) are load-
+                bearing for perceived responsiveness.
               </p>
             </div>
+
             <div className="card">
-              <h3>Billing</h3>
+              <h3>Prism (≈ 40 grammars)</h3>
               <p>
-                Stripe Embedded Checkout — Pro and Business tiers,
-                webhook-driven subscription state, hosted invoices.
-                Empty Stripe env vars short-circuit
-                <code> /billing/*</code> to 503 in dev.
+                <strong>What:</strong> syntax highlighting for the
+                code-file preview surface — open a <code>.py</code>{" "}
+                or <code>.ts</code> in your library and it renders
+                with proper tokens.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> highlight.js auto-detect mis-
+                fires on small files. Prism's per-language grammars
+                are explicit, ship as small modules, and we
+                eager-load the 40 grammars that cover almost every
+                source file people store in personal clouds.
               </p>
             </div>
+
             <div className="card">
-              <h3>Frontend</h3>
+              <h3>Docker Compose</h3>
               <p>
-                React 18 + TypeScript + Vite, TanStack Query for
-                server state, Zustand for auth, Prism (≈ 40 grammars
-                eager-loaded) for syntax-highlighted code preview.
-                Geist + Geist Mono type stack — same as this site.
+                <strong>What:</strong> one <code>docker compose up -d</code>{" "}
+                brings up the API container, ML worker container,
+                Postgres, Redis, MinIO, and Caddy with TLS.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> self-host is the headline
+                deployment story. Compose is the lowest-friction way
+                to spin a multi-container app on a single host — no
+                Kubernetes, no Helm chart, no cluster you need to
+                manage. Optional overlays add TLS, encrypted backups,
+                and Intel iGPU/NPU device-passthrough without
+                touching the base file.
               </p>
             </div>
+
             <div className="card">
-              <h3>Infra & ops</h3>
+              <h3>pytest + pytest-asyncio</h3>
               <p>
-                Docker Compose for the full stack (API + ML worker
-                + Postgres + Redis + MinIO + Caddy TLS). Optional
-                Intel iGPU/NPU device-passthrough overlay. Healthcheck
-                endpoint on the API, structured logs via the standard
-                logging module, Prometheus-shaped metrics ready when
-                wired.
+                <strong>What:</strong> end-to-end test suite covering
+                upload validation, codec dispatch, RLS enforcement,
+                consent gates, auth flows, deletion completeness, and
+                migration idempotency.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> we lean on the test suite to
+                prove security properties — there's a test that uploads
+                + deletes + asserts 0 rows + 0 objects, a test that
+                tries to read another tenant's data with RLS active
+                and asserts the empty result, and a test for every
+                hygiene contract (no real PII in fixtures, no binary
+                blobs under <code>tests/</code>, gitleaks runs full
+                history).
               </p>
             </div>
+
             <div className="card">
-              <h3>Testing</h3>
+              <h3>Stripe (Embedded Checkout)</h3>
               <p>
-                pytest + pytest-asyncio covering codec dispatch,
-                resize behavior, bandit decisions, upload validation,
-                consent gates, RLS enforcement, and end-to-end auth
-                flows. Migrations have idempotency + downgrade tests.
+                <strong>What:</strong> Free / Pro / Business tiers via
+                Stripe-hosted checkout + signature-verified webhooks +
+                Customer Portal for invoices and plan management.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why:</strong> Embedded Checkout means we
+                never see a card number or PCI scope. Empty Stripe
+                env vars short-circuit <code>/billing/*</code> to 503
+                in dev so the operator never has to wire it up to run
+                self-host.
               </p>
             </div>
           </div>
         </div>
       </section>
 
-      {/* ===================== Resource sizing calculator ===================== */}
+      {/* ===================== Models ===================== */}
       <section className="section">
         <div className="container">
-          <span className="eyebrow">Capacity planning</span>
-          <h2>Resource sizing — pick a user count, get a deployment.</h2>
+          <span className="eyebrow">Models we chose</span>
+          <h2>The AI side: what we run, and why we run it.</h2>
           <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
-            Three knobs below. Storage is the binding constraint on
-            most deployments; CPU/RAM scales with concurrent active
-            users (vs. total). Numbers are derived from measurements
-            against the dev stack with mixed-content photo libraries.
+            Every model below is pre-trained with frozen weights —{" "}
+            <strong>we never fine-tune anything on your library</strong>.
+            Why we picked each over the obvious alternative is in the
+            second paragraph of every card.
           </p>
-
-          <div className="dev-calc">
-            <div className="dev-calc__inputs">
-              <NumberRow
-                label="Users"
-                value={users}
-                onChange={setUsers}
-                min={1} max={1_000_000} step={10}
-                hint="Total accounts you expect to host."
-              />
-              <NumberRow
-                label="Photos per user (avg)"
-                value={photosPerUser}
-                onChange={setPhotosPerUser}
-                min={100} max={500_000} step={100}
-                hint="iPhone users typically 5–10k. Power photographers 50–100k."
-              />
-              <NumberRow
-                label="Original photo size (MB, avg)"
-                value={avgPhotoMb}
-                onChange={setAvgPhotoMb}
-                min={0.1} max={50} step={0.1}
-                hint="HEIC ~1.5 MB, 24 MP JPEG ~6 MB, 50 MP RAW ~25 MB."
-              />
-            </div>
-
-            <div className="dev-calc__output">
-              <SizingBar label="Originals (object storage)" bytes={sizing.originals} of={sizing.totalStorage} tone="ink"/>
-              <SizingBar label="Served (compressed for delivery)" bytes={sizing.served} of={sizing.totalStorage} tone="blue"/>
-              <SizingBar label="Postgres rows + indexes" bytes={sizing.postgres} of={sizing.totalStorage} tone="green"/>
-              <SizingBar label="CLIP embeddings (pgvector)" bytes={sizing.embeddings} of={sizing.totalStorage} tone="purple"/>
-              <SizingBar label="Face templates (ArcFace 512-d)" bytes={sizing.faces} of={sizing.totalStorage} tone="amber"/>
-              <SizingBar label="ML model weights (constant)" bytes={sizing.modelWeights} of={sizing.totalStorage} tone="gray"/>
-              <div className="dev-calc__total">
-                <strong>Total storage:</strong>
-                <span>{fmtBytes(sizing.totalStorage)}</span>
-              </div>
-              <p className="dev-calc__note">
-                Add ~20% headroom for the WAL, backups, and growth
-                between scaling events. Object storage and Postgres
-                volumes can live on separate disks.
+          <div className="cards" style={{ marginTop: 24 }}>
+            <div className="card">
+              <h3>OpenCLIP ViT-L-14</h3>
+              <p>
+                <strong>What it does:</strong> embeds every image
+                into a 768-dim vector that captures visual meaning.
+                Query text embeds into the same space; pgvector
+                cosine-similarity ranks results. That's how "snowy
+                roof at sunset" finds the photo without ever indexing
+                that string.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> OpenAI's original CLIP
+                is closed and never got a proper open release.
+                OpenCLIP is the open re-implementation trained on
+                LAION-2B — same architecture, openly licensed weights,
+                stronger benchmarks. ViT-L-14 is the sweet spot
+                between accuracy and inference cost on a single
+                consumer GPU. Larger variants (ViT-H, ViT-G) gain
+                ~3-5 % recall at 3-4× the cost; not worth it at this
+                scale.
               </p>
             </div>
-          </div>
-        </div>
-      </section>
 
-      {/* ===================== Deployment shapes ===================== */}
-      <section className="section">
-        <div className="container">
-          <span className="eyebrow">Production shapes</span>
-          <h2>Pick the deployment that fits your user count.</h2>
-          <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
-            Below is the recommended floor — you can run leaner but
-            expect higher tail latency under burst upload. The CPU /
-            RAM numbers cover the API + Postgres + Redis + a single
-            ML worker on one box. Object storage scales independently.
-          </p>
-          <div className="compare-wrap" style={{ marginTop: 24 }}>
-            <table className="compare">
-              <thead>
-                <tr>
-                  <th>Shape</th>
-                  <th>Users</th>
-                  <th>vCPU</th>
-                  <th>RAM</th>
-                  <th>Storage</th>
-                  <th>GPU</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {SHAPE_ROWS.map((r) => (
-                  <tr key={r.scale}>
-                    <td data-provider="Shape" style={{ fontWeight: 600 }}>{r.scale}</td>
-                    <td data-provider="Users">{r.users}</td>
-                    <td data-provider="vCPU">{r.cpu}</td>
-                    <td data-provider="RAM">{r.ram}</td>
-                    <td data-provider="Storage">{r.storage}</td>
-                    <td data-provider="GPU">{r.gpu}</td>
-                    <td data-provider="Notes" style={{ fontSize: 13, color: "var(--ink-2)" }}>{r.notes}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+            <div className="card">
+              <h3>Florence-2-large</h3>
+              <p>
+                <strong>What it does:</strong> generates the detailed
+                caption for every image ("a black-and-white photo of
+                two people standing on a rocky beach at sunset"). Also
+                handles inline OCR — scene-gated so we only run it on
+                images likely to contain text.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> the obvious alternative
+                is BLIP-2 or LLaVA. Florence-2 from Microsoft Research
+                is purpose-built for vision tasks (caption, detect,
+                segment, OCR — all in one model), runs comfortably on
+                a mid-tier GPU, and produces noticeably more concrete
+                captions than BLIP-2 ("auth-flow review on a
+                whiteboard" vs. "a person near a whiteboard"). Apache-
+                2.0 licensed and small enough that 8-bit / 4-bit quant
+                paths are tractable for self-hosters.
+              </p>
+            </div>
 
-      {/* ===================== Performance benchmarks ===================== */}
-      <section className="section">
-        <div className="container">
-          <span className="eyebrow">Performance</span>
-          <h2>Benchmarks — what to expect, end to end.</h2>
-          <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
-            Dev numbers come from a single 16-core / 32 GB box with a
-            mid-tier GPU running the docker-compose stack and warming
-            the model cache. Production numbers project the same code
-            on dedicated hardware without other tenants competing for
-            the GIL.
-          </p>
-          <div className="compare-wrap" style={{ marginTop: 24 }}>
-            <table className="compare">
-              <thead>
-                <tr>
-                  <th>Operation</th>
-                  <th>Dev</th>
-                  <th>Production</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {PERF_ROWS.map((r) => (
-                  <tr key={r.metric}>
-                    <td data-provider="Operation" style={{ fontWeight: 600 }}>{r.metric}</td>
-                    <td data-provider="Dev"><code>{r.dev}</code></td>
-                    <td data-provider="Production"><code>{r.prod}</code></td>
-                    <td data-provider="Notes" style={{ fontSize: 13, color: "var(--ink-2)" }}>{r.note}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="card">
+              <h3>Qwen2.5-Instruct</h3>
+              <p>
+                <strong>What it does:</strong> rewrites Florence-2's
+                raw caption into the human-readable summary you see
+                in the library, splices in detected scene labels,
+                handles document summarization (PDFs, code, markdown)
+                via map-reduce over chunked content.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> Llama-3.2-Instruct was
+                the runner-up; Qwen2.5 was consistently better on
+                instruction following at the same parameter count and
+                ships in 0.5B / 1.5B / 3B / 7B variants so operators
+                can pick by hardware. Apache-2.0 licensed (no
+                license-acceptance gate). The 1.5B variant runs at
+                acceptable latency on CPU for self-hosters without a
+                GPU; the 4-bit GGUF quant path is well-trodden.
+              </p>
+            </div>
+
+            <div className="card">
+              <h3>RetinaFace + ArcFace (insightface buffalo_l)</h3>
+              <p>
+                <strong>What it does:</strong> when face recognition
+                is enabled (opt-in only — off by default), RetinaFace
+                detects faces in the image and ArcFace produces a
+                512-dim embedding per face. Embeddings cluster into
+                Me + tagged people; everyone else is grouped but never
+                named without your input.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> insightface is the
+                standard reference implementation for both — used by
+                most face-recognition production stacks. ArcFace's
+                angular margin loss outperforms FaceNet's triplet loss
+                on standard benchmarks and the embeddings are stable
+                across age + lighting. The buffalo_l bundle ships
+                both models together with consistent preprocessing,
+                so we don't have to wire two pipelines.
+              </p>
+            </div>
+
+            <div className="card">
+              <h3>rawpy + LibRaw</h3>
+              <p>
+                <strong>What it does:</strong> decodes camera RAW
+                files — Nikon NEF, Canon CR2, Sony ARW, Adobe DNG,
+                Fuji RAF, Olympus ORF, Panasonic RW2, Pentax PEF —
+                into the full sensor image, not just the small
+                embedded JPEG preview most apps fall back to.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> LibRaw is the open-
+                source standard that dcraw evolved into; rawpy is the
+                Python binding. Pillow's RAW support is read-only and
+                grabs only the embedded preview. We re-encode the
+                decoded full-resolution image at JPEG q=95 for
+                thumbnails so the gallery shows what your camera
+                actually captured, not what the manufacturer's
+                preview JPEG decided was good enough.
+              </p>
+            </div>
+
+            <div className="card">
+              <h3>LinUCB contextual bandit (compression)</h3>
+              <p>
+                <strong>What it does:</strong> picks the best codec
+                (WebP / MozJPEG / AVIF / JXL) and quality level
+                (55-92) for each image, from a 32-dim feature vector
+                covering resolution, aspect ratio, detected
+                screenshot vs. photo, color count, dynamic range,
+                file-size class, and a few others.
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> a fixed "JPEG q=85"
+                policy gives mediocre results on everything. A neural
+                policy would need training data per user. LinUCB is
+                the contextual-bandit baseline that learns online,
+                converges in dozens of impressions per arm, and stays
+                explainable — you can read the per-arm coefficients
+                and explain exactly why it picked AVIF over WebP for
+                a given image. Per-user telemetry feeds reward back
+                privately; we never share arm state across users.
+              </p>
+            </div>
+
+            <div className="card">
+              <h3>WordNet (via NLTK)</h3>
+              <p>
+                <strong>What it does:</strong> expands every search
+                query into related terms before scoring. "vibrant"
+                also matches summaries that say "colorful", "vivid",
+                "bright", "saturated"; "sunset" matches "dusk",
+                "evening", "golden hour", "twilight".
+              </p>
+              <p style={{ marginTop: 8 }}>
+                <strong>Why this one:</strong> CLIP already handles
+                most of the semantic stretch, but the FTS pass over
+                summaries is token-exact and benefits from explicit
+                synonym expansion. WordNet is offline (no API), tiny
+                (~10 MB), exhaustive for English nouns and adjectives,
+                and has been the standard since 1995 for good
+                reason. We layer a small visual-domain overlay on top
+                for terms WordNet doesn't link well in the
+                photographer sense.
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -526,6 +463,8 @@ export default function Developers() {
 `}<span className="tok-k">POST</span>   /account/totp/codes          <span className="tok-c"># regen recovery codes</span>{`
 `}<span className="tok-k">POST</span>   /account/google/link         <span className="tok-c"># attach Google to existing account</span>{`
 `}<span className="tok-k">GET</span>    /account/trash               <span className="tok-c"># soft-deleted rows</span>{`
+`}<span className="tok-k">POST</span>   /account/export              <span className="tok-c"># portable ZIP (rate-limited)</span>{`
+`}<span className="tok-k">POST</span>   /account/delete              <span className="tok-c"># hard delete (every byte)</span>{`
 
 `}<span className="tok-c"># Images</span>{`
 `}<span className="tok-k">POST</span>   /images/                     <span className="tok-c"># upload</span>{`
@@ -534,7 +473,6 @@ export default function Developers() {
                                   `}<span className="tok-c">#   has_gps, person_id, folder_id,</span>{`
                                   `}<span className="tok-c">#   starred, trashed, tag, all)</span>{`
 `}<span className="tok-k">GET</span>    /images/facets               <span className="tok-c"># filter chip options + counts</span>{`
-`}<span className="tok-k">GET</span>    /images/summarize-progress   <span className="tok-c"># banner counter + self-heal drain</span>{`
 `}<span className="tok-k">GET</span>    /images/{`{id}`}/original        <span className="tok-c"># original bytes</span>{`
 `}<span className="tok-k">GET</span>    /images/{`{id}`}/served          <span className="tok-c"># compressed (?max_dim=N for thumbs)</span>{`
 `}<span className="tok-k">POST</span>   /images/{`{id}`}/star            <span className="tok-c"># toggle favorite</span>{`
@@ -544,13 +482,14 @@ export default function Developers() {
 `}<span className="tok-k">POST</span>   /images/bulk-delete          <span className="tok-c"># bulk soft / hard delete</span>{`
 `}<span className="tok-k">POST</span>   /images/bulk-restore         <span className="tok-c"># restore from trash</span>{`
 `}<span className="tok-k">POST</span>   /images/bulk-move            <span className="tok-c"># move to folder</span>{`
-`}<span className="tok-k">POST</span>   /images/backfill-summaries   <span className="tok-c"># queue resummarize</span>{`
-`}<span className="tok-k">POST</span>   /images/backfill-vision      <span className="tok-c"># run scene/content classifier</span>{`
-`}<span className="tok-k">POST</span>   /images/geo/backfill         <span className="tok-c"># extract EXIF GPS</span>{`
+`}<span className="tok-k">POST</span>   /images/best-of              <span className="tok-c"># rank N selected (sharpness +</span>{`
+                                  `}<span className="tok-c">#   exposure + face + use-case)</span>{`
 
-`}<span className="tok-c"># Folders & sharing</span>{`
-`}<span className="tok-k">GET</span>    /folders/                    <span className="tok-c"># tree</span>{`
+`}<span className="tok-c"># Folders, tags & sharing</span>{`
+`}<span className="tok-k">GET</span>    /folders/                    <span className="tok-c"># tree (?contains_type=image|video|doc)</span>{`
 `}<span className="tok-k">POST</span>   /folders/with-images         <span className="tok-c"># create + move N images atomically</span>{`
+`}<span className="tok-k">GET</span>    /tags/                       <span className="tok-c"># user's tag list</span>{`
+`}<span className="tok-k">POST</span>   /images/{`{id}`}/tags            <span className="tok-c"># attach by id or label</span>{`
 `}<span className="tok-k">POST</span>   /shares/                     <span className="tok-c"># grant a share</span>{`
 `}<span className="tok-k">GET</span>    /shares/incoming             <span className="tok-c"># files shared with me</span>{`
 
@@ -606,76 +545,6 @@ export default function Developers() {
         </div>
       </section>
     </>
-  );
-}
-
-// --------------------------------------------------------------------- //
-// Calculator helpers
-// --------------------------------------------------------------------- //
-
-function NumberRow({
-  label, value, onChange, min, max, step, hint,
-}: {
-  label: string;
-  value: number;
-  onChange: (n: number) => void;
-  min: number;
-  max: number;
-  step: number;
-  hint?: string;
-}) {
-  return (
-    <div className="dev-calc__row">
-      <label>
-        <span className="dev-calc__label">{label}</span>
-        <input
-          type="number"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(e) => {
-            const n = parseFloat(e.target.value);
-            if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
-          }}
-          className="dev-calc__input"
-        />
-      </label>
-      {hint && <p className="dev-calc__hint">{hint}</p>}
-    </div>
-  );
-}
-
-function SizingBar({
-  label, bytes, of, tone,
-}: {
-  label: string;
-  bytes: number;
-  of: number;
-  tone: "ink" | "blue" | "green" | "purple" | "amber" | "gray";
-}) {
-  const pct = of > 0 ? (bytes / of) * 100 : 0;
-  const color = {
-    ink:    "#0a0a0a",
-    blue:   "#2563eb",
-    green:  "#16a34a",
-    purple: "#7c3aed",
-    amber:  "#d97706",
-    gray:   "#8a8a8a",
-  }[tone];
-  return (
-    <div className="dev-calc__bar">
-      <div className="dev-calc__bar-head">
-        <span>{label}</span>
-        <strong>{fmtBytes(bytes)}</strong>
-      </div>
-      <div className="dev-calc__bar-track">
-        <div className="dev-calc__bar-fill" style={{
-          width: `${Math.max(1, Math.min(100, pct))}%`,
-          background: color,
-        }}/>
-      </div>
-    </div>
   );
 }
 
