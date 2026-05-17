@@ -7,8 +7,11 @@
  * experience is good.
  *
  * Third-party "Yes / No / Limited" calls reflect what each provider
- * publicly documents at time of writing. The neuthek column is
- * forward-looking ("Planned ..."): nothing is publicly released.
+ * publicly documents at time of writing. The neuthek column reflects
+ * what is actually working in our development build today — items
+ * are marked "Shipped" when they exist in the engine with tests,
+ * "Planned" when they're committed pre-launch but not yet built. The
+ * product itself is not publicly released.
  *
  * Brand names belong to their respective owners and appear here
  * nominatively to describe each product. */
@@ -20,7 +23,7 @@ type Row = { feature: string; cells: Cell[] };
 type Group = { title: string; subtitle: string; rows: Row[] };
 
 const HEADERS = [
-  "neuthek (planned)",
+  "neuthek",
   "Google Photos",
   "Apple iCloud Photos",
   "Microsoft OneDrive",
@@ -33,7 +36,7 @@ const EXPERIENCE: Row[] = [
   {
     feature: "Search by what you remember (natural language)",
     cells: [
-      { label: "Planned — core feature", tone: "good" },
+      { label: "Shipped — core feature", tone: "good" },
       { label: "Yes", tone: "good" },
       { label: "Yes", tone: "good" },
       { label: "Limited", tone: "mid" },
@@ -42,20 +45,20 @@ const EXPERIENCE: Row[] = [
     ],
   },
   {
-    feature: "Embeddings tuned to your library, not a global model",
+    feature: "Your embeddings stay in your account (no shared index)",
     cells: [
-      { label: "Planned", tone: "good" },
-      { label: "Global model", tone: "bad" },
-      { label: "Global model", tone: "bad" },
-      { label: "Global model", tone: "bad" },
-      { label: "Global model", tone: "bad" },
-      { label: "Global model", tone: "bad" },
+      { label: "Shipped — per-user isolation", tone: "good" },
+      { label: "Shared index", tone: "bad" },
+      { label: "Shared index", tone: "bad" },
+      { label: "Shared index", tone: "bad" },
+      { label: "Shared index", tone: "bad" },
+      { label: "Shared index", tone: "bad" },
     ],
   },
   {
     feature: "Browse without ads, suggestions, or upsell prompts",
     cells: [
-      { label: "Planned", tone: "good" },
+      { label: "By design — no ads, ever", tone: "good" },
       { label: "Mixed", tone: "mid" },
       { label: "Yes", tone: "good" },
       { label: "Mixed", tone: "mid" },
@@ -77,7 +80,7 @@ const EXPERIENCE: Row[] = [
   {
     feature: "Smart compression that picks lossless for documents",
     cells: [
-      { label: "Planned", tone: "good" },
+      { label: "Shipped — picks codec per image", tone: "good" },
       { label: "Lossy default", tone: "mid" },
       { label: "Lossy default", tone: "mid" },
       { label: "Original kept", tone: "good" },
@@ -92,7 +95,7 @@ const TRUST: Row[] = [
   {
     feature: "Your data lives where you say it does",
     cells: [
-      { label: "Planned (self-host)", tone: "good" },
+      { label: "Self-host planned", tone: "good" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -103,7 +106,7 @@ const TRUST: Row[] = [
   {
     feature: "Vector embeddings stored in your own database",
     cells: [
-      { label: "Planned (self-host)", tone: "good" },
+      { label: "Self-host planned", tone: "good" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -114,7 +117,7 @@ const TRUST: Row[] = [
   {
     feature: "Source code is open and auditable",
     cells: [
-      { label: "Planned at release", tone: "good" },
+      { label: "Planned (no committed date)", tone: "good" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -125,12 +128,34 @@ const TRUST: Row[] = [
   {
     feature: "Documented export of your full library",
     cells: [
-      { label: "Planned (pre-launch commitment)", tone: "good" },
+      { label: "Shipped — one-click ZIP", tone: "good" },
       { label: "Yes (Google Takeout)" },
       { label: "Yes" },
       { label: "Yes" },
       { label: "Yes" },
       { label: "Yes" },
+    ],
+  },
+  {
+    feature: "Hard account delete (every byte, every embedding, every face)",
+    cells: [
+      { label: "Shipped — covered by a test", tone: "good" },
+      { label: "Mixed", tone: "mid" },
+      { label: "Mixed", tone: "mid" },
+      { label: "Mixed", tone: "mid" },
+      { label: "Mixed", tone: "mid" },
+      { label: "Mixed", tone: "mid" },
+    ],
+  },
+  {
+    feature: "No AI training on your library",
+    cells: [
+      { label: "Hard guarantee", tone: "good" },
+      { label: "Mixed — see policy", tone: "mid" },
+      { label: "Mixed — see policy", tone: "mid" },
+      { label: "Mixed — see policy", tone: "mid" },
+      { label: "Mixed — see policy", tone: "mid" },
+      { label: "Mixed — see policy", tone: "mid" },
     ],
   },
 ];
@@ -140,7 +165,7 @@ const RUNTIME: Row[] = [
   {
     feature: "No mandatory cloud account",
     cells: [
-      { label: "Planned (self-host)", tone: "good" },
+      { label: "Self-host planned", tone: "good" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
       { label: "No", tone: "bad" },
@@ -151,7 +176,7 @@ const RUNTIME: Row[] = [
   {
     feature: "Runs on your own GPU / NPU",
     cells: [
-      { label: "Planned (CUDA / XPU / MPS)", tone: "good" },
+      { label: "Shipped — CUDA / XPU / Apple Metal", tone: "good" },
       { label: "No", tone: "bad" },
       { label: "Apple devices only", tone: "mid" },
       { label: "No", tone: "bad" },
@@ -173,7 +198,7 @@ const RUNTIME: Row[] = [
   {
     feature: "Available today",
     cells: [
-      { label: "Not yet", tone: "bad" },
+      { label: "Pre-release — join the waitlist", tone: "bad" },
       { label: "Yes" },
       { label: "Yes" },
       { label: "Yes" },
@@ -260,9 +285,12 @@ export default function Compare() {
             Brand names belong to their respective owners and are
             referenced here to describe each product. Third-party
             capabilities reflect public documentation at the time of
-            writing and may change. The neuthek column is
-            forward-looking — nothing in that column is publicly
-            available yet.
+            writing and may change. The neuthek column reflects what
+            is actually in the engine today — items marked{" "}
+            <strong>Shipped</strong> exist with tests; items marked{" "}
+            <strong>Planned</strong> are committed pre-launch but
+            not yet built. The product itself is not publicly
+            released — join the waitlist to be notified at launch.
           </p>
         </div>
       </section>

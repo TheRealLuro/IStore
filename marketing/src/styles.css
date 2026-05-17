@@ -517,27 +517,9 @@ p {
 }
 
 /* ---------- Roadmap ---------- */
-
-.roadmap {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px;
-  margin-top: 40px;
-}
-.roadmap__col h3 {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 16px;
-  font-size: 18px;
-}
-.roadmap__col h3::before {
-  content: "";
-  width: 9px; height: 9px;
-  border-radius: 50%;
-  background: var(--ink-4);
-}
-.roadmap__col--shipped h3::before { background: var(--good); }
-.roadmap__col--building h3::before { background: #f59e0b; }
-.roadmap__col--planned h3::before  { background: var(--ink-4); }
+/* The 3 columns now stack vertically as <details> collapsibles
+   (see .cat-disclosure rules) — what's kept here is just the list
+   styling for items inside an open section. */
 
 .roadmap__list {
   list-style: none;
@@ -555,6 +537,76 @@ p {
   line-height: 1.5;
 }
 .roadmap__list li strong { color: var(--ink); font-weight: 500; }
+
+/* Pre-launch checklist — designed B&W status pills replace the emoji
+   indicators. Each card carries a small icon + uppercase label so the
+   status reads at a glance without looking auto-generated. */
+.checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.checklist__card {
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.checklist__title {
+  font-size: 17px;
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.25;
+}
+.checklist__body {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  margin: 0;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px 4px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  width: fit-content;
+}
+.status-pill__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+.status-pill--done {
+  background: var(--ink);
+  color: var(--surface);
+}
+.status-pill--done .status-pill__icon { color: var(--surface); }
+.status-pill--in-progress {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.status-pill--in-progress .status-pill__icon { color: var(--ink); }
+.status-pill--owed {
+  background: transparent;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+}
+.status-pill--owed .status-pill__icon { color: var(--ink-3); }
+@media (max-width: 480px) {
+  .checklist { grid-template-columns: 1fr; }
+}
 
 /* ---------- Footer ---------- */
 
@@ -916,7 +968,6 @@ p {
   .hero__ctas .btn { flex: 1 1 100%; }
   .btn { padding: 14px 18px; }
   .btn--lg { padding: 16px 22px; font-size: 15px; }
-  .roadmap { gap: 14px; }
   .compare__provider { display: none; }
 }
 
