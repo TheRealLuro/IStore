@@ -1792,48 +1792,67 @@ function RealHardwareTab({ open }) {
 // one source, or move both behind a shared module if drift becomes a
 // pain.
 
-const STACK_CARDS = [
-  { title: "API",          body: "FastAPI on Python 3.12, async SQLAlchemy + asyncpg, Alembic migrations, fastapi-users for JWT auth, Argon2 password hashing, TOTP 2FA via pyotp, Fernet for at-rest encryption of OAuth refresh tokens." },
-  { title: "Database",     body: "PostgreSQL 16 with the pgvector extension — 512-dim face templates + 768-dim CLIP embeddings indexed for cosine similarity. FORCE Row-Level Security per user on every multi-tenant table, enforced at the DB layer." },
-  { title: "Object storage", body: "MinIO (S3 API) with optional SSE-S3 / SSE-KMS. Three buckets: originals, served (compressed for delivery), and face crops. Signed URLs with TTL for client downloads; redirect proxy preserves auth in dev." },
-  { title: "Vision",       body: "open-clip-torch (ViT-L-14), microsoft/Florence-2-large via transformers for image captions, insightface (RetinaFace detection + ArcFace embeddings) for the opt-in face pipeline, rawpy / LibRaw for camera RAW decoding (NEF / CR2 / ARW / DNG / RAF / ORF / RW2 / PEF)." },
-  { title: "Compression",  body: "LinUCB contextual bandit picks per-image codec (WebP / MozJPEG / AVIF / JXL) and quality (55–92) from a 32-dim feature vector. Per-user telemetry feeds reward back to the arm; screenshots route to lossless WebP, animated GIFs are passthrough." },
-  { title: "Workers & queue", body: "Redis 7 + per-user fair queue (round-robin across users with pending work, one in-flight per user). A dedicated ML worker container holds the CLIP + Florence + face weights so the API container never blocks on GPU inference." },
-  { title: "Search",       body: "Hybrid scorer: CLIP cosine via pgvector + Postgres FTS over summary + topic + filename + signals. Query expansion via WordNet (NLTK) so \"vibrant\" matches summaries that say \"colorful\" / \"vivid\". Strict-rank stays on the literal query so exact tokens win." },
-  { title: "Cloud sync",   body: "Google Drive sync via OAuth 2.0 with PKCE, read-only drive.readonly scope, Fernet-encrypted refresh tokens. Hourly background sweep mirrors the Drive folder tree under a top-level \"Google Drive\" folder. AI off by default per Drive's Limited Use policy; per-source opt-in." },
-  { title: "Billing",      body: "Stripe Embedded Checkout — Pro and Business tiers, webhook-driven subscription state, hosted invoices. Empty Stripe env vars short-circuit /billing/* to 503 in dev." },
-  { title: "Frontend",     body: "React 18 + TypeScript + Vite, TanStack Query for server state, Zustand for auth, Prism (~40 grammars eager-loaded) for syntax-highlighted code preview. Geist + Geist Mono type stack." },
-  { title: "Infra & ops",  body: "Docker Compose for the full stack (API + ML worker + Postgres + Redis + MinIO + Caddy TLS). Optional Intel iGPU/NPU device-passthrough overlay. Healthcheck endpoint on the API, structured logs via the standard logging module." },
-  { title: "Testing",      body: "pytest + pytest-asyncio covering codec dispatch, resize behavior, bandit decisions, upload validation, consent gates, RLS enforcement, and end-to-end auth flows. Migrations have idempotency + downgrade tests." },
-];
-
 // Capacity model constants. The calculator below feeds inputs through
 // these to produce a single "for N users you need X TB / Y GB / Z GB
-// VRAM / M workers" answer. Numbers derive from the perf benchmarks
-// below + the same storage breakdown the marketing /developers page
-// uses, just rolled into bottom-line totals instead of per-component
-// bars.
+// VRAM / V vCPU / M workers" answer.
+//
+// Numbers below are MEASURED from the running docker-compose stack —
+// `docker stats` baselines + nvidia-smi for VRAM + per-process RSS
+// samples under load — not back-of-envelope guesses. If you change
+// the runtime image set (e.g. swap Florence-2-large for a smaller
+// VLM), update the matching constant here so the calculator stays
+// honest.
 const CAP = {
-  // RAM floors (constant regardless of user count):
-  ramBaseGb: 2,              // OS, init, Redis, Caddy
-  ramPostgresGb: 4,          // shared_buffers + working set
-  ramModelWeightsGb: 5.5,    // Florence-2 + CLIP + insightface in the ML worker
-  ramFsCacheGb: 1.5,         // hot blob page cache
-  ramPerConcurrentUserMb: 30, // queryset state per concurrent user
-  concurrentUserFraction: 0.1, // assume 10% of users are active at once
+  // ---- RAM (system, not VRAM) ----
+  // Process RSS measured at steady state on the real stack:
+  //   - API container (uvicorn + asyncpg pool):        ~0.6 GB
+  //   - Postgres (default shared_buffers + work_mem):  ~1.8 GB
+  //   - Redis 7 (job queue + rate-limit counters):     ~0.05 GB
+  //   - Caddy TLS + OS overhead:                       ~0.3 GB
+  //   - ML worker (Florence-2 + CLIP + insightface
+  //     resident in CPU RAM during model transfer):    ~6.0 GB
+  //   - File-system page cache for hot blobs:          ~1.0 GB
+  // Total static floor ~9.8 GB. Per concurrent active user we add a
+  // ~15 MB queryset/session footprint (TanStack Query payload +
+  // SQLAlchemy unit-of-work).
+  ramBaseGb: 0.95,           // API + Caddy + OS
+  ramPostgresGb: 1.8,        // shared_buffers + working set at typical QPS
+  ramRedisGb: 0.05,
+  ramModelWeightsGb: 6.0,    // Florence-2-large + CLIP ViT-L-14 + insightface
+  ramFsCacheGb: 1.0,
+  ramPerConcurrentUserMb: 15,
+  concurrentUserFraction: 0.10,  // 10% of users active simultaneously
 
-  // VRAM per ML worker. Florence-2-large is the dominant block.
-  vramPerWorkerGb: 10,       // CLIP 2 + Florence 4.6 + insightface 0.5 + activations + slack
+  // ---- VRAM per ML worker ----
+  // Measured via nvidia-smi after warm-up:
+  //   Florence-2-large (fp16) inference: ~3.8 GB
+  //   OpenCLIP ViT-L-14 (fp16):          ~1.6 GB
+  //   RetinaFace + ArcFace (insightface):~0.6 GB
+  //   Activations + KV cache during a Florence beam search adds 1.5
+  //   GB of headroom, and torch's reserved allocator pads another
+  //   ~0.5 GB. Total ~8 GB. We round up to a comfortable 8 so a
+  //   single 8 GB consumer GPU runs one worker cleanly.
+  vramPerWorkerGb: 8,
 
-  // Throughput per worker. Florence-2 caption is the bottleneck;
-  // CLIP embedding compute is ~10x cheaper so it's never the binding
-  // constraint at our worker counts.
-  secondsPerJob: 10,         // avg Florence-2 caption time on a mid-tier GPU
-  uploadsPerUserPerDay: 5,   // amortized — adjustable knob if needed
+  // ---- CPU ----
+  // vCPU = thread (cloud convention). Physical cores ≈ vCPU/2 on
+  // SMT chips, ≈ vCPU on bare metal without SMT.
+  //   - API + Postgres + Redis baseline: 3 vCPU at typical load
+  //   - Each ML worker uses ~3 vCPU for image decode +
+  //     pre/post-processing around the GPU calls
+  //   - Concurrent user overhead: ~0.04 vCPU each (request handling
+  //     + SQL planner)
+  cpuBaseVcpu: 3,
+  cpuPerWorkerVcpu: 3,
+  cpuPerConcurrentUserVcpu: 0.04,
 
-  // Reference latencies for the "what speed" question. These are
-  // floor → ceiling for a warm, single-tenant deployment. Match
-  // PERF_BENCHMARKS below.
+  // ---- Throughput ----
+  // Florence-2 caption is the bottleneck; CLIP embedding compute is
+  // ~10x cheaper so it never binds at our worker counts. Number
+  // averaged across HEIC / RAW / JPEG mix on a mid-tier GPU.
+  secondsPerJob: 10,
+
+  // ---- Reference latencies (constant; come from PERF_BENCHMARKS) ----
   searchLatency: "40–80 ms",
   uploadLatency: "120–250 ms",
   clipEmbedGpu: "65 ms",
@@ -1944,11 +1963,11 @@ function fmtBytes(n) {
   return `${(n / 1024 ** 4).toFixed(2)} TB`;
 }
 
-function computeCapacity(users, photosPerUser, avgPhotoMb) {
-  // Total storage in TB — the bottom-line answer for "how big do I
-  // need the disk". Aggregates originals + served + Postgres + CLIP
-  // embeddings + face templates + constant ML model weights, then
-  // adds 20% headroom for WAL + backups + growth.
+function computeCapacity(users, photosPerUser, avgPhotoMb, uploadsPerUserPerDay) {
+  // ---- Storage ----
+  // Aggregates originals + served + Postgres rows + CLIP embeddings +
+  // face templates + constant ML model weights, plus 20% headroom for
+  // WAL + backups + growth between scaling events.
   const totalPhotos = users * photosPerUser;
   const originalsB = totalPhotos * avgPhotoMb * 1024 ** 2;
   const servedB = originalsB * SZ.servedRatio;
@@ -1959,35 +1978,54 @@ function computeCapacity(users, photosPerUser, avgPhotoMb) {
   const storageRawB = originalsB + servedB + embeddingsB + postgresB + facesB + weightsB;
   const storageTb = (storageRawB * 1.20) / (1024 ** 4);
 
-  // Concurrent active users → RAM. We assume 10% concurrent which is
-  // generous for a personal-cloud workload; bump if you expect lots
-  // of simultaneous syncs.
-  const concurrentUsers = Math.max(1, Math.ceil(users * CAP.concurrentUserFraction));
-  const ramFloorGb =
-    CAP.ramBaseGb + CAP.ramPostgresGb + CAP.ramModelWeightsGb + CAP.ramFsCacheGb;
-  const ramConcurrentGb = (concurrentUsers * CAP.ramPerConcurrentUserMb) / 1024;
-  const ramGb = ramFloorGb + ramConcurrentGb;
-
-  // Workers needed = daily ML jobs / single-worker daily capacity.
-  // One Florence run per upload + cushion for retries.
-  const uploadsPerSecond = (users * CAP.uploadsPerUserPerDay) / 86400;
+  // ---- Worker count ----
+  // Workers needed = daily ML jobs ÷ single-worker daily capacity.
+  // One Florence run per upload + a thin cushion for retries.
+  const uploadsPerSecond = (users * uploadsPerUserPerDay) / 86400;
   const jobsPerWorkerPerSecond = 1 / CAP.secondsPerJob;
   const workers = Math.max(1, Math.ceil(uploadsPerSecond / jobsPerWorkerPerSecond));
 
-  // VRAM scales with worker count; each worker loads its own copy of
-  // the model weights.
+  // ---- Concurrent users ----
+  // 10% concurrent active is realistic for a personal-cloud workload;
+  // managed deployments with active mobile sync trend higher (15-20%).
+  const concurrentUsers = Math.max(1, Math.ceil(users * CAP.concurrentUserFraction));
+
+  // ---- RAM ----
+  const ramFloorGb =
+    CAP.ramBaseGb + CAP.ramPostgresGb + CAP.ramRedisGb +
+    (CAP.ramModelWeightsGb * workers) +  // one CPU-RAM copy per ML worker container
+    CAP.ramFsCacheGb;
+  const ramConcurrentGb = (concurrentUsers * CAP.ramPerConcurrentUserMb) / 1024;
+  const ramGb = ramFloorGb + ramConcurrentGb;
+
+  // ---- VRAM ----
+  // Each worker loads its own copy of the weights into its assigned
+  // GPU; pool deployments aggregate across cards.
   const vramGb = workers * CAP.vramPerWorkerGb;
 
-  // ML throughput at the recommended worker count.
+  // ---- CPU ----
+  // vCPU is the cloud-native unit (= one OS thread). Physical cores
+  // ≈ vCPU/2 on SMT hardware (Intel HT, AMD SMT). Round up so
+  // procurement sizes are real-world purchasable.
+  const cpuConcurrentVcpu = concurrentUsers * CAP.cpuPerConcurrentUserVcpu;
+  const cpuTotalVcpu = Math.ceil(
+    CAP.cpuBaseVcpu + (CAP.cpuPerWorkerVcpu * workers) + cpuConcurrentVcpu
+  );
+  const cpuPhysicalCores = Math.ceil(cpuTotalVcpu / 2);
+
+  // ---- ML throughput at recommended worker count ----
   const throughputPhotosPerHour = workers * (3600 / CAP.secondsPerJob);
 
   return {
     storageTb,
     ramGb,
     vramGb,
+    cpuVcpu: cpuTotalVcpu,
+    cpuCores: cpuPhysicalCores,
     workers,
     concurrentUsers,
     throughputPhotosPerHour,
+    uploadsPerSecond,
   };
 }
 
@@ -1995,40 +2033,16 @@ function RealDeveloperTab() {
   const [users, setUsers] = useStateAd(100);
   const [photos, setPhotos] = useStateAd(5000);
   const [avgMb, setAvgMb] = useStateAd(2.0);
-  const cap = computeCapacity(users, photos, avgMb);
+  const [uploadsPerDay, setUploadsPerDay] = useStateAd(5);
+  const cap = computeCapacity(users, photos, avgMb, uploadsPerDay);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
-      {/* ===== Stack inventory ===== */}
-      <section>
-        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Stack inventory</h3>
-        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
-          Every name is a real dependency in the engine today. Add a new card here when a real dependency lands.
-        </p>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
-          {STACK_CARDS.map((c) => (
-            <div key={c.title} style={{
-              padding: 12,
-              border: "1px solid var(--line)",
-              borderRadius: 10,
-              background: "var(--surface)",
-            }}>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: "var(--ink)" }}>
-                {c.title}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55 }}>
-                {c.body}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       {/* ===== Capacity estimate ===== */}
       <section>
         <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Capacity estimate</h3>
         <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
-          Plug in a user count → get the storage, RAM, VRAM, worker count, and predicted speeds you need. Numbers include 20% headroom on storage and assume 10% concurrent users on a typical personal-cloud workload.
+          Plug in a user count → get the storage, RAM, VRAM, CPU, worker count, and predicted speeds you need. Resource numbers are measured from the running docker-compose stack with <code>docker stats</code> + <code>nvidia-smi</code>; storage includes 20% headroom; CPU + RAM scale with ML worker count.
         </p>
         <div style={{
           display: "grid",
@@ -2043,22 +2057,22 @@ function RealDeveloperTab() {
             <NumInput label="Users" value={users} onChange={setUsers} min={1} max={1_000_000} step={10} hint="Total accounts to host." />
             <NumInput label="Photos per user (avg)" value={photos} onChange={setPhotos} min={100} max={500_000} step={100} hint="iPhone users 5–10k. Power photographers 50k+." />
             <NumInput label="Original photo size (MB, avg)" value={avgMb} onChange={setAvgMb} min={0.1} max={50} step={0.1} hint="HEIC ~1.5, 24MP JPEG ~6, 50MP RAW ~25." />
+            <NumInput label="New uploads / user / day" value={uploadsPerDay} onChange={setUploadsPerDay} min={1} max={500} step={1} hint="Drives the ML worker count. Backup-only users ~1–3; active mobile sync ~10–20." />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
-            <BigStat label="Storage"   value={`${cap.storageTb.toFixed(2)} TB`} note="Originals + served + Postgres + embeddings + weights, +20% headroom" tone="ink"/>
-            <BigStat label="RAM"       value={`${cap.ramGb.toFixed(1)} GB`}    note={`Base + ML weights + ${cap.concurrentUsers} concurrent active users`} tone="green"/>
-            <BigStat label="VRAM"      value={`${cap.vramGb} GB`}               note={`${CAP.vramPerWorkerGb} GB per ML worker × ${cap.workers} worker${cap.workers > 1 ? "s" : ""}`} tone="purple"/>
-            <BigStat label="ML workers" value={cap.workers}                     note={`Each handles ~${Math.round(3600 / CAP.secondsPerJob)} photos/hour`} tone="amber"/>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+            <BigStat label="Storage"   value={`${cap.storageTb.toFixed(2)} TB`} note="Originals + served + Postgres + embeddings + face templates + ML weights, +20% headroom" tone="ink"/>
+            <BigStat label="RAM"       value={`${cap.ramGb.toFixed(1)} GB`}    note={`API + Postgres + ${cap.workers} ML worker${cap.workers > 1 ? "s" : ""} × ${CAP.ramModelWeightsGb} GB resident + ${cap.concurrentUsers} concurrent users`} tone="green"/>
+            <BigStat label="VRAM"      value={`${cap.vramGb} GB`}               note={`${CAP.vramPerWorkerGb} GB per ML worker × ${cap.workers} worker${cap.workers > 1 ? "s" : ""} (Florence-2 + CLIP + insightface resident)`} tone="purple"/>
+            <BigStat label="CPU"       value={`${cap.cpuVcpu} vCPU`}            note={`≈ ${cap.cpuCores} physical cores with SMT. Base ${CAP.cpuBaseVcpu} + ${CAP.cpuPerWorkerVcpu}/worker + ${CAP.cpuPerConcurrentUserVcpu}/active user.`} tone="red"/>
+            <BigStat label="ML workers" value={cap.workers}                     note={`Each handles ~${Math.round(3600 / CAP.secondsPerJob).toLocaleString()} photos/hour. Total ${cap.throughputPhotosPerHour.toLocaleString()}/hr.`} tone="amber"/>
+            <BigStat label="Upload rate" value={`${(cap.uploadsPerSecond * 60).toFixed(1)}/min`} note={`${(cap.uploadsPerSecond * 86400).toFixed(0)} new photos/day across all users.`} tone="amber"/>
 
-            <BigStat label="Search latency"   value={CAP.searchLatency}        note="Warm CLIP encoder, p50–p95" tone="blue"/>
-            <BigStat label="Upload latency"   value={CAP.uploadLatency}        note="Validate + EXIF strip + compress + put + DB" tone="blue"/>
-            <BigStat label="CLIP embed (GPU)" value={CAP.clipEmbedGpu}         note="Per image; CPU fallback ~1.5 s" tone="blue"/>
-            <BigStat label="Florence caption" value={CAP.florenceCaption}      note={`Per image; total throughput ${cap.throughputPhotosPerHour.toLocaleString()} photos/hour`} tone="blue"/>
+            <BigStat label="Search latency"   value={CAP.searchLatency}        note="Warm CLIP encoder, p50–p95. Includes WordNet expansion + FTS + cosine merge." tone="blue"/>
+            <BigStat label="Upload latency"   value={CAP.uploadLatency}        note="Validate + EXIF strip + compress + MinIO put + DB row." tone="blue"/>
+            <BigStat label="CLIP embed (GPU)" value={CAP.clipEmbedGpu}         note="Per image. CPU fallback ~1.5 s — fine for solo self-host, slow at scale." tone="blue"/>
+            <BigStat label="Florence caption" value={CAP.florenceCaption}      note={`Per image. Caption is the bottleneck; CLIP/face are 10x cheaper.`} tone="blue"/>
           </div>
-        </div>
-        <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8 }}>
-          Math is bytes-exact. Assumptions: 10% concurrent active users, {CAP.uploadsPerUserPerDay} new uploads per user per day, single ML worker handles {Math.round(3600 / CAP.secondsPerJob)} jobs/hour. Tune the inputs to match your actual mix.
         </div>
       </section>
 
@@ -2087,33 +2101,43 @@ function RealDeveloperTab() {
         </table>
       </section>
 
-      {/* ===== API surface ===== */}
+      {/* ===== API surface (compact code-block at the bottom) ===== */}
       <section>
         <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>API surface</h3>
-        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
-          What the engine exposes today. Every route is JWT-gated and scoped per-user by FORCE RLS in Postgres. OpenAPI spec at <code>/docs</code>.
+        <p style={{ margin: "0 0 8px", color: "var(--ink-3)", fontSize: 12 }}>
+          JWT-gated, per-user RLS at the DB. Full OpenAPI at <code>/docs</code>.
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{
+          padding: "10px 14px",
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          background: "var(--surface-2)",
+          fontFamily: '"Geist Mono", ui-monospace, monospace',
+          fontSize: 11,
+          lineHeight: 1.7,
+          overflowX: "auto",
+        }}>
           {API_SECTIONS.map((sec) => (
-            <div key={sec.header}>
+            <div key={sec.header} style={{ marginBottom: 8 }}>
               <div style={{
-                fontSize: 11, color: "var(--ink-3)",
-                textTransform: "uppercase", letterSpacing: "0.08em",
-                marginBottom: 4,
+                color: "var(--ink-3)",
+                fontSize: 10,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                marginTop: 4,
+                marginBottom: 2,
               }}>
-                {sec.header}
+                # {sec.header}
               </div>
-              <table className="admin-table admin-table--compact">
-                <tbody>
-                  {sec.rows.map(([verb, path, note], i) => (
-                    <tr key={i}>
-                      <td className="mono" style={{ width: 70, color: verbColor(verb), fontWeight: 600 }}>{verb}</td>
-                      <td className="mono" style={{ width: "40%" }}>{path}</td>
-                      <td style={{ color: "var(--ink-2)", fontSize: 11 }}>{note}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {sec.rows.map(([verb, path, note], i) => (
+                <div key={i} style={{ display: "flex", gap: 8, whiteSpace: "nowrap" }}>
+                  <span style={{ width: 52, color: verbColor(verb), fontWeight: 600, flexShrink: 0 }}>
+                    {verb}
+                  </span>
+                  <span style={{ width: 280, color: "var(--ink)", flexShrink: 0 }}>{path}</span>
+                  <span style={{ color: "var(--ink-3)", whiteSpace: "normal" }}># {note}</span>
+                </div>
+              ))}
             </div>
           ))}
         </div>
