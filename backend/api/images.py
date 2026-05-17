@@ -1410,10 +1410,16 @@ class BestOfBody(BaseModel):
       - overall:  single ranked list — top result is the keeper.
       - burst:    cluster by CLIP cosine sim, return best per cluster.
       - use_case: composite quality × CLIP cosine to a use-case prompt.
+
+    `use_case` accepts either:
+      - A preset key from USE_CASE_PROMPTS (e.g. "portrait", "sunset")
+      - A free-text prompt up to 80 chars (e.g. "vintage car",
+        "garden plants"). The backend wraps it in
+        "a sharp well-composed photograph of <text>" before encoding.
     """
     image_ids: list[UUID] = Field(..., min_length=2, max_length=30)
     mode: str = Field(default="overall", pattern="^(overall|burst|use_case)$")
-    use_case: str | None = Field(default=None, max_length=32)
+    use_case: str | None = Field(default=None, max_length=100)
 
 
 @router.post("/best-of")
@@ -1443,7 +1449,7 @@ async def images_best_of(
         detail="Too many best-of requests. Try again in a few minutes.",
     )
 
-    results = await best_of(
+    results, resolved_prompt = await best_of(
         session=session,
         user_id=user.id,
         image_ids=body.image_ids,
@@ -1453,6 +1459,10 @@ async def images_best_of(
     return {
         "mode": body.mode,
         "use_case": body.use_case,
+        # The actual CLIP prompt we ran (after preset lookup + free-text
+        # wrapping). Echo so the FE can show "Scored by: …" and the
+        # user can confirm their typed prompt was applied.
+        "resolved_prompt": resolved_prompt,
         "results": [
             {
                 "image_id": str(r.image_id),

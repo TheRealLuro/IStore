@@ -31,15 +31,43 @@ import {
 import { AuthedThumb, useAuthedBlobUrl } from "./auth-image.jsx";
 import { pickBestOf, bulkDelete, servedUrl } from "@/api/files";
 
-// Use-case prompts — keep aligned with backend/best_of.py USE_CASE_PROMPTS.
+// Use-case preset chips. The user can also type free text into the
+// custom input — handled by passing the raw string as `useCase` and
+// letting the backend wrap it in the "a sharp well-composed
+// photograph of <text>" template via _resolve_use_case_prompt.
+// Keep this list aligned with backend/best_of.py USE_CASE_PROMPTS.
 const USE_CASES = [
-  { id: "portrait",  label: "Portrait" },
-  { id: "landscape", label: "Landscape" },
-  { id: "social",    label: "Social media" },
-  { id: "print",     label: "Print quality" },
-  { id: "candid",    label: "Candid" },
-  { id: "pet",       label: "Pet" },
+  // People
+  { id: "portrait",  label: "Portrait",  group: "People" },
+  { id: "candid",    label: "Candid",    group: "People" },
+  { id: "group",     label: "Group",     group: "People" },
+  { id: "kids",      label: "Kids",      group: "People" },
+  { id: "pet",       label: "Pet",       group: "People" },
+  { id: "wedding",   label: "Wedding",   group: "People" },
+  // Scenes
+  { id: "landscape", label: "Landscape", group: "Scenes" },
+  { id: "sunset",    label: "Sunset",    group: "Scenes" },
+  { id: "nature",    label: "Nature",    group: "Scenes" },
+  { id: "city",      label: "City",      group: "Scenes" },
+  { id: "architecture", label: "Architecture", group: "Scenes" },
+  { id: "interior",  label: "Interior",  group: "Scenes" },
+  { id: "travel",    label: "Travel",    group: "Scenes" },
+  // Content
+  { id: "food",      label: "Food",      group: "Content" },
+  { id: "product",   label: "Product",   group: "Content" },
+  { id: "document",  label: "Document",  group: "Content" },
+  { id: "screenshot",label: "Screenshot",group: "Content" },
+  { id: "art",       label: "Art",       group: "Content" },
+  { id: "macro",     label: "Macro",     group: "Content" },
+  { id: "sports",    label: "Sports",    group: "Content" },
+  // Style
+  { id: "social",    label: "Social",    group: "Style" },
+  { id: "print",     label: "Print",     group: "Style" },
+  { id: "black-and-white", label: "B&W", group: "Style" },
+  { id: "vintage",   label: "Vintage",   group: "Style" },
+  { id: "minimal",   label: "Minimal",   group: "Style" },
 ];
+const USE_CASE_GROUPS = ["People", "Scenes", "Content", "Style"];
 
 const MODES = [
   { id: "overall",  label: "Overall best",  hint: "Single best photo in the selection" },
@@ -65,7 +93,15 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
   const [pickedIdx, setPickedIdx] = useStateBo(null);
   const [progress, setProgress] = useStateBo(0);
   const [mode, setMode] = useStateBo("overall");
+  // `useCase` is the value we'll send to the backend. It's either a
+  // preset id ("portrait") or arbitrary free text ("vintage car").
+  // `customText` is the live value of the typed-in input box; when
+  // the user submits it (Enter or blur), we set useCase = customText.
   const [useCase, setUseCase] = useStateBo("portrait");
+  const [customText, setCustomText] = useStateBo("");
+  // Resolved prompt echoed back from the backend so the user can see
+  // exactly what their typed prompt got expanded to.
+  const [resolvedPrompt, setResolvedPrompt] = useStateBo(null);
   const [error, setError] = useStateBo("");
   const [busyKeep, setBusyKeep] = useStateBo(false);
 
@@ -110,6 +146,7 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
         if (mode === "use_case") opts.useCase = useCase;
         const resp = await pickBestOf(imageIds, opts);
         if (cancelled) return;
+        setResolvedPrompt(resp.resolved_prompt || null);
         // Merge scores back by image_id; preserve the user's original
         // selection order in the display, not the backend ranking.
         const byId = new Map(resp.results.map((r) => [r.image_id, r]));
@@ -322,19 +359,105 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
                 ))}
               </div>
               {mode === "use_case" && (
-                <div className="bo2-criteria" style={{ marginTop: 6 }}>
-                  {USE_CASES.map((u) => (
-                    <button
-                      key={u.id}
-                      className="bo2-crit"
-                      data-active={useCase === u.id}
-                      onClick={() => { setUseCase(u.id); setStep("analyze"); }}
-                      style={{ fontSize: 11 }}
-                    >
-                      {useCase === u.id && <Icon name="check" size={9} strokeWidth={2.6}/>}
-                      {u.label}
-                    </button>
+                <div style={{ marginTop: 6 }}>
+                  {/* Free-text input — type anything ("garden", "vintage
+                      car", "skateboard tricks") and the backend wraps it
+                      with the photo-prompt template. Submit on Enter or
+                      blur (when the value changed). */}
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                    <input
+                      type="text"
+                      placeholder='Or type a custom use case — e.g. "vintage car", "garden plants"'
+                      value={customText}
+                      onChange={(e) => setCustomText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && customText.trim()) {
+                          e.preventDefault();
+                          setUseCase(customText.trim());
+                          setStep("analyze");
+                        }
+                      }}
+                      onBlur={() => {
+                        const v = customText.trim();
+                        if (v && v.toLowerCase() !== useCase.toLowerCase()) {
+                          setUseCase(v);
+                          setStep("analyze");
+                        }
+                      }}
+                      maxLength={80}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        padding: "8px 12px",
+                        border: "1px solid var(--line)",
+                        borderRadius: 999,
+                        background: "var(--surface)",
+                        color: "var(--ink)",
+                        fontSize: 13,
+                        outline: "none",
+                      }}
+                    />
+                    {customText.trim() && (
+                      <button
+                        type="button"
+                        className="btn btn--secondary btn--sm"
+                        onClick={() => {
+                          setUseCase(customText.trim());
+                          setStep("analyze");
+                        }}
+                      >
+                        Apply
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Preset chips, grouped. Click to apply immediately. */}
+                  {USE_CASE_GROUPS.map((g) => (
+                    <div key={g} style={{ marginBottom: 6 }}>
+                      <div style={{
+                        fontSize: 10, color: "var(--ink-3)",
+                        textTransform: "uppercase", letterSpacing: "0.08em",
+                        margin: "4px 0 4px",
+                      }}>
+                        {g}
+                      </div>
+                      <div className="bo2-criteria">
+                        {USE_CASES.filter((u) => u.group === g).map((u) => (
+                          <button
+                            key={u.id}
+                            className="bo2-crit"
+                            data-active={useCase === u.id}
+                            onClick={() => {
+                              setUseCase(u.id);
+                              setCustomText("");
+                              setStep("analyze");
+                            }}
+                            style={{ fontSize: 11 }}
+                          >
+                            {useCase === u.id && <Icon name="check" size={9} strokeWidth={2.6}/>}
+                            {u.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
+
+                  {/* Echo the actual CLIP prompt the backend ran. Lets
+                      the user confirm their typed text got applied (vs.
+                      silently swallowed) and see what preset chips
+                      expand to under the hood. */}
+                  {resolvedPrompt && (
+                    <div style={{
+                      marginTop: 8, padding: "6px 10px",
+                      background: "var(--surface-2)",
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      fontSize: 11.5, color: "var(--ink-2)",
+                      fontFamily: "ui-monospace, 'Geist Mono', monospace",
+                    }}>
+                      <span style={{ color: "var(--ink-3)" }}>Scored by:</span> "{resolvedPrompt}"
+                    </div>
+                  )}
                 </div>
               )}
 

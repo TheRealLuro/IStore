@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 from uuid import UUID
@@ -44,19 +45,74 @@ from backend.models import FaceDetection, Image
 logger = logging.getLogger(__name__)
 
 
-# CLIP text prompts for the use-case mode. Each one is encoded once,
-# cosine'd against every image's stored embedding, and rolled into the
-# composite score. Keep them short + concrete — CLIP responds better
-# to "a sharp professional portrait photograph" than to "the best
-# portrait photo".
+# Preset use-case prompts. The frontend renders these as one-tap chips.
+# Users can also type any free-text prompt (handled by
+# `_resolve_use_case_prompt` below) — these are just the common ones we
+# want to give one-click access to.
+#
+# Keep each prompt short + concrete — CLIP responds better to
+# "a sharp professional portrait photograph" than to "the best portrait".
 USE_CASE_PROMPTS: dict[str, str] = {
-    "portrait":  "a sharp professional portrait photograph of a person",
-    "landscape": "a stunning wide landscape photograph",
-    "social":    "a vibrant engaging social-media photo",
-    "print":     "a high-resolution print-quality photograph",
-    "candid":    "a natural candid photograph with great expression",
-    "pet":       "a charming photograph of a pet animal",
+    # People
+    "portrait":      "a sharp professional portrait photograph of a person",
+    "candid":        "a natural candid photograph with great expression",
+    "group":         "a sharp group photograph with everyone visible",
+    "kids":          "a sharp photograph of children with natural expression",
+    "pet":           "a charming photograph of a pet animal",
+    "wedding":       "a beautiful wedding photograph",
+    # Scenes
+    "landscape":     "a stunning wide landscape photograph",
+    "sunset":        "a dramatic sunset or golden-hour photograph",
+    "nature":        "a beautiful nature photograph",
+    "city":          "a striking urban cityscape photograph",
+    "architecture":  "a sharp architectural photograph of a building",
+    "interior":      "a well-composed interior photograph of a room",
+    "travel":        "a vivid travel photograph",
+    # Content
+    "food":          "an appetizing photograph of food",
+    "product":       "a clean product photograph with good lighting",
+    "document":      "a clear photograph of a document or page of text",
+    "screenshot":    "a clean screenshot",
+    "art":           "an artistic photograph with strong composition",
+    "macro":         "a detailed close-up macro photograph",
+    "sports":        "an action sports photograph with sharp motion",
+    # Style
+    "social":        "a vibrant engaging social-media photo",
+    "print":         "a high-resolution print-quality photograph",
+    "black-and-white": "a striking black-and-white photograph",
+    "vintage":       "a warm vintage-style photograph",
+    "minimal":       "a clean minimalist photograph",
 }
+
+
+# Free-text use-case prompts are wrapped with framing words so CLIP
+# treats the user's nouns like a photo description. Keeps "garden" or
+# "vintage car" from matching anything literal in the embedding space.
+_FREE_TEXT_TEMPLATE = "a sharp well-composed photograph of {q}"
+# Strip control chars + cap length. Lets through plain words, numbers,
+# spaces, hyphens, underscores — same alphabet CLIP's tokenizer handles
+# well. Anything else gets dropped silently.
+_SAFE_PROMPT = re.compile(r"[^\w\s\-]")
+
+
+def _resolve_use_case_prompt(use_case: Optional[str]) -> Optional[str]:
+    """Map the `use_case` string to a CLIP prompt.
+
+      - Empty / None      → no prompt, skip CLIP scoring.
+      - Preset key match  → canned prompt from USE_CASE_PROMPTS.
+      - Free text         → wrapped in _FREE_TEXT_TEMPLATE, sanitized.
+    """
+    if not use_case:
+        return None
+    key = use_case.strip().lower()
+    if not key:
+        return None
+    if key in USE_CASE_PROMPTS:
+        return USE_CASE_PROMPTS[key]
+    cleaned = _SAFE_PROMPT.sub(" ", key).strip()[:80]
+    if not cleaned:
+        return None
+    return _FREE_TEXT_TEMPLATE.format(q=cleaned)
 
 # Cosine similarity threshold above which two photos are considered
 # the same burst. Empirically: hand-held burst frames from the same
@@ -181,8 +237,13 @@ async def best_of(
     image_ids: list[UUID],
     mode: str = "overall",
     use_case: Optional[str] = None,
-) -> list[BestOfScore]:
+) -> tuple[list[BestOfScore], Optional[str]]:
     """Score the given images and return them ranked best-first.
+
+    Returns `(results, resolved_prompt)` where `resolved_prompt` is the
+    actual CLIP text prompt used for use-case mode (after preset
+    lookup + free-text wrapping), or None when no prompt was applied.
+    The endpoint echoes this back so the UI can show "Scored by: …".
 
     Owner-scoped via `Image.user_id == user_id` — ids belonging to
     other users are silently dropped from the result rather than
@@ -198,7 +259,7 @@ async def best_of(
         )
     ).scalars().all()
     if not rows:
-        return []
+        return [], None
 
     # Fetch served bytes in parallel — that's the dominant per-image
     # cost (one MinIO GET each). We use the served (compressed) variant,
@@ -247,13 +308,19 @@ async def best_of(
     ]
 
     # Use-case CLIP cosine — only computed when mode='use_case'.
+    # Accepts either a preset key (mapped via USE_CASE_PROMPTS) OR a
+    # free-text string from the user (e.g. "garden", "vintage car"),
+    # wrapped via _resolve_use_case_prompt into a photo-framed prompt.
     use_case_scores = [50.0] * len(rows)
-    if mode == "use_case" and use_case and use_case in USE_CASE_PROMPTS:
+    resolved_prompt: Optional[str] = None
+    if mode == "use_case":
+        resolved_prompt = _resolve_use_case_prompt(use_case)
+    if resolved_prompt:
         try:
             from backend.vision.runtime import encode_text_cached
             from backend.vision.inference_pool import run_in_inference_pool
             prompt_vec_raw = await run_in_inference_pool(
-                encode_text_cached, USE_CASE_PROMPTS[use_case]
+                encode_text_cached, resolved_prompt
             )
             prompt_vec = _l2_norm_or_none(prompt_vec_raw)
             if prompt_vec is not None:
@@ -313,4 +380,4 @@ async def best_of(
         ))
 
     results.sort(key=lambda r: r.score, reverse=True)
-    return results
+    return results, resolved_prompt

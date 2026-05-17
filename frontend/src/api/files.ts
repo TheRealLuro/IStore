@@ -178,6 +178,12 @@ export interface BestOfScore {
 export interface BestOfResponse {
   mode: "overall" | "burst" | "use_case";
   use_case: string | null;
+  /** The CLIP prompt the backend actually ran — preset prompt looked up
+   *  via the canned dictionary OR free text wrapped in the
+   *  "a sharp well-composed photograph of <text>" template. Null when
+   *  no use-case prompt was applied. UI surfaces this so users can see
+   *  exactly what their typed prompt got expanded to. */
+  resolved_prompt: string | null;
   results: BestOfScore[];
 }
 export async function pickBestOf(
