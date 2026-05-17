@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180">
+  <!-- 180x180 — Apple's standard touch-icon size, also picked up by
+       some SERP variants and PWA add-to-home prompts. Constellation
+       sits in the inner ~60% so a circular crop / rounded-square
+       crop doesn't clip the mark. -->
+  <rect width="180" height="180" rx="40" ry="40" fill="#0a0a0a"/>
+  <g transform="translate(36 36) scale(1.7)" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="18" y1="44" x2="22" y2="18"/>
+    <line x1="22" y1="18" x2="44" y2="44"/>
+    <line x1="44" y1="44" x2="48" y2="20"/>
+    <line x1="18" y1="28" x2="34" y2="30"/>
+    <line x1="34" y1="30" x2="48" y2="20"/>
+  </g>
+  <g transform="translate(36 36) scale(1.7)" fill="#ffffff">
+    <circle cx="18" cy="44" r="3.4"/>
+    <circle cx="22" cy="18" r="3.4"/>
+    <circle cx="44" cy="44" r="3.4"/>
+    <circle cx="18" cy="28" r="2.6"/>
+    <circle cx="34" cy="30" r="2.6"/>
+    <circle cx="48" cy="20" r="4.8"/>
+  </g>
+</svg>

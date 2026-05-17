@@ -1,20 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect x="0" y="0" width="32" height="32" rx="8" ry="8" fill="#0a0a0a"/>
-  <rect x="1.5" y="1.5" width="29" height="29" rx="6.5" ry="6.5"
-        fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-  <g stroke="#ffffff" stroke-width="0.7" stroke-linecap="round" opacity="0.55">
-    <line x1="9"  y1="22" x2="11" y2="9" />
-    <line x1="11" y1="9"  x2="22" y2="22" />
-    <line x1="22" y1="22" x2="24" y2="10" />
-    <line x1="9"  y1="14" x2="17" y2="15" />
-    <line x1="17" y1="15" x2="24" y2="10" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Solid black rounded square so the mark reads at any size,
+       including Google SERP's ~16x16 rasterisation. The constellation
+       glyph uses bold strokes (1.8 / 2.4 px on a 64-unit canvas, so
+       still visible at 16x16) and no opacity reduction. -->
+  <rect width="64" height="64" rx="16" ry="16" fill="#0a0a0a"/>
+  <g stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="18" y1="44" x2="22" y2="18"/>
+    <line x1="22" y1="18" x2="44" y2="44"/>
+    <line x1="44" y1="44" x2="48" y2="20"/>
+    <line x1="18" y1="28" x2="34" y2="30"/>
+    <line x1="34" y1="30" x2="48" y2="20"/>
   </g>
   <g fill="#ffffff">
-    <circle cx="9"  cy="22" r="1.4" />
-    <circle cx="11" cy="9"  r="1.4" />
-    <circle cx="22" cy="22" r="1.4" />
-    <circle cx="9"  cy="14" r="1.0" />
-    <circle cx="17" cy="15" r="1.0" />
-    <circle cx="24" cy="10" r="2.3" />
+    <circle cx="18" cy="44" r="3.4"/>
+    <circle cx="22" cy="18" r="3.4"/>
+    <circle cx="44" cy="44" r="3.4"/>
+    <circle cx="18" cy="28" r="2.6"/>
+    <circle cx="34" cy="30" r="2.6"/>
+    <circle cx="48" cy="20" r="4.8"/>
   </g>
 </svg>
