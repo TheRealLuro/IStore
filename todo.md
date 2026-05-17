@@ -8,7 +8,12 @@ This file tracks **what's still open** — broken, partial, or planned.
 Shipped work isn't listed here; read `git log` for that.
 
 **Next up:** Sprint D (sharing + onboarding). Sprint C compliance
-work (A2/A4/A5/A6/A7) all shipped 2026-05-16; see §11.
+work (A2/A4/A5/A6/A7) all shipped 2026-05-16; D7 (best-of picker) +
+C8.5–C8.7 (per-user fair queue + heavy-endpoint rate limits + admin
+Developer tab) shipped 2026-05-17. See §11. Weekly drafts of the
+public /updates entry live in [updates.md](updates.md) — collect
+each shipped item there as it lands so the Friday publish is a
+copy/paste.
 
 ---
 
@@ -549,12 +554,66 @@ Tokens close to Apple HIG, shadows strictly small
 ### C8. Dev / Admin dashboard
 > C8.1 visual overhaul + C8.2 model/worker visibility (heartbeats,
 > model_runs, VRAM-per-user estimator) shipped — see git log.
+> C8.3 Quick-action runners + C8.4 Queue tab + C8.5 Developer tab
+> all shipped 2026-05-17 (see §C8.5 / §C8.6 below).
+- ✅ **C8.3 Quick-action runners** — Account → AI features →
+  Library maintenance now exposes Reprocess summaries, Re-scan all
+  faces, Generate PDF thumbnails, and Reclassify images (vision
+  backfill for Drive-synced photos that skipped vision at upload).
+  All four are user-scoped + rate-limited (see §C8.6).
 - ⏳ **C8.2+ Training-run telemetry** (step / loss curve / ETA) — lands
   alongside D6 fine-tuning. Extends `model_runs` with `started_at` /
   `finished_at` / `val_loss` / `artifact_key`.
-- ⏳ **C8.3 Quick-action runners**: from the dev view, trigger a
-  re-summarize, re-embed, or re-detect-faces for a user / folder /
-  date range without leaving the UI.
+
+### C8.5. Per-user fair queue + Queue tab ✅ SHIPPED 2026-05-17
+> The job queue was a single Redis FIFO — a user kicking off a 500-job
+> "reclassify entire library" pass starved every other user on the
+> shared ML thread for the rest of the run. Rewrote
+> [backend/jobs.py](backend/jobs.py) as per-user lists with
+> round-robin worker pull (`fair_dequeue`). Per-user in-flight cap of
+> 1 means the user who just got served goes to the back of the line;
+> per-user queue cap of 1000 prevents a script from filling Redis.
+>
+> Admin Queue tab (in `admin.jsx`) shows per-user pending depth +
+> in-flight counters + rate-limit headroom for every gated endpoint,
+> plus a Drain button per row that calls
+> `POST /admin/queue/drain-user`. Polls every 3 s. The scheduler
+> config (caps + windows) is exposed at the top so operators can
+> verify what's actually being enforced.
+
+### C8.6. Heavy-endpoint rate limits ✅ SHIPPED 2026-05-17
+> Every endpoint that triggers ML work now has a per-user hourly
+> limit via the existing `enforce_rate_limit` helper. Keyed on
+> `ml:<endpoint>:<user_id>` so the existing
+> [/admin/queue](backend/api/admin.py) endpoint can read the
+> headroom for the dashboard.
+>
+> | Endpoint | Limit | Why |
+> |---|---|---|
+> | `POST /images/backfill-summaries` | 3 / hour | Each call queues up to 500 jobs |
+> | `POST /images/backfill-vision` | 3 / hour | Inline pipeline, minutes of GPU |
+> | `POST /images/{id}/resummarize` | 30 / hour | Per-item retries should feel free |
+> | `POST /images/{id}/redetect-faces` | 30 / hour | Cascade detector is heavy |
+> | `POST /people/detect-and-label` | 10 / hour | × 50 images per call = 500 runs/hr cap |
+> | `POST /images/best-of` | 30 / hour | OpenCV + CLIP encode on up to 30 photos |
+
+### C8.7. Admin Developer tab ✅ SHIPPED 2026-05-17
+> New "Developer" tab in the admin overlay. Drops the Stack inventory
+> cards; centers on a live Capacity estimate calculator:
+> users / photos-per-user / avg-MB-per-photo / uploads-per-user-per-day
+> → storage TB, RAM GB, VRAM GB, CPU vCPU (+ physical cores), ML
+> worker count, predicted speeds (search, upload, CLIP embed,
+> Florence caption + per-hour throughput).
+>
+> Constants in `RealDeveloperTab.CAP` are measured from the running
+> docker-compose stack (`docker stats` for RSS, `nvidia-smi` for
+> VRAM) — provenance comments on every line. RAM scales with worker
+> count since each worker container holds its own CPU-RAM copy of
+> the model weights.
+>
+> Plus a 9-row Performance benchmarks reference table (dev vs.
+> projected production numbers) and the full API surface in a
+> compact monospace code-block panel grouped by section.
 
 ### C9. Multi-axis image filtering ⏳
 Today's gallery has one filter axis (type pill: All / Photos / Videos /
@@ -651,13 +710,45 @@ Falls back to natural-language query if no command prefix.
   match the way *this* user phrases their searches. Per-user adapter
   (LoRA) so we don't pollute a global model.
 
-### D7. Best-of-set image picker ⏳
-User flow: select N similar photos, "Pick the best." Backend scores
-by sharpness, exposure, eyes-open / smile (face landmark signal),
-composition (rule-of-thirds), and an optional user-preference axis
-("subjectively best per this user"). Returns a ranked list with the
-top one highlighted; user can override and the override is logged
-for **D6**.
+### D7. Best-of-set image picker ✅ SHIPPED 2026-05-17
+> `POST /images/best-of` body `{image_ids: [2..30], mode, use_case?}`
+> returns each image ranked with a per-criterion breakdown
+> (sharpness, exposure, face quality, optional use-case match).
+> Three modes:
+>
+>   - **overall** — single ranked list; top is the keeper.
+>   - **burst**   — greedy single-linkage cluster on CLIP embeddings
+>                   (cosine > 0.85 == same burst), returns best per
+>                   cluster.
+>   - **use_case** — composite × CLIP cosine to a use-case prompt.
+>                    Takes either one of 25 presets (People / Scenes
+>                    / Content / Style) or arbitrary free text; the
+>                    backend wraps free text in
+>                    "a sharp well-composed photograph of <text>"
+>                    before encoding.
+>
+> Scoring lives in [backend/best_of.py](backend/best_of.py).
+> Signals:
+>   - Sharpness via OpenCV Laplacian variance on the served bytes,
+>     normalized min-max across the batch so the sharpest in the
+>     selection always sits at 100.
+>   - Exposure via mean grayscale luminance distance from mid-gray.
+>   - Face quality via max FaceDetection.detection_confidence from
+>     existing rows (no extra model run).
+>   - Use-case cosine via the shared CLIP text encoder + per-image
+>     `clip_embedding`, stretched [0.15, 0.35] → [0, 100].
+>
+> FE: [bestof.jsx](frontend/neuthek/src/bestof.jsx) — opened from
+> BulkActionBar with the actual selection, image rendering via
+> `AuthedThumb` / `useAuthedBlobUrl` (the served-variant endpoint
+> requires a Bearer token so CSS `background-image` 401s without
+> the blob wrapper). Mode + use-case chips re-trigger the scoring
+> pass. "Keep this one" calls `bulkDelete(loserIds)` → losers go
+> to Trash with confirmation. Rate-limited to 30/hr/user.
+>
+> User override + per-override telemetry for §D6 fine-tuning is
+> still owed — for now the modal lets you click any other frame
+> but doesn't log the override anywhere.
 
 ### D8. Person re-detection on user signal ⏳
 1. UI affordance on a photo: "Mark as containing a person."
@@ -922,7 +1013,7 @@ All compliance items now closed:
 16. **F3** Lite profile.
 17. **G3** real-time team editing (y.js + WebSocket).
 18. **D6** fine-tune from search (once C8.2 training telemetry ships).
-19. **D7** best-of-set picker.
+19. ~~**D7** best-of-set picker~~ — ✅ shipped 2026-05-17.
 20. **H1–H4** README rewrite + comment sweep + GitHub-ready .md
     polish + CI lint tightening (the §A7 secret-scanning piece
     already landed; H4 here refers to `ruff` / `mypy --strict` /
