@@ -432,6 +432,7 @@ export function AdminOverlay({ open, onClose }) {
           { id: "processes", label: "Processes" },
           { id: "hardware",  label: "Hardware" },
           { id: "queue",     label: "Queue" },
+          { id: "developer", label: "Developer" },
         ].map(t => (
           <button key={t.id} className="admin__tab" data-active={tab === t.id} onClick={() => setTab(t.id)}>
             {t.label}
@@ -450,6 +451,7 @@ export function AdminOverlay({ open, onClose }) {
         {tab === "processes" && <RealProcessesTab open={open}/>}
         {tab === "hardware"  && <RealHardwareTab open={open}/>}
         {tab === "queue"     && <RealQueueTab open={open}/>}
+        {tab === "developer" && <RealDeveloperTab/>}
       </div>
 
       <div className="modal__foot">
@@ -1778,4 +1780,373 @@ function RealHardwareTab({ open }) {
       </div>
     </div>
   );
+}
+
+// ---------- Developer (stack inventory + sizing calc + perf + API) ----------
+//
+// Reference content surfaced inside the admin overlay so operators can
+// answer "what runs the engine?", "how much hardware do I need for N
+// users?", and "what's the API surface?" without leaving the app. The
+// resource numbers and benchmarks mirror the ones documented on the
+// public /developers marketing page — keep them in sync if you change
+// one source, or move both behind a shared module if drift becomes a
+// pain.
+
+const STACK_CARDS = [
+  { title: "API",          body: "FastAPI on Python 3.12, async SQLAlchemy + asyncpg, Alembic migrations, fastapi-users for JWT auth, Argon2 password hashing, TOTP 2FA via pyotp, Fernet for at-rest encryption of OAuth refresh tokens." },
+  { title: "Database",     body: "PostgreSQL 16 with the pgvector extension — 512-dim face templates + 768-dim CLIP embeddings indexed for cosine similarity. FORCE Row-Level Security per user on every multi-tenant table, enforced at the DB layer." },
+  { title: "Object storage", body: "MinIO (S3 API) with optional SSE-S3 / SSE-KMS. Three buckets: originals, served (compressed for delivery), and face crops. Signed URLs with TTL for client downloads; redirect proxy preserves auth in dev." },
+  { title: "Vision",       body: "open-clip-torch (ViT-L-14), microsoft/Florence-2-large via transformers for image captions, insightface (RetinaFace detection + ArcFace embeddings) for the opt-in face pipeline, rawpy / LibRaw for camera RAW decoding (NEF / CR2 / ARW / DNG / RAF / ORF / RW2 / PEF)." },
+  { title: "Compression",  body: "LinUCB contextual bandit picks per-image codec (WebP / MozJPEG / AVIF / JXL) and quality (55–92) from a 32-dim feature vector. Per-user telemetry feeds reward back to the arm; screenshots route to lossless WebP, animated GIFs are passthrough." },
+  { title: "Workers & queue", body: "Redis 7 + per-user fair queue (round-robin across users with pending work, one in-flight per user). A dedicated ML worker container holds the CLIP + Florence + face weights so the API container never blocks on GPU inference." },
+  { title: "Search",       body: "Hybrid scorer: CLIP cosine via pgvector + Postgres FTS over summary + topic + filename + signals. Query expansion via WordNet (NLTK) so \"vibrant\" matches summaries that say \"colorful\" / \"vivid\". Strict-rank stays on the literal query so exact tokens win." },
+  { title: "Cloud sync",   body: "Google Drive sync via OAuth 2.0 with PKCE, read-only drive.readonly scope, Fernet-encrypted refresh tokens. Hourly background sweep mirrors the Drive folder tree under a top-level \"Google Drive\" folder. AI off by default per Drive's Limited Use policy; per-source opt-in." },
+  { title: "Billing",      body: "Stripe Embedded Checkout — Pro and Business tiers, webhook-driven subscription state, hosted invoices. Empty Stripe env vars short-circuit /billing/* to 503 in dev." },
+  { title: "Frontend",     body: "React 18 + TypeScript + Vite, TanStack Query for server state, Zustand for auth, Prism (~40 grammars eager-loaded) for syntax-highlighted code preview. Geist + Geist Mono type stack." },
+  { title: "Infra & ops",  body: "Docker Compose for the full stack (API + ML worker + Postgres + Redis + MinIO + Caddy TLS). Optional Intel iGPU/NPU device-passthrough overlay. Healthcheck endpoint on the API, structured logs via the standard logging module." },
+  { title: "Testing",      body: "pytest + pytest-asyncio covering codec dispatch, resize behavior, bandit decisions, upload validation, consent gates, RLS enforcement, and end-to-end auth flows. Migrations have idempotency + downgrade tests." },
+];
+
+const DEPLOYMENT_SHAPES = [
+  { scale: "Self-host (solo)",   users: "1",      cpu: "4 vCPU",      ram: "8 GB",       storage: "20 GB OS + your library", gpu: "Optional",        notes: "CPU is fine; vision runs in batches overnight. Docker compose on a NUC works." },
+  { scale: "Self-host (family)", users: "2–5",    cpu: "6 vCPU",      ram: "16 GB",      storage: "100 GB OS + libraries",   gpu: "Recommended",     notes: "GPU cuts summary backfill from days to hours. Shared RLS keeps libraries isolated." },
+  { scale: "Hosted (small)",     users: "100",    cpu: "8 vCPU",      ram: "32 GB",      storage: "S3-class object storage", gpu: "Single GPU node", notes: "Single-tenant fenced behind Postgres RLS. Pub/sub via Redis." },
+  { scale: "Hosted (medium)",    users: "1,000",  cpu: "16 vCPU",     ram: "64 GB",      storage: "Object storage tier",     gpu: "1–2 GPU nodes",   notes: "Vision workers scale independently; bandit telemetry per arm." },
+  { scale: "Hosted (large)",     users: "10,000", cpu: "Cluster (autoscaled)", ram: "256+ GB across nodes", storage: "S3 + Postgres HA",        gpu: "GPU pool",        notes: "Postgres read-replicas for /search; pgvector IVFFlat tuned for the embedding count." },
+];
+
+const PERF_BENCHMARKS = [
+  { metric: "Image upload (single)",                dev: "120–250 ms",      prod: "80–150 ms",       note: "End-to-end: validate, EXIF strip, compress, MinIO put, DB row." },
+  { metric: "CLIP embedding (ViT-L-14, GPU)",       dev: "65 ms",           prod: "40–90 ms",        note: "Per image. Florence-2 caption is a separate ~5–15 s pass." },
+  { metric: "CLIP embedding (CPU fallback)",        dev: "1.2–2.0 s",       prod: "0.8–1.5 s",       note: "Use for solo self-host without GPU; consider batch backfill overnight." },
+  { metric: "Florence-2 caption (GPU)",             dev: "5–15 s",          prod: "3–8 s",           note: "Per image; runs in a dedicated ML worker thread to keep the API loop free." },
+  { metric: "Semantic search (warm CLIP encoder)",  dev: "40–80 ms",        prod: "20–50 ms",        note: "FTS pass + CLIP cosine, hybrid scored. WordNet expansion adds <1 ms." },
+  { metric: "Gallery list (100 rows)",              dev: "30–60 ms",        prod: "10–30 ms",        note: "Indexed read; cross-folder + filters use the same path." },
+  { metric: "Admin dashboard (cached bucket walk)", dev: "86 ms",           prod: "60–120 ms",       note: "60-second LRU + worker thread + 20k-object cap (W19 fix)." },
+  { metric: "Face detection (RetinaFace, per image)", dev: "150–400 ms",    prod: "80–250 ms",       note: "Includes ArcFace embedding per detected face." },
+  { metric: "API median latency (warm cache)",      dev: "< 80 ms",         prod: "< 40 ms",         note: "Excludes upload + summary endpoints — those run on background workers." },
+];
+
+const API_SECTIONS = [
+  { header: "Auth", rows: [
+    ["POST",  "/auth/jwt/login",          "JWT login (TOTP-gated if enabled)"],
+    ["POST",  "/auth/jwt/login-totp",     "2-factor follow-up"],
+    ["POST",  "/auth/register",           "account create"],
+    ["GET",   "/auth/google/login",       "Google SSO start"],
+    ["GET",   "/users/me",                "current user + linked identities"],
+  ]},
+  { header: "Account & security", rows: [
+    ["POST",  "/account/totp/enroll",     "2FA setup"],
+    ["POST",  "/account/totp/codes",      "regen recovery codes"],
+    ["POST",  "/account/google/link",     "attach Google to existing account"],
+    ["GET",   "/account/trash",           "soft-deleted rows"],
+  ]},
+  { header: "Images", rows: [
+    ["POST",  "/images/",                 "upload"],
+    ["GET",   "/images/",                 "list (scene, content_type, indoor_outdoor, has_faces, has_gps, person_id, folder_id, starred, trashed, tag, all)"],
+    ["GET",   "/images/facets",           "filter chip options + counts"],
+    ["GET",   "/images/summarize-progress","banner counter + self-heal drain"],
+    ["GET",   "/images/{id}/original",    "original bytes"],
+    ["GET",   "/images/{id}/served",      "compressed (?max_dim=N for thumbs)"],
+    ["POST",  "/images/{id}/star",        "toggle favorite"],
+    ["POST",  "/images/{id}/resummarize", "force re-caption (30/hr/user)"],
+    ["PATCH", "/images/{id}/name",        "rename"],
+    ["DELETE","/images/{id}",             "soft delete (?purge=true → hard)"],
+    ["POST",  "/images/bulk-delete",      "bulk soft / hard delete"],
+    ["POST",  "/images/bulk-restore",     "restore from trash"],
+    ["POST",  "/images/bulk-move",        "move to folder"],
+    ["POST",  "/images/backfill-summaries","queue resummarize (3/hr/user)"],
+    ["POST",  "/images/backfill-vision",  "run scene/content classifier (3/hr/user)"],
+    ["POST",  "/images/geo/backfill",     "extract EXIF GPS"],
+  ]},
+  { header: "Folders & sharing", rows: [
+    ["GET",   "/folders/",                "tree"],
+    ["POST",  "/folders/with-images",     "create + move N images atomically"],
+    ["POST",  "/shares/",                 "grant a share"],
+    ["GET",   "/shares/incoming",         "files shared with me"],
+  ]},
+  { header: "People (opt-in)", rows: [
+    ["GET",   "/people/",                 "named + unlabeled clusters"],
+    ["POST",  "/people/clusters/{cluster_id}", "name a cluster"],
+    ["POST",  "/people/detect-and-label", "multi-select tag (10/hr/user × 50 imgs)"],
+  ]},
+  { header: "Search", rows: [
+    ["GET",   "/search/?q=<text>",        "hybrid CLIP + FTS + WordNet expansion"],
+  ]},
+  { header: "Cloud sync (Google Drive)", rows: [
+    ["POST",  "/cloud/google_drive/connect", "PKCE start"],
+    ["GET",   "/cloud/callback/google_drive", "OAuth callback"],
+    ["POST",  "/cloud/google_drive/sync", "manual sweep"],
+    ["POST",  "/cloud/{src}/ai-opt-in",   "enable AI on synced files"],
+  ]},
+  { header: "Billing", rows: [
+    ["POST",  "/billing/checkout",        "Stripe Embedded Checkout"],
+    ["POST",  "/billing/webhook",         "subscription events"],
+    ["GET",   "/billing/subscription",    "current tier + period"],
+  ]},
+  { header: "Admin (superuser-gated)", rows: [
+    ["GET",   "/admin/system",            "health rollup + DB/Redis/MinIO probes"],
+    ["GET",   "/admin/queue",             "per-user pending depth + rate-limit headroom"],
+    ["POST",  "/admin/queue/drain-user",  "clear one user's pending jobs"],
+    ["GET",   "/admin/hardware",          "CPU / RAM / GPU / thermals"],
+    ["GET",   "/admin/processes",         "psutil + heartbeat-tracked workers"],
+    ["GET",   "/admin/models",            "registered model state from heartbeats"],
+    ["GET",   "/admin/users",             "paginated user list + storage usage"],
+    ["PATCH", "/admin/users/{id}/quota",  "set/clear per-user quota override"],
+    ["GET",   "/admin/audit",             "audit log with filters"],
+  ]},
+  { header: "Health", rows: [
+    ["GET",   "/health",                  "liveness + DB ping"],
+  ]},
+];
+
+// Storage sizing constants — must match the marketing /developers
+// page so the public + internal calculators agree.
+const SZ = {
+  servedRatio: 0.25,         // ratio of served/compressed to original
+  embeddingBytes: 3072,      // 768-dim float32 CLIP vector
+  metadataKbPerFile: 5,      // Postgres row + indexes per file
+  faceTemplateBytes: 2048,   // 512-dim ArcFace template + overhead
+  avgFacesPerPhoto: 0.6,     // mixed libraries average <1 face/photo
+  modelWeightsBytes: 5.5 * 1024 ** 3,  // Florence-2 + OpenCLIP + insightface
+};
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n.toFixed(0)} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n < 1024 ** 4) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  return `${(n / 1024 ** 4).toFixed(2)} TB`;
+}
+
+function computeSizing(users, photos, avgMb) {
+  const totalPhotos = users * photos;
+  const originals = totalPhotos * avgMb * 1024 ** 2;
+  const served = originals * SZ.servedRatio;
+  const embeddings = totalPhotos * SZ.embeddingBytes;
+  const postgres = totalPhotos * SZ.metadataKbPerFile * 1024;
+  const faces = totalPhotos * SZ.avgFacesPerPhoto * SZ.faceTemplateBytes;
+  const weights = SZ.modelWeightsBytes;
+  return {
+    originals, served, postgres, embeddings, faces, weights,
+    total: originals + served + postgres + embeddings + faces + weights,
+  };
+}
+
+function SizeBar({ label, bytes, of, color }) {
+  const pct = of > 0 ? Math.max(1, Math.min(100, (bytes / of) * 100)) : 0;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--ink-2)" }}>
+        <span>{label}</span>
+        <strong className="mono" style={{ color: "var(--ink)" }}>{fmtBytes(bytes)}</strong>
+      </div>
+      <div style={{ height: 6, background: "var(--surface-3)", borderRadius: 999, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 999, transition: "width 200ms ease-out" }}/>
+      </div>
+    </div>
+  );
+}
+
+function RealDeveloperTab() {
+  const [users, setUsers] = useStateAd(100);
+  const [photos, setPhotos] = useStateAd(5000);
+  const [avgMb, setAvgMb] = useStateAd(2.0);
+  const sz = computeSizing(users, photos, avgMb);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+      {/* ===== Stack inventory ===== */}
+      <section>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Stack inventory</h3>
+        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
+          Every name is a real dependency in the engine today. Add a new card here when a real dependency lands.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+          {STACK_CARDS.map((c) => (
+            <div key={c.title} style={{
+              padding: 12,
+              border: "1px solid var(--line)",
+              borderRadius: 10,
+              background: "var(--surface)",
+            }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: "var(--ink)" }}>
+                {c.title}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--ink-2)", lineHeight: 1.55 }}>
+                {c.body}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ===== Sizing calculator ===== */}
+      <section>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Resource sizing calculator</h3>
+        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
+          Three knobs. Storage is the binding constraint on most deployments; CPU/RAM scales with concurrent active users.
+        </p>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(220px, 280px) 1fr",
+          gap: 18,
+          padding: 14,
+          border: "1px solid var(--line)",
+          borderRadius: 10,
+          background: "var(--surface-2)",
+        }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <NumInput label="Users" value={users} onChange={setUsers} min={1} max={1_000_000} step={10} hint="Total accounts to host." />
+            <NumInput label="Photos per user (avg)" value={photos} onChange={setPhotos} min={100} max={500_000} step={100} hint="iPhone users 5–10k. Power photographers 50k+." />
+            <NumInput label="Original photo size (MB, avg)" value={avgMb} onChange={setAvgMb} min={0.1} max={50} step={0.1} hint="HEIC ~1.5, 24MP JPEG ~6, 50MP RAW ~25." />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <SizeBar label="Originals (object storage)"   bytes={sz.originals}  of={sz.total} color="#0a0a0a"/>
+            <SizeBar label="Served (compressed)"          bytes={sz.served}     of={sz.total} color="#2563eb"/>
+            <SizeBar label="Postgres rows + indexes"      bytes={sz.postgres}   of={sz.total} color="#16a34a"/>
+            <SizeBar label="CLIP embeddings (pgvector)"   bytes={sz.embeddings} of={sz.total} color="#7c3aed"/>
+            <SizeBar label="Face templates (ArcFace 512-d)" bytes={sz.faces}    of={sz.total} color="#d97706"/>
+            <SizeBar label="ML model weights (constant)"  bytes={sz.weights}    of={sz.total} color="#8a8a8a"/>
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "baseline",
+              marginTop: 6, paddingTop: 10, borderTop: "1px solid var(--line)",
+              fontSize: 15,
+            }}>
+              <strong>Total storage</strong>
+              <span className="mono" style={{ fontSize: 18, fontWeight: 600 }}>{fmtBytes(sz.total)}</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: -2 }}>
+              Add ~20% headroom for WAL, backups, and growth between scaling events.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ===== Deployment shapes ===== */}
+      <section>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Deployment shapes</h3>
+        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
+          Recommended floor per scale. You can run leaner but expect higher tail latency under burst upload.
+        </p>
+        <table className="admin-table admin-table--compact">
+          <thead>
+            <tr>
+              <th>Shape</th><th>Users</th><th>vCPU</th><th>RAM</th><th>Storage</th><th>GPU</th><th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {DEPLOYMENT_SHAPES.map((r) => (
+              <tr key={r.scale}>
+                <td style={{ fontWeight: 600 }}>{r.scale}</td>
+                <td className="mono">{r.users}</td>
+                <td className="mono">{r.cpu}</td>
+                <td className="mono">{r.ram}</td>
+                <td>{r.storage}</td>
+                <td>{r.gpu}</td>
+                <td style={{ color: "var(--ink-2)", fontSize: 11 }}>{r.notes}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      {/* ===== Performance benchmarks ===== */}
+      <section>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>Performance benchmarks</h3>
+        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
+          Dev numbers from a 16-core / 32 GB / mid-tier GPU box. Production numbers project the same code on dedicated hardware.
+        </p>
+        <table className="admin-table admin-table--compact">
+          <thead>
+            <tr>
+              <th>Operation</th><th>Dev</th><th>Production</th><th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {PERF_BENCHMARKS.map((r) => (
+              <tr key={r.metric}>
+                <td style={{ fontWeight: 500 }}>{r.metric}</td>
+                <td className="mono">{r.dev}</td>
+                <td className="mono">{r.prod}</td>
+                <td style={{ color: "var(--ink-2)", fontSize: 11 }}>{r.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      {/* ===== API surface ===== */}
+      <section>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>API surface</h3>
+        <p style={{ margin: "0 0 12px", color: "var(--ink-3)", fontSize: 12 }}>
+          What the engine exposes today. Every route is JWT-gated and scoped per-user by FORCE RLS in Postgres. OpenAPI spec at <code>/docs</code>.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {API_SECTIONS.map((sec) => (
+            <div key={sec.header}>
+              <div style={{
+                fontSize: 11, color: "var(--ink-3)",
+                textTransform: "uppercase", letterSpacing: "0.08em",
+                marginBottom: 4,
+              }}>
+                {sec.header}
+              </div>
+              <table className="admin-table admin-table--compact">
+                <tbody>
+                  {sec.rows.map(([verb, path, note], i) => (
+                    <tr key={i}>
+                      <td className="mono" style={{ width: 70, color: verbColor(verb), fontWeight: 600 }}>{verb}</td>
+                      <td className="mono" style={{ width: "40%" }}>{path}</td>
+                      <td style={{ color: "var(--ink-2)", fontSize: 11 }}>{note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function NumInput({ label, value, onChange, min, max, step, hint }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{
+        fontSize: 11, color: "var(--ink-3)",
+        textTransform: "uppercase", letterSpacing: "0.06em",
+      }}>
+        {label}
+      </span>
+      <input
+        type="number" min={min} max={max} step={step} value={value}
+        onChange={(e) => {
+          const n = parseFloat(e.target.value);
+          if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
+        }}
+        className="mono"
+        style={{
+          padding: "8px 10px",
+          border: "1px solid var(--line)",
+          borderRadius: 8,
+          background: "var(--surface)",
+          color: "var(--ink)",
+          fontSize: 14,
+        }}
+      />
+      {hint && <span style={{ fontSize: 10.5, color: "var(--ink-3)" }}>{hint}</span>}
+    </label>
+  );
+}
+
+function verbColor(verb) {
+  return {
+    GET:    "#16a34a",
+    POST:   "#2563eb",
+    PATCH:  "#d97706",
+    DELETE: "#b91c1c",
+    PUT:    "#7c3aed",
+  }[verb] || "var(--ink)";
 }
