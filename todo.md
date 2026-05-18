@@ -475,19 +475,30 @@ copy/paste.
 - `CLOUD_ENCRYPTION_KEY` — Fernet key (required since §A2)
 - `CLOUD_SYNC_HOURLY_ENABLED=true` (default) + `CLOUD_SYNC_INTERVAL_SECONDS=3600`
 
-### C3. Map view refinements
-- ⛔ Blocked on **B1** (EXIF strip on by default + per-user opt-in).
-- Mechanically wired (pass-5) and visually approved — current
-  CartoDB Voyager / DarkMatter look stays. Outstanding refinements:
-  1. Reverse-geocode worker that fills `image_geo.place` (see 1.3) so
-     popups read "Big Sur, CA" instead of bare lat/lng. Cache results
-     server-side (Nominatim is rate-limited).
-  2. Migrate the inline pixel-space clusterer to `supercluster` once
-     pin counts pass ~2 000 — current clustering re-walks every visible
-     point on each render, which won't scale past that. Click cluster
-     → gallery view filtered by cluster bbox.
-  3. Per-pin animated entrance (staggered scale-in) when first arriving
-     after a fitBounds — visual polish, not load-bearing.
+### C3. Map view refinements ✅ SHIPPED 2026-05-18
+> 1. ✅ Reverse-geocode worker (`_reverse_geocode_one` in
+>    [backend/image.py](backend/image.py) + the `_reverse_geocode`
+>    helper in [backend/api/images.py](backend/api/images.py)) fires
+>    after upload commit and fills `image_geo.place`. Nominatim
+>    cached by rounded coords. Stale rows backfilled lazily by
+>    `POST /images/geo/backfill-places`; the FE auto-triggers it on
+>    detection of any pending row.
+> 2. ✅ Supercluster swap done in
+>    [frontend/neuthek/src/map.jsx](frontend/neuthek/src/map.jsx).
+>    Old O(N×K) pixel-space loop replaced with a `Supercluster`
+>    index built once per item-set change and queried at the current
+>    bbox + zoom on each render. Radius 60 px, maxZoom 16, minPoints 2.
+>    Click a cluster → `getClusterExpansionZoom` + `flyTo` smoothly
+>    expands into smaller clusters or individual pins. Handles
+>    10k+ pins without the prior render stall.
+> 3. ✅ Grid backdrop on `.map4-canvas .leaflet-container` (subtle
+>    28 px grid lines at ~6 % contrast light / ~5 % dark) so a fast
+>    zoom-out or pan into unloaded space reads as designed empty
+>    space rather than "the map broke." Tiles still cover it once
+>    they resolve.
+>
+> Deferred: per-pin staggered scale-in animation after a fitBounds —
+> visual polish, not blocking.
 
 ### C4. Profile / settings
 - ⏳ **C4.1 Display name on signup** — registration form gains required
@@ -1021,8 +1032,9 @@ All compliance items now closed:
 5. ~~**C9** multi-axis image filtering~~ — ✅ shipped 2026-05-18
    (`near` + `taken_between` filters + extended facets payload + FE
    People/Tags/Date-range chips + URL persistence).
-6. **C3** map refinements — supercluster migration once > 2 000 pins
-   (reverse-geocode fill already shipped).
+6. ~~**C3** map refinements~~ — ✅ shipped 2026-05-18 (supercluster
+   swap + grid backdrop + click-cluster-to-zoom; reverse-geocode
+   fill + auto-backfill trigger already in).
 7. ~~**C4.2** "Me" → display-name binding~~ — ✅ shipped 2026-05-18
    (server-side substitution + FE inline prompt for missing display
    name).

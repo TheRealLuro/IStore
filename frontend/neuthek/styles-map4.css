@@ -32,19 +32,32 @@
 
 .map4-canvas { flex: 1; min-height: 0; width: 100%; cursor: grab; }
 .map4-canvas:active { cursor: grabbing; }
-/* Tile-matching backdrop so a fast zoom-out doesn't flash white before
-   the new tile pyramid resolves. Picked to roughly match the ocean tone
-   of CartoDB Voyager (light) and DarkMatter (dark). The tiles cover this
-   completely once loaded — this is the underlay during transitions. */
+/* Subtle grid backdrop so a fast zoom-out / pan into unloaded space
+   doesn't flash a flat color — reads as designed empty space rather
+   than "the map broke." Base color matches the ocean tone of CartoDB
+   Voyager (light) and DarkMatter (dark) so the transition is seamless
+   when tiles drop in. Grid lines are very subtle (~6% contrast in
+   light, ~5% in dark) — visible enough to register, soft enough to
+   stay out of the way. 28px cell size matches the visual density of
+   the brand mark's constellation glyph at its native render scale. */
 .map4-canvas .leaflet-container {
-  background: #d6dde2;
+  background-color: #d6dde2;
+  background-image:
+    linear-gradient(to right, rgba(10, 10, 10, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(10, 10, 10, 0.06) 1px, transparent 1px);
+  background-size: 28px 28px;
   font-family: inherit;
   /* Smooth Leaflet's zoom transition curve. Default uses a cubic-bezier
      close to ease-out; tightening it makes zooming feel decisive instead
      of laggy on dense tile sets. */
   --leaflet-zoom-anim-duration: 0.25s;
 }
-html[data-theme="dark"] .map4-canvas .leaflet-container { background: #1a1f29; }
+html[data-theme="dark"] .map4-canvas .leaflet-container {
+  background-color: #1a1f29;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+}
 /* Smoother tile fade-in so individual tiles don't pop in jagged. */
 .map4-canvas .leaflet-tile {
   transition: opacity 220ms ease-out;

@@ -17,6 +17,7 @@ import React, {
 } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import Supercluster from "supercluster";
 import toast from "react-hot-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
@@ -66,6 +67,32 @@ export function MapView({ items, onPick }) {
       .filter(i => i && i.gps && i.gps.lat != null && i.gps.lng != null)
       .map(i => ({ ...i, lat: i.gps.lat, lng: i.gps.lng, placeName: i.gps.place }));
   }, [items]);
+
+  // Supercluster index. Built once per item-set change; reused across
+  // every zoom/pan render. Replaces the previous O(N×K) pixel-space
+  // clusterer that re-walked every visible point on each render — fine
+  // up to a few hundred pins, painful past ~2000.
+  //
+  //   radius: cluster radius in PIXELS at the index's "extent" (default
+  //     512). 60px is the visual sweet spot for this map size — large
+  //     enough that nearby pins merge cleanly, small enough that two
+  //     city-block-apart pins stay distinct at street zoom.
+  //   maxZoom: clustering stops at this zoom level; past it, every
+  //     point renders individually. 16 ≈ "block-level" — at higher
+  //     zoom the user wants to see each photo, not a cluster.
+  //   minPoints: minimum to form a cluster. 2 = standard.
+  const clusterIndex = useMemoMap(() => {
+    if (!itemsWithLoc.length) return null;
+    const sc = new Supercluster({ radius: 60, maxZoom: 16, minPoints: 2 });
+    sc.load(
+      itemsWithLoc.map((it) => ({
+        type: "Feature",
+        properties: { item: it },
+        geometry: { type: "Point", coordinates: [it.lng, it.lat] },
+      })),
+    );
+    return sc;
+  }, [itemsWithLoc]);
 
   // Authed blob URL cache for single-pin thumbnails. Pins live inside a
   // leaflet `divIcon` whose HTML is a static string — we can't drop a
@@ -178,100 +205,107 @@ export function MapView({ items, onPick }) {
     }).addTo(map);
   }, [theme]);
 
-  // Render clustered pins as a custom layer of divIcons
+  // Render clustered pins. Queries the supercluster index for the
+  // current viewport + zoom, builds one divIcon per cluster/point.
+  // Replaces the previous O(N×K) pixel-space loop.
   useEffectMap(() => {
     const map = mapRef.current; if (!map) return;
     if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
-    if (!itemsWithLoc.length) return;
-    const group = L.layerGroup();
+    if (!clusterIndex || !itemsWithLoc.length) return;
 
-    // Cluster in pixel space at the current zoom
-    const clusters = [];
-    const radius = 38;
-    for (const it of itemsWithLoc) {
-      const p = map.latLngToContainerPoint([it.lat, it.lng]);
-      let found = null;
-      for (const c of clusters) {
-        if (Math.hypot(c.cx - p.x, c.cy - p.y) < radius) { found = c; break; }
-      }
-      if (found) {
-        found.items.push(it);
-        found.cx = (found.cx * (found.items.length - 1) + p.x) / found.items.length;
-        found.cy = (found.cy * (found.items.length - 1) + p.y) / found.items.length;
-      } else {
-        clusters.push({ cx: p.x, cy: p.y, items: [it] });
-      }
-    }
+    // Query supercluster for the current viewport. The bbox is
+    // [west, south, east, north] in lng/lat. Supercluster wraps
+    // longitudes correctly even when the user pans across the
+    // antimeridian. Integer zoom — supercluster's clustering is
+    // bucketed per integer level, so a fractional Leaflet zoom
+    // (we run with zoomSnap: 0.25) snaps to the nearest cluster
+    // bucket. Floor matches the conventional behavior of most
+    // clustering libs (more aggressive merging at fractional zooms).
+    const bnds = map.getBounds();
+    const bbox = [bnds.getWest(), bnds.getSouth(), bnds.getEast(), bnds.getNorth()];
+    const z = Math.floor(map.getZoom());
+    const clusters = clusterIndex.getClusters(bbox, z);
 
-    // Single-pin thumb fetcher. Walk the clusters once, identify each
-    // 1-item pin whose lead has a thumb URL but no cached blob, and kick
-    // off one auth-fetch per missing entry. Each completion calls
-    // setThumbBlobs, which re-runs this effect via the dep — at which
-    // point the divIcon HTML below picks up the resolved blob URL.
-    // Already-fetched blobs are reused; we never re-fetch.
+    // Single-pin thumb fetcher. Walk the cluster set, identify each
+    // 1-item pin whose lead has a thumb URL but no cached blob, and
+    // kick off one auth-fetch per missing entry. Already-fetched blobs
+    // are reused; we never re-fetch. The thumbBlobs dep on this
+    // effect re-runs the render once a fetch completes.
     const needed = [];
     for (const c of clusters) {
-      if (c.items.length !== 1) continue;
-      const lead = c.items[0];
+      if (c.properties.cluster) continue;
+      const lead = c.properties.item;
       if (lead.thumb && !thumbBlobs[lead.id]) needed.push(lead);
     }
     for (const lead of needed) {
-      // Mark with `null` immediately so we don't re-issue the same fetch
-      // every time the layer re-renders.
       setThumbBlobs((prev) =>
         prev[lead.id] !== undefined ? prev : { ...prev, [lead.id]: null },
       );
       fetchAsBlobUrl(lead.thumb)
         .then((blob) => {
           setThumbBlobs((prev) => {
-            // Revoke a stale blob (rare — happens if the same id resolved
-            // twice in a race) and keep the latest.
             if (prev[lead.id]) {
               try { URL.revokeObjectURL(prev[lead.id]); } catch {}
             }
             return { ...prev, [lead.id]: blob };
           });
         })
-        .catch(() => {
-          // Leave as null — pin renders the dot variant.
-        });
+        .catch(() => { /* leave as null — pin renders dot variant */ });
     }
 
+    const group = L.layerGroup();
     for (const c of clusters) {
-      const lead = c.items[0];
-      const isCluster = c.items.length > 1;
-      const ll = map.containerPointToLatLng([c.cx, c.cy]);
+      const [lng, lat] = c.geometry.coordinates;
+      const props = c.properties;
       let html;
-      if (isCluster) {
-        const label = c.items.length > CLUSTER_LABEL_CAP
-          ? `${CLUSTER_LABEL_CAP}+`
-          : String(c.items.length);
-        html = `<div class="map4-pin map4-pin--cluster" data-size="${c.items.length}"><span>${label}</span></div>`;
+      let onClick;
+      if (props.cluster) {
+        const count = props.point_count;
+        const label = count > CLUSTER_LABEL_CAP ? `${CLUSTER_LABEL_CAP}+` : String(count);
+        html = `<div class="map4-pin map4-pin--cluster" data-size="${count}"><span>${label}</span></div>`;
+        // Click a cluster -> zoom to the level supercluster says splits
+        // it into smaller clusters (or individual pins). Smooth-pan +
+        // animated zoom feel native; the cluster index handles the
+        // math so we never accidentally over-zoom into a pin's exact
+        // pixel position.
+        const clusterId = props.cluster_id;
+        onClick = () => {
+          const expansionZoom = Math.min(
+            clusterIndex.getClusterExpansionZoom(clusterId),
+            map.getMaxZoom(),
+          );
+          map.flyTo([lat, lng], expansionZoom, { duration: 0.5 });
+        };
       } else {
+        const lead = props.item;
         const blob = lead.thumb ? thumbBlobs[lead.id] : null;
-        if (blob) {
-          html = `<div class="map4-pin"><span class="map4-pin__thumb" style="background-image:url(${blob})"></span></div>`;
-        } else {
-          // No thumb URL OR blob still loading — show the dot variant.
-          // (The fetcher above will trigger a re-render once blob is in.)
-          html = `<div class="map4-pin"><span class="map4-pin__dot"></span></div>`;
-        }
+        html = blob
+          ? `<div class="map4-pin"><span class="map4-pin__thumb" style="background-image:url(${blob})"></span></div>`
+          : `<div class="map4-pin"><span class="map4-pin__dot"></span></div>`;
+        onClick = (e) => {
+          L.DomEvent.stopPropagation(e);
+          setActive({
+            items: [lead],
+            lead,
+            pos: L.latLng(lat, lng),
+          });
+        };
       }
+      const isCluster = !!props.cluster;
       const icon = L.divIcon({
         className: "map4-pin-wrap",
-        html, iconSize: isCluster ? [36, 36] : [40, 48], iconAnchor: isCluster ? [18, 18] : [20, 46],
+        html,
+        iconSize: isCluster ? [36, 36] : [40, 48],
+        iconAnchor: isCluster ? [18, 18] : [20, 46],
       });
-      const marker = L.marker([ll.lat, ll.lng], { icon });
-      marker.on("click", (e) => {
-        L.DomEvent.stopPropagation(e);
-        setActive({ items: c.items, lead, pos: ll });
-      });
+      const marker = L.marker([lat, lng], { icon });
+      marker.on("click", onClick);
       marker.addTo(group);
     }
 
     group.addTo(map);
     layerRef.current = group;
-  }, [itemsWithLoc, zoom, theme, thumbBlobs]);
+  }, [clusterIndex, itemsWithLoc, zoom, theme, thumbBlobs, moveTick]);
 
   // After the first set of points arrives, fit bounds so the user sees the
   // result of a backfill without manually panning. We only auto-fit once per
