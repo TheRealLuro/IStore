@@ -1855,7 +1855,12 @@ export function App() {
     queryFn: getImageGeo,
     enabled: signedIn,
     staleTime: 60_000,
-    refetchInterval: (data) => {
+    // TanStack Query v5: refetchInterval callback receives the Query
+    // object, not the data directly (v4 passed data). Read the data
+    // via query.state.data — the v4 signature silently returned
+    // undefined for every poll, so the interval never fired.
+    refetchInterval: (query) => {
+      const data = query?.state?.data;
       if (!data || !data.points) return false;
       const anyPending = data.points.some((p) => p.lat != null && !p.place);
       return anyPending ? 3000 : false;
