@@ -1079,11 +1079,20 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
         logger.exception("reverse-geocode failed for (%s, %s)", lat, lng)
         short = None
 
-    # FIFO eviction once cap is hit; dict insertion order is the eviction order.
-    if len(_NOMINATIM_CACHE) >= _NOMINATIM_CACHE_CAP:
-        oldest = next(iter(_NOMINATIM_CACHE))
-        _NOMINATIM_CACHE.pop(oldest, None)
-    _NOMINATIM_CACHE[key] = short
+    # Only cache POSITIVE results. A None means Nominatim returned no
+    # usable name OR the request failed — both should be retried later
+    # (transient network, rate limit, slow upstream). Previously we
+    # cached None too, which permanently poisoned coords that had a
+    # blip on first lookup: every subsequent `_reverse_geocode` would
+    # return the cached None and the image_geo.place column stayed
+    # NULL forever, leaving the preview stuck on "Looking up
+    # location…" even when the same coord on the map showed a valid
+    # pin (because the lat/lng existed but place didn't).
+    if short:
+        if len(_NOMINATIM_CACHE) >= _NOMINATIM_CACHE_CAP:
+            oldest = next(iter(_NOMINATIM_CACHE))
+            _NOMINATIM_CACHE.pop(oldest, None)
+        _NOMINATIM_CACHE[key] = short
     return short
 
 
@@ -1120,17 +1129,20 @@ async def backfill_image_places(
     examined = 0
     filled = 0
     # Cache-only fast path: drain anything we already know without
-    # waiting on Nominatim's rate limit.
+    # waiting on Nominatim's rate limit. Defensively re-queue cached
+    # None entries (a leftover from before we stopped caching negative
+    # results) so they get a fresh Nominatim attempt instead of
+    # silently being skipped.
     pending: list[ImageGeo] = []
     for row in rows:
         examined += 1
         key = (round(row.lat, 3), round(row.lng, 3))
-        if key in _NOMINATIM_CACHE:
-            cached = _NOMINATIM_CACHE[key]
-            if cached:
-                row.place = cached
-                filled += 1
+        cached = _NOMINATIM_CACHE.get(key)
+        if cached:
+            row.place = cached
+            filled += 1
         else:
+            # Either cache miss OR poisoned-None — either way, retry.
             pending.append(row)
 
     # Slow path: rate-limited Nominatim calls for cache misses.

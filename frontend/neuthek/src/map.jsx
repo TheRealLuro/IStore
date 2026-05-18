@@ -17,12 +17,29 @@ import React, {
 } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import Supercluster from "supercluster";
 import toast from "react-hot-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
 import { AuthedThumb } from "./auth-image.jsx";
 import { backfillImageGeo, backfillImagePlaces, fetchAsBlobUrl } from "@/api/files";
+
+// Supercluster is dynamically loaded so a missing install (the package
+// has to land in whatever node_modules the dev server actually reads —
+// container mounts can be tricky) doesn't crash Vite's import-analysis
+// and block the entire app behind a build-error overlay. If the import
+// fails, we fall back to a simple O(N×K) pixel-space clusterer (the
+// pre-supercluster behavior); it's fine up to ~2000 pins, which covers
+// the vast majority of libraries.
+let _SuperclusterPromise = null;
+function loadSupercluster() {
+  if (!_SuperclusterPromise) {
+    _SuperclusterPromise = import("supercluster").then(
+      (m) => m.default || m,
+      () => null,
+    );
+  }
+  return _SuperclusterPromise;
+}
 
 // World bounds. Leaflet's default lets you pan into the void above /
 // below the map and reveal the body background — feels broken. Lock
@@ -68,10 +85,10 @@ export function MapView({ items, onPick }) {
       .map(i => ({ ...i, lat: i.gps.lat, lng: i.gps.lng, placeName: i.gps.place }));
   }, [items]);
 
-  // Supercluster index. Built once per item-set change; reused across
-  // every zoom/pan render. Replaces the previous O(N×K) pixel-space
-  // clusterer that re-walked every visible point on each render — fine
-  // up to a few hundred pins, painful past ~2000.
+  // Supercluster index. Loaded asynchronously so a missing install
+  // falls back gracefully instead of crashing the Vite import graph.
+  // `null` ctor = "supercluster module wasn't available" — the render
+  // effect below detects that and uses the pixel-space fallback.
   //
   //   radius: cluster radius in PIXELS at the index's "extent" (default
   //     512). 60px is the visual sweet spot for this map size — large
@@ -81,9 +98,18 @@ export function MapView({ items, onPick }) {
   //     point renders individually. 16 ≈ "block-level" — at higher
   //     zoom the user wants to see each photo, not a cluster.
   //   minPoints: minimum to form a cluster. 2 = standard.
+  const [SuperclusterCtor, setSuperclusterCtor] = useStateMap(null);
+  useEffectMap(() => {
+    let cancelled = false;
+    loadSupercluster().then((Ctor) => {
+      if (!cancelled) setSuperclusterCtor(() => Ctor);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   const clusterIndex = useMemoMap(() => {
-    if (!itemsWithLoc.length) return null;
-    const sc = new Supercluster({ radius: 60, maxZoom: 16, minPoints: 2 });
+    if (!itemsWithLoc.length || !SuperclusterCtor) return null;
+    const sc = new SuperclusterCtor({ radius: 60, maxZoom: 16, minPoints: 2 });
     sc.load(
       itemsWithLoc.map((it) => ({
         type: "Feature",
@@ -92,7 +118,7 @@ export function MapView({ items, onPick }) {
       })),
     );
     return sc;
-  }, [itemsWithLoc]);
+  }, [itemsWithLoc, SuperclusterCtor]);
 
   // Authed blob URL cache for single-pin thumbnails. Pins live inside a
   // leaflet `divIcon` whose HTML is a static string — we can't drop a
@@ -205,26 +231,61 @@ export function MapView({ items, onPick }) {
     }).addTo(map);
   }, [theme]);
 
-  // Render clustered pins. Queries the supercluster index for the
-  // current viewport + zoom, builds one divIcon per cluster/point.
-  // Replaces the previous O(N×K) pixel-space loop.
+  // Render clustered pins. Two paths:
+  //   - Supercluster (preferred): query the spatial index for the
+  //     current viewport + zoom. O(N) build + O(visible) per render.
+  //   - Pixel-space fallback (if supercluster wasn't available): the
+  //     pre-supercluster O(N×K) loop. Fine up to ~2000 pins. We emit
+  //     the same {properties: {cluster?, point_count?, cluster_id?, item?},
+  //     geometry: {coordinates: [lng, lat]}} shape so the divIcon
+  //     code below doesn't branch.
   useEffectMap(() => {
     const map = mapRef.current; if (!map) return;
     if (layerRef.current) { map.removeLayer(layerRef.current); layerRef.current = null; }
-    if (!clusterIndex || !itemsWithLoc.length) return;
+    if (!itemsWithLoc.length) return;
 
-    // Query supercluster for the current viewport. The bbox is
-    // [west, south, east, north] in lng/lat. Supercluster wraps
-    // longitudes correctly even when the user pans across the
-    // antimeridian. Integer zoom — supercluster's clustering is
-    // bucketed per integer level, so a fractional Leaflet zoom
-    // (we run with zoomSnap: 0.25) snaps to the nearest cluster
-    // bucket. Floor matches the conventional behavior of most
-    // clustering libs (more aggressive merging at fractional zooms).
-    const bnds = map.getBounds();
-    const bbox = [bnds.getWest(), bnds.getSouth(), bnds.getEast(), bnds.getNorth()];
-    const z = Math.floor(map.getZoom());
-    const clusters = clusterIndex.getClusters(bbox, z);
+    let clusters;
+    if (clusterIndex) {
+      // Supercluster path. The bbox is [west, south, east, north] in
+      // lng/lat; integer zoom matches supercluster's bucketing.
+      const bnds = map.getBounds();
+      const bbox = [bnds.getWest(), bnds.getSouth(), bnds.getEast(), bnds.getNorth()];
+      const z = Math.floor(map.getZoom());
+      clusters = clusterIndex.getClusters(bbox, z);
+    } else {
+      // Pixel-space fallback. Same shape as supercluster output so the
+      // marker-building loop below doesn't need to know which path
+      // produced it.
+      const pixelClusters = [];
+      const radius = 38;
+      for (const it of itemsWithLoc) {
+        const p = map.latLngToContainerPoint([it.lat, it.lng]);
+        let found = null;
+        for (const c of pixelClusters) {
+          if (Math.hypot(c.cx - p.x, c.cy - p.y) < radius) { found = c; break; }
+        }
+        if (found) {
+          found.items.push(it);
+          found.cx = (found.cx * (found.items.length - 1) + p.x) / found.items.length;
+          found.cy = (found.cy * (found.items.length - 1) + p.y) / found.items.length;
+        } else {
+          pixelClusters.push({ cx: p.x, cy: p.y, items: [it] });
+        }
+      }
+      clusters = pixelClusters.map((c) => {
+        const ll = map.containerPointToLatLng([c.cx, c.cy]);
+        if (c.items.length > 1) {
+          return {
+            properties: { cluster: true, point_count: c.items.length, cluster_id: null, items: c.items },
+            geometry: { coordinates: [ll.lng, ll.lat] },
+          };
+        }
+        return {
+          properties: { cluster: false, item: c.items[0] },
+          geometry: { coordinates: [ll.lng, ll.lat] },
+        };
+      });
+    }
 
     // Single-pin thumb fetcher. Walk the cluster set, identify each
     // 1-item pin whose lead has a thumb URL but no cached blob, and
@@ -263,18 +324,24 @@ export function MapView({ items, onPick }) {
         const count = props.point_count;
         const label = count > CLUSTER_LABEL_CAP ? `${CLUSTER_LABEL_CAP}+` : String(count);
         html = `<div class="map4-pin map4-pin--cluster" data-size="${count}"><span>${label}</span></div>`;
-        // Click a cluster -> zoom to the level supercluster says splits
-        // it into smaller clusters (or individual pins). Smooth-pan +
-        // animated zoom feel native; the cluster index handles the
-        // math so we never accidentally over-zoom into a pin's exact
-        // pixel position.
+        // Click a cluster -> zoom in. Two paths:
+        //   - Supercluster: ask `getClusterExpansionZoom` for the
+        //     exact zoom at which this cluster splits — most
+        //     accurate, never over-zooms.
+        //   - Fallback: just zoom in by 2 (capped at maxZoom) since
+        //     the pixel-space clusterer has no per-cluster expansion
+        //     metadata. Fine for the small libraries the fallback
+        //     handles in practice.
         const clusterId = props.cluster_id;
         onClick = () => {
-          const expansionZoom = Math.min(
-            clusterIndex.getClusterExpansionZoom(clusterId),
-            map.getMaxZoom(),
-          );
-          map.flyTo([lat, lng], expansionZoom, { duration: 0.5 });
+          let nextZoom;
+          if (clusterIndex && clusterId != null) {
+            nextZoom = clusterIndex.getClusterExpansionZoom(clusterId);
+          } else {
+            nextZoom = map.getZoom() + 2;
+          }
+          nextZoom = Math.min(nextZoom, map.getMaxZoom());
+          map.flyTo([lat, lng], nextZoom, { duration: 0.5 });
         };
       } else {
         const lead = props.item;
