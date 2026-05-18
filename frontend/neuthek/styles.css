@@ -1081,8 +1081,16 @@ mark {
   border: 1px solid var(--line);
   border-radius: 28px;
   z-index: 20;
+  /* The whole pane is ONE scroll container now. Previously the
+     hero sat above an independently-scrollable body, which made
+     scrolled body content visually slip "behind" the still-pinned
+     image — the user described it as "preview content goes behind
+     the image." With a single scroll context the image scrolls up
+     and out of view as you read down; the sticky header (below)
+     keeps Star + Close reachable the whole time. */
   display: flex; flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   box-shadow: var(--shadow-float);
   animation: slidein 360ms var(--ease);
 }
@@ -1095,6 +1103,14 @@ mark {
   padding: 14px 18px;
   border-bottom: 1px solid var(--line-2);
   height: 56px;
+  /* Sticky so Star + Close stay reachable as the user scrolls the
+     image out of view. background + z-index keep it solid above the
+     scrolling content underneath. */
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 2;
+  flex-shrink: 0;
 }
 .preview__head-title { font-size: 12px; color: var(--ink-3); letter-spacing: 0.04em; }
 
@@ -1102,9 +1118,14 @@ mark {
   aspect-ratio: 4 / 3;
   background-color: var(--surface-3);
   background-size: cover; background-position: center;
+  flex-shrink: 0;
 }
 .preview__body {
-  flex: 1; overflow-y: auto;
+  /* No longer an independent scroll container — the whole .preview
+     scrolls as one unit. flex: 1 still ensures the body fills the
+     remaining height when content is shorter than the viewport,
+     giving the bottom action bar somewhere to sit. */
+  flex: 1 0 auto;
   padding: 22px 22px 0;
 }
 .preview__title {
