@@ -48,13 +48,20 @@ dependencies = [
     # SDK imports lazily inside `backend/billing.py` so the API still
     # boots when `STRIPE_SECRET_KEY` is empty (dev / self-host).
     "stripe>=11.0",
+    # httpx — runtime HTTP client for reverse-geocoding (Nominatim) and
+    # any other outbound calls. Previously lived under `dev` only, so
+    # production containers built with `[ml]` extras silently lacked it
+    # and the geocoder fell through `except ImportError: return None`
+    # on every call — preview locations stayed "Looking up location…"
+    # forever and the backfill toast read "none could be geocoded"
+    # with no warning in the logs.
+    "httpx==0.27.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.3",
     "pytest-asyncio==0.24.0",
-    "httpx==0.27.2",
 ]
 ml = [
     # torch / torchvision deliberately unpinned so setup.sh --gpu can install
