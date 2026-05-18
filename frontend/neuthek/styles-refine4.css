@@ -413,17 +413,19 @@ html[data-theme="dark"] .skel {
   left: 0;
   bottom: 0;
   width: 360px;
-  z-index: 210;
+  /* The lightbox sits at z-index 9020 (forced higher than the
+     leaflet map underneath). The comment panel has to sit one
+     above so it isn't covered by the lightbox backdrop. Click
+     events on the panel never reach the backdrop (component
+     stops propagation), so the lightbox stays open while you
+     interact. */
+  z-index: 9021;
   background: var(--surface);
   border-right: 1px solid var(--line);
   display: flex;
   flex-direction: column;
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
   animation: cp-slide 260ms cubic-bezier(0.32, 0.72, 0, 1);
-  /* The lightbox sits at z-index 200; we sit one above and don't
-     darken its backdrop. Click events on the panel never reach the
-     backdrop (component stops propagation), so the lightbox stays
-     open while you interact. */
 }
 @keyframes cp-slide {
   from { transform: translateX(-100%); opacity: 0.6; }
