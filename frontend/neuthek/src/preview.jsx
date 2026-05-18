@@ -7,6 +7,7 @@ import { AuthedThumb, AuthedImg, useAuthedBlobUrl } from "./auth-image.jsx";
 import { getImagePeople, faceCropUrl, redetectFaces } from "@/api/people";
 import { EditableName } from "./nameable-chip.jsx";
 import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
+import { attachImageTag, detachImageTag } from "@/api/tags";
 import { listShares } from "@/api/shares";
 import { PdfPageStack } from "./pdf-stack.jsx";
 import { ShareModal } from "./share-modal.jsx";
@@ -48,14 +49,21 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [file, lightbox, onClose]);
 
-  // Re-seed tags + star state when the file changes. Star state mirrors
-  // the backend column (`file.is_starred`) — the local `starred` is just
-  // an optimistic UI flag so the toggle feels instant.
+  // Re-seed tags + star state when the file changes. We depend on the
+  // STRINGIFIED tag list (not the array ref) so when the React-Query
+  // cache refetches after a tag attach/detach, the new tags overwrite
+  // the local mirror — previously this effect's deps were `[file?.id,
+  // file?.is_starred]`, so adding a tag while the preview was open
+  // updated the cache but the local state stayed at the old snapshot,
+  // and on close + reopen the tag appeared briefly then "disappeared"
+  // because addTag's purely-local push had never been persisted to
+  // the backend (now it is, via addTag below).
+  const tagKey = Array.isArray(file?.tags) ? file.tags.join("␟") : "";
   useEffectP2(() => {
     if (!file) return;
     setTags(Array.isArray(file.tags) ? file.tags : []);
     setStarred(!!file.is_starred);
-  }, [file?.id, file?.is_starred]);
+  }, [file?.id, file?.is_starred, tagKey]);
 
   // Real people for this image. Fires only when an image is selected and
   // is gated on the user's face_recognition consent server-side — when
@@ -190,13 +198,52 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   }, [codeModal]);
   if (!file) return null;
 
-  const addTag = (t) => {
-    const v = t.trim();
-    if (!v) return;
-    setTags(prev => prev.includes(v) ? prev : [...prev, v]);
-    setDraft("");
+  // Tag changes here persist to the backend via /images/{id}/tags so
+  // closing + reopening the preview reflects the actual state. We
+  // optimistically update local state for snappy UI, then invalidate
+  // the React-Query caches that back the gallery, the preview's own
+  // re-seed effect, and the filter dropdown's chip group.
+  const invalidateAfterTagChange = () => {
+    qc.invalidateQueries({ queryKey: ["files"] });
+    qc.invalidateQueries({ queryKey: ["facets"] });
+    qc.invalidateQueries({ queryKey: ["tags"] });
   };
-  const removeTag = (t) => setTags(prev => prev.filter(x => x !== t));
+  const addTag = async (t) => {
+    const label = (t || "").trim();
+    if (!label || !file?.id) return;
+    if (tags.includes(label)) {
+      setDraft("");
+      return;
+    }
+    // Optimistic — instant UI; rolled back on error.
+    setTags((prev) => [...prev, label]);
+    setDraft("");
+    try {
+      await attachImageTag(file.id, { label });
+      invalidateAfterTagChange();
+    } catch (e) {
+      setTags((prev) => prev.filter((x) => x !== label));
+      toast.error(e?.detail || e?.message || "Could not save tag");
+    }
+  };
+  const removeTag = async (t) => {
+    if (!file?.id) return;
+    // Look up the tag id from the rich tagRows mirror (mapper in
+    // app.jsx kept the {id, label, color} shape alongside the
+    // flattened string list). Falls back to a no-op when we don't
+    // have an id — e.g. a tag the user just typed and the optimistic
+    // attach hasn't returned yet.
+    const rich = (file.tagRows || []).find((r) => r.label === t);
+    setTags((prev) => prev.filter((x) => x !== t));
+    if (!rich) return;
+    try {
+      await detachImageTag(file.id, rich.id);
+      invalidateAfterTagChange();
+    } catch (e) {
+      setTags((prev) => (prev.includes(t) ? prev : [...prev, t]));
+      toast.error(e?.detail || e?.message || "Could not remove tag");
+    }
+  };
 
   return (
     <React.Fragment>

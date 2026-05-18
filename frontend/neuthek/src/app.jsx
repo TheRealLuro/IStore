@@ -44,7 +44,7 @@ import {
   listFiles, getImageGeo, servedUrl, renameImage,
   getSummarizeProgress, searchSemantic, getFacets,
   bulkDelete, bulkRestore, bulkMove, createFolderWithImages,
-  clearSearchHistory,
+  clearSearchHistory, backfillImagePlaces,
 } from "@/api/files";
 import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
 import { eraseImageCaches } from "./cache-eraser.js";
@@ -200,7 +200,19 @@ function fileItemToNeuthek(f) {
     // a humanized "12 days ago" string for display only.
     uploaded_at: f.uploaded_at,
     gps: null, // wired separately from /images/geo
-    tags: f.status ? [f.status] : [],
+    // §C1.6 tags. Backend ImageRead.tags is an array of objects
+    // ({id, label, color, confidence}); we flatten to label strings
+    // because the preview's chip UI was written for strings. Falls
+    // back to the legacy `status` column for rows that haven't been
+    // re-summarized through the unified tag system yet.
+    tags: Array.isArray(f.tags) && f.tags.length
+      ? f.tags.map((t) => (typeof t === "string" ? t : t.label)).filter(Boolean)
+      : (f.status ? [f.status] : []),
+    // Rich tag rows ({id, label, color}) preserved so the preview can
+    // detach by id when the user removes a tag chip.
+    tagRows: Array.isArray(f.tags)
+      ? f.tags.filter((t) => t && typeof t === "object" && t.id)
+      : [],
     folder: f.folder_id,
     width: f.width,
     height: f.height,
@@ -1850,6 +1862,33 @@ export function App() {
     },
   });
 
+  // Reverse-geocode backfill — for image_geo rows whose post-upload
+  // worker never completed (failed Nominatim call, restarted before
+  // task ran, etc.), the place column stays NULL forever. Polling
+  // alone won't fix those because nothing on the backend is updating
+  // them. When we see pending rows, kick off /images/geo/backfill-
+  // places once per session; the existing refetchInterval above
+  // picks up the results as Nominatim fills in.
+  const geoBackfillFiredRef = useRefApp(false);
+  useEffectApp(() => {
+    if (!signedIn) return;
+    if (geoBackfillFiredRef.current) return;
+    const points = geoResp?.points;
+    if (!points || points.length === 0) return;
+    const anyPending = points.some((p) => p.lat != null && !p.place);
+    if (!anyPending) return;
+    geoBackfillFiredRef.current = true;
+    // Fire-and-forget — backfill can take minutes for large libraries
+    // (Nominatim is rate-limited to 1 rps), and the polling above
+    // will incrementally show results as they land.
+    backfillImagePlaces().catch(() => {
+      // Worker errors (no consent, network) don't matter here — the
+      // 403 on consent-off was already gated by `enabled` upstream,
+      // and any other failure just leaves places NULL.
+      geoBackfillFiredRef.current = false;
+    });
+  }, [signedIn, geoResp]);
+
   // Map view needs *every* file with GPS, not just files in the current
   // folder scope. Without this, opening a folder hides any pins for files
   // inside it (and vice versa). We fire this query unconditionally — once —
@@ -2434,7 +2473,20 @@ export function App() {
                 />}
       </main>
 
-      <PreviewPanel file={selectedFile} onClose={() => setSelectedFile(null)} onRename={handleRename} user={user}/>
+      {/* §C9 tag fix — pass the LIVE cache row (looked up by id) to
+          the preview, not the snapshot from when the user clicked.
+          Otherwise invalidations after tag attach/detach refresh the
+          cache but the preview keeps showing the original snapshot. */}
+      <PreviewPanel
+        file={
+          selectedFile
+            ? (sourceFiles.find((f) => f.id === selectedFile.id) || selectedFile)
+            : null
+        }
+        onClose={() => setSelectedFile(null)}
+        onRename={handleRename}
+        user={user}
+      />
 
       {/* FAB jump-to-top */}
       {t.showFab && (
