@@ -2182,7 +2182,14 @@ export function App() {
                 </button>
               : <span className="search__hint">⌘ K</span>}
 
-            {showHistory && (history.length > 0 || query) && (
+            {/* History dropdown is only useful BEFORE the user starts
+                typing. Once `query` is non-empty, the gallery below
+                shows the live search results — keeping the dropdown
+                open at that point covered the results and forced a
+                blur-then-refocus to actually see them. Now: dropdown
+                shows on focus with empty query (history + tip) and
+                hides as soon as the user types. */}
+            {showHistory && !query && history.length > 0 && (
               <div className="search-history" onMouseDown={(e) => e.preventDefault()}>
                 <div className="search-history__semantic">
                   <Icon name="sparkles" size={11}/>

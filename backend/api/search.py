@@ -80,11 +80,13 @@ async def clear_search_history(
     return None
 
 
-# Score blend weights. Tuned for the case where CLIP returns a top-30 list
-# and FTS returns a (usually shorter) top-30 list — most queries land in
-# one or the other; a few land in both, and those bubble to the top.
-_W_CLIP = 0.45
-_W_TEXT = 0.55
+# Score blend weights. CLIP-led because the headline feature is
+# "search by what you remember" — semantic queries like "teacher
+# teaching math" must surface a whiteboard photo even though none of
+# those literal words appear in the summary. FTS is a boost for
+# precise hits (filenames, exact terms), not the primary signal.
+_W_CLIP = 0.65
+_W_TEXT = 0.35
 
 
 def _encode_text_sync(query: str):
@@ -134,27 +136,26 @@ def _build_haystack():
     )
 
 
-# Minimum CLIP cosine for a hit to count on its own. Below this, the
-# embedding match is basically noise — CLIP's "this image is a little
-# bit related to your query" floor is around 0.20-0.22 for unrelated
-# images on the same domain. We require either a text/keyword match OR
-# a CLIP cosine above this threshold; weak CLIP-only matches don't
-# pollute the result list. Raised from 0.24 → 0.26 because at 0.24
-# small libraries returned every image (CLIP's "loosely related"
-# floor often sits in [0.22, 0.27] for unrelated content on the
-# same domain).
-_CLIP_MIN_SIM_KEEP = 0.26
+# Minimum CLIP cosine for a hit to count. Below this, the embedding
+# match is basically noise. We dropped from 0.26 to 0.22 because
+# semantic queries that don't share any literal terms with the
+# summary (the canonical "teacher teaching math" vs. a whiteboard
+# photo with calculus equations) typically land in [0.22, 0.30]
+# and were being filtered out as "weak." Unrelated images on the
+# same domain usually sit at 0.18-0.20, so 0.22 still excludes
+# noise.
+_CLIP_MIN_SIM_KEEP = 0.22
 # Strong-match floor — CLIP hits at or above this are kept even when
 # the user's query also has text matches. Below this and above the
 # keep threshold, they only show up if no keyword match was found.
-_CLIP_STRONG_SIM = 0.30
+_CLIP_STRONG_SIM = 0.28
 # After scoring + filtering, drop results whose score is below
-# `top_score * _RELATIVE_FLOOR`. This is the gate that fixes the
-# "type anything and everything pulls up" symptom on small libraries:
-# if the best match is a 0.50 hit, we only keep things scoring ≥ 0.30.
-# Tuned at 0.60 so a tightly-relevant top hit narrows the result
-# list but multiple strong matches still co-exist.
-_RELATIVE_FLOOR = 0.60
+# `top_score * _RELATIVE_FLOOR`. Loosened from 0.60 → 0.45 so a
+# tightly-relevant top hit doesn't suppress the second-best semantic
+# match. With the keyword-overlap gate gone, this is the main noise
+# filter — but it should be permissive enough that "teacher teaching
+# math" returns the 2-3 plausibly-relevant photos, not just the top.
+_RELATIVE_FLOOR = 0.45
 
 
 def _tokenize_query(q: str) -> list[str]:
@@ -256,23 +257,15 @@ async def semantic_search(
                 "Semantic search requires the [ml] extras to be installed.",
             )
 
-    tokens = _expand_tokens(_tokenize_query(q))
-
     # --- merge ----------------------------------------------------------
     #
-    # Filtering policy (tightened from the old "any positive cosine
-    # counts"): a row is kept if
-    #   1. it has a keyword hit on its searchable text, OR
-    #   2. its CLIP cosine is at least `_CLIP_MIN_SIM_KEEP` (i.e. CLIP
-    #      thinks it's plausibly related, not just "marginally not
-    #      orthogonal"), OR
-    #   3. its CLIP cosine is at least `_CLIP_STRONG_SIM` even when the
-    #      query has keyword hits elsewhere — strong visual matches
-    #      should always surface.
-    #
-    # The old behavior returned every image with a positive cosine,
-    # which on a small library meant the result list was just "all
-    # files, ordered by random CLIP noise."
+    # Policy: keep a row if its CLIP cosine clears `_CLIP_MIN_SIM_KEEP`
+    # OR it picked up an FTS hit. CLIP score dominates; FTS adds a
+    # boost when it lands. The old hard-gate that required a literal
+    # keyword overlap with the user's tokens was removed because it
+    # killed every legitimate semantic query whose vocabulary didn't
+    # match the captioned vocabulary (e.g. "teacher teaching math"
+    # vs. a whiteboard photo whose summary says "matrix algebra").
     merged: dict = {}
     for image_id, (image, clip_score) in clip_hits.items():
         if clip_score < _CLIP_MIN_SIM_KEEP:
@@ -285,28 +278,22 @@ async def semantic_search(
         else:
             merged[image_id] = (image, _W_TEXT * text_score, True)
 
-    # Apply the keyword-overlap gate. If the user typed concrete words,
-    # we require at least one to match the row's text OR the CLIP hit
-    # to be strong on its own — otherwise the row gets dropped.
-    have_any_text_match = any(has_text for (_, _, has_text) in merged.values())
-    final: list[tuple] = []
-    for image_id, (image, score, has_text) in merged.items():
-        if tokens:
-            haystack = _file_haystack_text(image)
-            keyword_hit = any(tok in haystack for tok in tokens)
-        else:
-            keyword_hit = False
-        clip_score = clip_hits.get(image_id, (None, 0.0))[1] if image_id in clip_hits else 0.0
-        if has_text or keyword_hit:
-            final.append((image, score))
-        elif clip_score >= _CLIP_STRONG_SIM:
-            final.append((image, score))
-        elif not have_any_text_match and not tokens:
-            # Query had no usable tokens (all stopwords); fall back to
-            # the looser CLIP-only ranking.
-            final.append((image, score))
-        # else: drop the row — weak CLIP-only match with no keyword hit.
-
+    # No keyword-overlap gate. The previous gate required at least one
+    # query token to appear literally in the row's summary/filename,
+    # which killed every semantic query that didn't share vocabulary
+    # with the image's caption — the canonical failure was "teacher
+    # teaching math" vs. a whiteboard photo whose summary talked about
+    # "matrix algebra and calculus" instead. CLIP's job is exactly to
+    # bridge that vocabulary gap; making it gate on keyword overlap
+    # negated the headline "search by what you remember" feature.
+    #
+    # Quality is now defended by two cheaper filters:
+    #   1. `_CLIP_MIN_SIM_KEEP` on entry (drops embeddings that are
+    #      basically orthogonal to the query — noise floor).
+    #   2. `_RELATIVE_FLOOR` below — drops results far below the top
+    #      score so a single weakly-similar image doesn't appear next
+    #      to a clearly relevant one.
+    final = [(image, score) for (image, score, _has_text) in merged.values()]
     ranked = sorted(final, key=lambda r: r[1], reverse=True)[:limit]
 
     # Relative-margin filter — on small libraries, multiple files all
