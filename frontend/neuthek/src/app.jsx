@@ -2473,14 +2473,19 @@ export function App() {
                 />}
       </main>
 
-      {/* §C9 tag fix — pass the LIVE cache row (looked up by id) to
-          the preview, not the snapshot from when the user clicked.
-          Otherwise invalidations after tag attach/detach refresh the
-          cache but the preview keeps showing the original snapshot. */}
+      {/* §C9 tag fix — pass the LIVE MAPPED row (looked up by id in
+          baseFiles, which runs every row through fileItemToNeuthek
+          first). Looking up the raw backend row in `sourceFiles`
+          instead would feed PreviewPanel a `tags` array of
+          {id,label,color} objects — and the chip UI renders them
+          directly as JSX children, which crashes with "Objects are
+          not valid as a React child" and unmounts the whole app.
+          baseFiles already flattens tags to strings + preserves
+          the rich shape on tagRows. */}
       <PreviewPanel
         file={
           selectedFile
-            ? (sourceFiles.find((f) => f.id === selectedFile.id) || selectedFile)
+            ? (baseFiles.find((f) => f.id === selectedFile.id) || selectedFile)
             : null
         }
         onClose={() => setSelectedFile(null)}
