@@ -1040,9 +1040,11 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
         async with httpx.AsyncClient(
             timeout=8.0,
             headers={
-                # Nominatim ToS requires a unique UA that lets them
-                # contact us if we abuse the service.
-                "User-Agent": "neuthek/0.1 (self-hosted; privacy@neuthek.app)",
+                # Nominatim ToS requires a unique UA. Plain product
+                # name is enough — the email-contact form was reading
+                # as a "scrapy" UA to some Nominatim mirrors and
+                # earning silent 200s with empty address objects.
+                "User-Agent": "neuthek-self-host/0.1",
                 "Accept-Language": "en",
             },
         ) as client:
@@ -1052,19 +1054,29 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
                     "lat": lat,
                     "lon": lng,
                     "format": "jsonv2",
-                    "zoom": 10,  # city-ish granularity
+                    # zoom 14 = "suburb / large village" granularity.
+                    # Previously zoom=10 ("city") returned an address
+                    # object missing city/town/village for some valid
+                    # urban coords (the road object got picked instead).
+                    # 14 reliably populates city + state.
+                    "zoom": 14,
                     "addressdetails": 1,
                 },
             )
         if resp.status_code != 200:
+            logger.warning(
+                "reverse-geocode HTTP %s for (%s, %s): %s",
+                resp.status_code, lat, lng, resp.text[:200],
+            )
             return None
         data = resp.json()
         # Prefer a compact "City, Region" form over the full display_name.
         addr = data.get("address") or {}
         city = (
             addr.get("city") or addr.get("town") or addr.get("village")
-            or addr.get("suburb") or addr.get("county")
-            or addr.get("state_district")
+            or addr.get("hamlet") or addr.get("suburb") or addr.get("neighbourhood")
+            or addr.get("county") or addr.get("state_district")
+            or addr.get("municipality")
         )
         region = addr.get("state") or addr.get("country")
         if city and region:
@@ -1075,6 +1087,14 @@ async def _reverse_geocode(lat: float, lng: float) -> str | None:
             short = ", ".join(parts[:2]) if len(parts) >= 2 else parts[0]
         else:
             short = None
+        if not short:
+            logger.warning(
+                "reverse-geocode produced no place for (%s, %s): "
+                "address=%s, display_name=%s",
+                lat, lng,
+                addr,
+                data.get("display_name"),
+            )
     except Exception:
         logger.exception("reverse-geocode failed for (%s, %s)", lat, lng)
         short = None

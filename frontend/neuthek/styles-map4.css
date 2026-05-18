@@ -52,11 +52,17 @@
      of laggy on dense tile sets. */
   --leaflet-zoom-anim-duration: 0.25s;
 }
+/* Dark-theme backdrop tuned to blend with CartoDB DarkMatter so an
+   unloaded tile slot reads as continuous map space, not "the tile
+   failed." DarkMatter renders its land/ocean base at roughly #0a0d12;
+   we sit slightly darker so the seam between loaded and unloaded is
+   invisible at quick-zoom speeds. Grid lines softened to 3% so the
+   pattern stays present at close inspection but disappears at glance. */
 html[data-theme="dark"] .map4-canvas .leaflet-container {
-  background-color: #1a1f29;
+  background-color: #0a0d12;
   background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
 }
 /* Smoother tile fade-in so individual tiles don't pop in jagged. */
 .map4-canvas .leaflet-tile {
