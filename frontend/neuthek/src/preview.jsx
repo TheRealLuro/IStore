@@ -8,6 +8,7 @@ import { getImagePeople, faceCropUrl, redetectFaces } from "@/api/people";
 import { EditableName } from "./nameable-chip.jsx";
 import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
 import { attachImageTag, detachImageTag } from "@/api/tags";
+import { CommentPanel } from "./comment-panel.jsx";
 import { listShares } from "@/api/shares";
 import { PdfPageStack } from "./pdf-stack.jsx";
 import { ShareModal } from "./share-modal.jsx";
@@ -248,8 +249,23 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   return (
     <React.Fragment>
     <div className="preview-backdrop" onClick={onClose}/>
+    {/* §G2 — comment panel only renders while a full-display
+        surface is open. Shared across image lightbox, PDF modal,
+        and code modal so every shareable file type gets the same
+        thread UX. Position: fixed left edge — the lightbox content
+        sits to its right (CSS gives the lightbox .lightbox--comments
+        class a left padding so nothing's covered). The panel closes
+        implicitly when the parent surface closes; the thread itself
+        is server-side, so re-opening the file resumes the
+        conversation. */}
+    <CommentPanel
+      fileId={file.id}
+      currentUserId={user?.id}
+      ownerUserId={file.user_id || user?.id}
+      open={lightbox || pdfModal || codeModal}
+    />
     {lightbox && file.thumb && (
-      <div className="lightbox" onClick={() => setLightbox(false)}>
+      <div className="lightbox lightbox--comments" onClick={() => setLightbox(false)}>
         <button className="lightbox__close" aria-label="Close" onClick={(e) => { e.stopPropagation(); setLightbox(false); }}>
           <Icon name="x" size={18}/>
         </button>
@@ -257,7 +273,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       </div>
     )}
     {pdfModal && isPdf && (
-      <div className="lightbox" onClick={() => setPdfModal(false)}>
+      <div className="lightbox lightbox--comments" onClick={() => setPdfModal(false)}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">
@@ -296,7 +312,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       </div>
     )}
     {codeModal && isCode && (
-      <div className="lightbox" onClick={() => setCodeModal(false)}>
+      <div className="lightbox lightbox--comments" onClick={() => setCodeModal(false)}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">

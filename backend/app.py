@@ -9,6 +9,7 @@ from backend.api.account import router as account_router
 from backend.api.admin import router as admin_dashboard_router
 from backend.api.billing import router as billing_router
 from backend.api.cloud import router as cloud_router
+from backend.api.comments import router as comments_router
 from backend.api.faces import router as faces_router
 from backend.api.feedback import router as feedback_router
 from backend.api.folders import router as folders_router
@@ -157,6 +158,8 @@ def create_app() -> FastAPI:
     app.include_router(tags_router)
     app.include_router(tag_image_attach_router)
     app.include_router(tag_folder_attach_router)
+    # §G2 — comments on any file (owner or active share recipient).
+    app.include_router(comments_router)
 
     return app
 

@@ -880,11 +880,54 @@ users.
 > User intent: when documents or slideshows are shared, there should
 > be an edit tab where people can comment or edit them as a team.
 
-### G2. Comments ⏳
-`comments(id, asset_id, author_user_id_or_email, body, anchor_json,
-created_at)` where `anchor_json` is a free-form pointer (page+rect
-for PDFs, slide index for slideshows, time range for video). FE
-renders pins on the asset and a thread panel on the right.
+### G2. Comments ✅ SHIPPED 2026-05-18
+> Migration 0034 adds the `comments` table — `image_id` (CASCADE on
+> image delete), nullable `user_id` (SET NULL on account delete so
+> the comment outlives its author and we can still render replies
+> under "former user"), self-FK `parent_id` (CASCADE for reply
+> trees), `body`, schema-less `anchor_json` JSONB (PDF page+rect,
+> slide index, video time-range, image-normalized xy — new asset
+> shapes don't need a migration), `created_at` / `updated_at` /
+> `deleted_at` (soft delete preserves reply tree integrity).
+>
+> RLS is intentionally lighter than other per-user tables. Comments
+> have three legitimate readers (commenter, image owner, active
+> share recipient), and the recipient check isn't expressible in a
+> single RLS predicate without joining `share_grants`. The DB
+> policy here only blocks the cheapest accident (writes that
+> aren't the commenter's own or on their own images); the API
+> layer enforces the full owner-OR-active-share check.
+>
+> Endpoints in [backend/api/comments.py](backend/api/comments.py):
+>
+>   GET    /images/{image_id}/comments         — list (threaded)
+>   POST   /images/{image_id}/comments         — create
+>   PATCH  /comments/{comment_id}              — edit (author only)
+>   DELETE /comments/{comment_id}              — soft delete
+>                                                (author OR image owner)
+>
+> Author can edit and delete their own. Image owner can delete any
+> comment on their files (mod-on-own-stuff) but cannot edit a
+> recipient's comment — that would let an owner put words in a
+> sharer's mouth.
+>
+> 7 pytest cases in [tests/test_g2_comments.py](tests/test_g2_comments.py)
+> cover owner happy-path, edit, soft-delete-then-list (body blanks,
+> row stays), reply parent-image validation, stranger 404
+> enumeration resistance, share-recipient read+write, and owner-
+> deletes-recipient-comments (but cannot edit).
+>
+> Frontend [comment-panel.jsx](frontend/neuthek/src/comment-panel.jsx)
+> mounted alongside every full-display surface (image lightbox /
+> PDF modal / code modal) via the `.lightbox--comments` class on
+> the wrapper. 360 px wide left-edge panel, slides in from the
+> left, closes implicitly when the parent surface closes. Header
+> with comment count, threaded list with avatar + byline + relative
+> time + body + Reply/Edit/Delete actions, compose textarea pinned
+> bottom with ⌘↵-to-send. Below 720 px the panel goes full-width
+> at the bottom of the viewport (mobile / tablet portrait). The
+> conversation lives on the server — re-opening the file resumes
+> the thread.
 
 ### G3. Real-time team editing ⏳
 Document type only at first; out of scope for images. Likely path:
@@ -1018,7 +1061,9 @@ All compliance items now closed:
 
 ### Sprint D — sharing + onboarding (next, ~2 weeks)
 
-1. **G2** comments — `comments` table + pin overlay + thread panel.
+1. ~~**G2** comments~~ — ✅ shipped 2026-05-18 (comments table +
+   threaded API + left-side CommentPanel in every full-display
+   surface).
 2. ~~**C5.1** setup script~~ — ✅ shipped 2026-05-18
    (`scripts/setup.py` with platform / GPU detect, fresh-secret
    generation, docker-or-native picker).

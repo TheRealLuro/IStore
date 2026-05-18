@@ -147,6 +147,14 @@ html[data-theme="light"] .preview-backdrop {
   animation: bd-fade 200ms ease;
   cursor: zoom-out;
 }
+/* §G2 — when the comment panel is visible, the lightbox content
+   shrinks right so the panel doesn't cover it. The panel itself is
+   position:fixed left:0 (see .comment-panel below); this is just
+   the offset for the lightbox's flex centering. */
+.lightbox--comments { padding-left: 360px; }
+@media (max-width: 720px) {
+  .lightbox--comments { padding-left: 0; padding-bottom: 320px; }
+}
 .lightbox__img {
   max-width: 92vw; max-height: 92vh;
   border-radius: 8px;
@@ -383,4 +391,265 @@ html[data-theme="dark"] .skel {
     rgba(255,255,255,0.05) 100%
   );
   background-size: 200% 100%;
+}
+
+/* ============================================================
+   §G2 — Comment panel
+   ============================================================
+   Slides in from the left edge alongside the full-display surfaces
+   (image lightbox / PDF modal / code modal). One column, card-per-
+   comment, compose box pinned to the bottom. Closes implicitly
+   when the parent surface closes — the React component unmounts
+   the moment `open` flips to false.
+
+   Layout intent: clean, organized, doesn't fight the file content.
+   Fixed width of 360px keeps comments wide enough for sentence-
+   length thoughts without dwarfing the file on smaller monitors.
+   Below 720px the panel goes full-width and stacks under the
+   content (mobile + tablet portrait). */
+.comment-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 360px;
+  z-index: 210;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  animation: cp-slide 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  /* The lightbox sits at z-index 200; we sit one above and don't
+     darken its backdrop. Click events on the panel never reach the
+     backdrop (component stops propagation), so the lightbox stays
+     open while you interact. */
+}
+@keyframes cp-slide {
+  from { transform: translateX(-100%); opacity: 0.6; }
+  to   { transform: translateX(0);     opacity: 1;   }
+}
+
+.comment-panel__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+.comment-panel__title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.comment-panel__count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.comment-panel__list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.comment-panel__empty {
+  text-align: center;
+  padding: 56px 28px;
+  color: var(--ink-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.comment-panel__empty-icon {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  display: grid; place-items: center;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.comment-panel__empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.comment-panel__empty-body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 240px;
+}
+
+.comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 18px;
+}
+.comment--reply {
+  padding-left: 50px;
+}
+.comment--deleted .comment__avatar { opacity: 0.4; }
+
+.comment__avatar {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--surface);
+  display: grid; place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.comment__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.comment__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.comment__author {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.comment__time {
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.comment__body {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+.comment__body--deleted {
+  color: var(--ink-3);
+  font-style: italic;
+}
+.comment__actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+}
+.comment__action {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.comment__action:hover { color: var(--ink); }
+.comment__action--danger:hover { color: var(--danger); }
+
+.comment__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.comment__edit textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.45;
+  resize: vertical;
+  outline: none;
+}
+.comment__edit textarea:focus { border-color: var(--ink-3); }
+.comment__edit-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.comment-panel__compose {
+  flex: 0 0 auto;
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.comment-panel__reply-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.comment-panel__compose textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  min-height: 60px;
+  max-height: 200px;
+}
+.comment-panel__compose textarea:focus { border-color: var(--ink-3); }
+.comment-panel__compose-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.comment-panel__hint {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+@media (max-width: 720px) {
+  /* Mobile/tablet portrait: panel goes full-width and stacks under
+     the file content instead of consuming the entire viewport. */
+  .comment-panel {
+    top: auto;
+    right: 0;
+    width: auto;
+    height: 320px;
+    border-right: 0;
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.35);
+  }
+  @keyframes cp-slide {
+    from { transform: translateY(100%); opacity: 0.6; }
+    to   { transform: translateY(0);    opacity: 1;   }
+  }
 }

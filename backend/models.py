@@ -512,6 +512,61 @@ class ImagePerson(Base):
     )
 
 
+class Comment(Base):
+    """§G2 — threaded comments on any file (owner OR active share
+    recipient can read/write).
+
+    `anchor_json` is schema-less so new asset types (slides, video,
+    etc.) can add new shapes without a migration. Today's shapes:
+
+        {"kind": "image", "x": 0.5, "y": 0.7}     # normalized 0-1
+        {"kind": "pdf", "page": 3, "rect": [...]}
+        {"kind": "slide", "index": 5}
+        {"kind": "video", "t_start": 12.3, "t_end": 15.0}
+
+    NULL `anchor_json` = "general comment on the file" — surfaces in
+    the thread panel but draws no pin overlay.
+
+    Soft delete via `deleted_at` so the FE can render "comment
+    deleted" placeholders in a thread instead of orphaning replies.
+    """
+
+    __tablename__ = "comments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Nullable: when an author deletes their account, the comment row
+    # stays but `user_id` flips to NULL ("former user"). CASCADE would
+    # orphan replies under deleted accounts.
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Reply threading. CASCADE so deleting a root deletes its tree.
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("comments.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    anchor_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+
 class FaceDetection(Base):
     __tablename__ = "face_detections"
 
