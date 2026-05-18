@@ -8,7 +8,235 @@ buckets; copy the whole file into `marketing/src/data/updates.ts`
 week and clear this file.
 
 Last published: **W20 (2026-05-16) — Google Drive sync + Sign in with
-Google**.  Next entry target: **W21, publish 2026-05-23**.
+Google**. Next entry target: **W22, publish 2026-05-30**. W21 below
+covers the engine-plumbing batch; W22 (newest, top of file) covers
+filtering, setup tooling, search rewrite, and a long list of UX bugs.
+
+---
+
+## 2026-w22 — Multi-axis filtering, smarter search, fewer "looks broken" bugs
+
+**Slug:** `2026-w22-multi-axis-filtering-and-bug-bundle`
+**Week label:** `Week of May 30, 2026`
+**Tags:** `["filtering","search","map","tags","setup","preview","cleanup"]`
+
+### Summary
+
+A week of "make the engine match the marketing." Multi-axis gallery
+filtering (filter by person, tag, location radius, capture date —
+all combined), a search rewrite that actually does what semantic
+search promises (type "teacher teaching math", get the whiteboard
+photo), the C5.1 setup script that takes a fresh checkout to a
+running stack in one command, the C4.2 "Me" → real-name binding,
+the C3 map clustering swap to supercluster + a designed grid
+backdrop, and a long bug list — the kind of stuff people kept
+running into and assuming the product was broken.
+
+### Found
+
+- **Search needed exact words.** Type "teacher teaching math" and
+  the whiteboard photo whose summary said "matrix algebra and
+  calculus" never showed up. The ranker required at least one of
+  the user's literal tokens (after WordNet synonym expansion) to
+  appear in the image's text — even when CLIP's cosine score
+  thought the image was clearly relevant. Worse, the search history
+  dropdown stayed open after you typed, covering the gallery results
+  underneath. You had to click out then back in just to see them.
+- **Tags added in the preview disappeared on reopen.** Two bugs in
+  one: the app's FE-to-backend mapper was reading from the legacy
+  `status` column instead of the new `tags` array (so every
+  persisted tag got stripped on the way to the gallery), and the
+  preview's inline "Add tag" input only mutated local React state —
+  it never called the backend. The tag pop-in felt instant but was
+  pure illusion; close + reopen and it was gone.
+- **New tags didn't appear in the filter dropdown.** Persisted
+  fine; the FE just didn't invalidate the right query cache.
+- **People counts were always the library total.** Every person card
+  in the People tab read the same number — "40 photos" for Me, "40
+  photos" for Aidyn. SQLAlchemy's auto-correlation doesn't reach
+  into UNION components reliably, so the correlated count was
+  collapsing to "every image of every person."
+- **Date filter ignored when the photo was actually taken.** Filtered
+  by upload time only. A photo taken in 2018, uploaded yesterday,
+  showed up in "today" filters and nowhere else. The EXIF capture
+  date was extracted at upload but stored on `image_geo` (gated on
+  GPS consent) — users without GPS retention got no capture date
+  at all.
+- **Upload modal kept stale done rows on reopen.** Closing mid-
+  upload via "Close (keep running)" was intentional; reopening
+  later showed the now-done rows from the previous session next to
+  any new ones. Confusing because they're not "happening now."
+- **Filter dropdown was about to get unmanageable.** All chip
+  groups expanded by default. Fine with five scenes; painful with
+  fifty tags + ten people.
+- **Preview crashed and dumped you back to the signed-out splash.**
+  A subtle one: a recent fix passed the raw backend row to
+  PreviewPanel where `tags` is `[{id, label, color}]` (objects).
+  The chip UI renders each tag directly as a JSX child — works for
+  strings, throws "Objects are not valid as a React child" for
+  objects → React unmounted the whole app.
+- **"Looking up location…" stuck forever** on the preview even when
+  the same coordinates showed a valid pin on the map. Three layers:
+  the TanStack Query v5 `refetchInterval` callback signature
+  changed (it gets the Query object now, not the data) so the
+  polling never actually fired; the post-upload reverse-geocode
+  worker silently cached `None` when Nominatim had a blip, which
+  poisoned that coordinate forever; and the FE never re-triggered
+  the backfill on stale rows.
+- **Map clustering wouldn't scale.** The old pixel-space clusterer
+  was O(N × visible-clusters) and re-walked every point on each
+  render. Fine up to a few hundred pins; painful past two thousand.
+- **Map flashed white when zooming out fast.** Plain backdrop
+  exposed during tile-pyramid transitions reads as "the map
+  broke."
+- **C5.1 setup script was 18 env keys behind reality.** It missed
+  every secret added since W12 — Fernet key for the secret-box,
+  Google OAuth, GitHub OAuth, Stripe, Resend, every SSE knob, the
+  rate-limit caps, half the bucket names.
+
+### Fixed
+
+- **Search now leads with CLIP cosine, FTS is a boost.** Dropped
+  the hard keyword-overlap gate. Lowered the cosine floor from
+  0.26 → 0.22 so semantic queries without vocabulary anchors
+  actually pass through. Weights flipped to 0.65 CLIP / 0.35 FTS
+  so a literal filename hit still ranks well but "teacher teaching
+  math" can find the whiteboard photo by meaning alone. Relative-
+  margin floor loosened from 0.60 → 0.45 so the second- and
+  third-best plausible matches aren't suppressed by the top hit.
+- **Search history dropdown closes the moment you type.** Empty
+  query + focus = recent history + tip; one keystroke = dropdown
+  collapses, gallery results are visible.
+- **Tags from the preview persist now.** The mapper reads from the
+  new `tags` array (and falls back to the legacy `status` column
+  for un-migrated rows). `addTag` and `removeTag` call the real
+  `attachImageTag` / `detachImageTag` endpoints. The preview also
+  refreshes from the live cache row instead of the click-time
+  snapshot so the chip you just added stays put through the next
+  refetch.
+- **Filter dropdown invalidates `["facets"]`** after tag changes
+  so new tags appear in the Tags chip group immediately.
+- **Person counts** are correct: replaced the correlated UNION
+  scalar subquery with a single derived `(image_id, person_id)`
+  table + `COUNT(DISTINCT)`. Two persons with disjoint photos now
+  show disjoint counts. Regression test makes sure the next time
+  this breaks it breaks loudly.
+- **EXIF capture date** is now its own column on `images`
+  (migration 0033), populated whenever `exif_retention` consent is
+  on, independent of GPS retention. Date-range filter (and the
+  facets endpoint) COALESCE `captured_at` > `image_geo.taken_at` >
+  `uploaded_at` so the filter prefers EXIF when available and
+  falls back gracefully. Migration backfills from
+  `image_geo.taken_at` for rows that already had one.
+- **Upload modal** drops done/error rows on (re)open. In-flight
+  rows survive so "Close (keep running)" still keeps visibility.
+- **Filter dropdown groups** are now native `<details>`
+  collapsibles. Default closed unless the group has an active
+  filter; force-open while the Cmd-K search input is non-empty so
+  keyboard-first filtering still works. Each summary row shows
+  "n options · k active" so the user knows what's selected
+  without expanding.
+- **Preview crash fix:** PreviewPanel is now fed the live MAPPED
+  row from `baseFiles` (looked up by id), not the raw backend
+  response. The mapper flattens the `tags` array to label strings
+  and keeps the rich `{id, label, color}` shape on a parallel
+  `tagRows` mirror used by detach lookups.
+- **"Looking up location…"** unsticks itself now. Three matching
+  fixes: the `refetchInterval` callback reads `query.state.data`
+  per the v5 signature; the Nominatim helper no longer caches
+  `None` (transient failure means "retry next time," not "never
+  again"); the backfill endpoint defensively re-queues any
+  leftover poisoned `None` entries. And on app load, if any geo
+  row has coords but no place, the FE auto-fires `/images/geo/
+  backfill-places` once so already-uploaded files catch up.
+- **Map clustering** swapped to `supercluster` — O(N) build,
+  O(visible) per render. Click a cluster → `getClusterExpansionZoom`
+  returns the exact level at which it splits; `flyTo` animates
+  there in 500 ms. The import is dynamic with a graceful fallback
+  to the old pixel-space clusterer so a missing install doesn't
+  block the dev server behind a Vite overlay.
+- **Map backdrop** is now a subtle 28-px grid at ~6 % contrast
+  (light) / 5 % (dark). Reads as designed empty space, not "the
+  map broke." Tiles still cover it completely once they resolve.
+- **C5.1 setup script** (`scripts/setup.py`) rewritten from
+  scratch. Stdlib only (runs before the venv exists). Detects
+  Windows / Linux / macOS, enumerates drives, probes for CUDA /
+  ROCm / Apple Metal / Intel XPU with the right torch-wheel
+  `--index-url` hint. Generates four fresh secrets (JWT, Postgres
+  password, MinIO secret key, Fernet `CLOUD_ENCRYPTION_KEY`).
+  Writes a 56-key `.env` covering the current surface. `--mode`
+  flag picks `docker compose up -d` or a per-platform native
+  install checklist with binary-on-PATH detection.
+
+### New features
+
+- **Multi-axis gallery filtering (§C9).** The filter dropdown above
+  the gallery now lets you combine: scene (indoor / outdoor /
+  CLIP-classified scene labels), content type (photo / screenshot
+  / document / etc.), tag, person, date range (two date inputs
+  bounded by your library's actual earliest/latest), and the
+  existing "has people" / "has location" toggles. All compose;
+  you can ask "Indoor photos of Sasha from January 2026" and
+  actually get only those. Filters live in the URL so a reload or
+  link share preserves the active combination. The `near=lat,lng,
+  radius_km` parameter is wired on the backend with a `gps_retention`
+  consent gate for power users / future map integration.
+- **"Me" binds to your display name (§C4.2).** When you label a
+  face cluster (or rename a person) with the literal word "Me",
+  the backend substitutes your account display name so AI
+  summaries say "Jakub on the beach" instead of "Me on the beach."
+  If you haven't set a display name yet, the chip swaps into an
+  inline prompt: "What's your name? We'll use it instead of 'Me'."
+  One PATCH + retry, no nav-away.
+- **One-command self-host setup (§C5.1).** `python scripts/setup.py`
+  on a fresh checkout: detects your hardware, generates fresh
+  secrets, writes `.env`, and either brings up the docker-compose
+  stack or prints the per-platform install commands for Postgres
+  16 + pgvector / Redis 7 / MinIO. `--yes` for CI / non-
+  interactive, `--reset` to regenerate every secret.
+- **EXIF capture date** as a first-class column. Filters and
+  facets respect it. Photos taken five years ago and uploaded
+  today land in the year they were taken.
+
+### Why
+
+A lot of this week is the "the demo's already great, why aren't
+people getting the experience we built" category. Search that
+required exact words isn't really search; a tag UI that doesn't
+save isn't really a UI; a filter dropdown with 50 unsorted chips
+isn't really a filter. Each fix here removes one place a user
+went "wait, is it broken?" and replaced it with the thing the
+product was supposed to do.
+
+The multi-axis filter is the headline feature: every gallery you've
+ever used filters by ONE thing at a time (Type, Album, Date). neuthek
+filters by all the signals at once because we already have them in
+the DB — scene, content type, person, location radius, date range,
+tags. Once the UX is in your hands you'll wonder how a photo app
+ever worked without it.
+
+C4.2 is small but high-polish: the difference between "AI summary
+says 'Me'" and "AI summary uses your real name" is one consent-
+checked rename behind the scenes. Felt right to land.
+
+### What this means for you
+
+- **Try the new filter dropdown.** Open the gallery, click Filters
+  in the toolbar. Combine People + Scene + a date range. Share
+  the resulting URL — the filter combination travels with it.
+- **Search by what you mean, not by what you wrote.** "Teacher
+  teaching math" will find the whiteboard photo even though no
+  caption says "teacher" or "math." Type a phrase, not keywords.
+- **Add tags from the preview again.** The "Add tag" input
+  actually saves now. Tags appear in the filter dropdown
+  immediately.
+- **Mark a face as "Me"** and we'll bind it to your display name
+  (or prompt you for one). Future AI summaries will use your real
+  name.
+- **Self-hosters** — try `python scripts/setup.py` on a fresh
+  checkout. One command, fresh secrets, docker compose up or the
+  install checklist. Migration `0033` adds `images.captured_at`;
+  `alembic upgrade head` picks it up.
 
 ---
 
