@@ -115,22 +115,38 @@ async def list_people(
     # both numbers from the same source so they always match.
     from backend.models import ImagePerson as _IP
 
-    # Per-person scalar subquery: UNION the two image-id sources, then
-    # count rows. The UNION (not UNION ALL) deduplicates, so an image
-    # that's both face-detected AND manually tagged for this person
-    # counts once.
-    from sqlalchemy import literal_column, union
-
-    union_sq = union(
-        select(FaceDetection.image_id)
-            .join(Face, Face.id == FaceDetection.face_id)
-            .where(Face.user_id == user.id, Face.person_id == Person.id),
-        select(_IP.image_id)
-            .where(_IP.user_id == user.id, _IP.person_id == Person.id),
-    ).alias("person_image_ids")
+    # Per-person photo count. The previous shape was a correlated UNION
+    # scalar subquery with `Person.id` referenced inside each UNION
+    # branch — but SQLAlchemy's auto-correlation doesn't reach into
+    # UNION components reliably, so each branch was selecting "all
+    # faces of all persons" and the outer COUNT returned every image
+    # in the library (every person card showed the same global total).
+    # New shape: build ONE derived table mapping (image_id, person_id)
+    # from both the face-detection and manual-tag paths, then run a
+    # standard correlated COUNT(DISTINCT image_id) WHERE person_id
+    # matches the outer Person row.
+    face_pairs = (
+        select(
+            FaceDetection.image_id.label("image_id"),
+            Face.person_id.label("person_id"),
+        )
+        .join(Face, Face.id == FaceDetection.face_id)
+        .where(
+            FaceDetection.user_id == user.id,
+            Face.person_id.is_not(None),
+        )
+    )
+    manual_pairs = (
+        select(
+            _IP.image_id.label("image_id"),
+            _IP.person_id.label("person_id"),
+        )
+        .where(_IP.user_id == user.id)
+    )
+    person_images_sq = face_pairs.union(manual_pairs).subquery("person_images")
     photo_count_sq = (
-        select(func.count(literal_column("image_id")))
-        .select_from(union_sq)
+        select(func.count(func.distinct(person_images_sq.c.image_id)))
+        .where(person_images_sq.c.person_id == Person.id)
         .correlate(Person)
         .scalar_subquery()
     )

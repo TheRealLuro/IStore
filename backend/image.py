@@ -218,6 +218,31 @@ def _exif_gps(raw_bytes: bytes) -> dict | None:
         return None
 
 
+def _exif_captured_at(raw_bytes: bytes) -> datetime | None:
+    """Return EXIF DateTimeOriginal as an aware UTC datetime, or None.
+
+    Independent of GPS — most cameras populate DateTimeOriginal even
+    when GPS is off. This helper exists so the C9 capture-date filter
+    works for users who haven't granted gps_retention. Same parse rules
+    as _exif_gps but no GPS block requirement.
+    """
+    try:
+        with PILImage.open(BytesIO(raw_bytes)) as pil:
+            exif = pil.getexif()
+            if not exif:
+                return None
+            exif_ifd = exif.get_ifd(0x8769)  # EXIF sub-IFD
+            taken_raw = exif_ifd.get(0x9003) if exif_ifd else None
+            if not taken_raw:
+                return None
+            return datetime.strptime(taken_raw, "%Y:%m:%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+    except (ValueError, TypeError, Exception):
+        logger.debug("EXIF capture-date parse failed", exc_info=True)
+        return None
+
+
 def _detect_category(content_type: str | None, filename: str | None) -> str:
     ct = (content_type or "").lower()
     name = (filename or "").lower()
@@ -412,6 +437,15 @@ async def store_upload(
         image.face_likelihood = vision.face_likelihood
         image.indoor_outdoor = vision.indoor_outdoor
         image.vision_processed_at = datetime.now(timezone.utc)
+    # §C9 follow-up — capture date from EXIF DateTimeOriginal, gated
+    # ONLY on exif_retention (not gps_retention). Without this, users
+    # without GPS data on their photos got no capture date and the
+    # date-range filter fell through to uploaded_at — meaning a photo
+    # taken in 2018 but uploaded today would only match "today" filters.
+    if await is_scope_active(session, user.id, "exif_retention"):
+        captured = _exif_captured_at(raw_for_metadata)
+        if captured is not None:
+            image.captured_at = captured
     # `pending_face_scan` is left at its default (true). RetinaFace is the
     # authoritative face detector; CLIP zero-shot proved unreliable at the
     # binary "are there people" question (e.g. 0.03 score on a clear portrait),

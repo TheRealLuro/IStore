@@ -43,6 +43,7 @@ async def _create_image(
     lat: float | None = None,
     lng: float | None = None,
     taken_at: datetime | None = None,
+    captured_at: datetime | None = None,
 ):
     from backend.db import SessionLocal
     from backend.models import Image, ImageGeo
@@ -59,6 +60,7 @@ async def _create_image(
             byte_size_original=1024,
             byte_size_served=512,
             is_starred=starred,
+            captured_at=captured_at,
         )
         if uploaded_at is not None:
             img.uploaded_at = uploaded_at
@@ -180,6 +182,30 @@ async def test_taken_between_uses_uploaded_at_fallback(db_client):
     assert str(may_img) in ids
     assert str(jan_img) not in ids
     assert str(mar_img) not in ids
+
+
+async def test_taken_between_prefers_captured_at_over_uploaded_at(db_client):
+    """When images.captured_at is set (EXIF DateTimeOriginal, populated
+    when exif_retention is on), the date filter uses that instead of
+    uploaded_at — independent of any GPS row."""
+    _, headers = await register_and_login(db_client, email="c9-tb-captured@example.com")
+    user_id = await fetch_user_id("c9-tb-captured@example.com")
+
+    old_upload = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    fresh_capture = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    # No GPS at all — captured_at alone should drive the filter.
+    img_id = await _create_image(
+        user_id,
+        filename="hike.jpg",
+        uploaded_at=old_upload,
+        captured_at=fresh_capture,
+    )
+
+    r = await db_client.get(
+        "/images/?taken_between=2026-04-01,2026-06-01&all=true", headers=headers
+    )
+    ids = {row["id"] for row in r.json()}
+    assert str(img_id) in ids
 
 
 async def test_taken_between_prefers_geo_taken_at(db_client):

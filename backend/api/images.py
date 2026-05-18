@@ -477,7 +477,13 @@ async def list_images(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="taken_between dates must be ISO format (e.g. 2026-05-18 or 2026-05-18T12:00:00)",
             )
+        # COALESCE chain: prefer images.captured_at (EXIF DateTimeOriginal,
+        # populated whenever exif_retention is on), then image_geo.taken_at
+        # (legacy data from before captured_at existed), then uploaded_at
+        # as a last resort so unparseable-EXIF / pre-consent images still
+        # respect the filter.
         captured_at = func.coalesce(
+            Image.captured_at,
             select(ImageGeo.taken_at).where(ImageGeo.image_id == Image.id).scalar_subquery(),
             Image.uploaded_at,
         )
@@ -624,6 +630,7 @@ async def list_facets(
             select(
                 func.min(
                     func.coalesce(
+                        Image.captured_at,
                         select(ImageGeo.taken_at)
                         .where(ImageGeo.image_id == Image.id)
                         .scalar_subquery(),
@@ -632,6 +639,7 @@ async def list_facets(
                 ),
                 func.max(
                     func.coalesce(
+                        Image.captured_at,
                         select(ImageGeo.taken_at)
                         .where(ImageGeo.image_id == Image.id)
                         .scalar_subquery(),

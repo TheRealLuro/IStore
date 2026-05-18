@@ -638,6 +638,66 @@ html[data-theme="dark"] summary:focus-visible { outline-color: rgba(255,255,255,
 .filters-dd__chips {
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+/* Collapsible filter group — each axis (Scene / Content / People /
+   Tags) is a <details> so the dropdown scales as the catalog grows.
+   The summary row shows the option count + active count so the user
+   can see what's selected without expanding. */
+.filters-dd__group--collapsible {
+  border-top: 1px solid var(--line-2);
+  padding-top: 8px;
+}
+.filters-dd__group--collapsible:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.filters-dd__group-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.filters-dd__group-summary::-webkit-details-marker { display: none; }
+.filters-dd__group-summary::marker { content: ""; }
+.filters-dd__group-summary:hover { color: var(--ink); }
+.filters-dd__group--collapsible .filters-dd__group-label {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.filters-dd__group-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+  flex: 1 1 auto;
+}
+.filters-dd__group-active {
+  color: var(--ink);
+  font-weight: 500;
+}
+.filters-dd__group-chev {
+  flex: 0 0 auto;
+  font-family: ui-monospace, "Geist Mono", monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-3);
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.filters-dd__group--collapsible[open] .filters-dd__group-chev::before { content: "−"; }
+.filters-dd__group--collapsible:not([open]) .filters-dd__group-chev::before { content: "+"; }
+.filters-dd__group-chev::before { font-size: 14px; }
+.filters-dd__group--collapsible[open] .filters-dd__chips {
+  padding-top: 6px;
+}
 /* §C9 date-range picker — sits above the chip groups. Compact pair of
    date inputs + an optional clear button. */
 .filters-dd__daterange {

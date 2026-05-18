@@ -1151,41 +1151,65 @@ function FiltersDropdown({
             No filters match "{search}".
           </div>
         ) : (
-          filteredGroups.map(g => (
-            <div key={g.label} className="filters-dd__group">
-              <div className="filters-dd__group-label">{g.label}</div>
-              <div className="filters-dd__chips">
-                {g.chips.map(c => (
-                  <button
-                    key={c.label}
-                    type="button"
-                    onClick={c.onClick}
-                    className="chip"
-                    data-active={c.val}
-                    style={c.tagColor ? { "--chip-tag-color": c.tagColor } : undefined}
-                  >
-                    {c.tagColor && (
-                      <span
-                        aria-hidden="true"
-                        style={{
-                          display: "inline-block",
-                          width: 8,
-                          height: 8,
-                          borderRadius: 999,
-                          background: c.tagColor,
-                          marginRight: 6,
-                        }}
-                      />
+          // Each group becomes a native <details> so the dropdown stays
+          // scannable as the catalog grows (50+ tags, dozens of scenes,
+          // many persons). When the user types in the search box we
+          // force every matching group open so Cmd-K-style filtering
+          // still works without scrolling through collapsed sections.
+          // The header shows "Group (n shown · k active)" so the user
+          // can see what's selected without expanding everything.
+          filteredGroups.map(g => {
+            const activeInGroup = g.chips.filter(c => c.val).length;
+            const forceOpen = !!q || activeInGroup > 0;
+            return (
+              <details
+                key={g.label}
+                className="filters-dd__group filters-dd__group--collapsible"
+                open={forceOpen}
+              >
+                <summary className="filters-dd__group-summary">
+                  <span className="filters-dd__group-label">{g.label}</span>
+                  <span className="filters-dd__group-meta">
+                    {g.chips.length}
+                    {activeInGroup > 0 && (
+                      <span className="filters-dd__group-active"> · {activeInGroup} active</span>
                     )}
-                    {c.label}
-                    {c.count != null && (
-                      <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))
+                  </span>
+                  <span className="filters-dd__group-chev" aria-hidden="true" />
+                </summary>
+                <div className="filters-dd__chips">
+                  {g.chips.map(c => (
+                    <button
+                      key={c.label}
+                      type="button"
+                      onClick={c.onClick}
+                      className="chip"
+                      data-active={c.val}
+                      style={c.tagColor ? { "--chip-tag-color": c.tagColor } : undefined}
+                    >
+                      {c.tagColor && (
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            display: "inline-block",
+                            width: 8,
+                            height: 8,
+                            borderRadius: 999,
+                            background: c.tagColor,
+                            marginRight: 6,
+                          }}
+                        />
+                      )}
+                      {c.label}
+                      {c.count != null && (
+                        <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </details>
+            );
+          })
         )}
 
         {anyFilterActive && (

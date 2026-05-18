@@ -199,6 +199,15 @@ class Image(Base):
         nullable=False,
         server_default=func.now(),
     )
+    # §C9 follow-up — EXIF DateTimeOriginal, populated whenever
+    # exif_retention consent is on (independent of GPS retention).
+    # NULL means we never had EXIF for this image OR the user hasn't
+    # granted exif_retention. list_images / facets COALESCE this with
+    # uploaded_at so the date-range filter Just Works either way.
+    captured_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
     original_expires_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True),
         nullable=True,

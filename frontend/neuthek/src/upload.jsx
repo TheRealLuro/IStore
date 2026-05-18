@@ -37,13 +37,20 @@ export function UploadModal({ open, onClose }) {
   // success/error handlers can still reach the latest map.
   const xhrsRef = useRef(new Map());
 
-  // Reset queue only when the user transitions to closed AND no uploads
-  // are still in-flight. Closing mid-upload retains the queue so it
-  // reappears on reopen — otherwise users lost visibility of an upload
-  // they meant to monitor.
+  // Queue lifecycle:
+  //   - On CLOSE: if nothing is in flight, wipe (next open starts
+  //     fresh). If anything is still running, retain the whole queue
+  //     so "Close (keep running)" keeps visibility.
+  //   - On (RE)OPEN: drop already-finished rows from the previous
+  //     session. The modal should only show what's actually happening
+  //     right now — done/error rows from earlier are confusing if the
+  //     user comes back to upload something new. In-flight rows stay
+  //     so the "keep running" promise is honored.
   useEffectU(() => {
-    if (open) return;
-    // If nothing in flight, safe to wipe.
+    if (open) {
+      setQueue((q) => q.filter((it) => it.phase === "uploading" || it.phase === "processing"));
+      return;
+    }
     setQueue((q) => {
       const stillRunning = q.some((it) => it.phase === "uploading" || it.phase === "processing");
       return stillRunning ? q : [];
