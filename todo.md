@@ -621,34 +621,44 @@ Tokens close to Apple HIG, shadows strictly small
 > projected production numbers) and the full API surface in a
 > compact monospace code-block panel grouped by section.
 
-### C9. Multi-axis image filtering ⏳
-Today's gallery has one filter axis (type pill: All / Photos / Videos /
-Documents). Users can't pin down "all indoor photos from Vancouver
-containing Sasha." Every signal needed is already in the DB —
-`images.content_type`, `scene_label`, `indoor_outdoor`,
-`image_geo.{lat,lng,place}`, `face_detections.person_id`, `image_tags`,
-`summary_topic`, dates. The UX gap is composable filters in the FE
-plus a query API that accepts them.
-
-- **Backend** ([backend/api/images.py](backend/api/images.py)
-  `list_images`): extend `GET /images/` to accept query params for
-  `scene_label`, `indoor_outdoor`, `content_type`,
-  `near=lat,lng,radius_km`, `person_id`, `tag`,
-  `taken_between=ISO,ISO`, `is_starred`. AND-combine. Each gates on
-  the relevant consent scope (location filter requires
-  `gps_retention`, person filter requires `face_recognition`).
-- **Frontend** ([frontend/neuthek/src/gallery.jsx](frontend/neuthek/src/gallery.jsx)
-  `TypeChips` + new `FilterStrip`,
-  [frontend/src/api/files.ts](frontend/src/api/files.ts) `ListFilters`):
-  a filter strip below the type pills with chips per axis ("Indoor" /
-  "Vancouver" / "Sasha" / "Starred"), each removable; clicking opens a
-  small picker (scene list / map radius / people grid / tag list).
-  Persist the filter in the URL so it survives reloads. Multi-axis
-  composes the React-Query key (`["files", scope, filters]`) — no
-  other plumbing change.
-- **Out of scope here**: the auto-generated facets ("show 12 most
-  common scenes from your library") — defer until D1 is tuned so the
-  labels are trustworthy.
+### C9. Multi-axis image filtering ✅ SHIPPED 2026-05-18
+> Backend [backend/api/images.py](backend/api/images.py) `list_images`
+> accepts the full filter surface — `scene`, `content_type`,
+> `indoor_outdoor`, `tag`, `person_id`, `person`, `has_faces`,
+> `has_gps`, `min_face_likelihood`, plus the two new
+> `near=lat,lng,radius_km` (Haversine bounding-box on `image_geo`,
+> 403 without `gps_retention` consent) and `taken_between=ISO,ISO`
+> (range against `COALESCE(image_geo.taken_at, uploaded_at)`, either
+> side can be empty). All AND-combine.
+>
+> Facets endpoint extended with `persons` (top named persons by
+> count, empty list when `face_recognition` consent is off),
+> `tags` (top tags with id + label + color + count), `starred_count`,
+> and `date_range: {earliest, latest}` so the FE can size the date
+> picker without a default-1970 placeholder.
+>
+> Frontend FiltersDropdown ([frontend/neuthek/src/app.jsx](frontend/neuthek/src/app.jsx))
+> reuses the existing Cmd-K-style search panel — adds People and
+> Tags chip groups (Tags carry their assigned color), plus a
+> Date-range row above the chips with two `<input type="date">`
+> bounded by the `facets.date_range` min/max so users can't pick
+> nonsense ranges. Filter state lives at the App level and writes
+> back to the URL via `history.replaceState` so reload + back/forward
+> + link-sharing preserves the active chips. React-Query cache key
+> includes every axis so toggling shows a separate cached page
+> instead of mutating the current one in place.
+>
+> 10 pytest cases in [tests/test_c9_filters.py](tests/test_c9_filters.py)
+> cover near consent gate, near bad-format, near bounding box,
+> taken_between fallback to uploaded_at, taken_between preferring
+> image_geo.taken_at when present, and the facets payload (persons
+> empty without consent, tags surface user labels, starred_count +
+> date_range present).
+>
+> "Out of scope" deferrals from the original spec still hold: a
+> map-based radius picker UI (the `near=` URL param works today for
+> power users + future map integration) and auto-generated facets
+> ("show 12 most common scenes") — both wait on D1 tuning first.
 
 ---
 
@@ -996,8 +1006,9 @@ All compliance items now closed:
 
 ### Sprint E — multi-axis filters + UX polish (~1 week)
 
-5. **C9** multi-axis image filtering — backend params + chip UI +
-   URL persistence.
+5. ~~**C9** multi-axis image filtering~~ — ✅ shipped 2026-05-18
+   (`near` + `taken_between` filters + extended facets payload + FE
+   People/Tags/Date-range chips + URL persistence).
 6. **C3** map refinements — supercluster migration once > 2 000 pins
    (reverse-geocode fill already shipped).
 7. **C4.2** "Me" → display-name binding.

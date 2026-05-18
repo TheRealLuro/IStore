@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
@@ -407,6 +408,83 @@ async def list_images(
         )
     if min_face_likelihood is not None:
         stmt = stmt.where(Image.face_likelihood >= min_face_likelihood)
+    # ----- C9 multi-axis filters: near + taken_between -----
+    # `near` (lat,lng,radius_km) gates on gps_retention consent — the
+    # filter implies the user wants to use their stored coordinates.
+    # Without consent, image_geo rows aren't populated anyway, so the
+    # filter would return empty; we 403 to make the failure mode
+    # explicit instead of silently returning [].
+    if near is not None:
+        if not await is_scope_active(session, user.id, "gps_retention"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="gps_retention consent required to filter by location",
+            )
+        try:
+            lat_s, lng_s, radius_s = near.split(",")
+            lat = float(lat_s)
+            lng = float(lng_s)
+            radius_km = float(radius_s)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="near must be 'lat,lng,radius_km' (three comma-separated floats)",
+            )
+        if radius_km <= 0 or radius_km > 20_000:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="near radius_km must be between 0 and 20000",
+            )
+        # Haversine bounding box. Cheap, no PostGIS dependency. 1° lat ≈
+        # 111 km globally; 1° lng ≈ 111 km × cos(lat) (shrinks toward the
+        # poles). The cosine clamp at 0.01 keeps the divisor safe at
+        # extreme latitudes — at 89.4° the bound widens to ~10× radius
+        # which is fine since we'd be returning everything near the pole
+        # anyway. We do NOT compute true great-circle distance here —
+        # the bounding box is the cheap pre-filter; if a future caller
+        # wants exact distance, layer a Haversine SQL UDF on top.
+        dlat = radius_km / 111.0
+        dlng = radius_km / (111.0 * max(0.01, math.cos(math.radians(lat))))
+        stmt = stmt.where(
+            select(ImageGeo.image_id)
+            .where(
+                ImageGeo.image_id == Image.id,
+                ImageGeo.lat.between(lat - dlat, lat + dlat),
+                ImageGeo.lng.between(lng - dlng, lng + dlng),
+            )
+            .exists()
+        )
+    # `taken_between` — date range filter. Prefer the EXIF capture date
+    # from image_geo.taken_at when it exists (and gps_retention is on so
+    # the row was actually populated); fall back to uploaded_at when no
+    # capture date is recorded. We splice the choice into a correlated
+    # COALESCE so a single comparison handles both cases without a JOIN.
+    # Either side of the comma can be empty: "2026-01-01," means
+    # "from Jan 1 onward".
+    if taken_between is not None:
+        parts = taken_between.split(",")
+        if len(parts) != 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="taken_between must be 'ISO,ISO' (either side can be empty)",
+            )
+        start_s, end_s = parts[0].strip(), parts[1].strip()
+        try:
+            start_dt = datetime.fromisoformat(start_s) if start_s else None
+            end_dt = datetime.fromisoformat(end_s) if end_s else None
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="taken_between dates must be ISO format (e.g. 2026-05-18 or 2026-05-18T12:00:00)",
+            )
+        captured_at = func.coalesce(
+            select(ImageGeo.taken_at).where(ImageGeo.image_id == Image.id).scalar_subquery(),
+            Image.uploaded_at,
+        )
+        if start_dt is not None:
+            stmt = stmt.where(captured_at >= start_dt)
+        if end_dt is not None:
+            stmt = stmt.where(captured_at <= end_dt)
     # Starred view sorts by when the user starred each row (newest stars
     # first); trashed view by when the file hit the bin (newest first);
     # everything else sorts by upload recency.
@@ -530,6 +608,101 @@ async def list_facets(
         )
     ).scalar_one()
 
+    # Starred count — drives the "Starred" filter chip badge.
+    starred_count = (
+        await session.execute(
+            select(func.count(Image.id)).where(*base, Image.is_starred.is_(True))
+        )
+    ).scalar_one()
+
+    # Date range — earliest + latest uploaded_at (with image_geo.taken_at
+    # preferred when present). The FE uses this to size the date-range
+    # picker (don't suggest a "From 1970" placeholder when the user's
+    # library starts in 2024).
+    date_min, date_max = (
+        await session.execute(
+            select(
+                func.min(
+                    func.coalesce(
+                        select(ImageGeo.taken_at)
+                        .where(ImageGeo.image_id == Image.id)
+                        .scalar_subquery(),
+                        Image.uploaded_at,
+                    )
+                ),
+                func.max(
+                    func.coalesce(
+                        select(ImageGeo.taken_at)
+                        .where(ImageGeo.image_id == Image.id)
+                        .scalar_subquery(),
+                        Image.uploaded_at,
+                    )
+                ),
+            ).where(*base)
+        )
+    ).one()
+
+    # Top tags — gated only by being on a non-trashed image owned by
+    # this user. Returns id + label + color + count so the FE doesn't
+    # need a second round-trip to /tags/ to color the chip.
+    tag_rows = (
+        await session.execute(
+            select(Tag.id, Tag.label, Tag.color, func.count(ImageTag.image_id))
+            .join(ImageTag, ImageTag.tag_id == Tag.id)
+            .join(Image, Image.id == ImageTag.image_id)
+            .where(*base, Tag.user_id == user.id)
+            .group_by(Tag.id)
+            .order_by(func.count(ImageTag.image_id).desc())
+            .limit(50)
+        )
+    ).all()
+    tags = [
+        {"id": tid, "label": label, "color": color, "count": int(c)}
+        for tid, label, color, c in tag_rows
+    ]
+
+    # Top persons — drives the People chip group. Gated on
+    # face_recognition consent: without consent, return an empty list
+    # so the FE renders no chips and no PII leaks via the count.
+    # Counts via the same UNION shape list_images uses (face_detections
+    # + image_persons) so the per-person count matches what the gallery
+    # would show after clicking the chip.
+    persons: list = []
+    if await is_scope_active(session, user.id, "face_recognition"):
+        from backend.models import ImagePerson  # local import — see list_images
+
+        # Faces path: image → face_detections → faces.person_id
+        face_image_ids = (
+            select(FaceDetection.image_id, Face.person_id)
+            .join(Face, Face.id == FaceDetection.face_id)
+            .where(FaceDetection.user_id == user.id, Face.person_id.is_not(None))
+        )
+        # Manual path: image_persons rows
+        manual_image_ids = (
+            select(ImagePerson.image_id, ImagePerson.person_id)
+            .where(ImagePerson.user_id == user.id)
+        )
+        union_subq = face_image_ids.union(manual_image_ids).subquery()
+        person_rows = (
+            await session.execute(
+                select(
+                    Person.id,
+                    Person.display_name,
+                    func.count(func.distinct(union_subq.c.image_id)),
+                )
+                .join(union_subq, union_subq.c.person_id == Person.id)
+                .join(Image, Image.id == union_subq.c.image_id)
+                .where(*base, Person.user_id == user.id)
+                .group_by(Person.id)
+                .order_by(func.count(func.distinct(union_subq.c.image_id)).desc())
+                .limit(50)
+            )
+        ).all()
+        persons = [
+            {"id": pid, "display_name": name, "count": int(c)}
+            for pid, name, c in person_rows
+        ]
+
     return {
         "total": int(total or 0),
         "scenes": scenes,
@@ -539,6 +712,13 @@ async def list_facets(
         "with_faces": int(with_faces or 0),
         "by_category": by_category,
         "trash_count": int(trash_count or 0),
+        "starred_count": int(starred_count or 0),
+        "date_range": {
+            "earliest": date_min.isoformat() if date_min else None,
+            "latest": date_max.isoformat() if date_max else None,
+        },
+        "tags": tags,
+        "persons": persons,
     }
 
 

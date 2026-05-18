@@ -638,6 +638,41 @@ html[data-theme="dark"] summary:focus-visible { outline-color: rgba(255,255,255,
 .filters-dd__chips {
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+/* §C9 date-range picker — sits above the chip groups. Compact pair of
+   date inputs + an optional clear button. */
+.filters-dd__daterange {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--line-2);
+}
+.filters-dd__daterange-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.filters-dd__date {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+.filters-dd__date:focus {
+  border-color: var(--ink-3);
+}
+.filters-dd__date::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+  cursor: pointer;
+}
 .filters-dd__foot {
   margin-top: 4px;
   padding-top: 8px;

@@ -905,6 +905,13 @@ function FiltersDropdown({
   filterIndoorOutdoor, setFilterIndoorOutdoor,
   filterHasFaces, setFilterHasFaces,
   filterHasGps, setFilterHasGps,
+  // §C9 — added in this pass. People + Tags surface from facets.persons /
+  // facets.tags; Date range is a free-form pair of <input type="date">.
+  // All three remain optional so the dropdown still works on backends
+  // that haven't redeployed yet (defensive ?. everywhere below).
+  filterPersonId, setFilterPersonId,
+  filterTag, setFilterTag,
+  filterDateRange, setFilterDateRange,
   anyFilterActive,
   clearAllFilters,
   activeCount,
@@ -967,6 +974,35 @@ function FiltersDropdown({
           onClick: () => setFilterContentType(filterContentType === c.value ? null : c.value),
         })),
       ].filter(Boolean),
+    },
+    // §C9 — People chips. Empty when face_recognition consent is off
+    // (backend returns persons=[] in that case). When present, one chip
+    // per named person; clicking sets filterPersonId and the gallery
+    // re-queries the cross-folder list.
+    {
+      label: "People",
+      chips: (facets.persons || []).map(p => ({
+        val: filterPersonId === p.id,
+        label: p.display_name,
+        hint: `person ${p.display_name}`,
+        count: p.count,
+        onClick: () => setFilterPersonId?.(filterPersonId === p.id ? null : p.id),
+      })),
+    },
+    // §C9 — Tags chips. Tag picker uses the color stored on the tag
+    // row so the chip matches what the gallery card shows. Single-tag
+    // selection for now (clicking a different tag swaps); multi-tag
+    // AND/OR is a future extension once we've seen real usage.
+    {
+      label: "Tags",
+      chips: (facets.tags || []).map(t => ({
+        val: filterTag === t.label,
+        label: t.label,
+        hint: `tag ${t.label}`,
+        count: t.count,
+        tagColor: t.color,
+        onClick: () => setFilterTag?.(filterTag === t.label ? null : t.label),
+      })),
     },
   ];
 
@@ -1061,6 +1097,55 @@ function FiltersDropdown({
           </div>
         )}
 
+        {/* §C9 — Date range picker. Two <input type="date"> fields side
+            by side. Either can be empty for an open-ended range. We
+            hide it entirely when the substring search is active so
+            the chip filter still feels keyboard-first; otherwise the
+            picker stays visible above the chip groups. */}
+        {!q && setFilterDateRange && (
+          <div className="filters-dd__daterange">
+            <div className="filters-dd__group-label">Date range</div>
+            <div className="filters-dd__daterange-row">
+              <input
+                type="date"
+                className="filters-dd__date"
+                value={filterDateRange?.start || ""}
+                min={facets.date_range?.earliest?.slice(0, 10) || undefined}
+                max={facets.date_range?.latest?.slice(0, 10) || undefined}
+                onChange={(e) => setFilterDateRange({
+                  ...filterDateRange,
+                  start: e.target.value || null,
+                })}
+                aria-label="From date"
+              />
+              <span style={{ color: "var(--ink-4)", fontSize: 12 }}>to</span>
+              <input
+                type="date"
+                className="filters-dd__date"
+                value={filterDateRange?.end || ""}
+                min={facets.date_range?.earliest?.slice(0, 10) || undefined}
+                max={facets.date_range?.latest?.slice(0, 10) || undefined}
+                onChange={(e) => setFilterDateRange({
+                  ...filterDateRange,
+                  end: e.target.value || null,
+                })}
+                aria-label="To date"
+              />
+              {(filterDateRange?.start || filterDateRange?.end) && (
+                <button
+                  type="button"
+                  className="btn-icon"
+                  onClick={() => setFilterDateRange({ start: null, end: null })}
+                  title="Clear date range"
+                  aria-label="Clear date range"
+                >
+                  <Icon name="x" size={11}/>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {filteredCount === 0 ? (
           <div className="filters-dd__empty">
             No filters match "{search}".
@@ -1077,7 +1162,21 @@ function FiltersDropdown({
                     onClick={c.onClick}
                     className="chip"
                     data-active={c.val}
+                    style={c.tagColor ? { "--chip-tag-color": c.tagColor } : undefined}
                   >
+                    {c.tagColor && (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          display: "inline-block",
+                          width: 8,
+                          height: 8,
+                          borderRadius: 999,
+                          background: c.tagColor,
+                          marginRight: 6,
+                        }}
+                      />
+                    )}
                     {c.label}
                     {c.count != null && (
                       <span style={{ marginLeft: 6, color: "var(--ink-4)" }}>{c.count}</span>
@@ -1314,22 +1413,97 @@ export function App() {
   // Richer filter axes — driven by the chip row below the type pills.
   // Each is independent and AND-composed on the server. `null` =
   // "don't filter on this axis." Reset together via the "Clear" chip.
-  const [filterScene, setFilterScene] = useStateApp(null);
-  const [filterContentType, setFilterContentType] = useStateApp(null);
-  const [filterIndoorOutdoor, setFilterIndoorOutdoor] = useStateApp(null);
-  const [filterHasFaces, setFilterHasFaces] = useStateApp(null);
-  const [filterHasGps, setFilterHasGps] = useStateApp(null);
+  // §C9 — seed filter state from URL so reloading or sharing a link
+  // keeps the chips applied. Same pattern as the `view` / `share`
+  // bootstrapping above. Read once on mount; the effect below writes
+  // back whenever state changes.
+  const _initialFilters = useMemoApp(() => {
+    if (typeof window === "undefined") {
+      return { scene: null, contentType: null, indoorOutdoor: null,
+        hasFaces: null, hasGps: null, personId: null, tag: null,
+        dateRange: { start: null, end: null } };
+    }
+    const p = new URLSearchParams(window.location.search);
+    const num = (s) => { const n = Number(s); return Number.isFinite(n) ? n : null; };
+    return {
+      scene: p.get("scene") || null,
+      contentType: p.get("content_type") || null,
+      indoorOutdoor: p.get("indoor") || null,
+      hasFaces: p.get("has_faces") === "true" ? true : null,
+      hasGps: p.get("has_gps") === "true" ? true : null,
+      personId: p.get("person_id") ? num(p.get("person_id")) : null,
+      tag: p.get("tag") || null,
+      dateRange: {
+        start: p.get("date_from") || null,
+        end: p.get("date_to") || null,
+      },
+    };
+  }, []);
+  const [filterScene, setFilterScene] = useStateApp(_initialFilters.scene);
+  const [filterContentType, setFilterContentType] = useStateApp(_initialFilters.contentType);
+  const [filterIndoorOutdoor, setFilterIndoorOutdoor] = useStateApp(_initialFilters.indoorOutdoor);
+  const [filterHasFaces, setFilterHasFaces] = useStateApp(_initialFilters.hasFaces);
+  const [filterHasGps, setFilterHasGps] = useStateApp(_initialFilters.hasGps);
+  // §C9 multi-axis additions. People/Tag/Date are AND-composed with
+  // every chip above, gated by the same `useGlobalScope` so applying
+  // one always pulls cross-folder results.
+  const [filterPersonId, setFilterPersonId] = useStateApp(_initialFilters.personId);
+  const [filterTag, setFilterTag] = useStateApp(_initialFilters.tag);
+  // Free-form date range as { start: "YYYY-MM-DD"|null, end: "YYYY-MM-DD"|null }.
+  // We keep it as an object in React-state (easier UI) and serialize to
+  // "start,end" only when handing it to listFiles below.
+  const [filterDateRange, setFilterDateRange] = useStateApp(_initialFilters.dateRange);
   const clearAllFilters = () => {
     setFilterScene(null);
     setFilterContentType(null);
     setFilterIndoorOutdoor(null);
     setFilterHasFaces(null);
     setFilterHasGps(null);
+    setFilterPersonId(null);
+    setFilterTag(null);
+    setFilterDateRange({ start: null, end: null });
   };
   const anyFilterActive =
     filterScene != null || filterContentType != null ||
     filterIndoorOutdoor != null || filterHasFaces != null ||
-    filterHasGps != null;
+    filterHasGps != null ||
+    filterPersonId != null || filterTag != null ||
+    filterDateRange.start != null || filterDateRange.end != null;
+  // §C9 — write filter state back to the URL so reload + back/forward
+  // + link-sharing all preserve the active chips. We never push() —
+  // every change replaces the current history entry so the back
+  // button still works as expected (it pops to the previous *page*,
+  // not the previous filter combination).
+  useEffectApp(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const u = new URL(window.location.href);
+      const set = (k, v) => {
+        if (v == null || v === "" || v === false) u.searchParams.delete(k);
+        else u.searchParams.set(k, String(v));
+      };
+      set("scene", filterScene);
+      set("content_type", filterContentType);
+      set("indoor", filterIndoorOutdoor);
+      set("has_faces", filterHasFaces === true ? "true" : null);
+      set("has_gps", filterHasGps === true ? "true" : null);
+      set("person_id", filterPersonId);
+      set("tag", filterTag);
+      set("date_from", filterDateRange.start);
+      set("date_to", filterDateRange.end);
+      const next = u.pathname + (u.search ? u.search : "") + u.hash;
+      // Only replace when the URL actually changed — avoids hammering
+      // the history stack on every render of an effect with stable deps.
+      if (next !== window.location.pathname + window.location.search + window.location.hash) {
+        window.history.replaceState({}, "", next);
+      }
+    } catch { /* defensive — URL API differences across browsers */ }
+  }, [
+    filterScene, filterContentType, filterIndoorOutdoor,
+    filterHasFaces, filterHasGps,
+    filterPersonId, filterTag,
+    filterDateRange.start, filterDateRange.end,
+  ]);
   // Toggleable per-tab sort direction. Recent defaults to desc (newest
   // first), Name and Size to asc — matches what users expect from
   // every other file browser. Stored as a single value for the
@@ -1561,14 +1735,31 @@ export function App() {
   // filtering does the heavy lifting (the gallery only paints what
   // matches). Cache key includes every axis so toggling a chip shows
   // a separate cached page rather than mutating the current one in place.
-  const filesQueryFilters = useMemoApp(() => ({
-    folderId: filesScope,
-    scene: filterScene,
-    contentType: filterContentType,
-    indoorOutdoor: filterIndoorOutdoor,
-    hasFaces: filterHasFaces,
-    hasGps: filterHasGps,
-  }), [filesScope, filterScene, filterContentType, filterIndoorOutdoor, filterHasFaces, filterHasGps]);
+  const filesQueryFilters = useMemoApp(() => {
+    // §C9 — serialize the date range object to the wire format the
+    // backend expects ("start,end" with either side empty for open-
+    // ended). Only emit when one side is set; empty,empty would just
+    // produce no-op WHERE clauses but pollutes the cache key.
+    const tb = filterDateRange.start || filterDateRange.end
+      ? `${filterDateRange.start || ""},${filterDateRange.end || ""}`
+      : null;
+    return {
+      folderId: filesScope,
+      scene: filterScene,
+      contentType: filterContentType,
+      indoorOutdoor: filterIndoorOutdoor,
+      hasFaces: filterHasFaces,
+      hasGps: filterHasGps,
+      personId: filterPersonId,
+      tag: filterTag,
+      takenBetween: tb,
+    };
+  }, [
+    filesScope, filterScene, filterContentType, filterIndoorOutdoor,
+    filterHasFaces, filterHasGps,
+    filterPersonId, filterTag,
+    filterDateRange.start, filterDateRange.end,
+  ]);
   // Folder count for the current scope — used by the empty-state guard
   // below so a library that contains synced cloud folders (Google
   // Drive, etc.) doesn't show "library is empty, upload something" at
@@ -2084,12 +2275,17 @@ export function App() {
                 filterIndoorOutdoor={filterIndoorOutdoor} setFilterIndoorOutdoor={setFilterIndoorOutdoor}
                 filterHasFaces={filterHasFaces} setFilterHasFaces={setFilterHasFaces}
                 filterHasGps={filterHasGps} setFilterHasGps={setFilterHasGps}
+                filterPersonId={filterPersonId} setFilterPersonId={setFilterPersonId}
+                filterTag={filterTag} setFilterTag={setFilterTag}
+                filterDateRange={filterDateRange} setFilterDateRange={setFilterDateRange}
                 anyFilterActive={anyFilterActive}
                 clearAllFilters={clearAllFilters}
                 activeCount={[
                   filterScene, filterContentType, filterIndoorOutdoor,
                   filterHasFaces === true ? true : null,
                   filterHasGps === true ? true : null,
+                  filterPersonId, filterTag,
+                  filterDateRange.start || filterDateRange.end ? true : null,
                 ].filter(v => v != null).length}
               />
             )}

@@ -24,8 +24,29 @@ export interface ListFilters {
   hasFaces?: boolean | null;
   /** Restrict to images that have GPS coordinates persisted. */
   hasGps?: boolean | null;
+  /** §C9 — single-tag label filter; AND-composes with everything else. */
+  tag?: string | null;
+  /** §C9 — `lat,lng,radius_km` Haversine bounding-box on image_geo.
+   *  Requires gps_retention consent (server returns 403 otherwise). */
+  near?: string | null;
+  /** §C9 — `ISO,ISO` date range against COALESCE(image_geo.taken_at,
+   *  uploaded_at). Either side can be empty for open-ended. */
+  takenBetween?: string | null;
   limit?: number;
   offset?: number;
+}
+
+export interface FacetPerson {
+  id: number;
+  display_name: string;
+  count: number;
+}
+
+export interface FacetTag {
+  id: number;
+  label: string;
+  color: string | null;
+  count: number;
 }
 
 export interface FacetsResponse {
@@ -35,6 +56,14 @@ export interface FacetsResponse {
   indoor_outdoor: { value: string; count: number }[];
   with_gps: number;
   with_faces: number;
+  by_category?: Record<string, number>;
+  trash_count?: number;
+  /** §C9 — added in this pass. */
+  starred_count: number;
+  date_range: { earliest: string | null; latest: string | null };
+  tags: FacetTag[];
+  /** Empty list when face_recognition consent is off. */
+  persons: FacetPerson[];
 }
 
 /** Available filter axes + counts for the gallery filter chips. The
@@ -68,6 +97,11 @@ export async function listFiles(filters: ListFilters = {}): Promise<FileItem[]> 
   if (filters.indoorOutdoor) params.set("indoor_outdoor", filters.indoorOutdoor);
   if (filters.hasFaces != null) params.set("has_faces", String(filters.hasFaces));
   if (filters.hasGps != null) params.set("has_gps", String(filters.hasGps));
+  // §C9 — multi-axis additions: tag label, near=lat,lng,radius_km,
+  // taken_between=ISO,ISO. All AND-compose with the chips above.
+  if (filters.tag) params.set("tag", filters.tag);
+  if (filters.near) params.set("near", filters.near);
+  if (filters.takenBetween) params.set("taken_between", filters.takenBetween);
   // Default behavior (no folderId / no starred) returns root images only —
   // same as passing folder_id=null on the backend.
   if (filters.limit) params.set("limit", String(filters.limit));
