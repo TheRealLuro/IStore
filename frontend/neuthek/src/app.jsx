@@ -1829,11 +1829,25 @@ export function App() {
 
   // Real GPS points for the Map view, keyed by image id so we can splice
   // them onto each neuthek-shaped row.
+  //
+  // refetchInterval kicks in when ANY geo row has coordinates but no
+  // place name yet — the post-upload reverse-geocode worker runs as a
+  // background task (~1-2s for Nominatim) and writes image_geo.place
+  // after the upload's HTTP response has already flushed. Without
+  // polling, the preview panel showed "Looking up location…" until
+  // the user reloaded. We poll every 3s while there's at least one
+  // pending row; once every row has a place, the interval auto-stops
+  // (returns false) so we're not hitting the endpoint forever.
   const { data: geoResp } = useQuery({
     queryKey: ["geo"],
     queryFn: getImageGeo,
     enabled: signedIn,
     staleTime: 60_000,
+    refetchInterval: (data) => {
+      if (!data || !data.points) return false;
+      const anyPending = data.points.some((p) => p.lat != null && !p.place);
+      return anyPending ? 3000 : false;
+    },
   });
 
   // Map view needs *every* file with GPS, not just files in the current

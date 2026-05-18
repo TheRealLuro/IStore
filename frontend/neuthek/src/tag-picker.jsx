@@ -127,6 +127,11 @@ export function TagPicker({ target, attached = [], onClose, onChanged }) {
     qc.invalidateQueries({ queryKey: ["tags"] });
     qc.invalidateQueries({ queryKey: ["files"] });
     qc.invalidateQueries({ queryKey: ["folders"] });
+    // Facets back the filter dropdown's Tags chip group + their
+    // counts. Without this, attaching a brand-new tag persisted on
+    // the file but the chip didn't appear in the filter dropdown
+    // until the user reloaded the page.
+    qc.invalidateQueries({ queryKey: ["facets"] });
     onChanged && onChanged();
   };
 
