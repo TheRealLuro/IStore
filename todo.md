@@ -493,11 +493,23 @@ copy/paste.
 - ⏳ **C4.1 Display name on signup** — registration form gains required
   "name" field; persisted as `users.display_name`; used in the
   topbar greeting and across the UI in place of email.
-- ⏳ **C4.2 "Me" → name binding** — when the user classifies a
-  person as **Me**, the summarizer must (a) auto-rename that person row
-  to the user's display name and (b) splice the display name (not "Me")
-  into AI summaries. If `display_name` is empty, prompt during the
-  classification flow.
+- ✅ **C4.2 "Me" → name binding** — shipped 2026-05-18.
+  Backend helper [resolve_self_name](backend/api/people.py) substitutes
+  the literal token "Me" (case-insensitive, trimmed) with
+  `user.display_name` at every person-rename entry point:
+  `name_cluster`, `detect-and-label`, `rename_person`. AI summaries
+  automatically splice the user's real name because the Person row
+  literally stores it. If the account has no display name yet, the
+  endpoint returns 422 with `detail.code = "missing_display_name"`
+  and the FE [nameable-chip](frontend/neuthek/src/nameable-chip.jsx)
+  catches it: inline prompt → PATCH `/users/me` → retry the original
+  rename, all without leaving the people view. 5 pytest cases in
+  [tests/test_c4_self_name.py](tests/test_c4_self_name.py).
+
+  Limitation: if the user later changes their display name in
+  account settings, the existing Person row keeps the old name. A
+  follow-up could add `Person.is_self` + propagation; today the
+  user can just rename the person manually.
 - ⏳ **C4.3 Email re-verification on change** — backend hook is there;
   needs the FE staged-email banner ("Click the link we sent to <new>;
   until then, your account email is still <old>").
@@ -1011,7 +1023,9 @@ All compliance items now closed:
    People/Tags/Date-range chips + URL persistence).
 6. **C3** map refinements — supercluster migration once > 2 000 pins
    (reverse-geocode fill already shipped).
-7. **C4.2** "Me" → display-name binding.
+7. ~~**C4.2** "Me" → display-name binding~~ — ✅ shipped 2026-05-18
+   (server-side substitution + FE inline prompt for missing display
+   name).
 
 ### Sprint F — multi-data-type platform (months)
 

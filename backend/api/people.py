@@ -33,6 +33,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/people", tags=["people"])
 
 
+# §C4.2 — "Me" -> the user's actual display name. When the user labels
+# a face cluster (or person) as the literal token "Me", we substitute
+# their account display name so AI summaries say "Jakub on the beach"
+# instead of "Me on the beach." If the account has no display name
+# yet, we return a structured 422 the FE can catch and prompt for one
+# inline before retrying.
+def resolve_self_name(user: User, raw: str) -> str:
+    """Substitute the special token "Me" with the user's display name.
+
+    Returns the resolved name. Raises HTTPException(422) with a
+    structured detail when the user typed "Me" but has no display
+    name set yet — the FE keys on `detail.code == "missing_display_name"`
+    to surface the inline prompt.
+    """
+    stripped = (raw or "").strip()
+    if stripped.lower() != "me":
+        return stripped
+    name = (user.display_name or "").strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "missing_display_name",
+                "message": (
+                    'Set a display name on your account first — AI summaries '
+                    'will use it in place of "Me".'
+                ),
+            },
+        )
+    return name
+
+
 # ---------- schemas ----------
 
 class PersonRead(BaseModel):
@@ -237,6 +269,8 @@ async def name_cluster(
     name = payload.display_name.strip()
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Name required")
+    # §C4.2 — "Me" -> user.display_name. Raises 422 if no display name.
+    name = resolve_self_name(user, name)
 
     # Reuse an existing person with the same name, or create one.
     existing = (
@@ -337,6 +371,8 @@ async def detect_and_label(
     name = body.display_name.strip()
     if not name:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "display_name is required")
+    # §C4.2 — "Me" -> user.display_name. Raises 422 if no display name.
+    name = resolve_self_name(user, name)
 
     # Find or create the target person.
     target = (
@@ -535,7 +571,8 @@ async def rename_person(
     ).scalar_one_or_none()
     if person is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Person not found")
-    person.display_name = payload.display_name.strip()
+    # §C4.2 — "Me" -> user.display_name. Raises 422 if no display name.
+    person.display_name = resolve_self_name(user, payload.display_name)
     await session.commit()
     await session.refresh(person)
     return person
