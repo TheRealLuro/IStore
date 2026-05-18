@@ -2,23 +2,28 @@
 """neuthek one-shot setup.
 
 A single cross-platform Python script that takes a fresh checkout to a
-running stack: detect storage + GPU, generate strong secrets, write
-`.env`, and (optionally) start the docker compose stack.
+running stack: detect storage + accelerator, generate strong secrets
+(JWT_SECRET, Postgres password, MinIO secret key, CLOUD_ENCRYPTION_KEY
+as a Fernet-compatible key), write `.env`, and (optionally) start the
+docker compose stack — or print the native-install checklist for
+operators who prefer to manage Postgres / Redis / MinIO themselves.
 
 Used by:
   - End users on a single machine (`python scripts/setup.py`).
-  - The dev team bootstrapping a new server (same command, --yes for
-    non-interactive mode).
+  - The dev team bootstrapping a new server (same command, `--yes`
+    for non-interactive mode).
 
 Design notes:
   - Stdlib only — runs before the venv is even created.
   - Idempotent: never overwrites an existing `.env` without `--reset`.
-  - Visual: matches the rest of the app — uses the same accent color
-    in the box-drawing prompts (cyan ≈ the in-app accent blue).
+  - Brand: the project is "neuthek"; internal database / bucket names
+    keep the historical `istore` prefix during the I.bis migration so
+    existing local data stays accessible.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import platform
 import secrets
@@ -37,7 +42,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
-# ---------- styling ----------------------------------------------------------
+# ---------- styling ---------------------------------------------------------
 
 # ANSI escape codes; respect NO_COLOR per https://no-color.org.
 _NO_COLOR = bool(os.environ.get("NO_COLOR")) or not sys.stdout.isatty()
@@ -79,7 +84,6 @@ def ask(prompt: str, default: Optional[str] = None) -> str:
             return raw
         if default is not None:
             return default
-        # else loop until user gives something
 
 
 def ask_yn(prompt: str, default: bool = True) -> bool:
@@ -90,7 +94,32 @@ def ask_yn(prompt: str, default: bool = True) -> bool:
     return raw[0] == "y"
 
 
+def ask_choice(prompt: str, choices: list[tuple[str, str]], default: str) -> str:
+    """choices: [(key, label), ...]. Returns key."""
+    keys = [k for k, _ in choices]
+    print(_c("36", "? ") + prompt)
+    for k, label in choices:
+        marker = "›" if k == default else " "
+        print(f"    {marker} {k}  — {label}")
+    while True:
+        raw = input(f"    pick [{default}]: ").strip().lower()
+        if not raw:
+            return default
+        if raw in keys:
+            return raw
+
+
 # ---------- detection -------------------------------------------------------
+
+
+def detect_platform() -> dict[str, str]:
+    sysname = platform.system()
+    return {
+        "system": sysname,
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "python": sys.version.split()[0],
+    }
 
 
 def detect_drives() -> list[tuple[str, int, int]]:
@@ -99,8 +128,11 @@ def detect_drives() -> list[tuple[str, int, int]]:
     try:
         import psutil  # type: ignore
     except ImportError:
-        # Use shutil.disk_usage on common roots.
-        candidates = ["C:\\", "D:\\", "E:\\", "/", "/home", "/mnt"] if platform.system() == "Windows" else ["/", "/home", "/mnt", "/data"]
+        candidates = (
+            ["C:\\", "D:\\", "E:\\", "F:\\"]
+            if platform.system() == "Windows"
+            else ["/", "/home", "/mnt", "/data", "/var", "/opt"]
+        )
         rows: list[tuple[str, int, int]] = []
         for c in candidates:
             try:
@@ -120,58 +152,185 @@ def detect_drives() -> list[tuple[str, int, int]]:
     return rows
 
 
-def detect_gpu() -> Optional[str]:
-    """Return a short string describing the available accelerator, or None.
+def detect_accelerator() -> dict[str, Optional[str]]:
+    """Probe for CUDA / ROCm / Apple Metal / Intel XPU. Returns kind + hint
+    pointing at the right torch wheel index URL.
 
-    Probes are best-effort; a missing `nvidia-smi` doesn't fail anything.
-    """
+    All probes are best-effort: a missing tool is a 'not detected', never
+    a hard failure."""
+    out: dict[str, Optional[str]] = {"kind": None, "detail": None, "wheel_hint": None}
+
+    # Apple Silicon
     if platform.system() == "Darwin" and platform.machine() == "arm64":
-        return "Apple Silicon (use the default torch wheel)"
+        out["kind"] = "apple"
+        out["detail"] = "Apple Silicon (Metal Performance Shaders)"
+        out["wheel_hint"] = "Default torch wheel; MPS is auto-selected."
+        return out
 
+    # NVIDIA CUDA
     if shutil.which("nvidia-smi"):
         try:
-            out = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5, check=True,
             ).stdout.strip()
-            if out:
-                first = out.splitlines()[0]
-                return f"NVIDIA: {first} (use cu128 wheel for Blackwell, cu121 otherwise)"
+            if r:
+                out["kind"] = "cuda"
+                first = r.splitlines()[0]
+                out["detail"] = f"NVIDIA — {first}"
+                out["wheel_hint"] = (
+                    "pip install torch --index-url https://download.pytorch.org/whl/cu121  "
+                    "(or cu128 for RTX 50-series Blackwell)"
+                )
+                return out
         except (subprocess.SubprocessError, FileNotFoundError):
             pass
 
-    if shutil.which("rocm-smi"):
-        return "AMD ROCm detected (use the rocm6.x torch wheel)"
+    # AMD ROCm (Linux only)
+    if shutil.which("rocm-smi") or shutil.which("rocminfo"):
+        out["kind"] = "rocm"
+        out["detail"] = "AMD ROCm"
+        out["wheel_hint"] = "pip install torch --index-url https://download.pytorch.org/whl/rocm6.0"
+        return out
 
-    return None
+    # Intel Arc / XPU
+    if shutil.which("xpu-smi") or shutil.which("xpuinfo"):
+        out["kind"] = "xpu"
+        out["detail"] = "Intel Arc / XPU"
+        out["wheel_hint"] = (
+            "pip install torch intel-extension-for-pytorch  "
+            "(intel/intel-extension-for-pytorch on PyPI)"
+        )
+        return out
+    if shutil.which("clinfo"):
+        try:
+            r = subprocess.run(["clinfo", "-l"], capture_output=True, text=True, timeout=5).stdout
+            if "Intel" in r and ("Arc" in r or "Graphics" in r):
+                out["kind"] = "xpu"
+                out["detail"] = "Intel iGPU / Arc (via OpenCL)"
+                out["wheel_hint"] = (
+                    "pip install torch intel-extension-for-pytorch — "
+                    "Intel XPU support in the engine is detect-only today; "
+                    "inference falls back to CPU."
+                )
+                return out
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+
+    return out
 
 
 # ---------- env file --------------------------------------------------------
 
-ENV_KEYS = {
-    "JWT_SECRET": "secret",
-    "MINIO_ROOT_USER": "istore",
-    "MINIO_ROOT_PASSWORD": "secret",
-    "POSTGRES_USER": "istore",
-    "POSTGRES_PASSWORD": "secret",
-    "POSTGRES_DB": "istore",
-    "DATABASE_URL": "default",
-    "DATABASE_URL_SYNC": "default",
-    "REDIS_URL": "redis://localhost:6379/0",
-    "MINIO_ENDPOINT": "localhost:9000",
-    "ISTORE_DATA_DIR": "data",
-    # C6 — set if you have SMTP. Empty means "log emails to console
-    # (development mode)".
-    "SMTP_HOST": "",
-    "SMTP_PORT": "587",
-    "SMTP_USER": "",
-    "SMTP_PASS": "",
-    "SMTP_FROM": "noreply@istore.local",
-    "FRONTEND_BASE_URL": "http://localhost:5173",
-}
+# Every key the backend or docker-compose reads. Defaults match
+# `docker-compose.yml` so a fresh checkout works without manual editing.
+# Comments preserved as `# ...` rows in the generated file.
+ENV_TEMPLATE: list[tuple[str, str, str]] = [
+    # (key, default, comment)
+    ("APP_ENV", "dev", "dev | prod — prod triggers the security boot validator"),
+    ("FRONTEND_BASE_URL", "http://localhost:5173", "where the SPA is served from"),
+
+    ("POSTGRES_USER", "istore", "DB user (legacy name; storage layer rename in I.bis)"),
+    ("POSTGRES_PASSWORD", "", "fresh password generated at setup time"),
+    ("POSTGRES_DB", "istore", "DB name"),
+    ("DATABASE_URL", "", "asyncpg URL; derived from POSTGRES_* above"),
+    ("DATABASE_URL_SYNC", "", "psycopg2 URL for Alembic; derived"),
+    ("POSTGRES_AT_REST_ENCRYPTION", "", "host_volume | luks | os_disk | (empty) — A2 attestation"),
+
+    ("REDIS_URL", "redis://localhost:6379/0", "Redis for rate-limits + job queue"),
+
+    ("MINIO_ENDPOINT", "localhost:9000", "MinIO host:port"),
+    ("MINIO_ACCESS_KEY", "istore", "MinIO access key (root user)"),
+    ("MINIO_SECRET_KEY", "", "fresh secret generated at setup time"),
+    ("MINIO_SECURE", "false", "true once TLS-terminated"),
+    ("MINIO_BUCKET_ORIGINALS", "istore-originals", ""),
+    ("MINIO_BUCKET_SERVED", "istore-served", ""),
+    ("MINIO_BUCKET_FACES", "istore-faces", ""),
+    ("MINIO_BUCKET_QUARANTINE", "istore-quarantine", ""),
+    ("MINIO_SSE_MODE", "off", "off | sse-s3 | sse-kms"),
+    ("MINIO_SSE_KMS_KEY_ID_CONTENT", "", "KMS key for content buckets (sse-kms only)"),
+    ("MINIO_SSE_KMS_KEY_ID_BIOMETRIC", "", "KMS key for the biometric/faces bucket"),
+
+    ("JWT_SECRET", "", "fresh URL-safe 48-byte secret"),
+    ("JWT_LIFETIME_SECONDS", "86400", "1 day default; rotate via JWT_SECRET regen"),
+
+    ("SECRET_MANAGER", "env_file", "env_file | docker_secrets | aws_secretsmanager — required in prod"),
+    ("TRUST_PROXY_HEADERS", "false", "true behind a reverse proxy so X-Forwarded-For is honored"),
+
+    ("UPLOAD_MAX_BYTES", "209715200", "200 MB per upload"),
+    ("UPLOAD_MAX_COUNT_PER_HOUR", "300", "per-user soft cap"),
+    ("UPLOAD_MAX_BYTES_PER_DAY", "10737418240", "10 GB/day per user"),
+    ("UPLOAD_MAX_IMAGE_PIXELS", "120000000", "decompression-bomb guard"),
+
+    ("DOWNLOAD_URL_TTL_SECONDS", "300", "signed-URL TTL cap (5 min)"),
+    ("REQUIRE_SIGNED_DOWNLOADS", "false", "true forces signed URLs even in-app"),
+    ("SECURITY_RATE_LIMITS_ENABLED", "true", ""),
+    ("AUTH_RATE_LIMIT_PER_MINUTE", "5", ""),
+    ("AUTH_LOCKOUT_FAILURES", "5", "lockout after N consecutive failures"),
+
+    ("BACKUP_AGE_RECIPIENT", "", "age public key for encrypted backups (see SECURITY.md)"),
+
+    ("CLOUD_ENCRYPTION_KEY", "", "Fernet key for secret-box (refresh tokens, TOTP); required in prod"),
+    ("GOOGLE_OAUTH_CLIENT_ID", "", "Drive sync — fill in from Google Cloud Console"),
+    ("GOOGLE_OAUTH_CLIENT_SECRET", "", ""),
+    ("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8000/cloud/callback/google_drive", ""),
+    ("GITHUB_OAUTH_CLIENT_ID", "", "GitHub sync — fill in from GitHub Developer Settings"),
+    ("GITHUB_OAUTH_CLIENT_SECRET", "", ""),
+    ("GITHUB_OAUTH_REDIRECT_URI", "http://localhost:8000/cloud/callback/github", ""),
+    ("CLOUD_SYNC_HOURLY_ENABLED", "true", ""),
+    ("CLOUD_SYNC_INTERVAL_SECONDS", "3600", "1 hour"),
+
+    ("SMTP_HOST", "", "leave empty in dev to log emails to the console"),
+    ("SMTP_PORT", "587", ""),
+    ("SMTP_USER", "", ""),
+    ("SMTP_PASS", "", ""),
+    ("SMTP_FROM", "neuthek <noreply@neuthek.local>", ""),
+
+    ("RESEND_API_KEY", "", "Resend HTTP API for waitlist + newsletter (W21)"),
+    ("RESEND_FROM", "neuthek <noreply@neuthek.com>", ""),
+
+    ("STRIPE_SECRET_KEY", "", "leave empty in dev → /billing/* returns 503"),
+    ("STRIPE_PUBLISHABLE_KEY", "", ""),
+    ("STRIPE_WEBHOOK_SECRET", "", ""),
+    ("STRIPE_PRICE_ID_PRO", "", ""),
+    ("STRIPE_PRICE_ID_BUSINESS", "", ""),
+
+    ("ISTORE_DATA_DIR", "data", "where neuthek puts local data when not using docker volumes"),
+]
+
+
+def fresh_fernet_key() -> str:
+    """Generate a Fernet-compatible key without requiring `cryptography` to
+    be installed. A Fernet key is `base64.urlsafe_b64encode(os.urandom(32))`
+    per the spec."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+
+
+def build_env_values(data_dir: str) -> dict[str, str]:
+    """Fill the template with fresh secrets + the user-chosen data dir."""
+    jwt = secrets.token_urlsafe(48)
+    pg_password = secrets.token_urlsafe(24)
+    minio_secret = secrets.token_urlsafe(24)
+    cloud_key = fresh_fernet_key()
+
+    values: dict[str, str] = {}
+    for key, default, _ in ENV_TEMPLATE:
+        values[key] = default
+
+    values["JWT_SECRET"] = jwt
+    values["POSTGRES_PASSWORD"] = pg_password
+    values["MINIO_SECRET_KEY"] = minio_secret
+    values["CLOUD_ENCRYPTION_KEY"] = cloud_key
+    values["DATABASE_URL"] = (
+        f"postgresql+asyncpg://{values['POSTGRES_USER']}:{pg_password}"
+        f"@localhost:5432/{values['POSTGRES_DB']}"
+    )
+    values["DATABASE_URL_SYNC"] = (
+        f"postgresql+psycopg2://{values['POSTGRES_USER']}:{pg_password}"
+        f"@localhost:5432/{values['POSTGRES_DB']}"
+    )
+    values["ISTORE_DATA_DIR"] = data_dir
+    return values
 
 
 def write_env(path: Path, values: dict[str, str], reset: bool) -> bool:
@@ -182,62 +341,87 @@ def write_env(path: Path, values: dict[str, str], reset: bool) -> bool:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Generated by scripts/setup.py — edit values as needed.",
-        "# DO NOT COMMIT this file. .gitignore should already exclude it.",
+        "# neuthek environment — generated by scripts/setup.py.",
+        "# DO NOT COMMIT this file. .gitignore already excludes it.",
+        "# Run with --reset to regenerate every secret (existing data may break).",
         "",
     ]
-    for k, v in values.items():
-        # Quote values that contain special chars; bare otherwise.
+    for key, _, comment in ENV_TEMPLATE:
+        if comment:
+            lines.append(f"# {comment}")
+        v = values.get(key, "")
         if any(ch in v for ch in ' #$"\''):
-            lines.append(f'{k}="{v}"')
+            lines.append(f'{key}="{v}"')
         else:
-            lines.append(f"{k}={v}")
+            lines.append(f"{key}={v}")
+        if comment:
+            lines.append("")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    ok(f"wrote {path} ({len(values)} keys)")
+    ok(f"wrote {path} ({len(values)} keys, 4 fresh secrets)")
     return True
 
 
-def build_env_values(data_dir: str) -> dict[str, str]:
-    """Generate fresh secrets + the rest of the defaults."""
-    jwt = secrets.token_urlsafe(48)
-    pg_password = secrets.token_urlsafe(24)
-    minio_password = secrets.token_urlsafe(24)
-    return {
-        **ENV_KEYS,
-        "JWT_SECRET": jwt,
-        "MINIO_ROOT_PASSWORD": minio_password,
-        "POSTGRES_PASSWORD": pg_password,
-        "DATABASE_URL": f"postgresql+asyncpg://istore:{pg_password}@localhost:5432/istore",
-        "DATABASE_URL_SYNC": f"postgresql+psycopg2://istore:{pg_password}@localhost:5432/istore",
-        "ISTORE_DATA_DIR": data_dir,
-    }
-
-
-# ---------- docker / native bootstrap --------------------------------------
+# ---------- docker / native bootstrap ---------------------------------------
 
 
 def has_docker() -> bool:
     return shutil.which("docker") is not None
 
 
+def has_postgres() -> bool:
+    return shutil.which("postgres") is not None or shutil.which("pg_ctl") is not None
+
+
+def has_redis() -> bool:
+    return shutil.which("redis-server") is not None
+
+
+def has_minio() -> bool:
+    return shutil.which("minio") is not None
+
+
 def docker_up(repo_root: Path) -> bool:
-    """Run docker compose up -d. Returns True on success."""
+    """Run `docker compose up -d`. Returns True on success."""
     compose = repo_root / "docker-compose.yml"
     if not compose.exists():
         warn("no docker-compose.yml found; skipping container bootstrap")
         return False
     info("starting docker compose…")
     try:
-        subprocess.run(
-            ["docker", "compose", "up", "-d"],
-            cwd=repo_root,
-            check=True,
-        )
+        subprocess.run(["docker", "compose", "up", "-d"], cwd=repo_root, check=True)
         ok("compose stack is up (postgres, minio, redis)")
         return True
     except subprocess.CalledProcessError:
-        err("docker compose up failed — start it manually with `docker compose up -d`")
+        err("docker compose up failed — try `docker compose up -d` manually")
         return False
+
+
+def print_native_checklist() -> None:
+    """Print a per-platform install checklist for operators who want to run
+    Postgres / Redis / MinIO directly on the host instead of in Docker."""
+    sysname = platform.system()
+    info("native install — run each service yourself, point .env at localhost.")
+    if sysname == "Linux":
+        print("    Postgres 16 + pgvector:")
+        print("      Debian/Ubuntu: sudo apt install postgresql-16 postgresql-16-pgvector")
+        print("      Fedora:        sudo dnf install postgresql-server postgresql-pgvector")
+        print("      Arch:          sudo pacman -S postgresql pgvector")
+        print("    Redis 7:        sudo apt install redis  (or `sudo dnf install redis`)")
+        print("    MinIO:          curl -O https://dl.min.io/server/minio/release/linux-amd64/minio")
+    elif sysname == "Darwin":
+        print("    Postgres 16 + pgvector:  brew install postgresql@16 pgvector")
+        print("    Redis 7:                 brew install redis")
+        print("    MinIO:                   brew install minio/stable/minio")
+    elif sysname == "Windows":
+        print("    Postgres 16 + pgvector:  https://www.postgresql.org/download/windows/")
+        print("                             pgvector via Stack Builder or build from source")
+        print("    Redis 7:                 use Docker (no first-party Windows build)")
+        print("    MinIO:                   https://min.io/download#/windows")
+    else:
+        print(f"    Unrecognized OS: {sysname}. See SECURITY.md for the manual steps.")
+
+    print()
+    info("once running, the .env defaults (localhost:5432 / 6379 / 9000) work as-is.")
 
 
 # ---------- main flow -------------------------------------------------------
@@ -248,19 +432,22 @@ def main() -> int:
     parser.add_argument("--yes", action="store_true",
                         help="non-interactive; accept all defaults")
     parser.add_argument("--reset", action="store_true",
-                        help="overwrite existing .env (WARNING: regenerates secrets)")
+                        help="overwrite existing .env (regenerates every secret)")
     parser.add_argument("--data-dir", default=None,
                         help="path for neuthek data (overrides interactive prompt)")
-    parser.add_argument("--no-docker", action="store_true",
-                        help="skip the docker compose up step")
+    parser.add_argument("--mode", choices=["docker", "native", "ask"], default="ask",
+                        help="docker = `docker compose up`; native = print install checklist")
+    parser.add_argument("--no-stack", action="store_true",
+                        help="skip both the docker compose AND native checklist sections")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
 
     header("neuthek setup")
-    info(f"repo: {repo_root}")
-    info(f"platform: {platform.platform()}")
-    info(f"python: {sys.version.split()[0]}")
+    plat = detect_platform()
+    info(f"repo:     {repo_root}")
+    info(f"platform: {plat['system']} {plat['release']} ({plat['machine']})")
+    info(f"python:   {plat['python']}")
 
     # ----- detect storage -----
     header("Storage")
@@ -269,7 +456,7 @@ def main() -> int:
         for mount, total, free in drives:
             print(f"    {mount:<30}  {total} GB total  {free} GB free")
     else:
-        warn("could not enumerate disks — `pip install psutil` for better detection")
+        warn("could not enumerate disks — `pip install psutil` improves detection")
 
     if args.data_dir:
         data_dir = args.data_dir
@@ -281,16 +468,17 @@ def main() -> int:
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     ok(f"data directory: {data_dir}")
 
-    # ----- detect GPU -----
+    # ----- detect accelerator -----
     header("Accelerator")
-    gpu = detect_gpu()
-    if gpu:
-        ok(gpu)
-        info("install GPU torch wheels with `pip install -e \".[ml]\"` "
-             "and pick the right --index-url for your CUDA version.")
+    acc = detect_accelerator()
+    if acc["kind"]:
+        ok(acc["detail"] or acc["kind"])
+        if acc["wheel_hint"]:
+            info(acc["wheel_hint"])
     else:
-        warn("no GPU detected — neuthek runs CPU-only but inference is slow")
-        info("for NVIDIA: install drivers, then `pip install torch --index-url https://download.pytorch.org/whl/cu121`")
+        warn("no GPU detected — neuthek runs CPU-only but inference will be slow")
+        info("for NVIDIA, install drivers + cu121 wheels: "
+             "pip install torch --index-url https://download.pytorch.org/whl/cu121")
 
     # ----- write .env -----
     header(".env")
@@ -298,27 +486,57 @@ def main() -> int:
     values = build_env_values(data_dir)
     written = write_env(env_path, values, reset=args.reset)
     if not written and not args.reset:
-        info("keeping existing .env — pass --reset to regenerate secrets")
+        info("keeping existing .env — pass --reset to regenerate every secret")
 
-    # ----- docker bootstrap -----
+    # ----- stack bootstrap (docker | native) -----
     header("Stack")
-    if args.no_docker:
-        info("--no-docker passed; skipping compose")
-    elif not has_docker():
-        warn("docker not found on PATH; install Docker Desktop and re-run with --reset")
+    if args.no_stack:
+        info("--no-stack passed; skipping")
     else:
-        do_up = args.yes or ask_yn("Start docker compose now?", default=True)
-        if do_up:
-            docker_up(repo_root)
+        mode = args.mode
+        if mode == "ask":
+            if not has_docker():
+                warn("docker not on PATH — falling back to the native checklist.")
+                mode = "native"
+            elif args.yes:
+                mode = "docker"
+            else:
+                pick = ask_choice(
+                    "How do you want to run Postgres / Redis / MinIO?",
+                    [
+                        ("docker", "one command, isolated containers (recommended)"),
+                        ("native", "I'll install Postgres / Redis / MinIO myself"),
+                        ("skip", "I already have the services running"),
+                    ],
+                    default="docker",
+                )
+                mode = pick
+
+        if mode == "docker":
+            if not has_docker():
+                err("docker not on PATH — install Docker Desktop and re-run.")
+            else:
+                docker_up(repo_root)
+        elif mode == "native":
+            print_native_checklist()
+            print()
+            info("local service detection:")
+            ok("postgres binary on PATH") if has_postgres() else warn("postgres not on PATH")
+            ok("redis-server on PATH") if has_redis() else warn("redis-server not on PATH")
+            ok("minio binary on PATH") if has_minio() else warn("minio not on PATH")
+        elif mode == "skip":
+            info("skipping; make sure your services are reachable on the URLs in .env")
 
     # ----- finishing instructions -----
     header("Next steps")
-    print(f"  1. Activate the venv:    {_c('36', '.venv\\\\Scripts\\\\activate' if platform.system() == 'Windows' else 'source .venv/bin/activate')}")
-    print(f"  2. Install deps:         {_c('36', 'pip install -e \".[dev,ml]\"')}")
-    print(f"  3. Run migrations:       {_c('36', 'python -m alembic upgrade head')}")
-    print(f"  4. Start backend:        {_c('36', 'python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000')}")
-    print(f"  5. Start frontend:       {_c('36', 'cd frontend && npm install && npm run dev')}")
+    activate = ".venv\\Scripts\\activate" if plat["system"] == "Windows" else "source .venv/bin/activate"
+    print(f"  1. Activate venv:    {_c('36', activate)}")
+    print(f"  2. Install deps:     {_c('36', 'pip install -e .[dev,ml]')}")
+    print(f"  3. Run migrations:   {_c('36', 'python -m alembic upgrade head')}")
+    print(f"  4. Start backend:    {_c('36', 'python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000')}")
+    print(f"  5. Start frontend:   {_c('36', 'cd frontend && npm install && npm run dev')}")
     print()
+    info("docs: README, SECURITY.md, PRIVACY.md")
     ok("Setup complete.")
     return 0
 

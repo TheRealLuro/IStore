@@ -507,17 +507,23 @@ copy/paste.
 - ⏳ **C4.6 Cloud provider connect buttons** — blocked on **C2**.
 
 ### C5. Onboarding & B2B migration
-- ⏳ **C5.1 Easy setup script** (single-host, dev/self-host):
-  1. Detect platform (Win/Linux/Mac), available drives, prompt for
-     path.
-  2. Probe for CUDA / AMD / Apple Silicon / Intel ARC; suggest the
-     right torch wheel index URL (ties into **F1**).
-  3. Generate `.env` with fresh `JWT_SECRET`
-     (`secrets.token_urlsafe(48)`), MinIO root creds, DB password.
-  4. Either `docker compose up -d` or native install (user picks).
-  5. Optional `Tk` / `webbrowser`-launched single-page wizard.
-  - **First step**: CLI-only `scripts/setup.py` that prints a
-    numbered checklist + writes `.env`. Wizard UI later.
+- ✅ **C5.1 Easy setup script** — shipped 2026-05-18.
+  [scripts/setup.py](scripts/setup.py) is stdlib-only (runs before
+  the venv exists). Detects Windows / Linux / macOS, enumerates
+  drives, probes for CUDA (nvidia-smi) / ROCm (rocm-smi) / Apple
+  Metal / Intel XPU (xpu-smi or clinfo) with the matching torch
+  wheel index hint. Generates 4 fresh secrets — JWT_SECRET via
+  `secrets.token_urlsafe(48)`, POSTGRES_PASSWORD + MINIO_SECRET_KEY
+  via `token_urlsafe(24)`, CLOUD_ENCRYPTION_KEY as a Fernet-shaped
+  `base64.urlsafe_b64encode(secrets.token_bytes(32))` key.
+  Writes a 56-key `.env` covering everything the backend reads
+  (DB / Redis / MinIO buckets + SSE / Fernet / Google OAuth /
+  GitHub OAuth / Stripe / Resend / SMTP / rate-limit knobs).
+  `--mode` picks `docker compose up -d` or a per-platform native
+  install checklist (apt / dnf / pacman / brew / Windows installer
+  links) plus a binary-on-PATH check for Postgres / Redis / MinIO.
+  Tk / webbrowser wizard UI still deferred per the original spec
+  ("Wizard UI later").
 - ⏳ **C5.2 B2B migration tooling** — headline B2B promise is
   "switching from your current drive should be smooth, quick, simple."
   1. Bulk import endpoints: drag-a-folder-tree (server-side walks an
@@ -980,8 +986,9 @@ All compliance items now closed:
 ### Sprint D — sharing + onboarding (next, ~2 weeks)
 
 1. **G2** comments — `comments` table + pin overlay + thread panel.
-2. **C5.1** setup script — platform detect, GPU probe, `.env`
-   generation, `docker compose` or native install.
+2. ~~**C5.1** setup script~~ — ✅ shipped 2026-05-18
+   (`scripts/setup.py` with platform / GPU detect, fresh-secret
+   generation, docker-or-native picker).
 3. **C5.2** B2B migration — bulk import + per-source scopes +
    dry-run + provider plugins.
 4. ~~**C2** Drive cloud sync~~ — ✅ shipped (Drive + GitHub, hourly
