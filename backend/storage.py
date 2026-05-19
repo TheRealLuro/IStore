@@ -78,6 +78,39 @@ class Storage:
             resp.close()
             resp.release_conn()
 
+    def stat(self, bucket: str, key: str) -> int:
+        """Return the byte length of an object without downloading it.
+        Used by the video / audio stream endpoint to size the
+        `Content-Length` and `Content-Range` headers when serving
+        partial bytes via HTTP Range — the size header has to land
+        in the response even on a 206, so we need it before reading.
+        """
+        info = self.client.stat_object(bucket, key)
+        return int(info.size)
+
+    def get_range(
+        self, bucket: str, key: str, offset: int, length: int,
+    ) -> bytes:
+        """Read a byte range from an object. Used by the video / audio
+        stream endpoint to answer HTTP Range requests without loading
+        the entire blob into memory — a 1-MB seek window on a 4-GB
+        movie should be a 1-MB read, not a 4-GB one.
+
+        `offset` is the first byte to read; `length` is how many bytes
+        to read past it. MinIO's `get_object(offset=, length=)` maps
+        directly to S3's `Range: bytes=<offset>-<offset+length-1>`.
+        """
+        if length <= 0:
+            return b""
+        resp = self.client.get_object(
+            bucket, key, offset=offset, length=length,
+        )
+        try:
+            return resp.read()
+        finally:
+            resp.close()
+            resp.release_conn()
+
     def delete(self, bucket: str, key: str) -> None:
         try:
             self.client.remove_object(bucket, key)

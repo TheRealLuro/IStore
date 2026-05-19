@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.audit import add_audit
 from backend.auth.users import current_active_user
 from backend.db import get_session
-from backend.models import Image, User
+from backend.models import Face, FaceDetection, Image, ImagePerson, Person, User
 from backend.schemas import ImageRead, ImageSearchHit
 
 logger = logging.getLogger(__name__)
@@ -85,8 +85,13 @@ async def clear_search_history(
 # teaching math" must surface a whiteboard photo even though none of
 # those literal words appear in the summary. FTS is a boost for
 # precise hits (filenames, exact terms), not the primary signal.
-_W_CLIP = 0.65
-_W_TEXT = 0.35
+# Weights bias toward CLIP because text-matches are sparser — when
+# they exist they're almost always the right answer, but for a
+# natural-language query like "teacher teaching matrix math" the
+# image summary won't share every keyword. CLIP bridges that gap.
+# Text is the boost; CLIP is the lead.
+_W_CLIP = 0.70
+_W_TEXT = 0.30
 
 
 def _encode_text_sync(query: str):
@@ -144,7 +149,14 @@ def _build_haystack():
 # and were being filtered out as "weak." Unrelated images on the
 # same domain usually sit at 0.18-0.20, so 0.22 still excludes
 # noise.
-_CLIP_MIN_SIM_KEEP = 0.22
+# Was 0.22 — produced false negatives on legitimate semantic queries
+# where the image cosine sits in the 0.18-0.21 band. Live debug on
+# "teacher teaching matrix math" → the matching whiteboard photo
+# scored 0.194 (just below 0.22) and got dropped before the merge
+# ever saw it, even though FTS could have boosted it. 0.16 keeps
+# real semantic matches while still excluding orthogonal noise
+# (unrelated images on the same domain usually sit at 0.10-0.14).
+_CLIP_MIN_SIM_KEEP = 0.16
 # Strong-match floor — CLIP hits at or above this are kept even when
 # the user's query also has text matches. Below this and above the
 # keep threshold, they only show up if no keyword match was found.
@@ -227,6 +239,114 @@ def _file_haystack_text(image) -> str:
     return " ".join(parts).lower()
 
 
+# Tokens that, when present in a query, mean "the logged-in user."
+# Matched case-insensitively as standalone tokens (so "memory" /
+# "items" / "midnight" don't trigger). Lowercase here; the regex
+# below adds word boundaries.
+_SELF_TOKENS: frozenset[str] = frozenset({"me", "myself", "i", "my"})
+_SELF_TOKEN_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in _SELF_TOKENS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_self_intent(q: str) -> tuple[bool, str]:
+    """Return (mentions_self, query_with_self_tokens_stripped).
+
+    The stripped query is what we pass to CLIP / FTS so the model
+    doesn't try to literal-match the word "me" against captioned
+    text (which catches anything saying "the man" / "memorial" /
+    "remember" depending on the encoder's vocabulary). The intent
+    flag drives the downstream image-set restriction.
+
+    "photo of me"          → (True, "photo of")
+    "me at the beach"      → (True, "at the beach")
+    "i was hiking"         → (True, "was hiking")
+    "matrix math"          → (False, "matrix math")
+    "remembering my trip"  → (False, "remembering trip")  # `my` stripped
+                                                          # because it
+                                                          # adds nothing
+    """
+    if not _SELF_TOKEN_RE.search(q):
+        return False, q
+    stripped = _SELF_TOKEN_RE.sub(" ", q)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    # If stripping leaves filler words like "of" / "at" hanging,
+    # those would noise CLIP slightly — clean trailing/leading
+    # short prepositions. Don't be aggressive; just the obvious ones.
+    stripped = re.sub(r"^(of|at|in|with|by|on|for|to|from)\b\s*", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"\s+(of|at|in|with|by|on|for|to|from)$", "", stripped, flags=re.IGNORECASE)
+    return True, stripped
+
+
+async def _resolve_self_image_ids(
+    session: AsyncSession, user: User,
+) -> set | None:
+    """Find every image of the logged-in user.
+
+    A user's "self" Person is the row whose `display_name` equals
+    the user's account `display_name` (per §C4.2 — the "Me" → real
+    name binding). Once that Person is identified, an image counts
+    as "of them" if it has either:
+
+      - A `face_detections.face_id.person_id` match (face was
+        clustered / explicitly labelled into that Person), OR
+      - An `image_persons` direct association (user multi-select
+        tagged the image as containing them, even when no face
+        was detected — covers tag-as-person flow from §D8).
+
+    Returns the set of matching image UUIDs, or `None` when we
+    can't determine "self" (no display name, no Person, no
+    consent — all degrade to "skip the person filter, fall back
+    to text/visual ranking alone").
+    """
+    # The user's self-Person can be labeled in one of two ways:
+    #   1. With their account's display_name (C4.2 binding — what new
+    #      labels go through).
+    #   2. The literal string "Me" (legacy convention from before
+    #      C4.2 or when the user hasn't set a display name yet).
+    # We accept either. If a user has BOTH (rare — typically a Person
+    # merge collapsed them), their image sets union.
+    candidates: list[str] = ["me"]  # always include literal "Me"
+    dname = (user.display_name or "").strip()
+    if dname:
+        candidates.append(dname.lower())
+
+    persons = (
+        await session.execute(
+            select(Person.id)
+            .where(
+                Person.user_id == user.id,
+                func.lower(Person.display_name).in_(candidates),
+            )
+        )
+    ).scalars().all()
+    if not persons:
+        return None
+
+    # Image IDs via face_detections.face -> face.person_id IN persons.
+    fd_rows = (
+        await session.execute(
+            select(FaceDetection.image_id)
+            .join(Face, FaceDetection.face_id == Face.id)
+            .where(
+                FaceDetection.user_id == user.id,
+                Face.person_id.in_(persons),
+            )
+        )
+    ).all()
+    # Image IDs via direct image_persons association.
+    ip_rows = (
+        await session.execute(
+            select(ImagePerson.image_id)
+            .where(ImagePerson.person_id.in_(persons))
+        )
+    ).all()
+
+    image_ids = {r[0] for r in fd_rows} | {r[0] for r in ip_rows}
+    return image_ids
+
+
 @router.get("/", response_model=list[ImageSearchHit])
 async def semantic_search(
     user: Annotated[User, Depends(current_active_user)],
@@ -234,8 +354,67 @@ async def semantic_search(
     q: Annotated[str, Query(min_length=1, max_length=200)],
     limit: int = 30,
 ) -> list[dict]:
+    # Reject empty-after-trim and ultra-short queries early. The CLIP +
+    # FTS layers downstream both degrade badly on single characters
+    # (CLIP gives ~0.25 to every image, FTS falls back to ILIKE which
+    # then matches every file that contains the letter). Returning
+    # nothing for q < 2 is the only correct answer to "what does the
+    # user mean by 'a'?".
+    q_clean = q.strip()
+    if len(q_clean) < 2:
+        return []
+
+    # --- person-aware rewrite ------------------------------------------
+    # "photo of me" used to land on whatever image happened to contain
+    # the literal words "photo" and "me" in its summary — usually a
+    # random photo of someone else. Now we detect self-tokens (me /
+    # myself / i / my), resolve them to the logged-in user's Person
+    # (via §C4.2 display-name binding), and after the regular CLIP +
+    # FTS scoring runs, hard-filter results to images that actually
+    # contain that person's face or have been tagged as them.
+    #
+    # The CLIP / FTS query passed downstream is the SCRUBBED version
+    # — "photo of me" → "photo" — so the encoder isn't biased toward
+    # whatever it learned "me" looks like (typically: any human in a
+    # selfie pose).
+    mentions_self, q_for_models = _extract_self_intent(q_clean)
+    self_image_ids: set | None = None
+    if mentions_self:
+        try:
+            self_image_ids = await _resolve_self_image_ids(session, user)
+        except Exception:
+            logger.exception("search: resolve self image ids failed")
+            self_image_ids = None
+        # If "me" was the ONLY thing in the query, q_for_models is
+        # empty — there's nothing for CLIP / FTS to score, so we
+        # short-circuit and just return the user's photos by recency.
+        if not q_for_models:
+            if not self_image_ids:
+                return []
+            rows = (
+                await session.execute(
+                    select(Image)
+                    .where(
+                        Image.user_id == user.id,
+                        Image.deleted_at.is_(None),
+                        Image.id.in_(self_image_ids),
+                    )
+                    .order_by(Image.uploaded_at.desc())
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return [
+                ImageSearchHit(
+                    **ImageRead.model_validate(img, from_attributes=True).model_dump(),
+                    score=1.0,
+                )
+                for img in rows
+            ]
+        # Otherwise fall through with the scrubbed query.
+        q_clean = q_for_models
+
     # --- text pass (cheap; runs even when CLIP / [ml] extras unavailable) --
-    text_hits = await _text_search(session, user.id, q, limit=limit)
+    text_hits = await _text_search(session, user.id, q_clean, limit=limit)
 
     # --- CLIP pass (gracefully degrades when [ml] extras aren't installed)
     # CLIP text encoding goes through the shared ML executor so a
@@ -245,7 +424,7 @@ async def semantic_search(
     from backend.vision.inference_pool import run_in_inference_pool
     clip_hits: dict = {}
     try:
-        query_vec = await run_in_inference_pool(_encode_text_sync, q)
+        query_vec = await run_in_inference_pool(_encode_text_sync, q_clean)
         clip_hits = await _clip_search(
             session, user.id, query_vec, limit=limit
         )
@@ -302,10 +481,55 @@ async def semantic_search(
     # noise." Drop anything more than `_RELATIVE_FLOOR` below the top
     # score so a clearly-best match narrows the list instead of
     # dragging every other row along with it.
+    #
+    # When the candidate set is big (> 20 rows passed all earlier
+    # gates), tighten the floor. A large candidate set after the
+    # noise gates have already fired usually means the query is
+    # ambiguous AND the library is doing broad keyword expansion —
+    # the user wants the top few, not 50 weak matches. Stepped
+    # tightening so the threshold doesn't slam shut on a legitimately-
+    # broad query.
     if ranked:
+        # Two-gate cutoff. Live "matrix math" debug: top was 0.6652
+        # (whiteboard math photo, correct), then 9 results in
+        # 0.30-0.43 band that have ZERO connection to matrices or
+        # math (stairs, snowy fields, eerie room, driving). The old
+        # `_RELATIVE_FLOOR = 0.45` cutoff (0.6652 × 0.45 = 0.30)
+        # passed every one of them through.
+        #
+        # New rule: always keep result #1, then for the rest require
+        # BOTH:
+        #   - score >= top_score × 0.70  (within 30 % of best)
+        #   - score >= 0.40 absolute      (above CLIP's noise band)
+        #
+        # CLIP's typical "vague visual relatedness" floor is ~0.18-0.30
+        # — anything below 0.40 is essentially "image contains a
+        # human / scene" with no semantic match to the query. The 70 %
+        # rule catches the case where the top is mid-band (0.4-0.5)
+        # and a single peer is competitive but the tail is noise.
+        #
+        # Quality: "matrix math" → just the whiteboard photo. "person
+        # on stairs" → both stair photos (their scores are tightly
+        # clustered and both above 0.40). "cat on laptop" → just the
+        # cat-on-laptop photo.
         top_score = ranked[0][1]
-        cutoff = top_score * _RELATIVE_FLOOR
-        ranked = [(img, sc) for (img, sc) in ranked if sc >= cutoff]
+        rel_cut = top_score * 0.70
+        abs_cut = 0.40
+        ranked = [
+            (img, sc) for (i, (img, sc)) in enumerate(ranked)
+            if i == 0 or (sc >= rel_cut and sc >= abs_cut)
+        ]
+
+    # Person-aware hard filter (see _extract_self_intent above). If the
+    # query mentioned self-tokens AND we resolved the user's Person,
+    # drop every result that doesn't actually contain them. This is the
+    # difference between "photo of me" returning a random man's selfie
+    # vs. returning the user's own selfie. When we couldn't resolve a
+    # Person (no display name set, or no Person row yet), we silently
+    # skip the filter — the search degrades to text+visual on the
+    # scrubbed query, which is still better than returning nothing.
+    if mentions_self and self_image_ids is not None:
+        ranked = [(img, sc) for (img, sc) in ranked if img.id in self_image_ids]
 
     return [
         ImageSearchHit(
@@ -319,30 +543,63 @@ async def semantic_search(
 async def _clip_search(
     session: AsyncSession, user_id, query_vec, limit: int
 ) -> dict:
-    """Top-k visual matches by CLIP cosine similarity.
+    """Top-k visual + textual semantic matches by CLIP cosine.
 
-    Returns {image_id: (image, score)} where score ∈ [0, 1] (cosine sim;
-    higher = better). Skips images that have no embedding (fresh uploads
-    waiting on the vision pipeline).
+    Returns {image_id: (image, score)} where score is the MAX of:
+      - cosine(query, clip_embedding)        — image visual semantics
+      - cosine(query, summary_clip_embedding) — image summary semantics
+    Either signal can pull a row through. That's the difference
+    between "place where I had coffee" matching a cafe photo via
+    its summary's text vs. only via the visual CLIP score (which
+    might be weak when the photo is, say, a closeup of a cup
+    instead of a wide cafe shot).
+
+    Two rounds (image side + summary side) because the HNSW indexes
+    are PER COLUMN — we can't ORDER BY a min-of-two-distances and
+    still hit the index. Unioning the top-k from each pass is
+    fast (each is a sub-millisecond index probe) and gives both
+    signals an equal shot at the candidate set.
     """
-    distance = Image.clip_embedding.cosine_distance(query_vec.tolist())
-    stmt = (
-        select(Image, distance.label("distance"))
-        .where(
-            Image.user_id == user_id,
-            Image.deleted_at.is_(None),
-            Image.clip_embedding.is_not(None),
-        )
-        .order_by(distance.asc())
+    qv = query_vec.tolist()
+    image_dist = Image.clip_embedding.cosine_distance(qv)
+    text_dist = Image.summary_clip_embedding.cosine_distance(qv)
+
+    base_where = (
+        Image.user_id == user_id,
+        Image.deleted_at.is_(None),
+    )
+
+    # Image-side top-k: walks images_clip_embedding_idx (HNSW).
+    image_stmt = (
+        select(Image, image_dist.label("distance"))
+        .where(*base_where, Image.clip_embedding.is_not(None))
+        .order_by(image_dist.asc())
         .limit(limit)
     )
-    result = await session.execute(stmt)
+    # Summary-side top-k: walks images_summary_clip_emb_idx (HNSW).
+    summary_stmt = (
+        select(Image, text_dist.label("distance"))
+        .where(*base_where, Image.summary_clip_embedding.is_not(None))
+        .order_by(text_dist.asc())
+        .limit(limit)
+    )
+
     out: dict = {}
-    for image, dist in result.all():
-        sim = 1.0 - float(dist)  # cosine_distance = 1 - cosine_similarity
+    # Image-side pass.
+    for image, dist in (await session.execute(image_stmt)).all():
+        sim = 1.0 - float(dist)
         if sim <= 0:
             continue
         out[image.id] = (image, sim)
+    # Summary-side pass — MAX into the same dict so the stronger
+    # signal wins per row.
+    for image, dist in (await session.execute(summary_stmt)).all():
+        sim = 1.0 - float(dist)
+        if sim <= 0:
+            continue
+        prev = out.get(image.id)
+        if prev is None or sim > prev[1]:
+            out[image.id] = (image, sim)
     return out
 
 
@@ -367,32 +624,63 @@ async def _text_search(
     """
     from backend.synonyms import expand_query_to_tsquery
 
-    haystack = _build_haystack()
-    # Cast the language literal to `regconfig` so Postgres binds to the
-    # `to_tsvector(regconfig, text)` overload. Without the cast we get a
-    # varchar bind param which doesn't match any `to_tsvector` signature
-    # and the planner raises `function to_tsvector(varchar, text) does
-    # not exist`. Same for plainto_tsquery.
+    # FTS path reads the stored `summary_tsv` column (generated-always
+    # tsvector, GIN-indexed via `ix_images_summary_tsv`). Index gives
+    # bitmap-index-scan + ts_rank_cd recheck — O(log N + k) instead of
+    # O(N) seq-scan-with-on-the-fly-tsvector.
+    #
+    # Trade-off: the stored column covers summary + summary_topic +
+    # summary_points + original_filename. NOT summary_signals /
+    # scene_label / indoor_outdoor / content_type — queries that hit
+    # ONLY those fall through to the ILIKE substring path below.
     english = cast(literal("english"), postgresql.REGCONFIG)
-    tsvec = func.to_tsvector(english, haystack)
-    tsquery_strict = func.plainto_tsquery(english, q)
-    # Expanded query for the predicate: synonyms OR'd in per token.
-    # If expansion comes back empty (no usable tokens) we fall back to
-    # the strict query everywhere.
+    tsvec = Image.summary_tsv
+
+    # KEY CHANGE: switched from AND-joined `plainto_tsquery` to
+    # OR-joined token query. `plainto_tsquery` produces
+    # `'a' & 'b' & 'c'` — every word must match. For natural-language
+    # queries like "teacher teaching matrix math" against an image
+    # whose summary says "Man Writing Math Equations in Classroom
+    # Whiteboard", only "math" overlaps and the AND form returns 0
+    # hits even though it's clearly the right answer. OR-joining lets
+    # partial keyword matches surface; ts_rank_cd then up-weights rows
+    # that match MORE of the query, so "more keywords matched" still
+    # outranks "one weak keyword matched."
+    #
+    # `to_tsquery` requires sanitized tokens — strip non-word chars
+    # before joining with ` | `. `synonyms.expand_query_to_tsquery`
+    # produces a similarly OR'd expansion with synonyms per token,
+    # which we union into the predicate.
+    raw_tokens = [t for t in re.split(r"\W+", q) if t]
+    or_query_str = " | ".join(raw_tokens) if raw_tokens else None
+
+    tsquery_or = None
+    if or_query_str:
+        try:
+            tsquery_or = func.to_tsquery(english, or_query_str)
+        except Exception:
+            tsquery_or = None
+    if tsquery_or is None:
+        # Fall back to plainto if our manual tokenization choked
+        # (rare — non-ASCII queries, etc.).
+        tsquery_or = func.plainto_tsquery(english, q)
+
     expanded_str = expand_query_to_tsquery(q)
     if expanded_str:
         try:
             tsquery_expanded = func.to_tsquery(english, expanded_str)
-            match_predicate = tsvec.op("@@")(tsquery_strict) | tsvec.op("@@")(tsquery_expanded)
+            match_predicate = tsvec.op("@@")(tsquery_or) | tsvec.op("@@")(tsquery_expanded)
         except Exception:
-            # to_tsquery raises on malformed input; fall back to strict.
-            match_predicate = tsvec.op("@@")(tsquery_strict)
+            match_predicate = tsvec.op("@@")(tsquery_or)
     else:
-        match_predicate = tsvec.op("@@")(tsquery_strict)
-    # Rank uses the STRICT query so exact-token matches outrank
-    # synonym-only matches. The expansion exists to surface rows,
-    # not to rerank them above literal matches.
-    rank = func.ts_rank_cd(tsvec, tsquery_strict).label("rank")
+        match_predicate = tsvec.op("@@")(tsquery_or)
+    # Rank uses the OR'd token query so partial-overlap rows still
+    # score — but ts_rank_cd inherently weights by "how many of the
+    # query lexemes matched the doc," so a row matching 3 of 4
+    # tokens outranks one matching 1 of 4. Better than the previous
+    # plainto-based rank which required ALL tokens to even land in
+    # the candidate set.
+    rank = func.ts_rank_cd(tsvec, tsquery_or).label("rank")
 
     fts_stmt = (
         select(Image, rank)
@@ -407,33 +695,67 @@ async def _text_search(
     rows = (await session.execute(fts_stmt)).all()
 
     if not rows:
-        # FTS gave nothing — try a substring scan over the same surfaces
-        # the FTS pass uses, plus `summary_signals` cast to text so a
-        # query of "whiteboard" matches an image whose only signal is a
-        # Florence-2 region or OpenCLIP concept tag of that word. Score
-        # 0.6 so substring hits sit below strong CLIP visual matches
-        # but above weak ones.
-        like = f"%{q}%"
+        # FTS gave nothing — try a substring scan, but only when the
+        # query is long enough that substring matching is meaningful.
+        # `%a%` matched every file's summary (every English summary
+        # contains the letter "a"); the result was the search bar
+        # returning the entire library on any single-character or
+        # very common prefix. 3-char minimum AND a regex
+        # word-boundary match (`\m<term>\M`) so "math" doesn't
+        # match "mathematics" → matrix? Yes it does, but "ma" won't
+        # match every word that starts with "ma".
+        if len(q.strip()) < 3:
+            return {}
+        # Use `~*` (case-insensitive regex match) with \m \M as
+        # word boundaries. Single regex bind across each surface
+        # column; on rare malformed input we fall back to the old
+        # %q% form so a "(" in the query doesn't break search
+        # entirely.
+        import re as _re
+        boundary = rf"\m{_re.escape(q.strip())}\M"
+        like = f"%{q.strip()}%"
         signals_as_text = cast(Image.summary_signals, sa.Text)
-        like_stmt = (
-            select(Image)
-            .where(
-                Image.user_id == user_id,
-                Image.deleted_at.is_(None),
-                or_(
-                    Image.summary.ilike(like),
-                    Image.summary_topic.ilike(like),
-                    Image.original_filename.ilike(like),
-                    Image.scene_label.ilike(like),
-                    Image.indoor_outdoor.ilike(like),
-                    Image.content_type.ilike(like),
-                    signals_as_text.ilike(like),
-                ),
+        try:
+            like_stmt = (
+                select(Image)
+                .where(
+                    Image.user_id == user_id,
+                    Image.deleted_at.is_(None),
+                    or_(
+                        Image.summary.op("~*")(boundary),
+                        Image.summary_topic.op("~*")(boundary),
+                        Image.original_filename.ilike(like),  # filenames keep substring — "neuthek" should match "neuthek.mp4"
+                        Image.scene_label.op("~*")(boundary),
+                        Image.indoor_outdoor.op("~*")(boundary),
+                        Image.content_type.op("~*")(boundary),
+                        signals_as_text.op("~*")(boundary),
+                    ),
+                )
+                .limit(limit)
             )
-            .limit(limit)
-        )
+            execed = await session.execute(like_stmt)
+        except Exception:
+            # Malformed regex (rare) — re-run with plain ILIKE.
+            like_stmt = (
+                select(Image)
+                .where(
+                    Image.user_id == user_id,
+                    Image.deleted_at.is_(None),
+                    or_(
+                        Image.summary.ilike(like),
+                        Image.summary_topic.ilike(like),
+                        Image.original_filename.ilike(like),
+                        Image.scene_label.ilike(like),
+                        Image.indoor_outdoor.ilike(like),
+                        Image.content_type.ilike(like),
+                        signals_as_text.ilike(like),
+                    ),
+                )
+                .limit(limit)
+            )
+            execed = await session.execute(like_stmt)
         out: dict = {}
-        for image in (await session.execute(like_stmt)).scalars():
+        for image in execed.scalars():
             out[image.id] = (image, 0.6)
         return out
 

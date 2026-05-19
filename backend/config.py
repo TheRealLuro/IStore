@@ -124,6 +124,13 @@ class Settings(BaseSettings):
     # a constant means tests + `verify_download` can reason about the
     # ceiling without hard-coding 300 in three places.
     download_url_ttl_max_seconds: int = Field(default=300)
+    # Streaming URLs (video / audio) live longer than downloads
+    # because the URL has to survive a watch session, including
+    # pauses + seeks. Default 1 hour; capped at 4 hours so a leaked
+    # URL still expires within one workday. The browser can fetch
+    # a fresh URL on `error` if a long pause crosses the boundary.
+    stream_url_ttl_seconds: int = Field(default=3600)
+    stream_url_ttl_max_seconds: int = Field(default=14400)
 
     security_rate_limits_enabled: bool = Field(default=True)
     auth_rate_limit_per_minute: int = Field(default=5)

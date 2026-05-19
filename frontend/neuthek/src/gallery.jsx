@@ -22,6 +22,41 @@ import toast from "react-hot-toast";
 import { RenameFolderModal, DeleteFolderModal } from "./folder-modals.jsx";
 import { EditableName } from "./nameable-chip.jsx";
 import { TagPicker, tagChipStyle } from "./tag-picker.jsx";
+import { fileTypeInfo } from "./file-types.js";
+import { API_BASE_URL } from "@/api/client";
+
+/** Fetch the folder-zip endpoint with a Bearer token, drop the
+ *  resulting blob into a hidden `<a download>`, click it, revoke.
+ *  Centralized so the FolderCard menu + any future bulk-action can
+ *  share one code path. */
+async function downloadFolderAsZip(folder) {
+  const t = tokens.get();
+  if (!folder?.id) return;
+  toast.success(`Building ${folder.name || "folder"}.zip…`);
+  try {
+    const r = await fetch(
+      `${API_BASE_URL}/folders/${folder.id}/download.zip`,
+      { headers: t ? { Authorization: `Bearer ${t}` } : {} },
+    );
+    if (!r.ok) {
+      let detail = "Download failed";
+      try { detail = (await r.json())?.detail || detail; } catch {}
+      toast.error(detail);
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(folder.name || "folder").replace(/[\\/]/g, "_")}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) {
+    toast.error("Download failed");
+  }
+}
 
 // Custom MIME used for HTML5 drag-and-drop of files. The legacy frontend
 // used the same key so we keep it for parity with anything else listening.
@@ -345,8 +380,11 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
       >
         {!f.thumb && (
           <div className="thumb-icon">
-            <Icon name={TYPE_ICON[f.type] || "document"} size={32} strokeWidth={1.3}/>
-            <span className="mono" style={{ fontSize: 11 }}>{f.ext}</span>
+            {/* Prefer the file-type catalog (extension → glyph) so
+                video/audio/CSV/ICS/VCF files render the right icon
+                even when the backend has them grouped under "doc". */}
+            <Icon name={fileTypeInfo(f.ext).icon || TYPE_ICON[f.type] || "document"} size={32} strokeWidth={1.3}/>
+            <span className="mono" style={{ fontSize: 11 }}>{fileTypeInfo(f.ext).label || f.ext}</span>
           </div>
         )}
         {/* Real multi-select toggle. Sits inside the thumb so it floats
@@ -632,6 +670,20 @@ function FolderCard({ folder, onEnter, onRequestRename, onRequestDelete }) {
             <button className="cardmenu__item" onClick={() => { setMenuPos(null); onRequestRename?.(folder); }}>
               <span className="cardmenu__icon"><Icon name="pencil" size={14}/></span>Rename
             </button>
+            <button
+              className="cardmenu__item"
+              onClick={() => {
+                setMenuPos(null);
+                // Authed zip download. fetchMediaBlob attaches the
+                // Bearer token + decodes the response into a blob URL
+                // we can hand to a hidden <a download>. The server
+                // streams the archive so very large folders don't
+                // block the API event loop.
+                downloadFolderAsZip(folder).catch(() => {});
+              }}
+            >
+              <span className="cardmenu__icon"><Icon name="download" size={14}/></span>Download as .zip
+            </button>
           </div>
           <div className="cardmenu__sep"/>
           <button
@@ -896,7 +948,50 @@ function MarqueeGrid({
     const grid = gridRef.current;
     if (!grid) return;
     let rafId = 0;
-    let pendingEvent = null;
+    let scrollRafId = 0;
+    let lastClientX = 0;
+    let lastClientY = 0;
+
+    // The grid lives inside a scrollable container (usually the
+    // gallery main column). Walk up until we find one with a real
+    // scrollable axis so auto-scroll targets the right element.
+    // Falls back to `window` when the page itself scrolls.
+    const findScroller = () => {
+      let n = grid.parentElement;
+      while (n) {
+        const cs = getComputedStyle(n);
+        const sy = cs.overflowY;
+        if ((sy === "auto" || sy === "scroll") && n.scrollHeight > n.clientHeight) {
+          return n;
+        }
+        n = n.parentElement;
+      }
+      return window;
+    };
+
+    // The drag-start zone is broader than just the grid itself —
+    // listening only on `.gallery__grid` meant the user had to
+    // pixel-aim into the strips between cards. We bind to the
+    // closest `.gallery` ancestor (or fall back to the scroller),
+    // which covers the type chips' row gap, the empty space below
+    // the last card, the padding around the grid, etc.
+    //
+    // The dragstart filter inside `onDown` still excludes cards,
+    // buttons, inputs, chips, and the type/filter strips so we
+    // don't hijack their click handlers.
+    const findDragZone = () => {
+      let n = grid.parentElement;
+      while (n) {
+        if (n.classList && n.classList.contains("gallery")) return n;
+        n = n.parentElement;
+      }
+      // No .gallery wrapper? fall back to the scroller. (Window is
+      // not a valid EventTarget candidate for our purposes since
+      // it'd also catch sidebar / header clicks.)
+      const sc = findScroller();
+      return sc === window ? grid : sc;
+    };
+    const dragZone = findDragZone();
 
     const showRect = (rect) => {
       const el = rectElRef.current;
@@ -909,12 +1004,17 @@ function MarqueeGrid({
     };
 
     const measureCards = () => {
-      // Cache each card's bounding box relative to the grid, indexed
-      // by `data-card`. Includes a soft inflate (`inset: -2`) so a
-      // drag that barely grazes a card still picks it up — the
-      // gallery gap was making the marquee feel "miss"-y on the edge
-      // of cards.
+      // Cache each card's bounding box in DOCUMENT coordinates —
+      // not viewport-relative — so the math survives a scroll
+      // mid-drag without re-measuring. We add scrollY/scrollX of
+      // the chosen scroller. Includes a soft inflate (`inset: -2`)
+      // so a drag that barely grazes a card still picks it up.
       const box = grid.getBoundingClientRect();
+      const scroller = findScroller();
+      const sx = scroller === window ? window.scrollX : scroller.scrollLeft;
+      const sy = scroller === window ? window.scrollY : scroller.scrollTop;
+      const baseLeft = box.left + sx;
+      const baseTop = box.top + sy;
       const out = [];
       grid.querySelectorAll("[data-card]").forEach((card) => {
         const id = card.getAttribute("data-card");
@@ -922,42 +1022,108 @@ function MarqueeGrid({
         const cb = card.getBoundingClientRect();
         out.push({
           id,
-          l: cb.left - box.left - 2,
-          t: cb.top - box.top - 2,
-          r: cb.left + cb.width - box.left + 2,
-          b: cb.top + cb.height - box.top + 2,
+          l: cb.left + sx - baseLeft - 2,
+          t: cb.top + sy - baseTop - 2,
+          r: cb.left + cb.width + sx - baseLeft + 2,
+          b: cb.top + cb.height + sy - baseTop + 2,
         });
       });
-      return { box, cards: out };
+      return { box, scroller, baseLeft, baseTop, cards: out };
+    };
+
+    // Convert a pointer event's clientX/Y → coordinates in the grid's
+    // document space (so they stay valid across page scrolls).
+    const ptrToGridCoords = (clientX, clientY, scroller, baseLeft, baseTop) => {
+      const sx = scroller === window ? window.scrollX : scroller.scrollLeft;
+      const sy = scroller === window ? window.scrollY : scroller.scrollTop;
+      return { x: clientX + sx - baseLeft, y: clientY + sy - baseTop };
+    };
+
+    // Auto-scroll loop — runs continuously while the pointer sits
+    // within `EDGE_PX` of the viewport top/bottom. Speed ramps up
+    // the closer the pointer is to the edge. Uses scrollBy on the
+    // chosen scroller so the page or an internal scroll container
+    // both work. Re-fires computeFrame after each scroll tick so the
+    // selection rectangle (drawn in document coords) re-projects
+    // through the pointer's last known position and the cards that
+    // scrolled into the rectangle get picked up.
+    const EDGE_PX = 60;
+    const MAX_SPEED = 24;
+    const tickAutoScroll = () => {
+      scrollRafId = 0;
+      const drag = dragRef.current;
+      if (!drag) return;
+      const vh = window.innerHeight;
+      const yTop = lastClientY;
+      const yBot = vh - lastClientY;
+      let dy = 0;
+      if (yTop < EDGE_PX) {
+        dy = -Math.ceil(((EDGE_PX - yTop) / EDGE_PX) * MAX_SPEED);
+      } else if (yBot < EDGE_PX) {
+        dy = Math.ceil(((EDGE_PX - yBot) / EDGE_PX) * MAX_SPEED);
+      }
+      if (dy !== 0) {
+        const sc = drag.scroller;
+        if (sc === window) window.scrollBy(0, dy);
+        else sc.scrollTop += dy;
+        // Re-run the selection math against the new scroll position.
+        // We synthesize a "move" using the last clientX/Y so cards
+        // that scrolled into the rectangle get picked up even though
+        // the pointer hasn't moved.
+        scheduleCompute();
+      }
+      if (yTop < EDGE_PX || yBot < EDGE_PX) {
+        scrollRafId = requestAnimationFrame(tickAutoScroll);
+      }
     };
 
     const onDown = (e) => {
       if (e.button !== 0) return;
       const target = e.target;
-      if (target.closest("[data-card], button, a, input, [contenteditable], [role='switch']")) return;
+      // Wider exclusion list — covers everything in the gallery
+      // header (type chips, filter strip, search, sort toolbar)
+      // so clicking on those buttons / chips / dropdowns doesn't
+      // accidentally start a marquee drag. The data-no-marquee
+      // attribute is an escape hatch for any custom widget that
+      // wants to opt out without enumerating it here.
+      if (target.closest(
+        "[data-card], [data-no-marquee], button, a, input, textarea, " +
+        "select, label, [contenteditable], [role='switch'], [role='menu'], " +
+        ".chip, .tag, .pill, .filter-strip, .type-chips, .toolbar, " +
+        "details, summary"
+      )) return;
       e.preventDefault();
-      grid.setPointerCapture?.(e.pointerId);
-      const { box, cards } = measureCards();
-      const startX = e.clientX - box.left;
-      const startY = e.clientY - box.top;
+      dragZone.setPointerCapture?.(e.pointerId);
+      const { box, scroller, baseLeft, baseTop, cards } = measureCards();
+      const { x: startX, y: startY } = ptrToGridCoords(e.clientX, e.clientY, scroller, baseLeft, baseTop);
       const additive = !!(e.shiftKey || e.metaKey || e.ctrlKey);
       const initial = new Set(multiSelected ? Array.from(multiSelected) : []);
       dragRef.current = {
         startX, startY, additive, initial, lastIds: new Set(),
-        box, cards, // baked card rects — measured once
-        active: false, // flips true once we cross the 4 px threshold
+        box, scroller, baseLeft, baseTop, cards,
+        active: false,
       };
+      lastClientX = e.clientX;
+      lastClientY = e.clientY;
+      // Global drag class — disables text selection across the
+      // whole page (sidebar, header, anywhere the pointer crosses)
+      // and switches the cursor to a crosshair so it's obvious
+      // what mode we're in. Clears any text that was already
+      // selected when the drag started.
+      document.body.classList.add("dragging-marquee");
+      try { window.getSelection?.()?.removeAllRanges(); } catch {}
+    };
+
+    const scheduleCompute = () => {
+      if (!rafId) rafId = requestAnimationFrame(computeFrame);
     };
 
     const computeFrame = () => {
       rafId = 0;
-      const e = pendingEvent;
-      pendingEvent = null;
       const drag = dragRef.current;
-      if (!drag || !e) return;
-      const { box, cards, startX, startY } = drag;
-      const x = e.clientX - box.left;
-      const y = e.clientY - box.top;
+      if (!drag) return;
+      const { startX, startY, scroller, baseLeft, baseTop, cards } = drag;
+      const { x, y } = ptrToGridCoords(lastClientX, lastClientY, scroller, baseLeft, baseTop);
       const l = Math.min(startX, x);
       const t = Math.min(startY, y);
       const w = Math.abs(x - startX);
@@ -967,7 +1133,9 @@ function MarqueeGrid({
       showRect({ l, t, w, h });
 
       // Intersect against cached card rects — pure JS math, no DOM
-      // reads, no getBoundingClientRect.
+      // reads, no getBoundingClientRect. Cards stay in document
+      // coords so this works the same whether or not the page
+      // scrolled.
       const want = new Set();
       const r = l + w;
       const b = t + h;
@@ -975,8 +1143,6 @@ function MarqueeGrid({
         if (c.r < l || c.l > r || c.b < t || c.t > b) continue;
         want.add(c.id);
       }
-      // Diff against last frame so each card only toggles when its
-      // membership in the rectangle actually changes.
       const last = drag.lastIds;
       for (const id of want) {
         if (!last.has(id)) {
@@ -997,31 +1163,39 @@ function MarqueeGrid({
 
     const onMove = (e) => {
       if (!dragRef.current) return;
-      pendingEvent = e;
-      // Single rAF in flight at a time. 1000 Hz pointermove events
-      // collapse into ~60 Hz visual updates, which is all the eye
-      // sees and all the diff calc needs to keep up with.
-      if (!rafId) rafId = requestAnimationFrame(computeFrame);
+      lastClientX = e.clientX;
+      lastClientY = e.clientY;
+      scheduleCompute();
+      // If the pointer entered the edge zone, kick off auto-scroll.
+      // The rAF guard means we never stack multiple loops.
+      const vh = window.innerHeight;
+      if ((e.clientY < EDGE_PX || vh - e.clientY < EDGE_PX) && !scrollRafId) {
+        scrollRafId = requestAnimationFrame(tickAutoScroll);
+      }
     };
 
     const onUp = () => {
       dragRef.current = null;
-      pendingEvent = null;
       if (rafId) cancelAnimationFrame(rafId);
       rafId = 0;
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+      scrollRafId = 0;
       showRect(null);
+      document.body.classList.remove("dragging-marquee");
     };
 
-    grid.addEventListener("pointerdown", onDown);
+    dragZone.addEventListener("pointerdown", onDown);
     window.addEventListener("pointermove", onMove, { passive: true });
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     return () => {
-      grid.removeEventListener("pointerdown", onDown);
+      dragZone.removeEventListener("pointerdown", onDown);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       if (rafId) cancelAnimationFrame(rafId);
+      if (scrollRafId) cancelAnimationFrame(scrollRafId);
+      document.body.classList.remove("dragging-marquee");
     };
   }, [multiSelected, onMultiSelectToggle]);
 

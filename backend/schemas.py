@@ -168,6 +168,14 @@ class ImageRead(BaseModel):
     # users see the policy applied to this specific file.
     original_expires_at: datetime | None = None
 
+    # Derived bool — true when this row has a separately-stored
+    # thumbnail blob (video / audio poster JPEG written by the
+    # transcode worker). The gallery card uses this to decide
+    # whether to ask `/served?max_dim=600` for a preview image.
+    # Populated from `Image.has_thumbnail` (a hybrid_property on
+    # the model that maps to `thumbnail_blob_key is not None`).
+    has_thumbnail: bool = False
+
 
 class FolderRead(BaseModel):
     """Folder shape returned by /folders. The grid renders folders as

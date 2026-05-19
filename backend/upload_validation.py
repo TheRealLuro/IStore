@@ -162,6 +162,108 @@ _GENERIC_CLIENT_MIME = {
 }
 
 _TEXT_EXTS = {".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml", ".toml", ".ini"}
+
+# Source code + structured-text extensions. Treated as document uploads
+# with a language-specific text/x-* mime so the FE can render them
+# through the syntax-highlighted code preview instead of trying to
+# decode them as images. The value is the mime returned by detect_magic;
+# the FE inspects the language part to pick a Prism grammar.
+_CODE_EXTS: dict[str, str] = {
+    # Web
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".css": "text/css",
+    ".scss": "text/x-scss",
+    ".sass": "text/x-sass",
+    ".less": "text/x-less",
+    ".svg": "image/svg+xml",
+    # JS family
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".cjs": "text/javascript",
+    ".ts": "text/x-typescript",
+    ".tsx": "text/x-tsx",
+    ".jsx": "text/x-jsx",
+    ".vue": "text/x-vue",
+    ".svelte": "text/x-svelte",
+    # Compiled-lang family
+    ".py": "text/x-python",
+    ".pyi": "text/x-python",
+    ".rb": "text/x-ruby",
+    ".php": "text/x-php",
+    ".java": "text/x-java",
+    ".kt": "text/x-kotlin",
+    ".kts": "text/x-kotlin",
+    ".scala": "text/x-scala",
+    ".swift": "text/x-swift",
+    ".go": "text/x-go",
+    ".rs": "text/x-rust",
+    ".c": "text/x-c",
+    ".h": "text/x-c",
+    ".cpp": "text/x-c++",
+    ".cc": "text/x-c++",
+    ".cxx": "text/x-c++",
+    ".hpp": "text/x-c++",
+    ".cs": "text/x-csharp",
+    ".dart": "text/x-dart",
+    ".lua": "text/x-lua",
+    ".r": "text/x-r",
+    ".pl": "text/x-perl",
+    ".sh": "text/x-shellscript",
+    ".bash": "text/x-shellscript",
+    ".zsh": "text/x-shellscript",
+    ".fish": "text/x-shellscript",
+    ".ps1": "text/x-powershell",
+    ".sql": "text/x-sql",
+    ".clj": "text/x-clojure",
+    ".ex": "text/x-elixir",
+    ".exs": "text/x-elixir",
+    ".elm": "text/x-elm",
+    ".erl": "text/x-erlang",
+    ".hs": "text/x-haskell",
+    ".ml": "text/x-ocaml",
+    ".mli": "text/x-ocaml",
+    ".nim": "text/x-nim",
+    ".zig": "text/x-zig",
+    ".v": "text/x-v",
+    # Markup + docs
+    ".rst": "text/x-rst",
+    ".adoc": "text/x-asciidoc",
+    ".asciidoc": "text/x-asciidoc",
+    ".tex": "text/x-tex",
+    ".latex": "text/x-tex",
+    # Config / infra
+    ".env": "text/x-dotenv",
+    ".env.example": "text/x-dotenv",
+    ".env.sample": "text/x-dotenv",
+    ".dockerfile": "text/x-dockerfile",
+    ".dockerignore": "text/plain",
+    ".gitignore": "text/plain",
+    ".editorconfig": "text/plain",
+    ".cfg": "text/x-properties",
+    ".conf": "text/x-properties",
+    ".properties": "text/x-properties",
+    ".xml": "text/xml",
+    ".plist": "text/xml",
+    ".graphql": "text/x-graphql",
+    ".gql": "text/x-graphql",
+    ".proto": "text/x-protobuf",
+    ".diff": "text/x-diff",
+    ".patch": "text/x-diff",
+    # Jupyter
+    ".ipynb": "application/x-ipynb+json",
+}
+# Files identified by basename (no extension) — Dockerfile / Makefile etc.
+_CODE_BASENAMES: dict[str, str] = {
+    "dockerfile": "text/x-dockerfile",
+    "makefile": "text/x-makefile",
+    "gnumakefile": "text/x-makefile",
+    "rakefile": "text/x-ruby",
+    "gemfile": "text/x-ruby",
+    "podfile": "text/x-ruby",
+    "vagrantfile": "text/x-ruby",
+    "procfile": "text/plain",
+}
 _OOXML = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -182,6 +284,52 @@ _RAW_EXTS = {
     ".pef": "image/x-pentax-pef",
 }
 RAW_MIMES: frozenset[str] = frozenset(_RAW_EXTS.values())
+
+# Video / audio extensions paired with their canonical MIMEs. The
+# magic-byte branches below check the file signature first (so a
+# `.mp4` masquerading as a PDF still gets rejected); the extension
+# map is consulted to disambiguate ISO BMFF brands (mp4 vs m4a vs
+# mov vs m4v all share the `ftyp` box) and to pick the right MIME
+# for matched RIFF / Matroska bytes.
+_VIDEO_EXTS: dict[str, str] = {
+    ".mp4":  "video/mp4",
+    ".m4v":  "video/mp4",
+    ".mov":  "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv":  "video/x-matroska",
+    ".avi":  "video/x-msvideo",
+}
+_AUDIO_EXTS: dict[str, str] = {
+    ".mp3":  "audio/mpeg",
+    ".m4a":  "audio/mp4",
+    ".aac":  "audio/aac",
+    ".wav":  "audio/wav",
+    ".flac": "audio/flac",
+    ".ogg":  "audio/ogg",
+    ".opus": "audio/opus",
+}
+# ISO Base Media File Format brand → MIME. The first 8 bytes of an
+# ISO BMFF file are `<size>ftyp`, then a 4-char brand at [8:12]. We
+# disambiguate by brand first; if the brand isn't in this table, we
+# fall back to the filename extension. Common brands seen in the wild:
+#   isom mp41 mp42 mp4v MSNV avc1   → mp4
+#   M4V  M4VH M4VP                  → m4v
+#   M4A  M4B                        → m4a
+#   qt                              → mov
+_ISO_BMFF_BRANDS: dict[bytes, str] = {
+    b"isom": "video/mp4",
+    b"mp41": "video/mp4",
+    b"mp42": "video/mp4",
+    b"mp4v": "video/mp4",
+    b"avc1": "video/mp4",
+    b"MSNV": "video/mp4",
+    b"M4V ": "video/mp4",
+    b"M4VH": "video/mp4",
+    b"M4VP": "video/mp4",
+    b"M4A ": "audio/mp4",
+    b"M4B ": "audio/mp4",
+    b"qt  ": "video/quicktime",
+}
 
 
 def _suffix(filename: str | None) -> str:
@@ -218,12 +366,77 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
         if ext in _OOXML:
             return _OOXML[ext], "document"
         raise UploadValidationError("Archive uploads are not enabled yet.", 415)
+    # ISO Base Media File Format — mp4 / mov / m4a / m4v. The first
+    # four bytes are a 32-bit box size, followed by `ftyp` and a 4-char
+    # brand. Brand → MIME table catches the common cases; unknown
+    # brands fall back to the filename extension when one matches.
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12]
+        if brand in _ISO_BMFF_BRANDS:
+            mime = _ISO_BMFF_BRANDS[brand]
+            return mime, "audio" if mime.startswith("audio/") else "video"
+        ext = _suffix(filename)
+        if ext in _VIDEO_EXTS:
+            return _VIDEO_EXTS[ext], "video"
+        if ext in _AUDIO_EXTS:
+            return _AUDIO_EXTS[ext], "audio"
+        return "video/mp4", "video"  # safe default for ftyp blobs
+    # Matroska / WebM — EBML header magic. Disambiguate by extension
+    # because the EBML doctype could be either.
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        ext = _suffix(filename)
+        if ext == ".webm":
+            return "video/webm", "video"
+        return "video/x-matroska", "video"
+    # AVI — `RIFF<size>AVI ` (4 + 4 + 4 = first 12 bytes).
+    if data[:4] == b"RIFF" and data[8:12] == b"AVI ":
+        return "video/x-msvideo", "video"
+    # WAV — `RIFF<size>WAVE`.
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "audio/wav", "audio"
+    # OGG / Opus.
+    if data.startswith(b"OggS"):
+        # Opus streams have an `OpusHead` packet near the front; a
+        # plain `OggS` could carry Vorbis or FLAC too. We surface
+        # `audio/opus` when we see OpusHead in the first 4 KiB and
+        # `audio/ogg` otherwise.
+        if b"OpusHead" in data[:4096]:
+            return "audio/opus", "audio"
+        return "audio/ogg", "audio"
+    # FLAC.
+    if data.startswith(b"fLaC"):
+        return "audio/flac", "audio"
+    # MP3 — either an ID3v2 tag (`ID3` at byte 0) or a raw MPEG
+    # audio frame sync (`0xFF` byte where the next byte's top 3 bits
+    # are all set). The frame-sync check is permissive on purpose;
+    # there's no shorter shibboleth for tag-less MP3s.
+    if data.startswith(b"ID3"):
+        return "audio/mpeg", "audio"
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        ext = _suffix(filename)
+        if ext == ".mp3":
+            return "audio/mpeg", "audio"
+        if ext == ".aac":
+            return "audio/aac", "audio"
     if lower.startswith((b"<svg", b"<?xml")) and b"<svg" in lower[:256]:
         raise UploadValidationError("SVG uploads are not accepted.", 415)
     if lower.startswith((b"<!doctype html", b"<html", b"<script")):
         raise UploadValidationError("HTML/script uploads are not accepted.", 415)
     if _suffix(filename) in _TEXT_EXTS and _looks_text(data):
         return _text_mime(filename), "document"
+    # Source code + structured-text uploads. Same trust line as plain
+    # text — we require the bytes to look like UTF-8 with no NUL bytes
+    # before accepting them. Catches a binary file masquerading as
+    # `evil.py` with NULs inside. The mime carries the language so the
+    # FE preview can pick the right Prism grammar.
+    code_ext = _suffix(filename)
+    if code_ext in _CODE_EXTS and _looks_text(data):
+        return _CODE_EXTS[code_ext], "document"
+    # Basename-only recognition for Dockerfile / Makefile / Rakefile etc.
+    if filename:
+        base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+        if base in _CODE_BASENAMES and _looks_text(data):
+            return _CODE_BASENAMES[base], "document"
     raise UploadValidationError("Unsupported or unrecognized file type.", 415)
 
 
@@ -503,6 +716,7 @@ _VALIDATORS: dict[str, ValidatorFn] = {
     "image":    _validate_image,
     "document": _validate_document,
     "video":    _validate_passthrough,
+    "audio":    _validate_passthrough,
     "other":    _validate_passthrough,
 }
 

@@ -128,3 +128,80 @@ def verify_share_download(
         return False
     expected = sign_share_download(share_id, variant, expires)
     return hmac.compare_digest(expected, sig)
+
+
+# ---------- Streaming (video / audio) — separate TTL ----------
+#
+# Video / audio playback needs a longer-lived URL than a one-shot
+# download — a 90-minute watch session with a pause in the middle
+# can't survive a 5-minute cap. We sign a separate payload prefix
+# ("stream:") so a download URL can't be replayed as a stream URL
+# and vice versa, and gate the TTL on a dedicated cap config.
+
+
+def _stream_payload(
+    image_id: UUID, user_id: UUID, expires: int, quality: str = "",
+) -> bytes:
+    """Quality label is part of the signed payload so a URL minted
+    for "720p" can't be replayed for "1080p" or "source" — gives the
+    operator a real audit trail on which tier each grant was for.
+    The empty string is the default tier (served_blob_key)."""
+    return f"stream:{image_id}:{user_id}:{quality}:{expires}".encode("utf-8")
+
+
+def sign_stream(
+    image_id: UUID, user_id: UUID, expires: int, quality: str = "",
+) -> str:
+    return hmac.new(
+        settings.jwt_secret.encode("utf-8"),
+        _stream_payload(image_id, user_id, expires, quality),
+        sha256,
+    ).hexdigest()
+
+
+def _capped_stream_ttl() -> int:
+    return max(
+        1,
+        min(
+            settings.stream_url_ttl_seconds,
+            settings.stream_url_ttl_max_seconds,
+        ),
+    )
+
+
+def make_signed_stream(
+    *,
+    base_url: str,
+    image_id: UUID,
+    user_id: UUID,
+    quality: str = "",
+) -> dict[str, str]:
+    ttl = _capped_stream_ttl()
+    expires = int(time.time()) + ttl
+    sig = sign_stream(image_id, user_id, expires, quality)
+    root = base_url.rstrip("/")
+    q_param = f"&q={quality}" if quality else ""
+    return {
+        "url": f"{root}/images/{image_id}/stream?uid={user_id}&expires={expires}{q_param}&sig={sig}",
+        "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
+        "quality": quality,
+    }
+
+
+def verify_stream(
+    *,
+    image_id: UUID,
+    user_id: UUID,
+    expires: int,
+    sig: str,
+    quality: str = "",
+) -> bool:
+    now = int(time.time())
+    if expires < now:
+        return False
+    # Same defense-in-depth as `verify_download`: reject URLs whose
+    # remaining lifetime exceeds the configured cap.
+    if expires - now > settings.stream_url_ttl_max_seconds:
+        return False
+    expected = sign_stream(image_id, user_id, expires, quality)
+    return hmac.compare_digest(expected, sig)

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, nulls_last, select
@@ -31,7 +31,12 @@ from backend.models import (
 )
 from backend.schemas import ImageMove, ImageRead, ImageRename, StatusSet
 from backend.security import enforce_upload_limits
-from backend.signed_urls import make_signed_download, verify_download
+from backend.signed_urls import (
+    make_signed_download,
+    make_signed_stream,
+    verify_download,
+    verify_stream,
+)
 from backend.storage import storage
 from backend.upload_validation import UploadValidationError, validate_image_filename
 
@@ -65,7 +70,7 @@ async def _enqueue_or_inline_fallback(enqueue_fn, *args, inline) -> None:
     except Exception:
         logger.exception("enqueue raised; falling back to inline")
         ok = False
-    if not ok:
+    if not ok and inline is not None:
         _detach(inline())
 
 
@@ -188,7 +193,14 @@ async def upload_image(
     # Pass B (faces) and the AI Vision summary apply, the worker
     # runs them sequentially so the summary can splice person names
     # from the faces pass.
-    needs_faces = image.category == "image" and image.pending_face_scan
+    # Video rows also need face detection — runs on a middle keyframe
+    # in the worker (`_process_face_scan` extracts one when category
+    # is video). Without this, the "People in this photo" panel never
+    # populates for talking-head clips even when the person is clearly
+    # on camera. Audio rows still skip (no faces in audio).
+    needs_faces = (
+        image.category in ("image", "video") and image.pending_face_scan
+    )
     needs_summary = image.pending_summary
     if needs_faces and needs_summary:
         await _enqueue_or_inline_fallback(
@@ -204,6 +216,21 @@ async def upload_image(
         await _enqueue_or_inline_fallback(
             jobs.enqueue_summarize, user.id, image.id,
             inline=lambda: _run_summarize_one(image.id),
+        )
+    # Video / audio uploads land in the originals bucket as-is — the
+    # validator passes the bytes through unchanged. Browsers can't
+    # play arbitrary codecs (HEVC, AV1 with no hw accel, ProRes, DV,
+    # etc.), so the worker re-encodes to H.264 + AAC + faststart so
+    # the stream endpoint serves a universally-playable copy. Per
+    # user policy the original is dropped after the transcode lands.
+    if image.category in {"video", "audio"}:
+        await _enqueue_or_inline_fallback(
+            jobs.enqueue_transcode_video, user.id, image.id,
+            # No inline fallback: ffmpeg might not be available in the
+            # API container, and an inline transcode would tie up the
+            # event loop for minutes. If the worker is offline, the
+            # job sits on Redis until the worker recovers.
+            inline=None,
         )
     return image
 
@@ -265,6 +292,329 @@ async def signed_download(
         return Response(content=blob, media_type=mime)
     blob, mime = await fetch_served(image)
     return Response(content=blob, media_type=mime)
+
+
+# ---------- Video / audio streaming with HTTP Range support ----------
+#
+# `<video>` and `<audio>` elements can't send Authorization headers,
+# and they need partial-byte responses to do scrubbing without
+# re-downloading the file. We pair these two endpoints to bridge:
+#
+#   GET /images/{id}/stream-url     → returns a short-lived signed URL
+#   GET /images/{id}/stream         → the signed URL the browser hits
+#                                     with Range: bytes=N-M requests
+#
+# Auth on the signed endpoint is the same HMAC pattern as
+# `signed_download`, but with a separate signing prefix + TTL so a
+# leaked stream URL can't be replayed against the one-shot download
+# endpoint and vice versa.
+#
+# Range handling: parses the standard `Range: bytes=start-end` form,
+# clamps end to file size − 1, reads ONLY that slice from MinIO via
+# `Storage.get_range`, and returns 206 Partial Content with
+# Content-Range + Content-Length + Accept-Ranges. A request with no
+# Range header falls back to a 200 streamed in a single chunk; the
+# browser will still pick up the Accept-Ranges header and switch to
+# Range-mode on the next seek.
+
+
+def _resolve_variant_key(image: Image, quality: str | None) -> str | None:
+    """Return the served-bucket blob key for the requested quality
+    tier, or None when there's no match. `served_variants` is a
+    dict[label, key] populated by the transcode worker; image rows
+    (which never go through the transcoder) leave it NULL.
+
+    An empty / missing `quality` resolves to the default tier
+    (the one `served_blob_key` already points at), so legacy
+    callers don't need to know the variant table exists.
+    """
+    if not quality:
+        return None  # caller falls back to served_blob_key
+    variants = image.served_variants or {}
+    return variants.get(quality)
+
+
+def _stream_bucket_and_key(
+    image: Image, quality: str | None = None,
+) -> tuple[str, str, str]:
+    """Pick the bucket + key + MIME to stream. For video / audio,
+    prefer the requested quality tier (when present), then the
+    default served variant, then the original. For everything else,
+    prefer original. Returns (bucket, key, mime)."""
+    is_av = image.category in {"video", "audio"}
+    served_key = image.served_blob_key
+    served_distinct = (
+        served_key is not None and served_key != image.original_blob_key
+    )
+
+    if is_av and served_distinct:
+        # If the caller asked for a specific quality AND that quality
+        # exists in the variants table, serve it.
+        v_key = _resolve_variant_key(image, quality)
+        if v_key:
+            return (
+                storage.bucket_served,
+                v_key,
+                image.mime_type_served or "application/octet-stream",
+            )
+        # Default tier (served_blob_key).
+        return (
+            storage.bucket_served,
+            served_key,
+            image.mime_type_served or "application/octet-stream",
+        )
+
+    if image.original_blob_key is not None:
+        return (
+            storage.bucket_originals,
+            image.original_blob_key,
+            image.mime_type_original or "application/octet-stream",
+        )
+
+    # Hybrid-retention has dropped the original; served is the only
+    # copy left. May live in either bucket depending on history.
+    bucket = (
+        storage.bucket_originals
+        if served_key == image.original_blob_key
+        else storage.bucket_served
+    )
+    return bucket, served_key, image.mime_type_served or "application/octet-stream"
+
+
+def _parse_range_header(
+    raw: str | None, total: int,
+) -> tuple[int, int] | None:
+    """Parse `Range: bytes=start-end` into (start, end_inclusive).
+    Returns None for any unparseable / unsatisfiable input — caller
+    falls back to a 200 full response. Open-ended ranges (`-N` or
+    `N-`) are honored per RFC 7233. Multi-range requests fall back
+    to full response (rare in browsers, complex to support, not
+    worth it for this surface)."""
+    if not raw or not raw.lower().startswith("bytes="):
+        return None
+    spec = raw[6:].strip()
+    if "," in spec:  # multi-range — not supported
+        return None
+    try:
+        start_str, end_str = spec.split("-", 1)
+    except ValueError:
+        return None
+    if start_str == "" and end_str == "":
+        return None
+    if start_str == "":
+        # Suffix range: last N bytes.
+        suffix = int(end_str)
+        if suffix <= 0 or suffix > total:
+            suffix = total
+        return total - suffix, total - 1
+    start = int(start_str)
+    if start >= total:
+        return None
+    end = int(end_str) if end_str != "" else total - 1
+    end = min(end, total - 1)
+    if end < start:
+        return None
+    return start, end
+
+
+@router.get("/{image_id}/stream-url")
+async def signed_stream_url(
+    image_id: UUID,
+    request: Request,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: Annotated[str | None, Query(max_length=8)] = None,
+) -> dict[str, str]:
+    """Mint a signed URL the browser can stick straight into a
+    `<video src=>` or `<audio src=>`. URL expires per
+    `stream_url_ttl_seconds` (default 1 hour); FE refreshes on
+    `error` if the user pauses past the boundary.
+
+    Optional `q=<label>` requests a specific quality tier (e.g.
+    `1080p`, `720p`, `480p`). The label is baked into the signature
+    so a URL minted for one quality can't be replayed for another.
+    Omit `q` to get the default (highest available) tier — keeps
+    callers that don't care simple.
+    """
+    image = await _load_owned_image(image_id, user, session)
+    return make_signed_stream(
+        base_url=str(request.base_url),
+        image_id=image.id,
+        user_id=user.id,
+        quality=q or "",
+    )
+
+
+@router.get("/{image_id}/stream-info")
+async def stream_info(
+    image_id: UUID,
+    request: Request,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """One-shot endpoint for the player to discover what quality
+    tiers exist for this file + mint a signed URL for each. The
+    player presents the labels in a menu; the user picks; the
+    player swaps `video.src` to the matching URL.
+
+    Response:
+      {
+        "default_quality": "1080p",
+        "qualities": [
+          {"label": "1080p", "url": "...", "expires_at": "..."},
+          {"label": "720p",  "url": "...", "expires_at": "..."},
+          {"label": "480p",  "url": "...", "expires_at": "..."}
+        ]
+      }
+    """
+    image = await _load_owned_image(image_id, user, session)
+    variants = image.served_variants or {}
+    # Order tiers by the canonical descending size so the picker
+    # reads top-down by resolution. Any unrecognized label (e.g. a
+    # custom "240p" we add later) lands at the bottom in
+    # insertion order.
+    ordered_known = ["2160p", "1440p", "1080p", "720p", "480p"]
+    seen: set[str] = set()
+    out_qualities: list[dict] = []
+
+    def _emit(label: str) -> None:
+        if label in seen:
+            return
+        seen.add(label)
+        signed = make_signed_stream(
+            base_url=str(request.base_url),
+            image_id=image.id,
+            user_id=user.id,
+            quality=label,
+        )
+        out_qualities.append({
+            "label": label,
+            "url": signed["url"],
+            "expires_at": signed["expires_at"],
+        })
+
+    for label in ordered_known:
+        if label in variants:
+            _emit(label)
+    # Any non-standard labels last.
+    for label in variants:
+        _emit(label)
+
+    # When no variants exist (e.g. row was uploaded before the
+    # multi-quality pipeline, OR transcode hasn't completed), expose
+    # a single "auto" entry that hits the default served bytes. Keeps
+    # the player from breaking on legacy rows.
+    if not out_qualities:
+        signed = make_signed_stream(
+            base_url=str(request.base_url),
+            image_id=image.id,
+            user_id=user.id,
+        )
+        out_qualities.append({
+            "label": "auto",
+            "url": signed["url"],
+            "expires_at": signed["expires_at"],
+        })
+
+    default_label = (
+        out_qualities[0]["label"] if out_qualities else "auto"
+    )
+    return {
+        "default_quality": default_label,
+        "qualities": out_qualities,
+    }
+
+
+@router.get("/{image_id}/stream")
+async def stream_media(
+    image_id: UUID,
+    uid: UUID,
+    expires: int,
+    sig: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: Annotated[str | None, Query(max_length=8)] = None,
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
+) -> Response:
+    """Stream a video / audio file with HTTP Range support so the
+    `<video>` element can seek without re-downloading from byte 0.
+    Auth via signed query params (uid/expires/sig) so the URL can
+    sit in a `src=` attribute without leaking the Bearer token."""
+    if not verify_stream(
+        image_id=image_id, user_id=uid, expires=expires, sig=sig,
+        quality=q or "",
+    ):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Invalid or expired stream URL"
+        )
+    image = (
+        await session.execute(
+            select(Image).where(
+                Image.id == image_id,
+                Image.user_id == uid,
+                Image.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if image is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+    if image.original_blob_key is None and image.served_blob_key is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No bytes for this file")
+
+    bucket, key, mime = _stream_bucket_and_key(image, quality=q)
+
+    # Size hint: we know `byte_size_served` for the DEFAULT served
+    # tier, but a non-default quality variant lives in the same
+    # bucket with a different size — we have to stat it. Always
+    # round-trip the stat when q resolves to a variant, AND when
+    # neither size column is populated (old rows).
+    if (
+        bucket == storage.bucket_served
+        and q
+        and q in (image.served_variants or {})
+    ):
+        total = await asyncio.to_thread(storage.stat, bucket, key)
+    elif bucket == storage.bucket_served:
+        total = image.byte_size_served
+    else:
+        total = image.byte_size_original
+    if not total:
+        total = await asyncio.to_thread(storage.stat, bucket, key)
+
+    parsed = _parse_range_header(range_header, total)
+    if parsed is None:
+        # Full-body response. Still advertise Accept-Ranges so the
+        # browser switches to Range-mode on the next seek without a
+        # second negotiation round-trip.
+        blob = await asyncio.to_thread(
+            storage.get_range, bucket, key, 0, total,
+        )
+        return Response(
+            content=blob,
+            media_type=mime,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(total),
+                "Cache-Control": "private, max-age=0, no-store",
+            },
+        )
+
+    start, end = parsed
+    length = end - start + 1
+    blob = await asyncio.to_thread(
+        storage.get_range, bucket, key, start, length,
+    )
+    return Response(
+        content=blob,
+        media_type=mime,
+        status_code=status.HTTP_206_PARTIAL_CONTENT,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Range": f"bytes {start}-{end}/{total}",
+            "Content-Length": str(length),
+            "Cache-Control": "private, max-age=0, no-store",
+        },
+    )
+
 
 
 @router.get("/", response_model=list[ImageRead])
@@ -1300,6 +1650,39 @@ async def download_served(
     if settings.require_signed_downloads:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Use a signed download URL")
     image = await _load_owned_image(image_id, user, session)
+
+    # Video / audio rows store the actual playable bytes in
+    # `served_blob_key` (post-transcode MP4) and a JPEG poster frame
+    # separately in `thumbnail_blob_key`. The gallery card asks for
+    # `/served?max_dim=600` and expects an image — for those rows
+    # we serve the poster instead of the video. Falls back to the
+    # served bytes when no poster has been generated yet (e.g. the
+    # transcode hasn't completed). Image rows never set
+    # `thumbnail_blob_key` so this branch is a no-op for them.
+    if (
+        max_dim is not None
+        and image.thumbnail_blob_key
+        and image.category in {"video", "audio"}
+    ):
+        try:
+            blob = await asyncio.to_thread(
+                storage.get, storage.bucket_served, image.thumbnail_blob_key,
+            )
+            mime = "image/jpeg"
+            blob, mime = await asyncio.to_thread(
+                _resized_thumb_cached, image.id, blob, max_dim,
+            )
+            return Response(
+                content=blob,
+                media_type=mime,
+                headers={"Cache-Control": "private, max-age=86400"},
+            )
+        except Exception:
+            logger.exception(
+                "served thumb fetch failed for %s (av poster); falling back",
+                image.id,
+            )
+
     blob, mime = await fetch_served(image)
 
     if max_dim is not None and mime and mime.startswith("image/") and mime != "image/gif":
@@ -1566,6 +1949,60 @@ async def backfill_doc_thumbs(
     return {"examined": examined, "generated": generated}
 
 
+@router.post("/backfill-summary-embeddings", status_code=status.HTTP_202_ACCEPTED)
+async def backfill_summary_embeddings(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = 1000,
+) -> dict:
+    """One-shot: encode summaries that have one but no
+    `summary_clip_embedding` yet. New summaries get encoded
+    inline by the worker (`_persist_result` → `_encode_summary_for_search`),
+    so this endpoint is for the migration / backfill phase only —
+    after the model column ships, every row already with a summary
+    needs its embedding computed once.
+
+    Runs synchronously (no Redis queue) because CLIP text encoding
+    is fast (~10 ms / row on GPU, ~80 ms on CPU). At limit=1000
+    that's 10s on GPU; tune `limit` down for slow boxes.
+
+    Returns counts so a progress UI can show "X of Y embedded."
+    """
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"ml:backfill-summary-emb:{user.id}",
+        limit=5,
+        window_seconds=3600,
+        detail="Too many embedding backfills. Try again in an hour.",
+    )
+    from backend.summarize import _encode_summary_for_search
+
+    rows = (
+        await session.execute(
+            select(Image)
+            .where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+                Image.summary.is_not(None),
+                Image.summary_clip_embedding.is_(None),
+            )
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    eligible = len(rows)
+    filled = 0
+    for img in rows:
+        vec = _encode_summary_for_search(img.summary, img.summary_topic)
+        if vec is None:
+            continue
+        img.summary_clip_embedding = vec
+        filled += 1
+    if filled:
+        await session.commit()
+    return {"eligible": eligible, "filled": filled}
+
+
 @router.post("/backfill-summaries", status_code=status.HTTP_202_ACCEPTED)
 async def backfill_summaries(
     user: Annotated[User, Depends(current_active_user)],
@@ -1573,6 +2010,9 @@ async def backfill_summaries(
     background: BackgroundTasks,
     limit: int = 500,
     force: bool = False,
+    category: Annotated[
+        str | None, Query(pattern="^(image|video|document|audio|other)$")
+    ] = None,
 ) -> dict:
     """Queue summarize jobs for owned images.
 
@@ -1588,6 +2028,12 @@ async def backfill_summaries(
     models or fixing a model that previously crashed and left fallback
     summaries on every row. Capped at `limit` so a 10k-image library
     doesn't overload the worker in one request.
+
+    `category` (optional) narrows the backfill to one storage category
+    so the user can re-summarize only their videos after a video-
+    summarizer upgrade without also touching every image in the
+    library. Validated server-side via the pattern in the dependency
+    above. Omit to backfill every category.
     """
     from backend.security import enforce_rate_limit
     await enforce_rate_limit(
@@ -1608,6 +2054,8 @@ async def backfill_summaries(
         .order_by(Image.uploaded_at.desc())
         .limit(limit)
     )
+    if category:
+        stmt = stmt.where(Image.category == category)
     if not force:
         stmt = stmt.where(
             or_(Image.pending_summary.is_(True), Image.summary.is_(None))

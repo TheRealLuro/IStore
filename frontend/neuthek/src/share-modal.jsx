@@ -127,10 +127,7 @@ export function ShareModal({ imageId, imageName, onClose }) {
     <div
       className="share-modal__overlay"
       onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
-        display: "grid", placeItems: "center", zIndex: 100,
-      }}
+      data-no-marquee="true"
     >
       <div
         className="share-modal"
@@ -138,26 +135,22 @@ export function ShareModal({ imageId, imageName, onClose }) {
         aria-modal="true"
         aria-labelledby="share-modal-title"
         onClick={(e) => e.stopPropagation()}
-        style={{
-          width: "min(540px, 92vw)", background: "var(--surface, #fff)",
-          color: "var(--ink, #111)", borderRadius: 12, padding: 22,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.18)", maxHeight: "86vh",
-          overflowY: "auto",
-        }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-3)" }}>Share</div>
-            <div id="share-modal-title" style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>{imageName || "this file"}</div>
+        <header className="share-modal__head">
+          <div className="share-modal__head-text">
+            <div className="share-modal__kicker">SHARE</div>
+            <div id="share-modal-title" className="share-modal__title">
+              {imageName || "this file"}
+            </div>
           </div>
           <button className="btn-icon" onClick={onClose} aria-label="Close share dialog">
             <Icon name="x" size={15}/>
           </button>
-        </div>
+        </header>
 
-        <form onSubmit={handleCreate} style={{ display: "grid", gap: 10 }}>
-          <label style={{ display: "grid", gap: 4 }}>
-            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Recipient email</span>
+        <form onSubmit={handleCreate} className="share-modal__form">
+          <label className="share-modal__field">
+            <span className="share-modal__label">Recipient email</span>
             <input
               type="email"
               required
@@ -165,36 +158,30 @@ export function ShareModal({ imageId, imageName, onClose }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="them@example.com"
-              style={{
-                padding: "9px 10px", borderRadius: 8,
-                border: "1px solid var(--border, #ddd)", background: "var(--surface-2, #f7f7f7)",
-                color: "var(--ink, #111)", fontSize: 13,
-              }}
+              className="share-modal__input"
             />
           </label>
-          <label style={{ display: "grid", gap: 4 }}>
-            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>Access window</span>
+          <label className="share-modal__field">
+            <span className="share-modal__label">Access window</span>
             <select
               value={duration}
               onChange={(e) => setDuration(Number(e.target.value))}
-              style={{
-                padding: "9px 10px", borderRadius: 8,
-                border: "1px solid var(--border, #ddd)", background: "var(--surface-2, #f7f7f7)",
-                color: "var(--ink, #111)", fontSize: 13,
-              }}
+              className="share-modal__input share-modal__input--select"
             >
               {DURATION_PRESETS.map((p) => (
                 <option key={p.seconds} value={p.seconds}>{p.label}</option>
               ))}
             </select>
-            <span style={{ fontSize: 11, color: "var(--ink-3)", lineHeight: 1.4 }}>
+            <span className="share-modal__hint">
               Existing accounts get the duration you pick. Recipients without
               an account get exactly <strong>1 day</strong> after they sign up,
               regardless of this setting.
             </span>
           </label>
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-            <button type="button" className="btn btn--ghost" onClick={onClose} disabled={submitting}>Cancel</button>
+          <div className="share-modal__actions">
+            <button type="button" className="btn btn--ghost" onClick={onClose} disabled={submitting}>
+              Cancel
+            </button>
             <button type="submit" className="btn btn--primary" disabled={submitting}>
               {submitting ? "Creating…" : "Create link"}
             </button>
@@ -202,25 +189,16 @@ export function ShareModal({ imageId, imageName, onClose }) {
         </form>
 
         {fullShareUrl && (
-          <div
-            style={{
-              marginTop: 14, padding: 12, borderRadius: 8,
-              border: "1px solid var(--border, #ddd)", background: "var(--surface-2, #f7f7f7)",
-            }}
-          >
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 6 }}>
-              Copy this link and send it to {issuedEmail}.
+          <div className="share-modal__issued">
+            <div className="share-modal__issued-note">
+              Copy this link and send it to <strong>{issuedEmail}</strong>.
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="share-modal__issued-row">
               <input
                 readOnly
                 value={fullShareUrl}
                 onFocus={(e) => e.currentTarget.select()}
-                style={{
-                  flex: 1, padding: "8px 10px", borderRadius: 6,
-                  border: "1px solid var(--border, #ddd)", background: "var(--surface, #fff)",
-                  color: "var(--ink, #111)", fontSize: 12, fontFamily: "monospace",
-                }}
+                className="share-modal__url"
               />
               <button
                 type="button"
@@ -232,38 +210,28 @@ export function ShareModal({ imageId, imageName, onClose }) {
                   );
                 }}
               >
-                Copy
+                <Icon name="copy" size={12}/> Copy
               </button>
             </div>
           </div>
         )}
 
-        <div style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-            Active shares
-          </div>
+        <section className="share-modal__grants">
+          <div className="share-modal__grants-head">Active shares</div>
           {isLoading ? (
-            <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Loading…</div>
+            <div className="share-modal__grants-empty">Loading…</div>
           ) : grants.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--ink-3)" }}>No active shares.</div>
+            <div className="share-modal__grants-empty">No active shares.</div>
           ) : (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 6 }}>
+            <ul className="share-modal__grants-list">
               {grants.map((g) => {
                 const label = g.recipient_display_name || g.recipient_email;
                 const pending = !g.recipient_user_id;
                 return (
-                  <li
-                    key={g.id}
-                    style={{
-                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                      padding: "8px 10px", borderRadius: 6,
-                      background: "var(--surface-2, #f7f7f7)",
-                      border: "1px solid var(--border, #eee)",
-                    }}
-                  >
-                    <div style={{ display: "grid", gap: 2 }}>
-                      <strong style={{ fontSize: 13 }}>{label}</strong>
-                      <span style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                  <li key={g.id} className="share-modal__grant">
+                    <div className="share-modal__grant-text">
+                      <strong className="share-modal__grant-name">{label}</strong>
+                      <span className="share-modal__grant-meta">
                         {pending ? "Pending signup · 1 day window starts at signup" : fmtCountdown(g.expires_at)}
                       </span>
                     </div>
@@ -281,7 +249,7 @@ export function ShareModal({ imageId, imageName, onClose }) {
               })}
             </ul>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );

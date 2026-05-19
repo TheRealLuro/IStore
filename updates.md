@@ -93,6 +93,31 @@ running into and assuming the product was broken.
   every secret added since W12 — Fernet key for the secret-box,
   Google OAuth, GitHub OAuth, Stripe, Resend, every SSE knob, the
   rate-limit caps, half the bucket names.
+- **MP4 / MOV / WebM uploads were rejected as "Unsupported or
+  unrecognized file type."** The upload validator recognized
+  images / PDF / OOXML / SVG / text / code formats but had no
+  branch for ISO BMFF (mp4 / m4v / mov / m4a), Matroska
+  (mkv / webm), AVI, or any audio container. Every video / audio
+  file fell through to the generic "we don't know what this is"
+  rejection at the magic-byte stage, never reaching the dispatch
+  table that already had a `"video"` validator wired and waiting.
+- **DOCX / XLSX / PPTX uploads crashed mid-INSERT.** The
+  `images.mime_type_{original,served}` columns were
+  `VARCHAR(64)`, but the OOXML MIMEs are 66-74 chars long —
+  `application/vnd.openxmlformats-officedocument.presentationml.presentation`
+  is 74. Postgres raised `StringDataRightTruncationError` on every
+  Office-format upload before the row landed. The validator said
+  yes, the database said no.
+- **No collapse-to-bubble for the comments panel.** When viewing
+  a video full-screen, the 360 px comment panel covered a
+  meaningful slice of the lightbox content. There was no way to
+  shrink it back without closing the entire surface — and the
+  comment thread state went with it.
+- **Video playback fought the rest of the UI.** The lightbox
+  backdrop stayed at its normal 92 %-opaque black, the right-
+  side details pane stayed visible, the comments panel stayed
+  expanded. Watching a clip felt like watching a video in a
+  cluttered tool, not watching a video.
 
 ### Fixed
 
@@ -167,6 +192,35 @@ running into and assuming the product was broken.
   Writes a 56-key `.env` covering the current surface. `--mode`
   flag picks `docker compose up -d` or a per-platform native
   install checklist with binary-on-PATH detection.
+- **Video + audio uploads accept the full common-format list now.**
+  Added magic-byte detection for ISO BMFF (mp4 / m4v / mov / m4a)
+  with an explicit brand → MIME table that disambiguates the
+  `ftyp` box (`isom` / `mp41` / `mp42` / `mp4v` / `avc1` → mp4,
+  `M4A` / `M4B` → audio/mp4, `qt` → mov, etc.), plus Matroska
+  (mkv / webm), AVI (`RIFF…AVI `), WAV (`RIFF…WAVE`), OGG, Opus
+  (sniffed via the OpenHead packet in the first 4 KiB), FLAC, and
+  MP3 (both ID3-tagged and raw MPEG frame-sync). Audio gets its
+  own validator entry in the dispatch table (passthrough — bytes
+  go to originals unmodified).
+- **MIME column widened to 128 chars** (migration `0035`). Forward
+  path is metadata-only on Postgres; the downgrade refuses to
+  truncate any rows whose MIME already exceeds 64 chars, so a
+  rollback can't silently break an existing library.
+- **Comments collapse to a bubble** instead of being all-or-nothing.
+  The 360 px side panel now shrinks to a small floating button on
+  the left edge with a count badge; click to expand, click the
+  ←-arrow in the header to collapse again. Thread state and draft
+  text stay in the TanStack Query cache so reopening is instant —
+  no refetch, no lost typing.
+- **Video focus mode** kicks in the moment a video starts playing.
+  The lightbox backdrop drops to pure black, the comment panel
+  auto-collapses to its bubble, and everything that isn't the
+  player visually steps back. Pausing or stopping the clip
+  restores normal lightbox brightness; the comments stay
+  collapsed (the user can re-expand whenever — we don't fight
+  their choice). The bubble dims to ~35 % opacity in focus mode
+  and brightens on hover so it's reachable without being a
+  distraction.
 
 ### New features
 
@@ -197,6 +251,48 @@ running into and assuming the product was broken.
 - **EXIF capture date** as a first-class column. Filters and
   facets respect it. Photos taken five years ago and uploaded
   today land in the year they were taken.
+- **Themed video player** (Batch 1). Native `<video>` with the
+  full control surface a normal player has — scrub bar with a
+  buffered underlay so you can see how much loaded, 10-second
+  skip back/forward, volume slider with mute, playback speed
+  (0.5×–2×), fullscreen, and a keyboard map that matches the
+  big video sites: Space/K for play-pause, ←/→ for ±5 s, J/L for
+  ±10 s, ↑/↓ for volume, M to mute, F for fullscreen, 0–9 to seek
+  to a percent of the file. Controls fade after 2.5 s of mouse-
+  quiet during playback and snap back on movement.
+- **Audio-autoplay consent** that actually respects browser
+  policy. The first time you open a video or audio file, a tiny
+  consent strip asks "Play future files with sound automatically?"
+  Yes flips a localStorage flag so every subsequent file plays
+  with sound the moment it opens; no keeps the muted-autoplay
+  default. Video and audio have separate flags — your "play music
+  with sound" choice doesn't accidentally unmute every video.
+- **Themed audio player** for the same hit list — `.mp3`, `.wav`,
+  `.flac`, `.ogg`, `.m4a`, `.aac`, `.opus`. Same control surface
+  minus the things that don't apply (no fullscreen, no speed menu
+  by default). Renders as a themed card with the file's extension
+  as the art chip so the format is identifiable at a glance.
+- **CSV / TSV viewer.** Used to be: download the file, open it in
+  Excel, scroll through commas. Now: click the file, see it as a
+  themed table with a sticky header, zebra rows, row numbers,
+  and a hover highlight. The parser is RFC-4180-subset, so quoted
+  fields with embedded commas / newlines / escaped quotes work,
+  and tab-delimited files auto-detect.
+- **ICS calendar viewer.** Open a `.ics` and see the events as
+  clean date-grouped cards — title, time range, location, organizer,
+  URL, description. Folded long lines unfold, UTC vs local datetimes
+  render in your locale, and all-day events get their own visual
+  style.
+- **VCF contact-card viewer.** Open a `.vcf` and see the contacts
+  as named cards with inline base64 photos (or initials if none),
+  phones, emails, addresses, URLs, notes — all `tel:` / `mailto:`
+  links so one tap dials or composes.
+- **Right glyph for every file type.** The gallery card icon and
+  the preview hero both pull from a catalog of ~50 extensions —
+  video gets a film icon, audio gets the music icon, calendar
+  files get a calendar, contact cards get a person, spreadsheets
+  get a grid. Unknown types still fall back to the generic
+  document, but the common formats look right out of the box.
 
 ### Why
 
@@ -219,6 +315,18 @@ C4.2 is small but high-polish: the difference between "AI summary
 says 'Me'" and "AI summary uses your real name" is one consent-
 checked rename behind the scenes. Felt right to land.
 
+Batch 1 of the "support every file type" effort is the other
+substantial piece. neuthek already accepted everything; what was
+missing was the experience of *opening* the long tail. Now a
+video plays in our own themed player instead of the browser's
+generic controls, a CSV renders as a readable table instead of a
+wall of commas, a calendar export shows up as events instead of a
+text file. Same surface that already handled images / PDFs / code
+just got extended to the rest of the formats the typical library
+actually contains. More batches coming — office documents (`.docx`,
+`.xlsx`, `.pptx`), archive previews, passwords vault, IoT
+time-series — but the bones are now in place.
+
 ### What this means for you
 
 - **Try the new filter dropdown.** Open the gallery, click Filters
@@ -237,6 +345,35 @@ checked rename behind the scenes. Felt right to land.
   checkout. One command, fresh secrets, docker compose up or the
   install checklist. Migration `0033` adds `images.captured_at`;
   `alembic upgrade head` picks it up.
+- **Open a video.** No more generic browser controls — themed
+  player with everything you'd expect plus a few keyboard shortcuts
+  (J/L for ±10 s, 0–9 to seek to %, F for fullscreen). First time
+  you open one we'll ask about audio-autoplay; say yes and every
+  subsequent file plays with sound the moment it opens.
+- **Open a `.csv` / `.ics` / `.vcf`.** They render as a readable
+  table / event list / contact card respectively, with the
+  comments panel available alongside (same way images + PDFs work).
+  No download-and-open round trip.
+- **Upload an MP4 / MOV / WebM / MKV / MP3 / WAV / FLAC / OGG.**
+  They go through now. Before this week the validator quietly
+  refused them with "unsupported file type" — wasn't a UI bug,
+  the magic-byte sniffer didn't have a branch for video / audio
+  containers at all.
+- **Upload a `.docx` / `.xlsx` / `.pptx`.** They go through too —
+  the Office MIME strings are 66-74 characters long and were
+  blowing past a 64-char database column on every insert. Migration
+  `0035` (`alembic upgrade head` picks it up) widens those columns
+  so the row actually lands.
+- **Comments slide out of the way during playback.** When you
+  start a video, the comment panel folds into a small floating
+  bubble on the left edge and the background goes pure black so
+  the only thing you're looking at is the clip. Pause and the
+  lightbox returns to normal; the bubble stays there so you can
+  expand it back when you want to write something while watching.
+- **Collapse the comment panel any time.** Click the ←-arrow in
+  the comments header to shrink the panel into a bubble; click
+  the bubble to bring it back. Useful when the file is
+  landscape-heavy and you want maximum content width.
 
 ---
 

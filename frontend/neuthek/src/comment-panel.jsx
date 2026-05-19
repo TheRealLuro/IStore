@@ -47,7 +47,22 @@ function authorInitial(c) {
   return label === "—" ? "·" : label.charAt(0).toUpperCase();
 }
 
-export function CommentPanel({ fileId, currentUserId, ownerUserId, open }) {
+// Props:
+//   open        — render at all? (controlled by parent: any full-display
+//                 surface being open)
+//   expanded    — render full 360px panel (true) or collapsed bubble (false)?
+//                 The parent owns this so e.g. starting video playback can
+//                 force the panel to collapse without losing thread state.
+//   onToggleExpanded(next) — fired when the user clicks the bubble (open)
+//                 or the collapse button (close).
+export function CommentPanel({
+  fileId,
+  currentUserId,
+  ownerUserId,
+  open,
+  expanded = true,
+  onToggleExpanded,
+}) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
   const [replyTo, setReplyTo] = useState(null); // {id, authorLabel}
@@ -65,6 +80,10 @@ export function CommentPanel({ fileId, currentUserId, ownerUserId, open }) {
     setEditDraft("");
   }, [fileId]);
 
+  // Fire the query whenever the surface is open at all (bubble OR
+  // expanded), so the bubble's count badge stays accurate without
+  // a separate fetch. Collapsing the panel to a bubble doesn't
+  // re-fetch; the cache is keyed on fileId.
   const { data: comments = [], isLoading } = useQuery({
     queryKey: ["comments", fileId],
     queryFn: () => listComments(fileId),
@@ -169,6 +188,30 @@ export function CommentPanel({ fileId, currentUserId, ownerUserId, open }) {
 
   if (!open) return null;
 
+  // Collapsed state: a small floating bubble pinned to the left
+  // edge. Click expands the panel. Count badge surfaces unread-ish
+  // signal (currently total comments — once we add read-state we'll
+  // wire that here instead).
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        className="comment-bubble"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleExpanded && onToggleExpanded(true);
+        }}
+        aria-label={`Open comments (${comments.length})`}
+        title={`Comments (${comments.length})`}
+      >
+        <Icon name="message" size={18} />
+        {comments.length > 0 && (
+          <span className="comment-bubble__badge">{comments.length}</span>
+        )}
+      </button>
+    );
+  }
+
   return (
     <aside
       className="comment-panel"
@@ -179,6 +222,17 @@ export function CommentPanel({ fileId, currentUserId, ownerUserId, open }) {
         <Icon name="message" size={14} />
         <span className="comment-panel__title">Comments</span>
         <span className="comment-panel__count">{comments.length}</span>
+        {/* Collapse to bubble. The thread state stays in TanStack
+            Query cache so reopening is instant — no refetch. */}
+        <button
+          type="button"
+          className="btn-icon comment-panel__collapse"
+          onClick={() => onToggleExpanded && onToggleExpanded(false)}
+          aria-label="Collapse comments"
+          title="Collapse to bubble"
+        >
+          <Icon name="chevronLeft" size={13} />
+        </button>
       </header>
 
       <div className="comment-panel__list">

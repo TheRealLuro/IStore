@@ -84,6 +84,21 @@ export const Icon = ({ name, size = 16, strokeWidth = 1.6, ...props }) => {
     // `code` is the angle-brackets glyph used on the gallery card +
     // preview hero whenever the file is a source-code text type.
     code: <><polyline points="8 6 2 12 8 18"/><polyline points="16 6 22 12 16 18"/></>,
+    // Audio / video player glyphs.
+    volume: <><polygon points="3 10 7 10 12 5 12 19 7 14 3 14 3 10"/><path d="M16 8a5 5 0 0 1 0 8"/><path d="M19 5a9 9 0 0 1 0 14"/></>,
+    volume_low: <><polygon points="3 10 7 10 12 5 12 19 7 14 3 14 3 10"/><path d="M16 8a5 5 0 0 1 0 8"/></>,
+    volume_off: <><polygon points="3 10 7 10 12 5 12 19 7 14 3 14 3 10"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></>,
+    rewind10: <><path d="M4 12a8 8 0 1 0 3-6.2L4 8"/><path d="M4 4v4h4"/><text x="12" y="15" fontSize="6" textAnchor="middle" stroke="none" fill="currentColor" fontFamily="ui-monospace,Menlo,monospace">10</text></>,
+    forward10: <><path d="M20 12a8 8 0 1 1-3-6.2L20 8"/><path d="M20 4v4h-4"/><text x="12" y="15" fontSize="6" textAnchor="middle" stroke="none" fill="currentColor" fontFamily="ui-monospace,Menlo,monospace">10</text></>,
+    music: <><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></>,
+    // Other file-type glyphs used by the file-type catalog + viewers.
+    calendar: <><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="16" y1="3" x2="16" y2="7"/></>,
+    spreadsheet: <><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></>,
+    archive: <><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="10" y1="13" x2="14" y2="13"/></>,
+    slides: <><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M12 17v4"/><path d="M8 21h8"/></>,
+    audio: <><path d="M3 12a9 9 0 0 1 18 0v6a2 2 0 0 1-2 2h-2v-6h4"/><path d="M3 18v-6h4v6H5a2 2 0 0 1-2-2z"/></>,
+    // Speech-bubble used by the comments panel + collapsed bubble.
+    message: <><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"

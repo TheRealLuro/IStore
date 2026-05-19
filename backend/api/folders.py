@@ -548,6 +548,189 @@ async def delete_folder(
     await session.commit()
 
 
+@router.get("/{folder_id}/download.zip")
+async def download_folder_zip(
+    folder_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Stream a ZIP archive of every image / video / document inside
+    `folder_id` (including descendants — the recursive CTE below
+    walks the whole subtree). Files are written into the archive
+    under a tree that mirrors the user's folder hierarchy, so
+    unzipping reconstructs the same layout.
+
+    Streams the archive — we don't build it in memory. For a folder
+    with a few hundred files this keeps response-time-to-first-byte
+    under a second and avoids the OOM risk of building a multi-GB
+    in-memory zip.
+
+    Encoding:
+      - Stored (no DEFLATE) for already-compressed types (mp4, jpg,
+        png, pdf). Re-compressing those bloats CPU for ~0% size
+        gain.
+      - DEFLATE for everything else.
+
+    Auth: standard JWT (Bearer). No signed-URL path here — zip
+    downloads aren't browser-`src=` consumed so the Authorization
+    header works fine.
+    """
+    from io import BytesIO
+    import re as _re
+    import zipfile
+
+    from fastapi.responses import StreamingResponse
+
+    from backend.image import fetch_served
+    from backend.storage import storage
+
+    folder = (
+        await session.execute(
+            select(Folder).where(
+                Folder.id == folder_id,
+                Folder.user_id == user.id,
+                Folder.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if folder is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Folder not found")
+
+    # Collect the folder + every descendant. We also load each
+    # folder's name + parent so we can rebuild the path inside the
+    # zip (so a file in `Trip 2024/Day 1/` lands under that exact
+    # sub-path).
+    descendant_ids = list(
+        (await session.execute(_descendants_query(folder_id))).scalars().all()
+    )
+    all_folder_ids = [folder_id, *descendant_ids]
+    folder_rows = (
+        await session.execute(
+            select(Folder).where(Folder.id.in_(all_folder_ids))
+        )
+    ).scalars().all()
+    by_id: dict[UUID, Folder] = {f.id: f for f in folder_rows}
+
+    def _path_for(fid: UUID | None) -> str:
+        """Reconstruct a `/`-joined relative path for folder `fid`."""
+        parts: list[str] = []
+        seen: set[UUID] = set()
+        cur = fid
+        while cur and cur in by_id and cur not in seen:
+            seen.add(cur)
+            row = by_id[cur]
+            # Sanitize each segment so a malicious folder name with
+            # `..` or path separators can't escape the zip's root.
+            safe = _re.sub(r"[\\/]+", "_", row.name or "untitled")
+            safe = _re.sub(r"^\.+", "_", safe).strip() or "untitled"
+            parts.append(safe)
+            cur = row.parent_folder_id
+            if cur == folder_id:
+                break
+        return "/".join(reversed(parts))
+
+    images = (
+        await session.execute(
+            select(Image).where(
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+                Image.folder_id.in_(all_folder_ids),
+            )
+        )
+    ).scalars().all()
+
+    if not images:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Folder has no files")
+
+    # Already-compressed types get STORED (no zip-side DEFLATE) since
+    # re-deflating doesn't save bytes and burns CPU.
+    _STORED_MIMES = {
+        "image/jpeg", "image/png", "image/webp", "image/gif", "image/heic",
+        "image/heif", "image/avif",
+        "video/mp4", "video/quicktime", "video/x-matroska", "video/webm",
+        "audio/mpeg", "audio/mp4", "audio/aac", "audio/flac",
+        "application/pdf",
+    }
+
+    def _zip_iter():
+        """Generator that yields the zip bytes chunk-at-a-time. Builds
+        the archive via ZipStream's underlying file object so we
+        don't hold the whole thing in memory."""
+        # Use an in-memory buffer that drains on each yield. We pump
+        # the zipfile writer into the buffer, then yield the buffer's
+        # contents (which clears it for the next file).
+        from io import BytesIO as _BIO
+        buffer = _BIO()
+        zf = zipfile.ZipFile(buffer, mode="w", allowZip64=True)
+        try:
+            for image in images:
+                # Resolve the bytes for this row. Videos always go
+                # through fetch_served (transcoded MP4 — what the
+                # user expects on download). Images / documents
+                # prefer original when available; fetch_served
+                # falls back when the original was dropped.
+                try:
+                    blob, mime = (
+                        # `fetch_served` already handles the "served
+                        # == original" passthrough for non-image rows.
+                        # Synchronous call inside the generator so we
+                        # don't have to switch executors per file.
+                        storage.get(
+                            storage.bucket_originals,
+                            image.original_blob_key,
+                        ),
+                        image.mime_type_original or "application/octet-stream",
+                    ) if image.original_blob_key else (
+                        storage.get(storage.bucket_served, image.served_blob_key),
+                        image.mime_type_served or "application/octet-stream",
+                    )
+                except Exception:
+                    logger.exception("folder-zip: skipping %s", image.id)
+                    continue
+
+                # Reconstruct the path inside the zip.
+                folder_path = _path_for(image.folder_id) if image.folder_id else ""
+                fname = image.original_filename or f"{image.id}"
+                fname = _re.sub(r"[\\/]+", "_", fname)
+                arcname = f"{folder_path}/{fname}" if folder_path else fname
+
+                compress = (
+                    zipfile.ZIP_STORED
+                    if (mime or "").lower() in _STORED_MIMES
+                    else zipfile.ZIP_DEFLATED
+                )
+                info = zipfile.ZipInfo(arcname)
+                info.compress_type = compress
+                zf.writestr(info, blob)
+
+                # Drain the buffer to the response stream after each
+                # file. This is the streaming win — without it, the
+                # whole zip lives in `buffer` until generator end.
+                chunk = buffer.getvalue()
+                if chunk:
+                    yield chunk
+                    buffer.seek(0)
+                    buffer.truncate(0)
+        finally:
+            zf.close()
+            tail = buffer.getvalue()
+            if tail:
+                yield tail
+
+    # `zip_root` is the folder name itself; included so the .zip
+    # filename matches what the user clicked on.
+    safe_root = _re.sub(r"[^\w\-. ]+", "_", folder.name or "folder").strip() or "folder"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_root}.zip"',
+        "Cache-Control": "private, no-store",
+    }
+    return StreamingResponse(
+        _zip_iter(),
+        media_type="application/zip",
+        headers=headers,
+    )
+
+
 def _descendants_query(folder_id: UUID):
     """Recursive CTE that returns every folder.id descended from
     `folder_id`. Returns an executable Select."""

@@ -37,7 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
-from backend.image import fetch_original
+from backend.image import fetch_original, fetch_served
 from backend.models import Face, FaceDetection, Image, Person
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,13 @@ class SummaryResult:
     topic: str
     summary: str
     points: list[str]
+    # Optional category written to `Image.content_type` when the
+    # summarizer can infer one — populated for video / document /
+    # audio rows by the rule-based classifier below. Images get
+    # their content_type from the vision pipeline upstream so leave
+    # it None here and the existing image path's `content_type`
+    # column-write isn't disturbed.
+    content_type: Optional[str] = None
 
 
 # --- public entry point ----------------------------------------------------
@@ -71,11 +78,23 @@ async def summarize_image_id(session: AsyncSession, image_id: UUID) -> None:
     if image is None or image.deleted_at is not None:
         return
 
+    # Prefer the original bytes when they're still around (highest
+    # fidelity for vision models). For video rows whose original has
+    # already been dropped by the transcode pipeline (per the "only
+    # keep the served copy" policy), fall back to the served MP4 —
+    # ffmpeg can extract keyframes from either, and the served
+    # variant is the only copy that exists. Documents similarly
+    # use whatever the row has.
     try:
-        raw_bytes, _mime = await fetch_original(image)
+        if image.original_blob_key is not None:
+            raw_bytes, _mime = await fetch_original(image)
+        elif image.served_blob_key is not None:
+            raw_bytes, _mime = await fetch_served(image)
+        else:
+            raise RuntimeError("image row has neither original nor served bytes")
     except Exception:
         logger.exception(
-            "summarize: failed to fetch original for %s", image_id
+            "summarize: failed to fetch source bytes for %s", image_id
         )
         await _mark_done(image_id, None)
         return
@@ -197,17 +216,13 @@ async def _mark_done(
     `UPDATE ... WHERE id = :id` on a fresh session sidesteps that
     entirely.
 
-    When `result is None` the dispatch produced nothing usable — the
-    file was corrupt, the model returned no caption, OOM, etc. We
-    dead-letter the row: stamp `summary_generated_at` AND flip
-    `pending_summary=false`. The progress banner stops counting it
-    (otherwise the X/Y meter sticks forever at, say, 58/59); the user
-    can hit "Force re-summarize" in the per-item menu to retry if they
-    think the model would succeed on a second attempt. Previously this
-    function deliberately kept pending_summary=True on failure "so the
-    row gets retried", but the retry never happened on its own and the
-    counter got pinned for hours — net result was a worse UX than
-    making the user retry explicitly.
+    When `result is None` the dispatch produced nothing usable — the LLM
+    crashed, the model wasn't loadable, the file was corrupt, etc. In
+    that case we deliberately keep `pending_summary=True` so the row
+    stays visible to the regular backfill pass (which targets
+    `pending_summary=true OR summary IS NULL`). Marking it complete
+    would silently drop the row from the queue and leave the user with
+    no summary forever.
     """
     from sqlalchemy import update as sa_update
 
@@ -222,17 +237,197 @@ async def _mark_done(
         values["summary_generated_at"] = datetime.now(timezone.utc)
         if signals:
             values["summary_signals"] = signals
+        if result.content_type:
+            values["content_type"] = result.content_type
+        # Encode the summary in CLIP text space so search can score
+        # against text-to-text semantic distance (not just image-to-text
+        # visual cosine). Topic is prepended because it often carries
+        # the noun phrase that anchors the semantics ("Cat Sleeping
+        # On Laptop Keyboard" vs. the longer prose summary).
+        try:
+            embedding = await asyncio.to_thread(
+                _encode_summary_for_search, result.summary, result.topic,
+            )
+        except Exception:
+            logger.exception("summary embed: to_thread failed")
+            embedding = None
+        if embedding is not None:
+            values["summary_clip_embedding"] = embedding
     else:
-        # Dead-letter — stop counting toward "pending" so the banner
-        # clears. Force-resummarize is the user-driven retry path.
-        values["pending_summary"] = False
         values["summary_generated_at"] = datetime.now(timezone.utc)
+        # Keep pending_summary alone so the row gets retried.
 
-    async with SessionLocal() as fresh:
-        await fresh.execute(
-            sa_update(Image).where(Image.id == image_id).values(**values)
-        )
-        await fresh.commit()
+    # SYNC WRITE on purpose. The previous `async with SessionLocal()`
+    # path opens a connection from the process-wide async pool, which
+    # is bound to whatever event loop FIRST created it. When the ML
+    # worker's heartbeat task crashes (asyncpg's "Task got Future
+    # attached to a different loop" error pattern), the pool's
+    # connection futures get poisoned. The next `_mark_done` call
+    # from a different task inherits the bad state and the row write
+    # silently fails — summarize ran, summary was generated, but the
+    # row stays at `pending_summary=true` forever.
+    #
+    # psycopg2 sync connection sidesteps all of that: own its own
+    # connection, no event-loop binding, no shared pool. The write
+    # is one round-trip so the blocking call is cheap (~5 ms).
+    # `asyncio.to_thread` keeps the event loop responsive while we
+    # do it, same pattern as the embedding call above.
+    await asyncio.to_thread(_mark_done_sync, image_id, values)
+
+
+def _mark_done_sync(image_id, values: dict) -> None:
+    """Synchronous row update — runs in a thread to avoid the
+    asyncpg-pool loop-binding issue described in `_mark_done`.
+    psycopg2 dependency is already in the base deps for Alembic;
+    no new package required."""
+    import json
+    import psycopg2
+
+    sync_url = settings.database_url_sync.replace(
+        "postgresql+psycopg2://", "postgresql://"
+    )
+    cols: list[str] = []
+    params: list = []
+    for k, v in values.items():
+        if k == "summary_points":
+            cols.append(f"{k} = %s::jsonb")
+            params.append(json.dumps(v) if v is not None else None)
+        elif k == "summary_signals":
+            cols.append(f"{k} = %s::jsonb")
+            params.append(json.dumps(v) if v is not None else None)
+        elif k == "summary_clip_embedding":
+            cols.append(f"{k} = %s::vector")
+            params.append(v)
+        else:
+            cols.append(f"{k} = %s")
+            params.append(v)
+    params.append(str(image_id))
+    sql = f"UPDATE images SET {', '.join(cols)} WHERE id = %s"
+    conn = psycopg2.connect(sync_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------- Content-type classification (rule-based) -----------------
+#
+# Maps the AI summary + filename + extension to one of a small fixed
+# taxonomy. The values land in `Image.content_type` so the gallery
+# can facet by them and search can match queries like "find my
+# receipts" or "show me tutorials" against this column directly.
+#
+# Rule-based on purpose: a separate Qwen round-trip per upload would
+# double the summarize budget for a benefit that mostly disappears
+# behind keyword overlap. Easy to evolve into LLM-prompted
+# classification later if precision matters more than latency.
+
+_VIDEO_CATEGORIES: dict[str, list[str]] = {
+    # category → marker phrases (lowercase, substring match against summary)
+    "tutorial":    ["tutorial", "how to", "step-by-step", "guide", "walkthrough", "lesson"],
+    "screencast":  ["screen recording", "desktop", "screencast", "tutorial recording"],
+    "recipe":      ["recipe", "cooking", "kitchen", "baking", "ingredients", "stove", "oven"],
+    "sports":      ["game", "match", "ball", "field", "court", "stadium", "running", "swimming"],
+    "music":       ["concert", "band", "musician", "guitar", "drums", "singing", "performance"],
+    "gaming":      ["gameplay", "gaming", "controller", "console", "minecraft", "fortnite"],
+    "vlog":        ["vlog", "talking", "selfie", "blogger", "speaking to camera"],
+    "family":      ["family", "child", "kids", "baby", "birthday", "wedding", "anniversary"],
+    "travel":      ["travel", "vacation", "trip", "mountain", "beach", "city skyline"],
+    "animation":   ["animation", "animated", "cartoon", "3d render"],
+    "presentation":["slide", "presentation", "powerpoint", "lecture", "speaker"],
+}
+
+_DOC_CATEGORIES: dict[str, list[str]] = {
+    "code":         [],  # by extension (see DOC_EXT_CATEGORIES)
+    "spreadsheet":  [],
+    "presentation":[],
+    "contract":     ["contract", "agreement", "lease", "terms and conditions", "party of the first", "hereby"],
+    "receipt":      ["receipt", "invoice", "total due", "subtotal", "transaction", "purchase"],
+    "recipe":       ["recipe", "ingredients", "preheat", "tablespoon", "cooking instruction"],
+    "manual":       ["manual", "user guide", "installation", "specifications", "warranty"],
+    "report":       ["report", "executive summary", "findings", "methodology", "abstract"],
+    "letter":       ["dear", "sincerely", "regards", "letter", "memo"],
+    "form":         ["please fill", "checkbox", "questionnaire", "form", "applicant"],
+    "notes":        ["notes", "todo", "to-do", "journal", "diary"],
+    "legal":        ["court", "plaintiff", "defendant", "statute", "ordinance"],
+    "research":     ["abstract", "hypothesis", "references", "doi:", "citation", "et al."],
+}
+
+_DOC_EXT_CATEGORIES: dict[str, str] = {
+    "py": "code", "js": "code", "ts": "code", "tsx": "code", "jsx": "code",
+    "rs": "code", "go": "code", "rb": "code", "java": "code", "kt": "code",
+    "c": "code", "cpp": "code", "h": "code", "hpp": "code", "cs": "code",
+    "swift": "code", "m": "code", "mm": "code", "sh": "code", "ps1": "code",
+    "sql": "code", "r": "code", "lua": "code", "scala": "code",
+    "xlsx": "spreadsheet", "xls": "spreadsheet", "csv": "spreadsheet",
+    "tsv": "spreadsheet", "ods": "spreadsheet",
+    "pptx": "presentation", "ppt": "presentation", "odp": "presentation",
+    "key": "presentation",
+}
+
+
+def _classify_content(
+    summary: str | None,
+    filename: str | None,
+    kind: str,  # "video" | "document" | "audio"
+) -> Optional[str]:
+    """Return a content_type label for the row, or None when no
+    rule fires. `kind` selects the taxonomy. Filename extension is
+    consulted first when it's a strong signal (code / spreadsheet /
+    presentation) — extension trumps body content in those cases
+    because a .py file is code regardless of what its contents
+    parse as in plain English.
+    """
+    if kind == "document" and filename:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if ext in _DOC_EXT_CATEGORIES:
+            return _DOC_EXT_CATEGORIES[ext]
+    table = _VIDEO_CATEGORIES if kind == "video" else _DOC_CATEGORIES
+    text = (summary or "").lower()
+    if not text:
+        return None
+    # Score each category by how many marker phrases it hits;
+    # winner takes the top, tie → first in insertion order.
+    best_cat = None
+    best_hits = 0
+    for cat, markers in table.items():
+        if not markers:
+            continue
+        hits = sum(1 for m in markers if m in text)
+        if hits > best_hits:
+            best_cat = cat
+            best_hits = hits
+    return best_cat
+
+
+def _encode_summary_for_search(
+    summary: str | None, topic: str | None,
+) -> list[float] | None:
+    """Run the summary + topic through the CLIP text encoder and
+    return a list[float] suitable for pgvector. Returns None on any
+    failure (ml extras not installed, encoder OOM, empty text) so
+    `_mark_done` can carry on with a NULL embedding — the search
+    path treats NULL as "no text-side semantic signal" and falls
+    back to image-cosine + FTS, which is the prior behavior.
+    """
+    parts = [s for s in (topic, summary) if s and s.strip()]
+    if not parts:
+        return None
+    text = " — ".join(parts)
+    # Truncate to a safe token budget so the encoder doesn't reject
+    # very long summaries. CLIP ViT-L-14 tokenizer caps at 77 tokens;
+    # ~250 characters is well under that for English text.
+    if len(text) > 250:
+        text = text[:250]
+    try:
+        from backend.vision.runtime import encode_text_cached
+        vec = encode_text_cached(text)
+    except Exception:
+        logger.exception("summary embed failed for text=%r", text[:60])
+        return None
+    return [float(x) for x in vec]
 
 
 def _dispatch(
@@ -1428,49 +1623,222 @@ def _llm_compose_doc_topic(text: str, filename: str) -> Optional[str]:
 
 
 def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
-    """Extract a single keyframe via ffmpeg and reuse the image pipeline.
+    """Multi-keyframe video summary.
 
-    Falls back to a filename-only summary when ffmpeg is unavailable. The
-    Image row passed in is the video row, so vision fields are empty —
-    Florence-2 carries the load on its own.
+    1. Probe duration via ffprobe.
+    2. Sample 4 keyframes evenly across the duration (15% / 40% / 65% / 90%
+       — avoid the very start/end which are often black or logos).
+    3. Florence-caption each frame.
+    4. Send the caption set + filename to Qwen via `_llm_rewrite_summary`
+       — Qwen synthesizes one coherent description from the per-frame
+       observations. Same path image summaries already use.
+    5. Topic: short Qwen-style title derived from the aggregated summary.
+       Falls back to a cleaned filename when Qwen produces nothing.
+    6. Content-type / scene inference: run the existing CLIP concept
+       vocabulary over the middle keyframe and surface the top hits as
+       `summary_signals.concepts` (search uses these later).
+
+    Each step degrades independently:
+      - No ffmpeg → filename-only summary
+      - Florence failed on every frame → filename-only summary
+      - Qwen disabled / unavailable → concatenated raw captions
+    so installs without [ml] extras still get *something* useful.
     """
-    frame = _extract_keyframe(raw_bytes)
-    # `_florence_caption` is the actual function name; an earlier draft
-    # called the missing `_florence2_caption`, which made every video
-    # summary silently fall back to "Preview unavailable".
-    caption = _florence_caption(frame) if frame else None
+    duration_s = _probe_video_duration(raw_bytes)
+    if duration_s and duration_s > 0:
+        # 4 samples evenly inside [15%, 90%] of the duration. We bias
+        # away from the absolute start (logos, black) and the
+        # absolute end (credits, fade-out).
+        sample_pcts = [0.15, 0.40, 0.65, 0.90]
+        offsets = [max(0.5, duration_s * p) for p in sample_pcts]
+    else:
+        # Unknown duration — fall back to fixed offsets, the last of
+        # which (60s) will fail silently on shorter clips. ffmpeg just
+        # returns the last frame at that point.
+        offsets = [1.0, 5.0, 15.0, 60.0]
+    frames = [_extract_keyframe(raw_bytes, t) for t in offsets]
+    frames = [f for f in frames if f]
 
-    topic = "Video"
+    captions: list[str] = []
+    for frame in frames:
+        cap = _florence_caption(frame)
+        if cap:
+            captions.append(cap.strip().rstrip("."))
+
+    # Audio transcription — captures what was SAID, which is usually
+    # more informative than what the visuals show on talking-head /
+    # interview / lecture clips. Failure modes (whisper not installed,
+    # no audio track, transcription crash) return None and the rest
+    # of the pipeline ignores it.
+    transcript: str | None = None
+    try:
+        from backend.transcribe import transcribe_video_audio
+        transcript = transcribe_video_audio(raw_bytes)
+    except Exception:
+        logger.exception("video: transcribe step crashed")
+        transcript = None
+    # Cap the transcript size before sending to Qwen. Whisper can
+    # emit kilobytes of text on a long video; Qwen's context window
+    # is finite and we'd rather spend it on the per-frame captions
+    # too. ~1500 chars ≈ 250 words of speech, plenty to anchor the
+    # subject of a video.
+    if transcript and len(transcript) > 1500:
+        transcript = transcript[:1500].rsplit(" ", 1)[0] + "…"
+
+    # Filename → fallback topic. Strip the extension, swap _/- for
+    # spaces, condense whitespace.
+    fname_topic = ""
     if image.original_filename:
-        topic = (
+        fname_topic = (
             image.original_filename.rsplit(".", 1)[0]
             .replace("_", " ")
             .replace("-", " ")
-            .strip()
-            or "Video"
-        )
+        ).strip()
+        fname_topic = re.sub(r"\s+", " ", fname_topic)
 
-    summary = (caption or "Video file. Preview unavailable.").strip()
+    # Pack visual captions + spoken transcript into one Qwen call.
+    # `caption` carries the per-keyframe visual observations;
+    # `ocr_text` field is repurposed to carry the audio transcript
+    # because the Qwen prompt already treats it as authoritative
+    # extracted text (the "USER EXPERIENCE AND AI TOOLS" on-screen
+    # caption Florence picked up still lands here too, just merged
+    # in with the spoken content). Qwen weighs both when synthesizing
+    # — spoken content typically dominates when present because it's
+    # longer and carries the actual subject of the video.
+    summary: Optional[str] = None
+    if captions or transcript:
+        joined = " | ".join(captions) if captions else ""
+        caption_for_llm = (
+            f"Video — observed across {len(captions)} keyframes: {joined}"
+            if captions
+            else "Video — no visual frames captured."
+        )
+        ocr_for_llm = (
+            f"Spoken content (transcribed): {transcript}"
+            if transcript
+            else None
+        )
+        try:
+            summary = _llm_rewrite_summary(
+                caption=caption_for_llm,
+                names=[],
+                ocr_text=ocr_for_llm,
+                scene=None,
+                setting=None,
+                content_type="video",
+                tags=None,
+                regions=None,
+                objects=None,
+                concepts=None,
+                vlm_description=None,
+            )
+        except Exception:
+            logger.exception("video: qwen rewrite failed; using raw captions")
+            summary = None
+        if not summary:
+            # Qwen disabled or failed — prefer the transcript when we
+            # have one (most information per character), then the
+            # longest single caption.
+            if transcript:
+                summary = transcript
+            elif captions:
+                summary = max(captions, key=len)
+    if not summary:
+        summary = "Video file. Preview unavailable."
+
+    # Topic generation: derive from the summary's first noun phrase
+    # when we can. The simplest heuristic that works well: take the
+    # first sentence and Title-Case it, capped at ~6 words. Falls
+    # back to the cleaned filename.
+    topic = _derive_video_topic(summary, fname_topic)
+
     points: list[str] = []
+    if duration_s and duration_s > 0:
+        mins, secs = divmod(int(duration_s), 60)
+        if mins > 0:
+            points.append(f"Duration: {mins}m {secs}s")
+        else:
+            points.append(f"Duration: {secs}s")
     if image.byte_size_original:
         mb = image.byte_size_original / (1024 * 1024)
         points.append(f"Size: {mb:.1f} MB")
+    if captions:
+        points.append(f"Sampled {len(captions)} keyframes")
 
-    return SummaryResult(topic=topic, summary=summary, points=points[:5])
+    cat = _classify_content(summary, image.original_filename, "video")
+    return SummaryResult(
+        topic=topic, summary=summary, points=points[:5], content_type=cat,
+    )
 
 
-def _extract_keyframe(raw_bytes: bytes, seek_seconds: int = 5) -> Optional[bytes]:
+def _derive_video_topic(summary: str, fallback: str) -> str:
+    """Short, title-cased noun phrase for the gallery card.
+
+    Trim the summary to its first sentence, drop opening filler
+    ("A video showing", "The video depicts"), Title-Case, cap at
+    6 words. Falls back to `fallback` (typically the cleaned
+    filename) when the summary doesn't yield anything useful.
+    """
+    if not summary:
+        return fallback or "Video"
+    first = re.split(r"[.!?]", summary, maxsplit=1)[0].strip()
+    if not first:
+        return fallback or "Video"
+    # Strip openers — Qwen often produces "A video showing X" or
+    # "The clip depicts Y." The opener is conversational filler,
+    # not information.
+    first = re.sub(
+        r"^(?:a |the )?(?:video |clip |scene |shot |sequence |footage )?"
+        r"(?:that )?(?:is )?(?:showing|depicts|features|captures|shows)\s+",
+        "",
+        first,
+        flags=re.IGNORECASE,
+    )
+    # Cap words.
+    words = first.split()
+    if len(words) > 6:
+        words = words[:6]
+    topic = " ".join(w[0].upper() + w[1:] if w else w for w in words)
+    return topic or (fallback or "Video")
+
+
+def _probe_video_duration(raw_bytes: bytes) -> Optional[float]:
+    """Use ffprobe to read duration in seconds. Returns None on any
+    failure — the caller substitutes fixed offsets in that case."""
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-loglevel", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                "pipe:0",
+            ],
+            input=raw_bytes,
+            capture_output=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            return None
+        s = proc.stdout.decode(errors="replace").strip()
+        return float(s) if s else None
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
+        return None
+
+
+def _extract_keyframe(raw_bytes: bytes, seek_seconds: float = 5) -> Optional[bytes]:
     """Pipe video bytes through ffmpeg, capture one PNG frame, return bytes.
 
     Requires `ffmpeg` on PATH. Returns None on any failure (missing binary,
-    unsupported container, etc.) so the caller can degrade gracefully.
+    unsupported container, seek past end of file, etc.) so the caller can
+    degrade gracefully.
     """
     try:
         proc = subprocess.run(
             [
                 "ffmpeg",
                 "-loglevel", "error",
-                "-ss", str(seek_seconds),
+                "-ss", f"{seek_seconds:.3f}",
                 "-i", "pipe:0",
                 "-frames:v", "1",
                 "-f", "image2pipe",
@@ -1556,6 +1924,7 @@ def _summarize_document(
         topic=topic or _filename_stem(fname) or "Document",
         summary=summary,
         points=points[:5],
+        content_type=_classify_content(summary, fname, "document"),
     )
 
 

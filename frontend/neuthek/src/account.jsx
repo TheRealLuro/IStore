@@ -16,6 +16,7 @@ import {
   StorageBreakdownPanel,
   SecurityPanel,
   NotificationsPanel,
+  PlaybackPanel,
   PlanCard,
 } from "./account-panels.jsx";
 import { CloudSyncPanel } from "./cloud-sync-panel.jsx";
@@ -431,6 +432,10 @@ const APPSET_NAV = [
   { id: "privacy",       label: "Privacy",       icon: "shield",   tone: "blue"   },
   { id: "security",      label: "Security",      icon: "lock",     tone: "red"    },
   { id: "notifications", label: "Notifications", icon: "bell",     tone: "amber"  },
+  // §C10 — playback preferences. Lives between Notifications and AI
+  // features because it's another "how the app behaves while I'm
+  // using it" surface, distinct from privacy / consent.
+  { id: "playback",      label: "Playback",      icon: "play",     tone: "sky"    },
   { id: "ai",            label: "AI features",   icon: "sparkles", tone: "purple" },
   // §C2 — Drive + GitHub sync. Lives between AI features and Your data
   // because it's where most users will go after enabling AI features
@@ -927,6 +932,8 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
             {tab === "security" && <SecurityPanel twoFA={twoFA} setTwoFA={setTwoFA} emailNotif={emailNotif} setEmailNotif={setEmailNotif} Row={Row} Chev={Chev}/>}
 
             {tab === "notifications" && <NotificationsPanel/>}
+
+            {tab === "playback" && <PlaybackPanel/>}
 
             {tab === "ai" && (
               <>

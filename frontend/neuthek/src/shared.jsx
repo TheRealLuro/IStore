@@ -118,6 +118,82 @@ function SharedCard({ share, selected, onClick }) {
   );
 }
 
+// Empty state for the Shared tab. Used to be a single dashed-border
+// "nothing here" card centered in a wall of blank space — accurate
+// but felt like a dead page. This version turns the blank canvas into
+// an explainer: what the tab IS, three concrete steps for getting
+// files into it, and a soft prompt back to the user's own gallery so
+// they always have somewhere to click.
+function SharedEmptyState() {
+  const steps = [
+    {
+      icon: "share",
+      title: "Someone sends you a link",
+      body:
+        "Anyone with a neuthek account can share a single file or a folder " +
+        "with you. The link works whether or not you have an account yourself.",
+    },
+    {
+      icon: "user",
+      title: "Open it while signed in",
+      body:
+        "When you click a share link while signed in to neuthek, it lands " +
+        "in this tab instead of opening its own preview page. Easier to keep " +
+        "track of everything you've been sent.",
+    },
+    {
+      icon: "lock",
+      title: "Access lasts as long as the sender chose",
+      body:
+        "Most shares stay accessible for 1 day. The sender can extend that " +
+        "or revoke access at any time — when they do, the file disappears " +
+        "from this tab automatically.",
+    },
+  ];
+  return (
+    <div className="shared-empty" data-no-marquee="true">
+      {/* Hero — quiet glyph + headline. Less alarming than the
+          previous "No shares yet" notice; reads more like an
+          intentional landing. */}
+      <div className="shared-empty__hero">
+        <div className="shared-empty__glyph" aria-hidden="true">
+          <Icon name="share" size={28} strokeWidth={1.4} />
+        </div>
+        <div className="shared-empty__heading">
+          <h3 className="shared-empty__title">No shares yet — that's expected</h3>
+          <p className="shared-empty__lead">
+            This is where anything someone shares with you will land.
+            Nothing's missing — your inbox is just empty.
+          </p>
+        </div>
+      </div>
+
+      {/* Three-step grid. The cards are static — there's nothing to
+          click here because the user can't "make a share appear."
+          The point is reassurance, not action. */}
+      <ul className="shared-empty__steps">
+        {steps.map((s) => (
+          <li key={s.title} className="shared-empty__step">
+            <span className="shared-empty__step-icon" aria-hidden="true">
+              <Icon name={s.icon} size={16} strokeWidth={1.5} />
+            </span>
+            <div className="shared-empty__step-title">{s.title}</div>
+            <div className="shared-empty__step-body">{s.body}</div>
+          </li>
+        ))}
+      </ul>
+
+      {/* Soft footer note — a single line that closes the loop:
+          if you want to share something OUT, here's where to go. */}
+      <div className="shared-empty__footer">
+        Want to share one of your own files? Open it from{" "}
+        <strong>All files</strong>, then click <strong>Share</strong> in the
+        details panel.
+      </div>
+    </div>
+  );
+}
+
 export function SharedGalleryView({ initialShareId, onClearShareParam }) {
   const { data: shares = [], isLoading } = useQuery({
     queryKey: ["incoming-shares"],
@@ -138,47 +214,17 @@ export function SharedGalleryView({ initialShareId, onClearShareParam }) {
 
   return (
     <div style={{ padding: 0 }}>
-      <div
-        style={{
-          padding: "8px 0 16px",
-          borderBottom: "1px solid var(--line)",
-          marginBottom: 16,
-        }}
-      >
-        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 600, color: "var(--ink)" }}>
-          Shared with you
-        </h2>
-        <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--ink-3)" }}>
-          Files other people sent you. They stay accessible while the
-          sender's share is active — usually 1 day for new accounts,
-          longer if the sender chose.
-        </p>
-      </div>
-
+      {/* No inner header — the app topbar already shows "Shared /
+          N items" above this view, and the empty state below has
+          its own heading. The previous "Shared with you" h2 + long
+          paragraph + bottom border was duplicating the page title
+          and crowding the content area. */}
       {isLoading ? (
         <div style={{ padding: 40, textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
           Loading shares…
         </div>
       ) : shares.length === 0 ? (
-        <div
-          style={{
-            padding: 60,
-            textAlign: "center",
-            border: "1px dashed var(--line)",
-            borderRadius: 12,
-            background: "var(--surface)",
-          }}
-        >
-          <Icon name="share" size={32} strokeWidth={1.3} />
-          <div style={{ fontSize: 14, fontWeight: 600, marginTop: 10, color: "var(--ink)" }}>
-            No shares yet
-          </div>
-          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 4 }}>
-            When someone shares a file with you, it'll show up here.
-            Open share links while signed in — they land in this tab
-            instead of opening their own window.
-          </div>
-        </div>
+        <SharedEmptyState />
       ) : (
         <div
           className="cards"

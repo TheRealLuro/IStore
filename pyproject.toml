@@ -118,6 +118,14 @@ ml = [
     "openpyxl>=3.1",
     "sumy>=0.11.0",
     "nltk>=3.9",
+    # Audio transcription for video summarize. faster-whisper is the
+    # CTranslate2 build of OpenAI Whisper — 4-5x faster than
+    # openai-whisper on the same hardware AND has a smaller memory
+    # footprint at runtime (no torch dep). Default model `base` is
+    # ~150 MB and runs ~1× realtime on a single GPU. Heavier models
+    # (small / medium / large) can be swapped via a config knob if
+    # the user's transcription accuracy needs go up.
+    "faster-whisper>=1.0.3",
 ]
 cloud = [
     # C2 — Google Drive sync. cryptography is already pulled in transitively

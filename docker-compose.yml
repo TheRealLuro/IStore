@@ -94,18 +94,6 @@ services:
       # but that key won't persist past a `down/up` cycle unless this
       # variable carries it forward.
       CLOUD_ENCRYPTION_KEY: ${CLOUD_ENCRYPTION_KEY:-}
-      # §C2 — cloud sync providers. Empty values keep the connect
-      # endpoints returning 503 with the "configure cloud sync first"
-      # hint. Filled per the SETUP.md walkthrough for the host's `.env`.
-      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
-      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
-      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
-      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
-      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
-      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/github}
-      CLOUD_SYNC_HOURLY_ENABLED: ${CLOUD_SYNC_HOURLY_ENABLED:-true}
-      CLOUD_SYNC_INTERVAL_SECONDS: ${CLOUD_SYNC_INTERVAL_SECONDS:-3600}
-      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       FRONTEND_BASE_URL: http://localhost:5173
       REQUIRE_SIGNED_DOWNLOADS: "false"
       # HF cache lives on the model_cache volume so a rebuild doesn't
@@ -184,15 +172,6 @@ services:
       # Same Fernet key as the API container — the worker reads
       # encrypted refresh tokens for cloud-sync jobs.
       CLOUD_ENCRYPTION_KEY: ${CLOUD_ENCRYPTION_KEY:-}
-      # §C2 — cloud sync providers (same as the API container; the
-      # worker needs them when run_hourly_sweep fires a sync).
-      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
-      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
-      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
-      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
-      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
-      GITHUB_OAUTH_REDIRECT_URI: ${GITHUB_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/github}
-      CLOUD_SYNC_HOURLY_ENABLED: ${CLOUD_SYNC_HOURLY_ENABLED:-false}
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
       WORKER_LOG_LEVEL: INFO
@@ -210,7 +189,16 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              # `gpu` alias covers compute+utility (Torch CUDA). `video`
+              # is needed separately so libnvidia-encode.so.1 is exposed
+              # to the container — without it, ffmpeg's h264_nvenc
+              # encoder registers but fails at first frame with
+              # "Cannot load libnvidia-encode.so.1." The transcode
+              # probe in backend/transcode.py would then fall back to
+              # libx264 (CPU), which works but is 10-30× slower on a
+              # 1080p encode. Requesting both keeps the GPU path
+              # available.
+              capabilities: [gpu, video]
     # Intel iGPU (Arc / Xe) + NPU passthrough lives in
     # docker-compose.intel.yml — opt in via:
     #   docker compose -f docker-compose.yml -f docker-compose.intel.yml up -d

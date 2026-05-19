@@ -12,7 +12,7 @@ import {
   getTwoFactorStatus, setupTwoFactor, verifyTwoFactor, disableTwoFactor,
   getNotificationPrefs, updateNotificationPrefs,
 } from "@/api/auth";
-import { backfillSummaries, backfillVision } from "@/api/files";
+import { backfillSummaries, backfillSummaryEmbeddings, backfillVision } from "@/api/files";
 import { API_BASE_URL, tokens } from "@/api/client";
 
 // Small helper for raw fetch() calls that need an Authorization header
@@ -890,7 +890,9 @@ function ModelsPage() {
 function AIUsagePage() {
   const qc = useQueryClient();
   const [busy, setBusy] = useStateSP(false);
+  const [videosBusy, setVideosBusy] = useStateSP(false);
   const [visionBusy, setVisionBusy] = useStateSP(false);
+  const [embedBusy, setEmbedBusy] = useStateSP(false);
   const reprocess = async () => {
     if (busy) return;
     if (!window.confirm("Re-run summarization on every image in your library? This uses your local Florence-2 + Qwen2.5 models and can take several minutes.")) return;
@@ -905,6 +907,53 @@ function AIUsagePage() {
       toast.error(e?.detail || "Could not start re-summarize.");
     } finally {
       setBusy(false);
+    }
+  };
+  // Video-only variant. Same `backfill-summaries` endpoint with
+  // `category=video` so it routes through the worker's transcode-
+  // aware summarizer (multi-keyframe + Qwen aggregation) without
+  // also re-running on every image. Useful after a video-summary
+  // upgrade or when the user knows their existing video rows have
+  // stale "Video file" stubs.
+  const reprocessVideos = async () => {
+    if (videosBusy) return;
+    if (!window.confirm("Re-run video summarization on every video in your library? Each video gets 4 keyframes captioned and aggregated — typically 5-30 s per video on GPU.")) return;
+    setVideosBusy(true);
+    try {
+      const r = await backfillSummaries(500, true, "video");
+      if (r.queued === 0) {
+        toast("No videos to re-summarize.");
+      } else {
+        toast.success(`Queued ${r.queued} video${r.queued === 1 ? "" : "s"} for re-summarization.`);
+      }
+      qc.invalidateQueries({ queryKey: ["files"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not start video re-summarize.");
+    } finally {
+      setVideosBusy(false);
+    }
+  };
+  // Compute the CLIP text-space embedding for every summary that has
+  // one but no `summary_clip_embedding`. New summaries get encoded
+  // inline by the worker; this is the one-shot for rows that
+  // pre-date the column. Cheap (~10 ms / row on GPU) and synchronous
+  // — the toast tells the user how many were filled.
+  const embedSummaries = async () => {
+    if (embedBusy) return;
+    setEmbedBusy(true);
+    try {
+      const r = await backfillSummaryEmbeddings(2000);
+      if (r.filled === 0 && r.eligible === 0) {
+        toast("Every summary already has an embedding.");
+      } else if (r.filled === 0) {
+        toast.error(`Found ${r.eligible} eligible rows but none could be embedded — check server logs.`);
+      } else {
+        toast.success(`Embedded ${r.filled} of ${r.eligible} summaries.`);
+      }
+    } catch (e) {
+      toast.error(e?.detail || "Could not start embedding backfill.");
+    } finally {
+      setEmbedBusy(false);
     }
   };
   const reclassify = async () => {
@@ -940,14 +989,20 @@ function AIUsagePage() {
 
       <DetSection
         title="Library maintenance"
-        desc="Re-run the summarizer or scene/content classifier over your library. Cloud-synced (Google Drive) images skip vision at upload — reclassifying populates scene labels so the gallery filter chips become useful."
+        desc="Re-run the summarizer or scene/content classifier over your library. Cloud-synced (Google Drive) images skip vision at upload — reclassifying populates scene labels so the gallery filter chips become useful. The video pass samples 4 keyframes per clip and aggregates them through the LLM rewriter — typically 5-30 s per video on GPU."
       >
         <div className="det-card" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button className="btn btn--secondary" onClick={reprocess} disabled={busy}>
             <Icon name="refresh" size={12}/> {busy ? "Queueing…" : "Reprocess summaries"}
           </button>
+          <button className="btn btn--secondary" onClick={reprocessVideos} disabled={videosBusy}>
+            <Icon name="video" size={12}/> {videosBusy ? "Queueing…" : "Re-summarize videos"}
+          </button>
           <button className="btn btn--secondary" onClick={reclassify} disabled={visionBusy}>
             <Icon name="sparkles" size={12}/> {visionBusy ? "Classifying…" : "Reclassify images (filters)"}
+          </button>
+          <button className="btn btn--secondary" onClick={embedSummaries} disabled={embedBusy}>
+            <Icon name="search" size={12}/> {embedBusy ? "Embedding…" : "Backfill search embeddings"}
           </button>
         </div>
       </DetSection>
@@ -1356,6 +1411,115 @@ export function NotificationsPanel() {
 // cards) so we don't try to fit the embedded-checkout iframe inside
 // the Account modal — the embedded form needs vertical room and its
 // own URL the user can refresh.
+// ---------- Playback preferences ----------
+//
+// Settings the video / audio players read at mount time. All three
+// keys are localStorage, not server-side preferences — they're
+// per-device choices (mobile data may want a different default
+// quality than the desktop in the same account).
+
+const PB_KEYS = {
+  videoAutoplay: "neuthek.video.autoplay_sound",
+  audioAutoplay: "neuthek.audio.autoplay_sound",
+  defaultQuality: "neuthek.video.default_quality",
+};
+const PB_QUALITIES = [
+  { value: "",       label: "Auto (highest available)" },
+  { value: "2160p",  label: "2160p (4K)" },
+  { value: "1440p",  label: "1440p" },
+  { value: "1080p",  label: "1080p (FHD)" },
+  { value: "720p",   label: "720p (HD)" },
+  { value: "480p",   label: "480p (SD — saves bandwidth)" },
+];
+
+export function PlaybackPanel() {
+  // Pull initial state straight from localStorage; useState is per-
+  // component-mount so reads stay synchronous + each toggle write
+  // is reflected in the next render.
+  const readBool = (k) => {
+    try { return localStorage.getItem(k) === "on"; } catch { return false; }
+  };
+  const readStr = (k) => {
+    try { return localStorage.getItem(k) || ""; } catch { return ""; }
+  };
+  const [videoAutoplay, setVideoAutoplay] = useStateSP(readBool(PB_KEYS.videoAutoplay));
+  const [audioAutoplay, setAudioAutoplay] = useStateSP(readBool(PB_KEYS.audioAutoplay));
+  const [defaultQuality, setDefaultQuality] = useStateSP(readStr(PB_KEYS.defaultQuality));
+
+  const flipVideo = () => {
+    const next = !videoAutoplay;
+    setVideoAutoplay(next);
+    try { localStorage.setItem(PB_KEYS.videoAutoplay, next ? "on" : "off"); } catch {}
+  };
+  const flipAudio = () => {
+    const next = !audioAutoplay;
+    setAudioAutoplay(next);
+    try { localStorage.setItem(PB_KEYS.audioAutoplay, next ? "on" : "off"); } catch {}
+  };
+  const pickQuality = (q) => {
+    setDefaultQuality(q);
+    try {
+      if (q) localStorage.setItem(PB_KEYS.defaultQuality, q);
+      else localStorage.removeItem(PB_KEYS.defaultQuality);
+    } catch {}
+  };
+
+  return (
+    <>
+      <DetSection
+        title="Autoplay with sound"
+        desc="When you open a video or audio file, neuthek can start playback immediately with sound on. Browsers block unmuted autoplay until you explicitly opt in — these toggles flip that opt-in."
+      >
+        <div className="det-card" style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0" }}>
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 500 }}>Videos</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+                Off → video opens muted and you click the volume icon to unmute.
+              </div>
+            </div>
+            <SwitchSP on={videoAutoplay} onChange={flipVideo} ariaLabel="Autoplay videos with sound"/>
+          </div>
+          <div style={{ borderTop: "1px solid var(--line-2)", margin: "8px 0" }}/>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0" }}>
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 500 }}>Audio files</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+                Same behavior for `.mp3` / `.wav` / `.flac` and other audio formats.
+              </div>
+            </div>
+            <SwitchSP on={audioAutoplay} onChange={flipAudio} ariaLabel="Autoplay audio with sound"/>
+          </div>
+        </div>
+      </DetSection>
+
+      <DetSection
+        title="Default video quality"
+        desc="Which encoded tier the player loads first. The transcoder produces every tier the source supports — picking a lower one cuts bandwidth on mobile data without changing what's stored. You can still switch quality in the player at any time."
+      >
+        <div className="det-card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {PB_QUALITIES.map((q) => (
+            <label key={q.value} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", cursor: "pointer" }}>
+              <input
+                type="radio"
+                name="default-quality"
+                checked={defaultQuality === q.value}
+                onChange={() => pickQuality(q.value)}
+                style={{ accentColor: "var(--ink)" }}
+              />
+              <span style={{ fontSize: 13 }}>{q.label}</span>
+            </label>
+          ))}
+          <DetExplain style={{ marginTop: 8 }}>
+            "Auto" picks the highest tier available for each video. Older clips (uploaded before the multi-quality transcoder) only have one tier; in that case the player serves that one regardless of this setting.
+          </DetExplain>
+        </div>
+      </DetSection>
+    </>
+  );
+}
+
+
 export function PlanCard() {
   const { data: usage } = useQuery({
     queryKey: ["storage-usage"],

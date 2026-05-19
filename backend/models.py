@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID
 from pgvector.sqlalchemy import Vector
@@ -19,7 +19,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, INET, JSONB, UUID as PgUUID
+from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, INET, JSONB, TSVECTOR, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db import Base
@@ -100,8 +100,18 @@ class Image(Base):
     height: Mapped[Optional[int]] = mapped_column(nullable=True)
     byte_size_original: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     byte_size_served: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    mime_type_original: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    mime_type_served: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # 128 is enough headroom for every IANA-registered MIME we accept,
+    # including the OOXML ones at 70-74 chars
+    # (e.g. `application/vnd.openxmlformats-officedocument.presentationml.presentation`).
+    mime_type_original: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    mime_type_served: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Per-image quality-tier map (video / audio only). Populated by the
+    # transcode worker — when the source is 1080p+ we emit 1080p,
+    # 720p, and 480p variants; lower-res sources emit fewer tiers.
+    # `served_blob_key` always points at the default (highest) tier;
+    # this dict is the lookup table for the picker. Image rows leave
+    # this NULL.
+    served_variants: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     sha256: Mapped[Optional[bytes]] = mapped_column(LargeBinary(32), nullable=True)
 
     codec: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
@@ -118,6 +128,16 @@ class Image(Base):
 
     # Phase 2 vision columns.
     clip_embedding: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(768), nullable=True
+    )
+    # CLIP text-space embedding of `summary`. Populated post-summarize
+    # by the worker hook. At search time we score against MAX of
+    # (image_emb cosine, summary_emb cosine) so queries that match
+    # the image's CAPTION but not its visual content still surface
+    # the right row (e.g. "place where I had coffee" → a row whose
+    # summary mentions "cafe table" but doesn't visually look like
+    # the canonical coffee shop). HNSW-indexed (migration 0037).
+    summary_clip_embedding: Mapped[Optional[list[float]]] = mapped_column(
         Vector(768), nullable=True
     )
     content_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -169,6 +189,18 @@ class Image(Base):
     #    "concepts": [...clip tags...], "vlm": "rich VLM paragraph"}
     # Any subset may be missing — each stage is best-effort.
     summary_signals: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # `summary_tsv` is a Postgres GENERATED ALWAYS AS (...) STORED
+    # tsvector — produced from summary + summary_topic +
+    # summary_points + original_filename at row-write time, then
+    # GIN-indexed (`ix_images_summary_tsv`). Surfacing it in the
+    # ORM lets `_text_search` reference it directly instead of
+    # building `to_tsvector(...)` on the fly per row (which
+    # forced full table scans even though the index existed).
+    # `Mapped[Optional[Any]]` because the column is read-only from
+    # Python's perspective — Postgres maintains it; we never write.
+    summary_tsv: Mapped[Optional[Any]] = mapped_column(
+        TSVECTOR, nullable=True, server_default=None,
+    )
 
     # Phase 12 — folders + project status.
     folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
@@ -220,6 +252,23 @@ class Image(Base):
     tags: Mapped[list["ImageTag"]] = relationship(
         back_populates="image", cascade="all, delete-orphan"
     )
+
+    # Derived presentation flag for the gallery card. Pure Python
+    # property — never queried directly, just surfaced via
+    # `ImageRead.has_thumbnail` (from_attributes=True). For images
+    # the row uses `served_blob_key` itself as the thumb; for video
+    # / audio it's the separately-stored JPEG poster the transcode
+    # worker writes. Image rows return True when they have ANY
+    # served bytes; video / audio rows return True only when the
+    # poster is in place.
+    @property
+    def has_thumbnail(self) -> bool:
+        if self.category in {"video", "audio"}:
+            return self.thumbnail_blob_key is not None
+        return (
+            self.served_blob_key is not None
+            and (self.mime_type_served or "").startswith("image/")
+        )
 
     __table_args__ = (
         Index("images_user_uploaded_idx", "user_id", desc("uploaded_at")),

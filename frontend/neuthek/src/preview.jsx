@@ -14,6 +14,12 @@ import { PdfPageStack } from "./pdf-stack.jsx";
 import { ShareModal } from "./share-modal.jsx";
 import { eraseImageCaches } from "./cache-eraser.js";
 import { CodePreview, isCodeMime } from "./code-preview.jsx";
+import { VideoPlayer } from "./video-player.jsx";
+import { AudioPlayer } from "./audio-player.jsx";
+import { CsvViewer } from "./csv-viewer.jsx";
+import { IcsViewer } from "./ics-viewer.jsx";
+import { VcfViewer } from "./vcf-viewer.jsx";
+import { fileTypeInfo } from "./file-types.js";
 
 function fmtBytes(n) {
   if (n == null) return "—";
@@ -177,14 +183,62 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   // Prism grammar from that mime. Falls back to plain monospace if
   // the language isn't in the loader table.
   const isCode = !!(file && isDoc && !isPdf && isCodeMime(file.mime_type_original));
+  // Batch 1 — themed full-display viewers for video, audio, CSV/TSV,
+  // ICS, VCF. The kind tag comes from the catalog in file-types.js;
+  // each kind gets its own modal state so Esc-handlers can target the
+  // right one, mirroring the pdfModal / codeModal pattern.
+  const ftKind = fileTypeInfo(file?.ext).kind;
+  const isVideoFile = !!file && ftKind === "video";
+  const isAudioFile = !!file && ftKind === "audio";
+  const isCsvFile   = !!file && ftKind === "csv";
+  const isIcsFile   = !!file && ftKind === "ics";
+  const isVcfFile   = !!file && ftKind === "vcf";
   const [pdfModal, setPdfModal] = useStateP2(false);
   const [codeModal, setCodeModal] = useStateP2(false);
-  // Close the PDF / code modals when the panel is closed externally or
-  // the user navigates to a different file.
-  useEffectP2(() => { setPdfModal(false); setCodeModal(false); }, [file?.id]);
-  // Esc closes the PDF modal before falling through to the panel-close
-  // handler. We already have an Esc listener for lightbox + preview;
-  // it doesn't know about pdfModal, so add a guard here.
+  const [videoModal, setVideoModal] = useStateP2(false);
+  const [audioModal, setAudioModal] = useStateP2(false);
+  const [csvModal, setCsvModal] = useStateP2(false);
+  const [icsModal, setIcsModal] = useStateP2(false);
+  const [vcfModal, setVcfModal] = useStateP2(false);
+  // Comments panel state — expanded by default whenever a
+  // full-display surface opens. Auto-collapses to the bubble during
+  // video playback (see videoFocusMode below); the user can click
+  // the bubble to expand again while the video keeps playing.
+  const [commentsExpanded, setCommentsExpanded] = useStateP2(true);
+  // Video focus mode — true while a video is actively playing.
+  // Drives:
+  //   - .lightbox--focus (pure-black backdrop, hides everything but
+  //     the player so the eye lands on the picture)
+  //   - auto-collapse of the comment panel to its bubble
+  // Cleared on pause / end / modal close.
+  const [videoFocusMode, setVideoFocusMode] = useStateP2(false);
+  // Close any open full-display modal when the panel is closed
+  // externally or the user navigates to a different file.
+  useEffectP2(() => {
+    setPdfModal(false); setCodeModal(false);
+    setVideoModal(false); setAudioModal(false);
+    setCsvModal(false); setIcsModal(false); setVcfModal(false);
+    setCommentsExpanded(true);
+    setVideoFocusMode(false);
+  }, [file?.id]);
+  // When the video modal closes (Esc, click-outside, X), drop focus
+  // mode so re-opening another surface starts at "normal lightbox."
+  useEffectP2(() => {
+    if (!videoModal) setVideoFocusMode(false);
+  }, [videoModal]);
+  // Bridge from VideoPlayer's onPlayingChange. When playback starts
+  // we set focus mode AND auto-collapse the comments bubble. When
+  // it stops we drop focus mode but DON'T re-expand comments — the
+  // user may have explicitly collapsed during a pause, and we should
+  // respect that until they click the bubble themselves.
+  const handleVideoPlayingChange = (playing) => {
+    setVideoFocusMode(!!playing);
+    if (playing) setCommentsExpanded(false);
+  };
+  // Esc closes whatever modal is open before falling through to the
+  // panel-close handler. We already have an Esc listener for the
+  // image lightbox + preview; each modal needs its own capture-phase
+  // listener so it can swallow the event first.
   useEffectP2(() => {
     if (!pdfModal) return;
     const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setPdfModal(false); } };
@@ -197,6 +251,36 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [codeModal]);
+  useEffectP2(() => {
+    if (!videoModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setVideoModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [videoModal]);
+  useEffectP2(() => {
+    if (!audioModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setAudioModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [audioModal]);
+  useEffectP2(() => {
+    if (!csvModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setCsvModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [csvModal]);
+  useEffectP2(() => {
+    if (!icsModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setIcsModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [icsModal]);
+  useEffectP2(() => {
+    if (!vcfModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setVcfModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [vcfModal]);
   if (!file) return null;
 
   // Tag changes here persist to the backend via /images/{id}/tags so
@@ -246,6 +330,17 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     }
   };
 
+  // Compose the lightbox className once — the modifiers depend on
+  // comment-panel expanded state (drops the 360px left padding when
+  // the panel is just a bubble) and on videoFocusMode (paints the
+  // backdrop pure black so the eye lands on the video). Used on
+  // every modal surface so the behavior is consistent.
+  const lightboxClass = [
+    "lightbox",
+    commentsExpanded ? "lightbox--comments" : "lightbox--bubble",
+    videoFocusMode ? "lightbox--focus" : "",
+  ].filter(Boolean).join(" ");
+
   return (
     <React.Fragment>
     <div className="preview-backdrop" onClick={onClose}/>
@@ -262,10 +357,12 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       fileId={file.id}
       currentUserId={user?.id}
       ownerUserId={file.user_id || user?.id}
-      open={lightbox || pdfModal || codeModal}
+      open={lightbox || pdfModal || codeModal || videoModal || audioModal || csvModal || icsModal || vcfModal}
+      expanded={commentsExpanded}
+      onToggleExpanded={setCommentsExpanded}
     />
     {lightbox && file.thumb && (
-      <div className="lightbox lightbox--comments" onClick={() => setLightbox(false)}>
+      <div className={lightboxClass} onClick={() => setLightbox(false)}>
         <button className="lightbox__close" aria-label="Close" onClick={(e) => { e.stopPropagation(); setLightbox(false); }}>
           <Icon name="x" size={18}/>
         </button>
@@ -273,7 +370,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       </div>
     )}
     {pdfModal && isPdf && (
-      <div className="lightbox lightbox--comments" onClick={() => setPdfModal(false)}>
+      <div className={lightboxClass} onClick={() => setPdfModal(false)}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">
@@ -312,7 +409,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       </div>
     )}
     {codeModal && isCode && (
-      <div className="lightbox lightbox--comments" onClick={() => setCodeModal(false)}>
+      <div className={lightboxClass} onClick={() => setCodeModal(false)}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">
@@ -346,6 +443,85 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
               byteSize={file.byteSize}
               filename={file.name}
             />
+          </div>
+        </div>
+      </div>
+    )}
+    {videoModal && isVideoFile && (
+      <div className={lightboxClass} onClick={() => setVideoModal(false)}>
+        <VideoPlayer
+          fileId={file.id}
+          fileName={file.name}
+          onClose={() => setVideoModal(false)}
+          onPlayingChange={handleVideoPlayingChange}
+        />
+      </div>
+    )}
+    {audioModal && isAudioFile && (
+      <div className={lightboxClass} onClick={() => setAudioModal(false)}>
+        <AudioPlayer
+          fileId={file.id}
+          fileName={file.name}
+          fileExt={file.ext}
+        />
+      </div>
+    )}
+    {csvModal && isCsvFile && (
+      <div className={lightboxClass} onClick={() => setCsvModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="spreadsheet" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setCsvModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <CsvViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {icsModal && isIcsFile && (
+      <div className={lightboxClass} onClick={() => setIcsModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="calendar" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setIcsModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <IcsViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {vcfModal && isVcfFile && (
+      <div className={lightboxClass} onClick={() => setVcfModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="contact" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setVcfModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <VcfViewer fileId={file.id} fileName={file.name}/>
           </div>
         </div>
       </div>
@@ -435,6 +611,93 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             <span className="mono">{file.ext}</span>
           </div>
         </button>
+      ) : isVideoFile ? (
+        // Video hero: server-rasterized poster frame (when available)
+        // with a centered play overlay. Click anywhere on the hero
+        // opens the themed video player full-screen. Falls back to a
+        // play-button + extension chip when no thumb has been
+        // generated yet.
+        <button
+          type="button"
+          onClick={() => setVideoModal(true)}
+          className="preview__hero preview__hero--video"
+          aria-label="Play video"
+          title="Click to play"
+          style={{ position: "relative", padding: 0, border: 0, cursor: "pointer", background: "var(--surface-2)" }}
+        >
+          {file.thumb ? (
+            <AuthedThumb url={file.thumb} className="preview__hero" style={{ width: "100%", height: "100%" }}/>
+          ) : (
+            <div style={{ display: "grid", placeItems: "center", width: "100%", height: "100%", color: "var(--ink-3)" }}>
+              <div className="thumb-icon">
+                <Icon name="video" size={42} strokeWidth={1.3}/>
+                <span className="mono">{file.ext}</span>
+              </div>
+            </div>
+          )}
+          <span className="preview__play-overlay" aria-hidden="true">
+            <Icon name="play" size={28}/>
+          </span>
+        </button>
+      ) : isAudioFile ? (
+        <button
+          type="button"
+          onClick={() => setAudioModal(true)}
+          className="preview__hero preview__hero--audio"
+          aria-label="Play audio"
+          title="Click to play"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="music" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+          <span className="preview__play-overlay" aria-hidden="true">
+            <Icon name="play" size={28}/>
+          </span>
+        </button>
+      ) : isCsvFile ? (
+        <button
+          type="button"
+          onClick={() => setCsvModal(true)}
+          className="preview__hero"
+          aria-label="Open spreadsheet"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="spreadsheet" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isIcsFile ? (
+        <button
+          type="button"
+          onClick={() => setIcsModal(true)}
+          className="preview__hero"
+          aria-label="Open calendar"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="calendar" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isVcfFile ? (
+        <button
+          type="button"
+          onClick={() => setVcfModal(true)}
+          className="preview__hero"
+          aria-label="Open contact card"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="contact" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
       ) : file.thumb ? (
         <AuthedThumb
           url={file.thumb}
@@ -444,10 +707,13 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
           aria-label={isImage ? "View full size" : undefined}
         />
       ) : (
+        // Generic fallback — uses the file-type catalog so every known
+        // extension gets a clean themed glyph instead of the bare
+        // "document" icon. Unknown extensions fall through to "file".
         <div className="preview__hero" style={{ display: "grid", placeItems: "center", color: "var(--ink-3)" }}>
           <div className="thumb-icon">
-            <Icon name={isVideo ? "video" : "document"} size={42} strokeWidth={1.3}/>
-            <span className="mono">{file.ext}</span>
+            <Icon name={fileTypeInfo(file.ext).icon} size={42} strokeWidth={1.3}/>
+            <span className="mono">{fileTypeInfo(file.ext).label}</span>
           </div>
         </div>
       )}
@@ -754,6 +1020,14 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       <div className="preview__foot">
         <button className="btn btn--secondary" style={{ flex: 1 }} onClick={handleDownload}>
           <Icon name="download" size={14}/> Download
+        </button>
+        <button
+          className="btn btn--secondary"
+          style={{ flex: 1 }}
+          onClick={() => setShareModalOpen(true)}
+          title="Share this file"
+        >
+          <Icon name="share" size={14}/> Share
         </button>
         <button
           className="btn-icon"

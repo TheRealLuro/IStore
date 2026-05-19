@@ -167,11 +167,16 @@ function fileItemToNeuthek(f) {
   try {
     when = formatDistanceToNowStrict(new Date(f.uploaded_at), { addSuffix: true });
   } catch { /* keep default */ }
-  // Docs (PDF page-1 rasters land in the same served bucket as image
-  // thumbs once the backend rasterize-at-upload path is wired). Until
-  // then, FE only emits a thumb for images; the preview hero falls
-  // back to the icon otherwise.
-  const hasServedThumb = type === "image" || (cat === "document" && f.mime_type_served && f.mime_type_served.startsWith("image/"));
+  // Backend's `has_thumbnail` derived flag handles every case:
+  //   - image rows: true once the served bytes are an image MIME
+  //   - PDFs:       true once the page-1 raster lands in the served
+  //                 bucket (mime_type_served starts with "image/")
+  //   - video / audio: true once the transcode worker writes the
+  //                    poster JPEG to `thumbnail_blob_key`
+  // The FE only has to ask the served endpoint when this is true —
+  // the endpoint then routes to the right blob (image bytes vs the
+  // poster JPEG for AV) automatically.
+  const hasServedThumb = !!f.has_thumbnail;
 
   return {
     id: f.id,
@@ -1813,6 +1818,24 @@ export function App() {
     queryFn: () => listFiles(filesQueryFilters),
     enabled: signedIn,
     staleTime: 10_000,
+    // Poll while any video / audio row is still waiting for its
+    // poster JPEG from the transcode worker (`has_thumbnail` flips
+    // false → true the moment the worker commits). 3s is fast
+    // enough that a 5-10 s transcode finishes within a single
+    // refetch, slow enough that an idle library doesn't hammer the
+    // API. Returns false when nothing's pending so we stop polling.
+    // TanStack v5: callback receives the Query object, data lives
+    // on `q.state.data`.
+    refetchInterval: (q) => {
+      const rows = q.state.data;
+      if (!Array.isArray(rows)) return false;
+      const pending = rows.some(
+        (f) =>
+          (f.category === "video" || f.category === "audio") &&
+          !f.has_thumbnail,
+      );
+      return pending ? 3000 : false;
+    },
   });
 
   // Facets — drives the chip choices below the type pills. Refetches
@@ -1831,10 +1854,15 @@ export function App() {
   // backend is the ranked order (highest score first); we keep it for
   // display so the most relevant hits stay on top. Local refinement
   // (sort / type-filter) still applies on top of these results.
-  const { data: searchHits } = useQuery({
+  const { data: searchHits, isFetching: searchIsFetching } = useQuery({
     queryKey: ["search", debouncedQuery],
-    queryFn: () => searchSemantic(debouncedQuery, 60),
-    enabled: signedIn && debouncedQuery.length > 0,
+    // 2-char minimum: single characters are too ambiguous for both
+    // CLIP (returns ~0.25 to every image) and FTS (falls back to
+    // substring scan that matches every file containing the letter).
+    // The backend also rejects q<2 with an empty list now; keeping
+    // the gate on the FE saves the round-trip.
+    queryFn: () => searchSemantic(debouncedQuery.trim(), 60),
+    enabled: signedIn && debouncedQuery.trim().length >= 2,
     staleTime: 30_000,
     keepPreviousData: true,
   });
@@ -1944,9 +1972,20 @@ export function App() {
   // When a search is active, the ranked /search hits become the source
   // of truth for the gallery. The score ordering is preserved here —
   // the gallery's local sort runs only when no query is present (handled
-  // inside GalleryView). Local fallback filtering still narrows further
-  // by type pill etc.
-  const sourceFiles = trimmedQuery.length > 0 && searchHits ? searchHits : rawFiles;
+  // inside GalleryView).
+  //
+  // While the search is IN-FLIGHT (no results yet), show an empty
+  // source — not `rawFiles`. The previous code fell back to the
+  // entire library during the round-trip, so typing "matrix math"
+  // briefly showed every file before the ranked list arrived. That
+  // read as "the search didn't filter anything" and felt slow even
+  // when the response landed in 200 ms. Empty + loading shimmer
+  // gives the user immediate visual feedback that filtering is
+  // happening.
+  const searchActive = trimmedQuery.length >= 2;
+  const sourceFiles = searchActive
+    ? (searchHits || [])
+    : rawFiles;
   const baseFiles = useMemoApp(() => {
     const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
     return sourceFiles.map((f) => {

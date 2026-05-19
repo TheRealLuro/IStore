@@ -183,14 +183,29 @@ export async function searchSemantic(q: string, limit = 30): Promise<(FileItem &
   return api.get<(FileItem & { score: number })[]>(`/search/?${params.toString()}`);
 }
 
+/** Compute the CLIP text-space embedding for every summary that
+ *  has one but no `summary_clip_embedding`. Runs synchronously
+ *  server-side (no Redis queue) because the cost is ~10 ms / row
+ *  on GPU. Returns `{eligible, filled}` so the FE can show a
+ *  progress chip. */
+export async function backfillSummaryEmbeddings(
+  limit = 1000,
+): Promise<{ eligible: number; filled: number }> {
+  return api.post<{ eligible: number; filled: number }>(
+    `/images/backfill-summary-embeddings?limit=${limit}`,
+  );
+}
+
 export async function backfillSummaries(
   limit = 500,
   force = false,
+  category?: "image" | "video" | "document" | "audio" | "other",
 ): Promise<{ queued: number; limit: number; force: boolean }> {
   const params = new URLSearchParams({
     limit: String(limit),
     force: String(force),
   });
+  if (category) params.set("category", category);
   return api.post<{ queued: number; limit: number; force: boolean }>(
     `/images/backfill-summaries?${params.toString()}`,
   );
@@ -339,6 +354,54 @@ export async function getDownloadUrl(
   );
   return res.url;
 }
+
+/** Signed streaming URL for video / audio playback. The returned URL
+ *  embeds an HMAC signature + expiry, so the browser can stick it
+ *  straight into <video src=>/<audio src=> without needing to send
+ *  the Bearer token (which media elements can't carry). Default TTL
+ *  is 1 hour, refresh from the FE on the element's `error` event.
+ *
+ *  Pass `quality` (e.g. "1080p", "720p", "480p") to request a
+ *  specific tier; the label is baked into the signature so the URL
+ *  can't be replayed against a different tier. Omit to get the
+ *  default (highest available). */
+export async function getStreamUrl(
+  id: string, quality?: string,
+): Promise<string> {
+  const qs = quality ? `?q=${encodeURIComponent(quality)}` : "";
+  const res = await api.get<{ url: string; expires_at: string }>(
+    `/images/${id}/stream-url${qs}`,
+  );
+  return res.url;
+}
+
+export interface StreamQuality {
+  label: string;
+  url: string;
+  expires_at: string;
+}
+
+export interface StreamInfo {
+  default_quality: string;
+  qualities: StreamQuality[];
+}
+
+/** Enumerate the quality tiers available for a video / audio file.
+ *  The player's quality menu reads this once when the modal opens,
+ *  renders one entry per tier, and swaps `video.src` to the
+ *  picked tier's URL when the user changes the selection. Rows
+ *  uploaded before multi-quality landed return a single "auto"
+ *  entry pointing at the legacy served bytes. */
+export async function getStreamInfo(id: string): Promise<StreamInfo> {
+  return api.get<StreamInfo>(`/images/${id}/stream-info`);
+}
+
+/** Build an authed URL for the raw original bytes — used by the
+ *  client-side parsers (CSV / ICS / VCF) that read the file as text
+ *  via `fetchMediaBlob`. Centralizes the API_BASE prefix so callers
+ *  don't recompute it. */
+export const originalMediaUrl = (id: string): string =>
+  `${API_BASE_URL}/images/${id}/original`;
 
 function parseMediaUrl(url: string): { id: string; variant: "original" | "served" } | null {
   try {

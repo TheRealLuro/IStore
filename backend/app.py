@@ -51,6 +51,24 @@ async def lifespan(app: FastAPI):
     task: asyncio.Task | None = None
     if settings.cloud_sync_hourly_enabled:
         task = asyncio.create_task(run_hourly_sweep())
+
+    # Pre-warm the CLIP text encoder so the first /search?q=... request
+    # doesn't pay the 5-10 s cold-load tax. We saw a real "matrix math"
+    # query take 9.6 s end-to-end where ~9 s was just torch loading
+    # OpenCLIP weights into memory on first call. The warmup runs in a
+    # background thread so it doesn't block startup (API serves requests
+    # while the model loads — search-only queries that arrive before
+    # warmup finishes still pay the cold-load cost, but anything else
+    # comes up immediately). Wrapped in a broad except so an [ml]-less
+    # build doesn't 503 on startup.
+    async def _prewarm_clip():
+        try:
+            from backend.vision.runtime import encode_text_cached
+            await asyncio.to_thread(encode_text_cached, "warm")
+        except Exception:
+            pass
+    asyncio.create_task(_prewarm_clip())
+
     try:
         yield
     finally:

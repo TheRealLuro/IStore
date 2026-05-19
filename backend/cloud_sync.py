@@ -1056,7 +1056,29 @@ def _github_download(refresh_token: str, remote_id: str, remote_path: str) -> by
 
 
 def _drive_client(refresh_token: str):
-    """Build an authenticated Drive v3 client."""
+    """Build an authenticated Drive v3 client.
+
+    IMPORTANT: don't pass `scopes=` to the Credentials constructor.
+    `google-auth`'s refresh-token grant includes any non-empty
+    `scopes` field as the `scope` parameter in the POST body to
+    Google's token endpoint — and Google's refresh endpoint REJECTS
+    requests that ask for scopes the user's original consent didn't
+    cover.
+
+    Users who linked Drive before we added `openid email profile`
+    to the scope list (so the OAuth grant doubles as a Google
+    sign-in link) still have a refresh token authorized only for
+    `drive.readonly`. Re-requesting all four at refresh time blows
+    up with:
+
+        google.auth.exceptions.RefreshError:
+          ('invalid_scope: Bad Request',
+           {'error': 'invalid_scope', 'error_description': 'Bad Request'})
+
+    Leaving scopes off the refresh request lets Google echo back
+    whatever scopes were originally granted — works regardless of
+    whether the user authorized 1 scope or 4.
+    """
     from google.auth.transport.requests import Request  # type: ignore
     from google.oauth2.credentials import Credentials  # type: ignore
     from googleapiclient.discovery import build  # type: ignore
@@ -1067,7 +1089,7 @@ def _drive_client(refresh_token: str):
         client_id=settings.google_oauth_client_id,
         client_secret=settings.google_oauth_client_secret,
         token_uri="https://oauth2.googleapis.com/token",
-        scopes=PROVIDER_SCOPES["google_drive"],
+        # scopes intentionally omitted — see docstring above.
     )
     creds.refresh(Request())
     # cache_discovery=False silences a stale-cache warning that fires
