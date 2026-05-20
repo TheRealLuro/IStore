@@ -182,7 +182,7 @@ export function CodePreview({ fileId, mime, byteSize, filename }) {
     // Cookie auth: ship the session cookie via credentials. Legacy
     // Bearer kept for users mid-migration.
     let legacy = null;
-    try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+    try { legacy = localStorage.getItem("neuthek.jwt"); } catch {}
     fetch(`${API_BASE_URL}/images/${fileId}/original`, {
       credentials: "include",
       headers: legacy ? { Authorization: `Bearer ${legacy}` } : {},

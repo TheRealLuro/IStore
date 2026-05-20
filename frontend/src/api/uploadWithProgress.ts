@@ -40,7 +40,7 @@ export function uploadFileWithProgress(
   xhr.withCredentials = true;
   // Legacy localStorage Bearer fallback for users mid-migration.
   try {
-    const legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt");
+    const legacy = localStorage.getItem("neuthek.jwt");
     if (legacy) xhr.setRequestHeader("Authorization", `Bearer ${legacy}`);
   } catch { /* private browsing */ }
 

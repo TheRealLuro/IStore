@@ -444,7 +444,7 @@ export async function fetchMediaBlob(url: string): Promise<Blob> {
   // string and don't need auth.
   let legacyAuth: HeadersInit | undefined;
   try {
-    const legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt");
+    const legacy = localStorage.getItem("neuthek.jwt");
     if (legacy) legacyAuth = { Authorization: `Bearer ${legacy}` };
   } catch { /* private browsing */ }
   const res = await fetch(target, {
