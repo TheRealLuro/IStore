@@ -114,10 +114,26 @@ def _prod_env(monkeypatch):
     )
     monkeypatch.setenv("MINIO_ACCESS_KEY", "strong-random-access")
     monkeypatch.setenv("MINIO_SECRET_KEY", "strong-random-secret-Pw!")
+    # CR-10 — extended validator prerequisites. The CR-8 tests target
+    # DB / MinIO clauses specifically; everything CR-10 adds has to
+    # pass for the baseline to validate clean.
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "true")
+    monkeypatch.setenv("SECURITY_RATE_LIMITS_ENABLED", "true")
+    monkeypatch.setenv("JWT_LIFETIME_SECONDS", "86400")
+    monkeypatch.setenv("ACCOUNT_DELETE_GRACE_DAYS", "30")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("FRONTEND_BASE_URL", "https://app.example.com")
     # Force the Settings singleton to re-read env on each test.
     # backend.security imports `settings` at module load time, so
     # patching `backend.config.settings` alone isn't enough — the
     # validator reads its own bound copy. Patch both.
+    import backend.app as app_mod
+    monkeypatch.setattr(
+        app_mod,
+        "ALLOWED_ORIGINS",
+        tuple(list(app_mod.ALLOWED_ORIGINS) + ["https://app.example.com"]),
+        raising=True,
+    )
     import backend.config as cfg
     import backend.security as sec
     fresh = cfg.Settings()

@@ -157,6 +157,129 @@ async def validate_production_settings() -> None:
             "to a rotated random secret in .env before deploying."
         )
 
+    # Audit CR-10 — gap closures the original validator missed. Each
+    # of these is a "production deploy should not boot with the dev
+    # default" check. Order: cheap config presence first, then the
+    # cross-config consistency check (FRONTEND_BASE_URL vs CORS
+    # allowlist), so a misconfigured operator sees the simpler
+    # individual errors before the relational one.
+
+    # Reverse-proxy header trust. Without TRUST_PROXY_HEADERS=true,
+    # `client_ip()` returns the proxy's address for every request
+    # — so per-IP rate-limits, auth-lockout counters, and audit
+    # `details.ip` all key to the proxy. Indistinguishable from "no
+    # rate limit" in practice.
+    if not settings.trust_proxy_headers:
+        errors.append(
+            "TRUST_PROXY_HEADERS must be true outside dev/test — "
+            "production sits behind a reverse proxy (Caddy/nginx/CF) "
+            "that strips + re-sets X-Forwarded-For. Without this, "
+            "per-IP rate limits and lockout counters all key on the "
+            "proxy's address."
+        )
+
+    # Rate limits + auth lockout. `SECURITY_RATE_LIMITS_ENABLED=false`
+    # would silently no-op every limit set by enforce_rate_limit and
+    # by SecurityControlsMiddleware. Easy to flip during a "let me
+    # just test something" pass and forget to flip back.
+    if not settings.security_rate_limits_enabled:
+        errors.append(
+            "SECURITY_RATE_LIMITS_ENABLED must be true outside "
+            "dev/test — rate-limits + auth-lockout silently no-op "
+            "when this is false."
+        )
+
+    # JWT lifetime upper bound. A 30-day session JWT is a 30-day blast
+    # radius on theft because we don't yet have token-version-based
+    # revocation (audit finding A8). 24h is the default; cap at 7d
+    # so an operator can extend modestly but not catastrophically.
+    _max_jwt_lifetime = 7 * 24 * 60 * 60  # 7 days in seconds
+    if settings.jwt_lifetime_seconds <= 0:
+        errors.append(
+            "JWT_LIFETIME_SECONDS must be positive — a non-positive "
+            "value would mint already-expired tokens."
+        )
+    elif settings.jwt_lifetime_seconds > _max_jwt_lifetime:
+        errors.append(
+            f"JWT_LIFETIME_SECONDS={settings.jwt_lifetime_seconds} is "
+            f"longer than the {_max_jwt_lifetime} s (7 d) production "
+            "ceiling. Without token-version revocation (audit A8) a "
+            "stolen JWT stays valid for the full lifetime; cap the "
+            "blast radius."
+        )
+
+    # Account-delete grace window. A zero / negative grace = immediate
+    # hard-delete with no operator-cancel window. The schedule_delete
+    # endpoint refuses to schedule when grace is non-positive, so a
+    # 0 setting bricks the account-delete flow entirely.
+    if settings.account_delete_grace_days <= 0:
+        errors.append(
+            "ACCOUNT_DELETE_GRACE_DAYS must be > 0 — a non-positive "
+            "value disables the user-cancel window on a scheduled "
+            "deletion and breaks /account/schedule-delete."
+        )
+
+    # Google SSO consistency. If either OAuth credential is set, both
+    # MUST be (a half-configured client lets /auth/google/login 302
+    # to Google with an invalid client_id; Google rejects with an
+    # opaque error the user sees).
+    has_google_id = bool(settings.google_oauth_client_id)
+    has_google_secret = bool(settings.google_oauth_client_secret)
+    if has_google_id != has_google_secret:
+        errors.append(
+            "GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET "
+            "must be set together (or both empty to disable SSO). "
+            "Half-configuring lands users on a Google error page."
+        )
+
+    # CORS / FRONTEND_BASE_URL alignment. The CORS allowlist lives in
+    # `backend.app.create_app` as a hardcoded tuple; production
+    # deployments that set FRONTEND_BASE_URL to a real prod hostname
+    # need that hostname to also appear in the allowlist or every
+    # credentialed request from the SPA 502s with a CORS error.
+    # Import lazily so we don't pull app-construction code into the
+    # validator's module-import time.
+    try:
+        from backend.app import ALLOWED_ORIGINS
+        cors_allowed = ALLOWED_ORIGINS
+    except Exception:  # pragma: no cover — best-effort hint
+        cors_allowed = None
+    if cors_allowed is not None:
+        fe_origin = settings.frontend_base_url.rstrip("/")
+        normalized = {o.rstrip("/") for o in cors_allowed}
+        if fe_origin and fe_origin not in normalized:
+            errors.append(
+                f"FRONTEND_BASE_URL={fe_origin!r} is not in the CORS "
+                "allowlist (backend.app.create_app's allowed_origins). "
+                "Every credentialed FE request will fail CORS. Add "
+                "the prod hostname to the allowlist."
+            )
+
+    # Stripe webhook consistency. The /billing/webhook endpoint
+    # verifies an `Stripe-Signature` header against
+    # STRIPE_WEBHOOK_SECRET. Misconfigured = the endpoint silently
+    # accepts forged events (or rejects every legit one); either
+    # mode is a billing-state corruption risk.
+    if settings.stripe_secret_key and not settings.stripe_webhook_secret:
+        errors.append(
+            "STRIPE_SECRET_KEY is set without STRIPE_WEBHOOK_SECRET — "
+            "/billing/webhook can't verify Stripe signatures. Either "
+            "set the webhook secret or unset the API key to disable "
+            "billing."
+        )
+
+    # SMTP host required when production needs verification / reset /
+    # recovery emails. Empty smtp_host makes email_send fall back to
+    # writing the full message (including reset-token URLs and
+    # plaintext recovery codes) to stderr → log aggregator. Audit
+    # finding A4.
+    if not settings.smtp_host:
+        errors.append(
+            "SMTP_HOST is required outside dev/test — without it, "
+            "email_send writes verification / reset / recovery-code "
+            "bodies to stderr where any log reader can mint sessions."
+        )
+
     if settings.secret_manager in {"", "env_file"}:
         errors.append("SECRET_MANAGER must be docker_secrets or a platform secret manager.")
     if settings.postgres_at_rest_encryption != "host_volume_confirmed":

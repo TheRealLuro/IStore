@@ -39,6 +39,22 @@ from backend.security import (
 from backend.storage import storage
 
 
+# Single source of truth for "origins we trust to make credentialed
+# requests against this API." Module-level so `validate_production_
+# settings` can cross-check against FRONTEND_BASE_URL at boot, AND
+# so `create_app()` and the CSRF middleware read the same list.
+# Adding a new frontend origin = add it here once.
+ALLOWED_ORIGINS: tuple[str, ...] = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+    "tauri://localhost",
+)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await validate_production_settings()
@@ -156,21 +172,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Single source of truth for "origins we trust to make
-    # credentialed requests against this API." Used by BOTH the CORS
-    # middleware (browser-side enforcement) and the
-    # CsrfOriginMiddleware (server-side enforcement on
-    # cookie-authenticated mutating requests). Adding a new frontend
-    # origin = add it here once.
-    allowed_origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:4173",
-        "http://127.0.0.1:4173",
-        "tauri://localhost",
-    ]
+    # Resolved at app-construction time from the module-level
+    # constant declared below. Kept as a local alias so the existing
+    # middleware-wiring code below reads unchanged.
+    allowed_origins = ALLOWED_ORIGINS
     # Middleware order matters (and is counterintuitive).
     # `add_middleware` does `user_middleware.insert(0, …)`, so the
     # LAST middleware added becomes the OUTERMOST wrapper. The
