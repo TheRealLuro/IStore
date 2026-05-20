@@ -18,6 +18,11 @@ from backend.config import settings
 from backend.context import set_current_user_id
 from backend.db import get_session
 from backend.email_send import send_reset_email, send_verify_email
+from backend.key_derivation import (
+    PURPOSE_RESET_PASSWORD,
+    PURPOSE_VERIFY_EMAIL,
+    derive_subkey_str,
+)
 from backend.models import User
 
 logger = logging.getLogger(__name__)
@@ -119,8 +124,15 @@ _COMMON_PASSWORDS = {
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
-    reset_password_token_secret = settings.jwt_secret
-    verification_token_secret = settings.jwt_secret
+    # CR-3: distinct subkeys per token class, derived from jwt_secret
+    # via HKDF-SHA256. Previously these read settings.jwt_secret
+    # directly — same secret as session JWTs + signed URLs + OAuth
+    # state — so a single leak forged ALL of them at once. Tokens
+    # already in flight (pending reset / verify emails issued before
+    # this deploy) are invalidated by the change; their TTL is 1h so
+    # the migration cost is bounded.
+    reset_password_token_secret = derive_subkey_str(PURPOSE_RESET_PASSWORD)
+    verification_token_secret = derive_subkey_str(PURPOSE_VERIFY_EMAIL)
 
     async def validate_password(
         self,

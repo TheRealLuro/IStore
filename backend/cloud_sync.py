@@ -65,6 +65,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.audit import add_audit
 from backend.config import settings
+from backend.key_derivation import oauth_cloud_sync_state_key
 from backend.models import CloudFile, CloudLink, Folder, Image, User
 from backend.secret_box import (
     MisconfiguredEncryption,
@@ -85,8 +86,13 @@ def _build_state(user_id: UUID) -> str:
     """
     nonce = secrets.token_urlsafe(16)
     payload = f"{user_id}.{nonce}"
+    # CR-3: distinct subkey from the Google sign-in state HMAC. Before
+    # this both flows used `settings.jwt_secret`; the state shapes were
+    # different but the verifier in one path could be tricked by a
+    # state minted in the other under sufficiently bad future refactors
+    # (confused-deputy). Subkey separation is the structural fix.
     mac = hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        oauth_cloud_sync_state_key(),
         payload.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
@@ -100,7 +106,7 @@ def _verify_state(state: str) -> UUID:
     user_id_str, nonce, mac = state.split(".", 2)
     payload = f"{user_id_str}.{nonce}"
     expected = hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        oauth_cloud_sync_state_key(),
         payload.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
