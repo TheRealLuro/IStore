@@ -249,9 +249,11 @@ def _probe_source(path: Path) -> dict:
     """Return source dimensions + duration. Uses ffprobe's
     `json` output mode so a partial probe doesn't throw on
     container metadata gaps."""
+    from backend.ffmpeg_args import safe_input_args
     proc = subprocess.run(
         [
             "ffprobe", "-hide_banner", "-loglevel", "error",
+            *safe_input_args(),
             "-print_format", "json", "-show_streams", "-show_format",
             str(path),
         ],
@@ -382,10 +384,12 @@ def _run_video_encode(
     file so the browser can begin playback before the entire file
     downloads. Without this, a 4 GB video shows 0:00 until the very
     last byte arrives."""
+    from backend.ffmpeg_args import safe_input_args
     bitrate_kbps = _video_bitrate_kbps(width, height, source_kbps=source_kbps)
     common = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-y",  # overwrite output without prompt
+        *safe_input_args(),
         "-i", str(src),
         "-vf", f"scale={width}:{height}:flags=lanczos",
         "-pix_fmt", "yuv420p",
@@ -439,11 +443,13 @@ def _extract_poster(src: Path, dst: Path, *, duration_s: float) -> None:
     """Grab a representative frame ~2 s into the video (avoids the
     common black opener). For very short clips (< 4 s), grab the
     midpoint instead."""
+    from backend.ffmpeg_args import safe_input_args
     seek = min(2.0, max(0.0, duration_s / 2.0))
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-y",
         "-ss", f"{seek:.3f}",
+        *safe_input_args(),
         "-i", str(src),
         "-frames:v", "1",
         "-q:v", "2",  # JPEG quality 2 (range 1-31, lower = higher quality)

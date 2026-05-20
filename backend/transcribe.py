@@ -148,10 +148,12 @@ def _extract_audio_wav(raw_bytes: bytes) -> Optional[bytes]:
         ) as tmp:
             tmp.write(raw_bytes)
             tmp_path = tmp.name
+        from backend.ffmpeg_args import safe_input_args
         proc = subprocess.run(
             [
                 "ffmpeg",
                 "-loglevel", "error",
+                *safe_input_args(),
                 "-i", tmp_path,
                 "-vn",                          # drop video stream
                 "-ac", "1",                     # mono
