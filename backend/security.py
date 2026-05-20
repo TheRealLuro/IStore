@@ -81,8 +81,26 @@ async def validate_production_settings() -> None:
         errors.append("MINIO_SECURE must be true outside dev/test.")
     if settings.frontend_base_url.startswith("http://"):
         errors.append("FRONTEND_BASE_URL must be https outside dev/test.")
-    if settings.jwt_secret.startswith("dev-only"):
-        errors.append("JWT_SECRET must be rotated outside dev/test.")
+    # Stricter JWT_SECRET check. The old "startswith('dev-only')"
+    # filter only caught the exact compose default; setting
+    # `JWT_SECRET=""` or `JWT_SECRET="secret"` or any short string
+    # bypassed it. Reject anything: blank, a known weak default, OR
+    # shorter than 32 chars (Argon2id needs entropy + a real
+    # rotation policy makes this a useful floor).
+    _weak_jwt = {
+        "", "secret", "changeme", "change-me", "test", "jwt-secret",
+        "dev", "dev-secret", "development",
+    }
+    if (
+        not settings.jwt_secret
+        or settings.jwt_secret.startswith("dev-only")
+        or settings.jwt_secret.lower() in _weak_jwt
+        or len(settings.jwt_secret) < 32
+    ):
+        errors.append(
+            "JWT_SECRET must be a strong (>=32 char) rotated value outside "
+            "dev/test — not the compose default, not blank, not a known weak value."
+        )
     if settings.secret_manager in {"", "env_file"}:
         errors.append("SECRET_MANAGER must be docker_secrets or a platform secret manager.")
     if settings.postgres_at_rest_encryption != "host_volume_confirmed":
@@ -463,5 +481,159 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
                 ip=ip,
                 identity=identity,
                 status_code=response.status_code,
+            )
+        return response
+
+
+class CsrfOriginMiddleware(BaseHTTPMiddleware):
+    """Reject mutating requests that arrive with our auth cookie but
+    a cross-origin `Origin` header.
+
+    Modern browsers default the auth cookie's SameSite=Lax behavior
+    to "cookies don't ride along on cross-origin POSTs", which by
+    itself blocks the basic CSRF surface. This middleware is
+    defence-in-depth for the (small) set of browsers / clients that
+    handle SameSite incorrectly or where a future framework choice
+    relaxes it. The check:
+
+        if method is mutating
+           AND the auth cookie is present
+           AND Origin (or Referer if Origin missing) doesn't match
+               one of our explicit allowed origins
+        → 403 with `csrf_origin_blocked`
+
+    Bearer-token callers (no cookie) skip the check entirely — the
+    Authorization header is impossible to forge from another origin
+    without a CORS preflight that we control. The login endpoint
+    itself is also exempt: it always crosses the no-cookie boundary
+    (you're TRYING to set the cookie), so an Origin requirement
+    there is solved by CORS, not CSRF.
+
+    The allow-list is derived from `settings.csrf_allowed_origins`,
+    defaulting to the CORS allowlist (since we already trust those
+    origins to make credentialed requests).
+    """
+
+    _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+    # These paths intentionally don't require a CSRF-Origin match.
+    # `/auth/cookie/login` is the moment the cookie is BEING SET —
+    # the request can't carry it yet. Health endpoints are
+    # unauthenticated. `/auth/jwt/*` uses Bearer not cookies.
+    _EXEMPT_PREFIXES = (
+        "/auth/cookie/login",
+        "/auth/cookie/logout",  # idempotent + needs to work cross-origin from logout buttons
+        "/auth/jwt/",
+        "/auth/forgot-password",
+        "/auth/reset-password",
+        "/auth/request-verify-token",
+        "/auth/verify",
+        "/auth/register",
+        "/auth/google/",
+        "/health",
+        "/shares/preview/",  # public share endpoints
+        "/shares/claim",
+    )
+
+    def __init__(self, app, *, allowed_origins: tuple[str, ...]) -> None:
+        super().__init__(app)
+        # Normalise to scheme://host[:port] (no path, no trailing slash)
+        # so the comparison against the Origin header is exact-match.
+        self._allowed = tuple(o.rstrip("/") for o in allowed_origins)
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        method = request.method.upper()
+        if method in self._SAFE_METHODS:
+            return await call_next(request)
+        path = request.url.path
+        if any(path.startswith(p) for p in self._EXEMPT_PREFIXES):
+            return await call_next(request)
+        # Only enforce when the request is authenticated via the
+        # auth cookie — Bearer-token requests are exempt because the
+        # Authorization header can't be set from another origin
+        # without a preflight, which CORS already gates.
+        from backend.auth.users import COOKIE_NAME  # late import to avoid cycle
+        if COOKIE_NAME not in request.cookies:
+            return await call_next(request)
+        origin = request.headers.get("origin") or ""
+        if not origin:
+            # Some browsers omit Origin on same-origin POSTs. Fall
+            # back to Referer in that case — it's less reliable but
+            # still distinguishes another tab on attacker.example
+            # from the same page on our origin.
+            referer = request.headers.get("referer") or ""
+            if referer:
+                try:
+                    from urllib.parse import urlparse
+                    p = urlparse(referer)
+                    if p.scheme and p.netloc:
+                        origin = f"{p.scheme}://{p.netloc}"
+                except Exception:
+                    origin = ""
+        if origin.rstrip("/") not in self._allowed:
+            return JSONResponse(
+                {"detail": "csrf_origin_blocked"},
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return await call_next(request)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add baseline security headers to every response.
+
+    Before this middleware landed, security headers (CSP / HSTS /
+    X-Frame-Options / X-Content-Type-Options / Referrer-Policy /
+    Permissions-Policy) were ONLY set by the production Caddy
+    reverse proxy. Any deployment that didn't front the API with
+    Caddy — internal LAN, ngrok-tunnel, the dev compose, a direct
+    `uvicorn` for debugging — shipped responses with no headers at
+    all, leaving every browser at the most permissive defaults.
+
+    We set conservative values here so they're always present, then
+    let the Caddy layer override them in prod if the operator wants
+    different policy. The HSTS header is omitted in plain-HTTP
+    contexts so that a dev install on localhost doesn't accidentally
+    pin the browser to HTTPS for a port it can't serve.
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        # Static defaults. CSP is restrictive because our API only
+        # serves JSON / opaque media bytes — no inline HTML, no
+        # script execution, no `<iframe>` embedding. The frontend
+        # is served from a separate origin and has its own CSP via
+        # the index.html meta + Caddy.
+        headers = response.headers
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        headers.setdefault(
+            "Permissions-Policy",
+            "geolocation=(), microphone=(), camera=(), payment=()",
+        )
+        # CSP: every API response is JSON or an opaque media blob —
+        # nothing should ever be parsed as HTML. `default-src 'none'`
+        # is the safest possible default; the frontend never reads
+        # these headers and the browser only enforces them on HTML
+        # navigations, so this is purely defence-in-depth for the
+        # rare misconfigured client that interprets bytes as HTML.
+        headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        )
+        # HSTS only on HTTPS contexts. Setting it on HTTP would be a
+        # browser no-op anyway, but adding the header on plain HTTP
+        # is confusing to anyone debugging.
+        if request.url.scheme == "https":
+            headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=63072000; includeSubDomains; preload",
             )
         return response

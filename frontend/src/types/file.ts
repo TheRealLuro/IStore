@@ -60,10 +60,47 @@ export interface Folder {
 }
 
 export interface StorageUsage {
+  /** Grand total of bytes physically on disk for this user. As of
+   *  2026-05 this is the sum of served + variants + originals +
+   *  trash, NOT just the served default-tier total like older
+   *  builds returned. */
   used_bytes: number;
   quota_bytes: number;
   by_category: Record<string, number>;
   by_count: Record<string, number>;
+  /** Default served blob per row — the compressed preview shown
+   *  by the viewer. For videos this is the default quality tier. */
+  served_bytes?: number;
+  /** Non-default video quality variants (480p / 720p / 1440p /
+   *  2160p) the transcoder emits alongside the default 1080p. */
+  variants_bytes?: number;
+  /** Originals still retained (rows with original_blob_key). The
+   *  retention sweeper drops these on TTL or on /storage/free-
+   *  originals. */
+  originals_bytes?: number;
+  /** Soft-deleted rows still on disk. Emptying Trash zeros this. */
+  trash_bytes?: number;
+  originals_count?: number;
+  variants_count?: number;
+  /** Per-provider cloud-link summary. Lets the UI say "57 files
+   *  mirrored from your Google Drive; originals stay on Drive."
+   *  Empty when no cloud account is linked. */
+  linked_services?: LinkedService[];
+}
+
+export interface LinkedService {
+  provider: string;       // "google_drive" | "github" | …
+  status: string;         // "active" | "pending" | "revoked"
+  files_mirrored: number;
+  served_bytes: number;
+  originals_bytes: number;
+  last_synced_at: string | null;
+  ai_opted_in: boolean;
+}
+
+export interface ReclaimResponse {
+  bytes_freed: number;
+  items_dropped: number;
 }
 
 export interface User {

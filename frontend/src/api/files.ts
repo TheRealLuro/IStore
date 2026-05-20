@@ -1,4 +1,4 @@
-import { api, API_BASE_URL, tokens } from "./client";
+import { api, API_BASE_URL } from "./client";
 import type { FileItem, FileCategory } from "@/types/file";
 
 const REQUIRE_SIGNED_DOWNLOADS =
@@ -381,7 +381,24 @@ export interface StreamQuality {
   expires_at: string;
 }
 
+export interface HlsRendition {
+  label: string;
+  width: number;
+  height: number;
+  bandwidth_bps: number;
+}
+
 export interface StreamInfo {
+  /** "hls" when the row was transcoded by the 2026-05+ HLS pipeline.
+   *  Older / non-HLS rows omit this field. */
+  mode?: "hls";
+  /** Relative URL to the master.m3u8 manifest. Frontend resolves
+   *  against API_BASE_URL and feeds to hls.js. Present only when
+   *  `mode === "hls"`. */
+  hls_url?: string;
+  renditions?: HlsRendition[];
+  /** Legacy per-quality signed mp4 URLs. Empty array when
+   *  `mode === "hls"` since hls.js handles quality switching. */
   default_quality: string;
   qualities: StreamQuality[];
 }
@@ -420,14 +437,19 @@ export async function fetchMediaBlob(url: string): Promise<Blob> {
   if (REQUIRE_SIGNED_DOWNLOADS && parsed) {
     target = await getDownloadUrl(parsed.id, parsed.variant);
   }
-  const token = tokens.get();
+  // Cookie auth: send the session cookie via `credentials: "include"`.
+  // Legacy localStorage Bearer is added as a transitional fallback for
+  // users mid-migration; will be removed once all login paths emit a
+  // cookie. Signed-URL downloads carry their own HMAC in the query
+  // string and don't need auth.
+  let legacyAuth: HeadersInit | undefined;
+  try {
+    const legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt");
+    if (legacy) legacyAuth = { Authorization: `Bearer ${legacy}` };
+  } catch { /* private browsing */ }
   const res = await fetch(target, {
-    headers:
-      REQUIRE_SIGNED_DOWNLOADS && parsed
-        ? {}
-        : token
-          ? { Authorization: `Bearer ${token}` }
-          : {},
+    credentials: REQUIRE_SIGNED_DOWNLOADS && parsed ? "omit" : "include",
+    headers: REQUIRE_SIGNED_DOWNLOADS && parsed ? {} : (legacyAuth || {}),
   });
   if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
   return await res.blob();

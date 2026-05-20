@@ -54,4 +54,45 @@ export function Check({ checked, onChange, label, sub }) {
   );
 }
 
+/**
+ * Collapsible section for Settings. Click the header to open / close.
+ * Closed state hides the body but keeps the chevron + section label
+ * visible so the user knows what's there. State is local — caller
+ * controls the `defaultOpen` initial value; for tabs with many
+ * sections, the convention is "first section open, rest closed."
+ *
+ * `count` (optional) renders a small numeric pill next to the
+ * label, e.g. "Library maintenance · 6" — useful when the body is
+ * a list of action rows and the count tells the user how much is
+ * inside without expanding.
+ */
+export function Collapsible({ label, defaultOpen = false, count, children, id }) {
+  const [open, setOpen] = React.useState(!!defaultOpen);
+  const bodyId = id ? `${id}-body` : undefined;
+  return (
+    <div className="collapsible" data-open={open ? "true" : "false"}>
+      <button
+        type="button"
+        className="collapsible__head"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="collapsible__label">{label}</span>
+        {(count !== undefined && count !== null) && (
+          <span className="collapsible__count">{count}</span>
+        )}
+        <span className="collapsible__chev" aria-hidden="true">
+          <Icon name="chevronRight" size={12}/>
+        </span>
+      </button>
+      {open && (
+        <div id={bodyId} className="collapsible__body">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Named exports above; legacy `window.Primitives` access removed.

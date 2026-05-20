@@ -7,6 +7,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
     Float,
     ForeignKey,
     Index,
@@ -46,6 +47,17 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # C8 admin dashboard — per-user storage quota override. NULL means
     # "use the global default" (DEFAULT_QUOTA_BYTES in api/storage.py).
     quota_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+    # Per-user originals-retention policy (migration 0038). Discrete
+    # enum so the UI is a radio group and the upload path is a
+    # one-switch translation. "30d" is the legacy default — existing
+    # accounts see no behavior change until they explicitly pick
+    # something else. Validated by a CHECK constraint at the DB
+    # layer; values are kept in sync with the application enum
+    # (`_RETENTION_TO_TIMEDELTA` in backend/api/storage.py).
+    original_retention_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="30d",
+    )
 
     # §1.2.2 — TOTP 2FA. Secret is Fernet-encrypted via secret_box so a
     # DB dump alone doesn't yield working codes. `enabled` flips to True
@@ -196,10 +208,28 @@ class Image(Base):
     # ORM lets `_text_search` reference it directly instead of
     # building `to_tsvector(...)` on the fly per row (which
     # forced full table scans even though the index existed).
-    # `Mapped[Optional[Any]]` because the column is read-only from
-    # Python's perspective — Postgres maintains it; we never write.
+    #
+    # The `Computed()` marker is critical here — WITHOUT it,
+    # SQLAlchemy includes this column in every INSERT statement
+    # with value NULL, and Postgres rejects it with:
+    #   "cannot insert a non-DEFAULT value into column \"summary_tsv\""
+    # The expression we pass is a placeholder for DDL purposes
+    # only; the actual GENERATED ALWAYS AS expression lives in
+    # the migration that created the column. What matters at
+    # runtime is the marker, which tells SQLAlchemy "the DB
+    # maintains this — exclude it from INSERT and UPDATE."
+    # `Mapped[Optional[Any]]` because the column is read-only
+    # from Python's perspective.
     summary_tsv: Mapped[Optional[Any]] = mapped_column(
-        TSVECTOR, nullable=True, server_default=None,
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english'::regconfig, "
+            "coalesce(summary, '') || ' ' || "
+            "coalesce(summary_topic, '') || ' ' || "
+            "coalesce(original_filename, ''))",
+            persisted=True,
+        ),
+        nullable=True,
     )
 
     # Phase 12 — folders + project status.
@@ -319,6 +349,20 @@ class Folder(Base):
     status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status_color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    # Cloud-sync attribution. NULL on every folder the user made
+    # manually through the UI; set on the synthesized "Google Drive"
+    # root + every subfolder the sync worker mirrored from the
+    # provider. Lets `delete_folder` propagate "user said no" back
+    # into the sync layer, AND lets `_ensure_remote_folder_tree`
+    # recognise an already-deleted synced folder and NOT recreate
+    # it on the next sync run.
+    cloud_provider: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True,
+    )
+    cloud_remote_path: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -337,6 +381,13 @@ class Folder(Base):
     )
 
     images: Mapped[list["Image"]] = relationship(back_populates="folder")
+
+    __table_args__ = (
+        Index(
+            "folders_cloud_path_idx",
+            "user_id", "cloud_provider", "cloud_remote_path",
+        ),
+    )
 
 
 class Tag(Base):
@@ -805,9 +856,20 @@ class CloudFile(Base):
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+    # Tombstone for user-driven deletion of a synced file. When the
+    # user deletes the local Image attached to this row, we stamp
+    # this column. Sync skips any cloud_files entry with
+    # `excluded_at IS NOT NULL` so the file doesn't re-ingest on
+    # the next walk. Without this, every soft- or hard-delete was
+    # undone by the next sync run (the "I deleted it 20 times and
+    # it keeps coming back" bug — migration 0039).
+    excluded_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index("cloud_files_user_provider_remote_uq", "user_id", "provider", "remote_id", unique=True),
+        Index("cloud_files_excluded_at_idx", "user_id", "provider", "excluded_at"),
     )
 
 

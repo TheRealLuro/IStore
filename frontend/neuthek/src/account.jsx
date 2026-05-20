@@ -7,6 +7,7 @@ import {
   Modal as ModalAcc,
   ModalClose as ModalCloseAcc,
   Switch as SwitchAcc,
+  Collapsible,
 } from "./primitives.jsx";
 import {
   PasswordChangePanel,
@@ -32,7 +33,7 @@ import {
   withdrawConsent,
   rescanAllFaces,
 } from "@/api/consent";
-import { backfillSummaries, backfillVision, getSummarizeProgress, backfillDocThumbs } from "@/api/files";
+import { backfillSummaries, backfillSummaryEmbeddings, backfillVision, getSummarizeProgress, backfillDocThumbs } from "@/api/files";
 import {
   getAccountActivity,
   getAccountTrash,
@@ -464,10 +465,11 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   const [tab, setTab] = useStateAcc(initialTab);
   // 2FA toggle here is the section visibility flag, not a real grant.
   // SecurityPanel below shows the recovery-codes UI which IS wired.
-  // emailNotif state retained for SecurityPanel's signature; the
-  // notifications surface itself is hidden until the backend ships.
+  // (Dropped the dead `emailNotif`/`setEmailNotif` state — they
+  // were passed to SecurityPanel but its signature ignores them;
+  // the real notifications surface lives in NotificationsPanel and
+  // hits /account/notifications directly.)
   const [twoFA, setTwoFA] = useStateAcc(true);
-  const [emailNotif, setEmailNotif] = useStateAcc(true);
   // Real per-scope consent state. Each toggle hits /consent/{scope}/grant|
   // withdraw and invalidates this query so the UI reflects the server.
   const qc = useQueryClient();
@@ -581,9 +583,11 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   // background work; we toast immediately and let the file/people queries
   // re-fetch as the worker completes rows.
   const [busyResummarize, setBusyResummarize] = useStateAcc(false);
+  const [busyResummarizeVideos, setBusyResummarizeVideos] = useStateAcc(false);
   const [busyRescan, setBusyRescan] = useStateAcc(false);
   const [busyDocThumbs, setBusyDocThumbs] = useStateAcc(false);
   const [busyReclassify, setBusyReclassify] = useStateAcc(false);
+  const [busyEmbed, setBusyEmbed] = useStateAcc(false);
 
   const reclassifyImages = async () => {
     if (busyReclassify) return;
@@ -653,6 +657,40 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
       toast.error(e?.detail || "Could not start re-summarize.");
     } finally {
       setBusyResummarize(false);
+    }
+  };
+  // Video-only variant — Whisper transcription + multi-keyframe
+  // Florence + Qwen aggregation. ~30-90 s per video on GPU.
+  const reprocessVideos = async () => {
+    if (busyResummarizeVideos) return;
+    if (!window.confirm("Re-run video summarization on every video in your library? Each video samples 4 keyframes, transcribes audio with Whisper, and aggregates via Qwen — typically 30-90 s per video on GPU.")) return;
+    setBusyResummarizeVideos(true);
+    try {
+      const r = await backfillSummaries(500, true, "video");
+      if (r.queued === 0) toast("No videos to re-summarize.");
+      else toast.success(`Queued ${r.queued} video${r.queued === 1 ? "" : "s"} for re-summarization.`);
+      qc.invalidateQueries({ queryKey: ["files"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not start video re-summarize.");
+    } finally {
+      setBusyResummarizeVideos(false);
+    }
+  };
+  // Synchronous backfill for rows that have a summary but no
+  // search embedding — cheap (~10 ms/row on GPU) so we surface
+  // the eligible / filled counts inline instead of polling.
+  const embedSummaries = async () => {
+    if (busyEmbed) return;
+    setBusyEmbed(true);
+    try {
+      const r = await backfillSummaryEmbeddings(2000);
+      if (r.eligible === 0) toast("Every summary already has a search embedding.");
+      else if (r.filled === 0) toast.error(`Found ${r.eligible} eligible rows but none could be embedded — check server logs.`);
+      else toast.success(`Embedded ${r.filled} of ${r.eligible} summaries.`);
+    } catch (e) {
+      toast.error(e?.detail || "Could not start embedding backfill.");
+    } finally {
+      setBusyEmbed(false);
     }
   };
   const rescanFaces = async () => {
@@ -830,21 +868,24 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   )}
                 </div>
 
-                <div className="applist__label">Sign-in & security</div>
-                <div className="applist">
-                  <Expandable id="pwd" icon="lock" tone="red"
-                              title="Password" desc="Last changed 4 months ago"
-                              tailExtra={<span style={{ color: "var(--ink-3)", marginRight: 8 }}>•••••••••</span>}
-                              panel={<PasswordChangePanel onSaved={() => tog("pwd")}/>}/>
-                  <GoogleLinkRow user={user}/>
-                  <UserTwoFactorRow user={user} onOpenTwoFA={() => setTab("security")}/>
-                </div>
+                <Collapsible label="Sign-in & security" defaultOpen count={3} id="acct-signin">
+                  <div className="applist">
+                    <Expandable id="pwd" icon="lock" tone="red"
+                                title="Password" desc="Last changed 4 months ago"
+                                tailExtra={<span style={{ color: "var(--ink-3)", marginRight: 8 }}>•••••••••</span>}
+                                panel={<PasswordChangePanel onSaved={() => tog("pwd")}/>}/>
+                    <GoogleLinkRow user={user}/>
+                    <UserTwoFactorRow user={user} onOpenTwoFA={() => setTab("security")}/>
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label">Account state</div>
-                <UserStateGrid user={user}/>
+                <Collapsible label="Account state" id="acct-state">
+                  <UserStateGrid user={user}/>
+                </Collapsible>
 
-                <div className="applist__label">Plan</div>
-                <PlanCard/>
+                <Collapsible label="Plan" id="acct-plan">
+                  <PlanCard/>
+                </Collapsible>
               </>
             )}
 
@@ -859,77 +900,81 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
 
                 <PrivacyStanceCard/>
 
-                <div className="applist__label">AI on your library</div>
-                <div className="applist">
-                  <Row icon="sparkles" tone="purple" title="AI summaries"
-                       desc={subFor("ai_summary",
-                         "Florence-2 + Qwen describe new uploads.",
-                         "Off — no summary generated.")}
-                       tail={<SwitchAcc on={aiSummaries} onChange={setAiSummaries} ariaLabel="AI summaries"/>}/>
-                  <Row icon="search" tone="blue" title="Semantic search"
-                       desc={subFor("semantic_search",
-                         "CLIP embeddings stored, queryable by meaning.",
-                         "Off — search by filename only.")}
-                       tail={<SwitchAcc on={semanticSearch} onChange={setSemanticSearch} ariaLabel="Semantic search"/>}/>
-                  <Row icon="users" tone="purple" title="Face recognition"
-                       desc={subFor("face_recognition",
-                         "Faces detected and grouped on this server.",
-                         "Off — requires written consent (BIPA).")}
-                       tail={<SwitchAcc on={faceRecog} onChange={setFaceRecog} ariaLabel="Face recognition"/>}/>
-                  {faceRecog && (
-                    <Expandable id="face-detail" icon="info" tone="indigo"
-                                title="Face data details" desc="Detection counts and management"
-                                panel={<FaceDetailPanel/>}/>
-                  )}
-                </div>
+                <Collapsible label="AI on your library" defaultOpen count={3} id="priv-ai">
+                  <div className="applist">
+                    <Row icon="sparkles" tone="purple" title="AI summaries"
+                         desc={subFor("ai_summary",
+                           "Florence-2 + Qwen describe new uploads.",
+                           "Off — no summary generated.")}
+                         tail={<SwitchAcc on={aiSummaries} onChange={setAiSummaries} ariaLabel="AI summaries"/>}/>
+                    <Row icon="search" tone="blue" title="Semantic search"
+                         desc={subFor("semantic_search",
+                           "CLIP embeddings stored, queryable by meaning.",
+                           "Off — search by filename only.")}
+                         tail={<SwitchAcc on={semanticSearch} onChange={setSemanticSearch} ariaLabel="Semantic search"/>}/>
+                    <Row icon="users" tone="purple" title="Face recognition"
+                         desc={subFor("face_recognition",
+                           "Faces detected and grouped on this server.",
+                           "Off — requires written consent (BIPA).")}
+                         tail={<SwitchAcc on={faceRecog} onChange={setFaceRecog} ariaLabel="Face recognition"/>}/>
+                    {faceRecog && (
+                      <Expandable id="face-detail" icon="info" tone="indigo"
+                                  title="Face data details" desc="Detection counts and management"
+                                  panel={<FaceDetailPanel/>}/>
+                    )}
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label">Photo metadata</div>
-                <div className="applist">
-                  <Row icon="map" tone="green" title="Keep GPS from photos"
-                       desc={subFor("gps_retention",
-                         "EXIF location stored — pins appear on the Map.",
-                         "Stripped on upload — no map pins.")}
-                       tail={<SwitchAcc on={gpsTags} onChange={setGpsTags} ariaLabel="GPS retention"/>}/>
-                  <Expandable id="loc-detail" icon="info" tone="indigo"
-                              title="Location settings" desc="Strip GPS from existing photos"
-                              panel={<LocationDetailPanel/>}/>
-                  <Row icon="camera" tone="amber" title="Keep camera EXIF"
-                       desc={subFor("exif_retention",
-                         "Make / model / lens / shutter speed kept on originals.",
-                         "Stripped on upload — only pixels remain.")}
-                       tail={<SwitchAcc on={exifRetention} onChange={setExifRetention} ariaLabel="EXIF retention"/>}/>
-                </div>
+                <Collapsible label="Photo metadata" count={2} id="priv-meta">
+                  <div className="applist">
+                    <Row icon="map" tone="green" title="Keep GPS from photos"
+                         desc={subFor("gps_retention",
+                           "EXIF location stored — pins appear on the Map.",
+                           "Stripped on upload — no map pins.")}
+                         tail={<SwitchAcc on={gpsTags} onChange={setGpsTags} ariaLabel="GPS retention"/>}/>
+                    <Expandable id="loc-detail" icon="info" tone="indigo"
+                                title="Location settings" desc="Strip GPS from existing photos"
+                                panel={<LocationDetailPanel/>}/>
+                    <Row icon="camera" tone="amber" title="Keep camera EXIF"
+                         desc={subFor("exif_retention",
+                           "Make / model / lens / shutter speed kept on originals.",
+                           "Stripped on upload — only pixels remain.")}
+                         tail={<SwitchAcc on={exifRetention} onChange={setExifRetention} ariaLabel="EXIF retention"/>}/>
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label">Diagnostics</div>
-                <div className="applist">
-                  <Row icon="info" tone="blue" title="Compression telemetry"
-                       desc={subFor("bandit_compression_telemetry",
-                         "Bandit reward signals from your encodes shared anonymously.",
-                         "Off — no telemetry leaves this server.")}
-                       tail={<SwitchAcc on={telemetry} onChange={setTelemetry} ariaLabel="Telemetry"/>}/>
-                  <Expandable id="tel-detail" icon="layers" tone="ink"
-                              title="What's collected" desc="Crash reports, performance, feature usage"
-                              panel={<TelemetryDetailPanel/>}/>
-                </div>
+                <Collapsible label="Diagnostics" count={1} id="priv-diag">
+                  <div className="applist">
+                    <Row icon="info" tone="blue" title="Compression telemetry"
+                         desc={subFor("bandit_compression_telemetry",
+                           "Bandit reward signals from your encodes shared anonymously.",
+                           "Off — no telemetry leaves this server.")}
+                         tail={<SwitchAcc on={telemetry} onChange={setTelemetry} ariaLabel="Telemetry"/>}/>
+                    <Expandable id="tel-detail" icon="layers" tone="ink"
+                                title="What's collected" desc="Crash reports, performance, feature usage"
+                                panel={<TelemetryDetailPanel/>}/>
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label">Documents</div>
-                <div className="applist">
-                  <Row icon="document" tone="indigo" title="Privacy Notice"
-                       desc="What we collect, why, and how to control it"
-                       tail={<Chev/>} onClick={() => onOpenSubmodal?.("privacy")}/>
-                  <Row icon="document" tone="indigo" title="Terms of Use"
-                       desc="v4.2 · Accepted on signup"
-                       tail={<Chev/>} onClick={() => onOpenSubmodal?.("terms")}/>
-                  <Row icon="users" tone="purple" title="Face recognition consent"
-                       desc={detailOf("face_recognition")?.granted_at
-                         ? `Signed ${fmtConsentDate(detailOf("face_recognition").granted_at)} · Withdraw any time`
-                         : "Read the BIPA-grade consent text"}
-                       tail={<Chev/>} onClick={() => onOpenSubmodal?.("face")}/>
-                </div>
+                <Collapsible label="Documents" count={3} id="priv-docs">
+                  <div className="applist">
+                    <Row icon="document" tone="indigo" title="Privacy Notice"
+                         desc="What we collect, why, and how to control it"
+                         tail={<Chev/>} onClick={() => onOpenSubmodal?.("privacy")}/>
+                    <Row icon="document" tone="indigo" title="Terms of Use"
+                         desc="v4.2 · Accepted on signup"
+                         tail={<Chev/>} onClick={() => onOpenSubmodal?.("terms")}/>
+                    <Row icon="users" tone="purple" title="Face recognition consent"
+                         desc={detailOf("face_recognition")?.granted_at
+                           ? `Signed ${fmtConsentDate(detailOf("face_recognition").granted_at)} · Withdraw any time`
+                           : "Read the BIPA-grade consent text"}
+                         tail={<Chev/>} onClick={() => onOpenSubmodal?.("face")}/>
+                  </div>
+                </Collapsible>
               </>
             )}
 
-            {tab === "security" && <SecurityPanel twoFA={twoFA} setTwoFA={setTwoFA} emailNotif={emailNotif} setEmailNotif={setEmailNotif} Row={Row} Chev={Chev}/>}
+            {tab === "security" && <SecurityPanel twoFA={twoFA} setTwoFA={setTwoFA} Row={Row} Chev={Chev}/>}
 
             {tab === "notifications" && <NotificationsPanel/>}
 
@@ -944,27 +989,28 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </div>
 
-                <div className="applist__label">Features</div>
-                <div className="applist">
-                  <Row icon="sparkles" tone="purple" title="AI summaries"
-                       desc={subFor("ai_summary",
-                         "Florence-2 + Qwen describe new uploads.",
-                         "Off — no summary generated.")}
-                       tail={<SwitchAcc on={aiSummaries} onChange={setAiSummaries} ariaLabel="Summaries"/>}/>
-                  <Row icon="search" tone="blue" title="Semantic search"
-                       desc={subFor("semantic_search",
-                         "CLIP embeddings stored, queryable by meaning.",
-                         "Off — search by filename only.")}
-                       tail={<SwitchAcc on={semanticSearch} onChange={setSemanticSearch} ariaLabel="Semantic"/>}/>
-                  <Row icon="users" tone="purple" title="Face recognition"
-                       desc={subFor("face_recognition",
-                         "Faces grouped on this server.",
-                         "Off — requires written consent (BIPA).")}
-                       tail={<SwitchAcc on={faceRecog} onChange={setFaceRecog} ariaLabel="Faces"/>}/>
-                </div>
+                <Collapsible label="Features" defaultOpen count={3} id="ai-features">
+                  <div className="applist">
+                    <Row icon="sparkles" tone="purple" title="AI summaries"
+                         desc={subFor("ai_summary",
+                           "Florence-2 + Qwen describe new uploads.",
+                           "Off — no summary generated.")}
+                         tail={<SwitchAcc on={aiSummaries} onChange={setAiSummaries} ariaLabel="Summaries"/>}/>
+                    <Row icon="search" tone="blue" title="Semantic search"
+                         desc={subFor("semantic_search",
+                           "CLIP embeddings stored, queryable by meaning.",
+                           "Off — search by filename only.")}
+                         tail={<SwitchAcc on={semanticSearch} onChange={setSemanticSearch} ariaLabel="Semantic"/>}/>
+                    <Row icon="users" tone="purple" title="Face recognition"
+                         desc={subFor("face_recognition",
+                           "Faces grouped on this server.",
+                           "Off — requires written consent (BIPA).")}
+                         tail={<SwitchAcc on={faceRecog} onChange={setFaceRecog} ariaLabel="Faces"/>}/>
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label">Library maintenance</div>
-                <div className="applist">
+                <Collapsible label="Library maintenance" count={6} id="ai-maintenance">
+                  <div className="applist">
                   <Row icon="refresh" tone="purple" title="Re-summarize entire library"
                        desc={(() => {
                          if (busyResummarize) return "Queueing… your library will rebuild summaries in the background.";
@@ -1019,7 +1065,24 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                                      disabled={busyReclassify}>
                          {busyReclassify ? "Working…" : "Run"}
                        </button>}/>
-                </div>
+                  <Row icon="video" tone="purple" title="Re-summarize videos"
+                       desc={busyResummarizeVideos
+                         ? "Queueing… each video re-samples 4 keyframes, transcribes audio with Whisper, and aggregates via Qwen."
+                         : "Re-run the multi-keyframe + Whisper audio transcription + Qwen aggregation pipeline on every video. Use this after upgrading the video summarizer or to refresh outdated descriptions. ~30-90 s per video on GPU."}
+                       tail={<button className="btn btn--secondary btn--sm" onClick={reprocessVideos}
+                                     disabled={busyResummarizeVideos}>
+                         {busyResummarizeVideos ? "Working…" : "Run"}
+                       </button>}/>
+                  <Row icon="search" tone="blue" title="Backfill search embeddings"
+                       desc={busyEmbed
+                         ? "Computing CLIP text-space vectors for each summary…"
+                         : "Compute the search-side embedding for rows that have a summary but no vector yet. New summaries embed automatically — this is the one-shot for older rows so semantic search finds them by meaning. Fast (~10 ms/row)."}
+                       tail={<button className="btn btn--secondary btn--sm" onClick={embedSummaries}
+                                     disabled={busyEmbed}>
+                         {busyEmbed ? "Working…" : "Run"}
+                       </button>}/>
+                  </div>
+                </Collapsible>
               </>
             )}
 
@@ -1044,33 +1107,37 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </div>
 
-                <div className="applist">
-                  <Expandable id="storage" icon="layers" tone="green"
-                              title="Storage"
-                              desc="Live breakdown by category"
-                              panel={<StorageBreakdownPanel/>}/>
-                  <Row icon="download" tone="blue" title="Export everything"
-                       desc="ZIP of all files plus a JSON metadata sidecar"
-                       tail={<Chev/>} onClick={() => onOpenSubmodal?.("export")}/>
-                  <Expandable id="activity" icon="document" tone="teal"
-                              title="Activity log"
-                              desc="Your sign-ins, consents, renames, deletes"
-                              panel={<RealActivityLogPanel/>}/>
-                </div>
+                <Collapsible label="Overview" defaultOpen count={3} id="data-overview">
+                  <div className="applist">
+                    <Expandable id="storage" icon="layers" tone="green"
+                                title="Storage"
+                                desc="Live breakdown by category"
+                                panel={<StorageBreakdownPanel/>}/>
+                    <Row icon="download" tone="blue" title="Export everything"
+                         desc="ZIP of all files plus a JSON metadata sidecar"
+                         tail={<Chev/>} onClick={() => onOpenSubmodal?.("export")}/>
+                    <Expandable id="activity" icon="document" tone="teal"
+                                title="Activity log"
+                                desc="Your sign-ins, consents, renames, deletes"
+                                panel={<RealActivityLogPanel/>}/>
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label">Trash</div>
-                <div className="applist">
-                  <Expandable id="trash" icon="trash" tone="orange"
-                              title="Empty trash"
-                              desc="Permanently delete soft-deleted items"
-                              panel={<RealTrashPanel onEmptied={() => tog("trash")}/>}/>
-                </div>
+                <Collapsible label="Trash" count={1} id="data-trash">
+                  <div className="applist">
+                    <Expandable id="trash" icon="trash" tone="orange"
+                                title="Empty trash"
+                                desc="Permanently delete soft-deleted items"
+                                panel={<RealTrashPanel onEmptied={() => tog("trash")}/>}/>
+                  </div>
+                </Collapsible>
 
-                <div className="applist__label" style={{ color: "var(--danger)" }}>Danger zone</div>
-                <div className="applist">
-                  <Row icon="trash" tone="red" title="Delete account" desc="Permanently remove your library"
-                       tail={<Chev/>} onClick={() => onOpenSubmodal?.("delete")}/>
-                </div>
+                <Collapsible label="Danger zone" count={1} id="data-danger">
+                  <div className="applist">
+                    <Row icon="trash" tone="red" title="Delete account" desc="Permanently remove your library"
+                         tail={<Chev/>} onClick={() => onOpenSubmodal?.("delete")}/>
+                  </div>
+                </Collapsible>
               </>
             )}
 

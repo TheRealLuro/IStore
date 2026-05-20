@@ -106,17 +106,32 @@ _QUALITY_TIERS: list[tuple[str, int]] = [
 
 
 def _tiers_for_source(src_long_edge: int) -> list[tuple[str, int]]:
-    """Return the quality tiers we should emit for a source whose
-    long edge is `src_long_edge` pixels. Always includes the largest
-    tier the source supports + every smaller tier down to 480p, so
-    the user has at least 2-3 picks for any source >= 720p.
-    Sources smaller than 480p get a single passthrough tier at their
-    native resolution."""
-    available = [(name, h) for (name, h) in _QUALITY_TIERS if h <= src_long_edge]
-    if not available:
-        # Source < 480p — keep at native long edge.
-        return [(f"{src_long_edge}p", src_long_edge)]
-    return available
+    """Return the quality tiers we emit at upload time.
+
+    **One tier only as of 2026-05.** The previous 5-tier ladder
+    pre-generated 480p / 720p / 1080p / 1440p / 2160p alongside the
+    default. Pre-storing them was wasteful: most videos are watched
+    once at the default tier, and the extra tiers were costing
+    ~60-80% of the served bucket even though almost no one picked
+    them. Now we emit the master tier (highest the source supports,
+    capped at 1080p so a 4K phone clip doesn't churn out a 3-GB
+    served blob). Lower tiers can be generated on-demand in a future
+    follow-up; for now `served_variants` is just `{default}` and the
+    stream endpoint falls back to it for any quality request.
+
+    Cap at 1080p chosen because: (a) 99% of laptops + phones render
+    1080p at full visual quality, (b) 4K served content forces every
+    bandwidth-limited viewer to either stutter or get nothing, (c)
+    the original is retained per the user's retention policy if
+    they want the true source bytes back.
+    """
+    long_edge = min(src_long_edge, 1080)
+    # Find the closest standard label at or below this size, else
+    # use a free-form `<height>p` label for unusual sources.
+    for name, h in _QUALITY_TIERS:
+        if h <= long_edge:
+            return [(name, h)]
+    return [(f"{long_edge}p", long_edge)]
 
 
 @dataclass

@@ -179,9 +179,13 @@ export function CodePreview({ fileId, mime, byteSize, filename }) {
     setText(null);
     setError(null);
     setTruncated(false);
-    const token = tokens.get();
+    // Cookie auth: ship the session cookie via credentials. Legacy
+    // Bearer kept for users mid-migration.
+    let legacy = null;
+    try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
     fetch(`${API_BASE_URL}/images/${fileId}/original`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: "include",
+      headers: legacy ? { Authorization: `Bearer ${legacy}` } : {},
     })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);

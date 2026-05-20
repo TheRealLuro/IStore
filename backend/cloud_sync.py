@@ -547,6 +547,7 @@ async def sync_user_provider(
     folder_root_name = _provider_display_name(provider)
     folder_ids_by_path = await _ensure_remote_folder_tree(
         session, user, folder_root_name,
+        provider=provider,
         all_remote_parent_paths={e.get("remote_parent_path") or "" for e in entries},
     )
 
@@ -566,6 +567,27 @@ async def sync_user_provider(
                 )
             )
         ).scalar_one_or_none()
+
+        # Tombstone check (migration 0039). When the user deletes a
+        # synced file in neuthek, we stamp `cloud_files.excluded_at`.
+        # Skip those on every subsequent sync — the user's intent is
+        # "I don't want this file in my library." Without this, every
+        # delete was undone by the next sync ("I deleted it 20 times
+        # and it keeps coming back").
+        if existing is not None and existing.excluded_at is not None:
+            skipped_unchanged += 1
+            continue
+
+        # Folder-level tombstone: if the file's remote parent path is
+        # under a folder the user explicitly deleted (synced folder
+        # with `deleted_at IS NOT NULL`), skip it. Same intent — they
+        # deleted the whole folder; don't re-import its files.
+        parent_path = entry.get("remote_parent_path") or ""
+        if parent_path and await _is_folder_path_excluded(
+            session, user_id, provider, parent_path,
+        ):
+            skipped_unchanged += 1
+            continue
 
         remote_mod = entry.get("modified_at")
         # SHA dedup: if we already pulled this exact byte sequence, the
@@ -609,14 +631,31 @@ async def sync_user_provider(
             )
             continue
 
-        # §C2 — Limited Use: never train on cloud-sourced content
-        # without per-source opt-in. `store_upload` honors
-        # `skip_ai_training=True` by skipping CLIP / Florence /
-        # face-scan dispatch.
+        # §C2 — Limited Use: cloud sources default to skip_ai_training
+        # (no summarization / no face scan / no CLIP embedding) UNTIL
+        # the user explicitly flips `cloud_links.ai_opted_in` to True
+        # in the Cloud Sync settings panel. Once opted in, every
+        # newly-synced file rides the same AI pipeline that direct
+        # uploads do — pending_face_scan + pending_summary stay True
+        # and the worker picks the row up post-commit.
+        #
+        # Before this read, the sync hardcoded `skip_ai_training=True`
+        # regardless of the toggle state, so flipping "Enable AI
+        # features for Google Drive files" looked enabled in the UI
+        # but had zero effect on a fresh sync — the user's complaint.
         from backend.image import store_upload  # local — avoid cycles
 
+        skip_ai_training = not bool(link.ai_opted_in)
+
         parent_path = entry.get("remote_parent_path") or ""
-        folder_id = folder_ids_by_path.get(parent_path) or folder_ids_by_path[""]
+        folder_id = folder_ids_by_path.get(parent_path) or folder_ids_by_path.get("")
+        # Empty `folder_ids_by_path` means the user excluded the root
+        # "Google Drive" folder OR every relevant subfolder is
+        # excluded. Skip the file rather than dumping it at the
+        # gallery root.
+        if folder_id is None:
+            skipped_unchanged += 1
+            continue
         try:
             image = await store_upload(
                 session,
@@ -624,10 +663,59 @@ async def sync_user_provider(
                 entry["name"],
                 blob,
                 entry.get("mime_type"),
-                skip_ai_training=True,
+                skip_ai_training=skip_ai_training,
                 source_provider=provider,
                 folder_id=folder_id,
             )
+            # Dispatch the appropriate worker jobs. The direct-upload
+            # endpoint (api/images.py::create_image) normally enqueues
+            # transcode for videos + face_scan/summarize for AI-eligible
+            # rows; the sync path bypasses that endpoint so we have to
+            # repeat the dispatch logic here. Before this block,
+            # cloud-synced videos got NO transcode job → no HLS
+            # rendition, no poster JPEG, no `thumbnail_blob_key` → the
+            # gallery card sat with a generic mp4 glyph forever.
+            from backend import jobs as job_q
+
+            # Transcode runs REGARDLESS of `skip_ai_training` — it's
+            # about producing browser-playable HLS + a poster JPEG,
+            # not about AI training. Every video upload needs it.
+            if image.category in ("video", "audio"):
+                try:
+                    await job_q.enqueue_transcode_video(user.id, image.id)
+                except Exception:
+                    logger.exception(
+                        "cloud_sync: transcode enqueue failed for %s — "
+                        "video will play from the original mp4 but "
+                        "won't get a poster thumbnail until requeued",
+                        image.id,
+                    )
+
+            # AI jobs gated on the cloud link's opt-in toggle.
+            if not skip_ai_training:
+                needs_faces = (
+                    image.category in ("image", "video")
+                    and image.pending_face_scan
+                )
+                needs_summary = image.pending_summary
+                try:
+                    if needs_faces and needs_summary:
+                        await job_q.enqueue_face_scan_then_summarize(
+                            user.id, image.id,
+                        )
+                    elif needs_faces:
+                        await job_q.enqueue_face_scan(user.id, image.id)
+                    elif needs_summary:
+                        # enqueue_summarize signature is just (image_id,)
+                        # — the worker resolves user_id from the row.
+                        await job_q.enqueue_summarize(image.id)
+                except Exception:
+                    logger.exception(
+                        "cloud_sync: AI job enqueue failed for %s — "
+                        "row stays pending; the summarize-progress "
+                        "poll will pick it up as a safety net",
+                        image.id,
+                    )
         except Exception:
             logger.exception("ingest failed for %s", entry["name"])
             continue
@@ -686,11 +774,47 @@ def _provider_display_name(provider: CloudProvider) -> str:
     }.get(provider, provider.title())
 
 
+async def _is_folder_path_excluded(
+    session: AsyncSession,
+    user_id: UUID,
+    provider: str,
+    remote_parent_path: str,
+) -> bool:
+    """Return True if the user has soft-deleted a synced folder at
+    `remote_parent_path` OR at any of its ancestors. Used by the
+    file-level sync loop to skip files whose containing folder the
+    user explicitly removed — without this, deleting a Drive folder
+    in neuthek pulls every file inside it back on the next sync."""
+    # Check the exact path AND every ancestor prefix. e.g. for
+    # "Trip 2024/Day 1/morning" we check that exact string PLUS
+    # "Trip 2024/Day 1" PLUS "Trip 2024".
+    candidates = [remote_parent_path]
+    cur = remote_parent_path
+    while "/" in cur:
+        cur = cur.rsplit("/", 1)[0]
+        candidates.append(cur)
+    if not candidates:
+        return False
+    row = (
+        await session.execute(
+            select(Folder.id).where(
+                Folder.user_id == user_id,
+                Folder.cloud_provider == provider,
+                Folder.cloud_remote_path.in_(candidates),
+                Folder.deleted_at.is_not(None),
+            )
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
 async def _ensure_remote_folder_tree(
     session: AsyncSession,
     user: User,
     root_name: str,
     *,
+    provider: str,
     all_remote_parent_paths: set[str],
 ) -> dict[str, UUID]:
     """Materialize the synthesized folder tree for a provider.
@@ -703,10 +827,40 @@ async def _ensure_remote_folder_tree(
     Re-runs are idempotent — existing folders are reused via the
     `(user_id, parent, lower(name))` partial unique index from
     migration 0010.
+
+    Excluded-folder semantics (migration 0039): if the user has
+    soft-deleted a synced folder at the same remote_path, we do NOT
+    recreate it under the same name+parent — that's how previous
+    syncs ended up duplicating "Google Drive" folders every time
+    the user deleted them. Instead we omit that path (and every
+    subpath) from the returned map; the caller's file loop then
+    sees them as unreachable and skips the contained files.
     """
     from sqlalchemy.exc import IntegrityError
 
-    async def _get_or_create(parent_id: UUID | None, name: str) -> UUID:
+    async def _get_or_create(
+        parent_id: UUID | None, name: str, remote_path: str,
+    ) -> UUID | None:
+        """Returns the folder id, or None when the user has explicitly
+        excluded this remote_path (soft-deleted synced folder)."""
+        # First: is there a SOFT-DELETED synced folder at this exact
+        # remote_path? If so, that's the user's "exclude" marker — do
+        # not resurrect, do not create a new sibling with the same
+        # name. Return None so the caller drops the whole subtree.
+        excluded = (
+            await session.execute(
+                select(Folder.id).where(
+                    Folder.user_id == user.id,
+                    Folder.cloud_provider == provider,
+                    Folder.cloud_remote_path == remote_path,
+                    Folder.deleted_at.is_not(None),
+                )
+                .limit(1)
+            )
+        ).first()
+        if excluded is not None:
+            return None
+
         existing = (
             await session.execute(
                 select(Folder).where(
@@ -719,9 +873,18 @@ async def _ensure_remote_folder_tree(
             )
         ).scalar_one_or_none()
         if existing is not None:
+            # Backfill provenance on first sync after migration 0039
+            # — pre-existing rows have NULL cloud_* fields, but they
+            # ARE synced folders. Tag them so future deletes are
+            # honoured.
+            if not existing.cloud_provider:
+                existing.cloud_provider = provider
+                existing.cloud_remote_path = remote_path
             return existing.id
         folder = Folder(
             user_id=user.id, parent_folder_id=parent_id, name=name,
+            cloud_provider=provider,
+            cloud_remote_path=remote_path,
         )
         session.add(folder)
         try:
@@ -743,7 +906,16 @@ async def _ensure_remote_folder_tree(
             return existing.id
         return folder.id
 
-    root_id = await _get_or_create(None, root_name)
+    # Root folder. Its `cloud_remote_path` is the empty string ""
+    # which acts as a sentinel — the user can soft-delete the root
+    # "Google Drive" folder and the whole subtree gets dropped
+    # from sync without us needing to enumerate every descendant.
+    root_id = await _get_or_create(None, root_name, "")
+    if root_id is None:
+        # User has excluded the root folder entirely. Nothing more
+        # to materialize; caller treats this as "no folders, drop
+        # everything from this sync run."
+        return {}
     folder_ids_by_path: dict[str, UUID] = {"": root_id}
 
     # Each parent path looks like `a/b/c`. We collect each prefix +
@@ -759,8 +931,14 @@ async def _ensure_remote_folder_tree(
     for path in sorted(needed_paths, key=lambda p: p.count("/")):
         parent_path = path.rsplit("/", 1)[0] if "/" in path else ""
         leaf_name = path.rsplit("/", 1)[-1]
-        parent_id = folder_ids_by_path.get(parent_path) or root_id
-        folder_ids_by_path[path] = await _get_or_create(parent_id, leaf_name)
+        parent_id = folder_ids_by_path.get(parent_path)
+        if parent_id is None:
+            # Either the parent path didn't get built (ancestor was
+            # excluded) — drop this whole subtree too.
+            continue
+        fid = await _get_or_create(parent_id, leaf_name, path)
+        if fid is not None:
+            folder_ids_by_path[path] = fid
 
     return folder_ids_by_path
 
@@ -825,9 +1003,27 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
 
         out: list[dict] = []
         page_token = None
+        # 2026-05 change: drop the `mimeType contains 'image/'` filter.
+        # Before this, sync only pulled photos — the user's videos /
+        # documents / audio / archives never made it into neuthek even
+        # though we accept all of them on direct upload. Now we list
+        # EVERY non-folder file in the user's Drive and let the import
+        # path filter by what neuthek can actually handle. Google's
+        # native Docs / Sheets / Slides (mimeType `application/vnd.google-apps.*`)
+        # are skipped server-side — they can't be downloaded as bytes
+        # without an export step, which is a separate workstream.
+        #
+        # Filter: NOT a Google-native doc (those need export) AND NOT
+        # trashed. Drive returns folders separately; we already walked
+        # those above into `folder_map`.
+        DRIVE_FILES_QUERY = (
+            "trashed = false "
+            "and not mimeType contains 'application/vnd.google-apps' "
+            "and mimeType != 'application/vnd.google-apps.folder'"
+        )
         while True:
             resp = drive.files().list(
-                q="mimeType contains 'image/' and trashed = false",
+                q=DRIVE_FILES_QUERY,
                 spaces="drive",
                 fields=(
                     "nextPageToken, "
@@ -863,6 +1059,90 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
         return out
 
     return await asyncio.to_thread(_work)
+
+
+# ---------- Provider stats (Drive size discovery) ----------
+#
+# Surfaces "how big is this account's library on the provider side"
+# so the storage panel can honestly say "your Drive holds 28 GB
+# across 1,247 files; we've mirrored 59 of those here." Without this,
+# the user sees neuthek's local 1 GB usage and can't reconcile it
+# with the 28 GB Drive zip they downloaded directly from Google.
+
+
+async def _drive_folder_stats(refresh_token: str) -> dict:
+    """Walk all non-folder, non-Google-native files in this user's Drive
+    and sum `size`. Excludes trashed items. One-shot, paginates server-
+    side. Returns `{file_count, total_bytes}` — the same shape we'd
+    show in the storage panel header.
+
+    Drive's `about.get()` is global account quota (all of Google,
+    not just the user's library) so we walk files explicitly.
+    Reasonably fast — `pageSize=1000` * O(1) per page; an account
+    with 50K files returns in ~3 s.
+    """
+    import asyncio
+
+    def _work() -> dict:
+        drive = _drive_client(refresh_token)
+        count = 0
+        total = 0
+        page_token: str | None = None
+        # Same query shape as the enumerator above — drop Google-native
+        # docs (`application/vnd.google-apps.*`) because they have no
+        # `size` and can't be downloaded as bytes.
+        q = (
+            "trashed = false "
+            "and not mimeType contains 'application/vnd.google-apps' "
+            "and mimeType != 'application/vnd.google-apps.folder'"
+        )
+        while True:
+            resp = drive.files().list(
+                q=q,
+                spaces="drive",
+                fields="nextPageToken, files(id,size)",
+                pageToken=page_token,
+                pageSize=1000,
+            ).execute()
+            for f in resp.get("files", []):
+                count += 1
+                # `size` is a string in Drive's JSON; cast safely.
+                sz = f.get("size")
+                if sz:
+                    try:
+                        total += int(sz)
+                    except (TypeError, ValueError):
+                        pass
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return {"file_count": count, "total_bytes": total}
+
+    return await asyncio.to_thread(_work)
+
+
+async def provider_folder_stats(
+    provider: str, refresh_token_enc: bytes,
+) -> dict | None:
+    """Dispatch to the per-provider stats walker. Returns None on any
+    failure (revoked token / network down / Google API hiccup) so the
+    storage panel can degrade gracefully — the rest of the page
+    renders fine, the linked-services row just hides the "X total
+    in Drive" line. Decryption errors are caught here so a misconfigured
+    Fernet key doesn't kill the whole `/storage/usage` call."""
+    from backend.secret_box import decrypt
+
+    try:
+        refresh_token = decrypt(refresh_token_enc)
+    except Exception:
+        logger.warning("provider_folder_stats: refresh-token decrypt failed for %s", provider)
+        return None
+    try:
+        if provider == "google_drive":
+            return await _drive_folder_stats(refresh_token)
+    except Exception:
+        logger.exception("provider_folder_stats: %s walk failed", provider)
+    return None
 
 
 # ---------- GitHub ------------------------------------------------------

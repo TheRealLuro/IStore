@@ -123,6 +123,9 @@ async def hard_delete_images(
     # face crops) — useful for the A5 integration test + operator
     # forensics.
     blob_targets: list[tuple[str, str, str]] = []
+    # HLS prefixes that need a list-and-delete sweep (collected separately
+    # because they fan out to N segment objects each).
+    hls_prefixes: list[str] = []
     for img in images:
         if img.original_blob_key:
             blob_targets.append((storage.bucket_originals, img.original_blob_key, "original"))
@@ -130,6 +133,31 @@ async def hard_delete_images(
             blob_targets.append((storage.bucket_served, img.served_blob_key, "served"))
         if img.thumbnail_blob_key:
             blob_targets.append((storage.bucket_served, img.thumbnail_blob_key, "thumbnail"))
+        # Video / audio variants — legacy multi-tier mp4s AND new HLS.
+        # `served_variants` JSONB shapes:
+        #   Legacy mp4:  {"480p": "...key.mp4", "720p": "...key.mp4", ...}
+        #   HLS (2026-05): {"hls_master": "...master.m3u8",
+        #                   "hls_prefix": "users/.../hls/<job>/<id>",
+        #                   "renditions": [...]}
+        # We collect every variant blob explicitly, and for HLS we also
+        # walk the `hls_prefix` to delete every segment + per-rendition
+        # playlist. Before this, emptying Trash left hundreds of MB of
+        # HLS .ts segments orphaned in the served bucket.
+        sv = img.served_variants or {}
+        if isinstance(sv, dict):
+            for label, v in sv.items():
+                if label in ("hls_master", "hls_prefix", "renditions"):
+                    continue
+                key = v if isinstance(v, str) else (
+                    v.get("key") if isinstance(v, dict) else None
+                )
+                if key and key != img.served_blob_key:
+                    blob_targets.append(
+                        (storage.bucket_served, key, "variant"),
+                    )
+            hp = sv.get("hls_prefix") if isinstance(sv, dict) else None
+            if hp:
+                hls_prefixes.append(hp)
 
     # Face detections live in their own table with FK CASCADE on
     # images.id — the row deletion below will drop them automatically.
@@ -154,7 +182,10 @@ async def hard_delete_images(
     # continues so a transient bucket outage on one object doesn't
     # block the row cleanup. The per-kind counters let callers verify
     # which class of object was affected.
-    kind_count: dict[str, int] = {"original": 0, "served": 0, "thumbnail": 0, "face_crop": 0}
+    kind_count: dict[str, int] = {
+        "original": 0, "served": 0, "thumbnail": 0, "face_crop": 0,
+        "variant": 0, "hls_segment": 0,
+    }
     blob_errors = 0
     for bucket, key, kind in blob_targets:
         try:
@@ -167,15 +198,81 @@ async def hard_delete_images(
                 bucket, key, kind, exc,
             )
 
-    # Phase 3 — drop cloud_files pointers for these images. The FK
-    # column has ondelete=SET NULL, so without this the rows survive
-    # account deletion with a NULL local_image_id; we'd rather drop
-    # them since they no longer point anywhere meaningful.
-    await session.execute(
-        delete(CloudFile).where(
-            CloudFile.user_id == user_id, CloudFile.local_image_id.in_(ids),
-        )
+    # Phase 2b — HLS prefix sweep. For every video transcoded with the
+    # 2026-05+ HLS pipeline, `served_variants["hls_prefix"]` holds the
+    # parent directory under which dozens of .ts segment files +
+    # per-rendition playlists live. The keys aren't listed individually
+    # in the row, so we walk MinIO by prefix and delete each match.
+    # Without this sweep, a single 30s video's deletion can leave ~30
+    # segment files orphaned (~50 MB+ per video).
+    for prefix in hls_prefixes:
+        try:
+            # `recursive=True` walks every object under the prefix,
+            # including sub-paths like `<prefix>/master/segment_001.ts`.
+            objects = list(storage.client.list_objects(
+                storage.bucket_served, prefix=prefix.rstrip("/") + "/",
+                recursive=True,
+            ))
+        except Exception as exc:
+            blob_errors += 1
+            logger.warning(
+                "delete hls prefix list failed prefix=%s err=%s", prefix, exc,
+            )
+            continue
+        for obj in objects:
+            key = getattr(obj, "object_name", None)
+            if not key:
+                continue
+            try:
+                storage.delete(storage.bucket_served, key)
+                kind_count["hls_segment"] = kind_count.get("hls_segment", 0) + 1
+            except Exception as exc:
+                blob_errors += 1
+                logger.warning(
+                    "delete hls segment failed key=%s err=%s", key, exc,
+                )
+
+    # Phase 3 — handle cloud_files pointers. There are two cases:
+    #
+    # (a) `account.delete` / `account.images.delete`: the user is
+    #     dropping their account entirely OR explicitly nuking these
+    #     images. Drop the cloud_files rows too — there's nothing
+    #     left to track and the FK SET NULL would otherwise leave
+    #     dangling rows.
+    #
+    # (b) `account.trash.empty.image` / `image.bulk_purge` / single
+    #     `image.purge`: user soft-deleted, then chose to empty
+    #     Trash. The cloud_files row should be KEPT and marked
+    #     `excluded_at` so the next sync doesn't re-import the file
+    #     from the provider. Without this tombstone, every
+    #     "empty trash" was followed by the same files reappearing
+    #     on the next hourly sweep.
+    keep_as_tombstone = audit_action in (
+        "account.trash.empty.image",
+        "image.bulk_purge",
+        "image.purge",
     )
+    if keep_as_tombstone:
+        from datetime import datetime as _dt, timezone as _tz
+        from sqlalchemy import update as sa_update
+        await session.execute(
+            sa_update(CloudFile)
+            .where(
+                CloudFile.user_id == user_id,
+                CloudFile.local_image_id.in_(ids),
+                CloudFile.excluded_at.is_(None),
+            )
+            .values(
+                excluded_at=_dt.now(_tz.utc),
+                local_image_id=None,
+            )
+        )
+    else:
+        await session.execute(
+            delete(CloudFile).where(
+                CloudFile.user_id == user_id, CloudFile.local_image_id.in_(ids),
+            )
+        )
 
     # Phase 4 — delete the image rows. FK CASCADEs run for:
     #   * image_tags          (CASCADE on image_id)

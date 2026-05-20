@@ -22,6 +22,8 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Icon } from "./icons.jsx";
 import { getStreamInfo, getStreamUrl } from "@/api/files";
+import { API_BASE_URL, tokens } from "@/api/client";
+import Hls from "hls.js";
 
 const AUTOPLAY_KEY = "neuthek.video.autoplay_sound";
 
@@ -59,14 +61,55 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
   const [quality, setQuality] = useState(null);   // current label
   const [showQualityMenu, setShowQualityMenu] = useState(false);
 
+  // HLS state — set when the row was transcoded by the 2026-05+
+  // pipeline. `hlsUrl` is the master.m3u8 URL; `hlsRenditions` is the
+  // resolution ladder for the quality picker. When these are set the
+  // player binds hls.js to <video> instead of using `streamUrl` as
+  // an `src=`. The hls.js instance handles quality switching itself
+  // (level === -1 = auto-adapt).
+  const [hlsUrl, setHlsUrl] = useState(null);
+  const [hlsRenditions, setHlsRenditions] = useState([]); // [{label,width,height,bandwidth_bps}]
+  const [hlsLevel, setHlsLevel] = useState(-1);           // -1 = auto, else array index
+  // `hlsActiveLevel` is the level hls.js is CURRENTLY playing
+  // (whether the user picked it or the ABR algorithm did). Different
+  // from `hlsLevel` which is the user's MANUAL pick — in auto mode
+  // `hlsLevel === -1` but `hlsActiveLevel` follows whatever the
+  // adapter chose. The quality button shows both: "Auto (720p)".
+  const [hlsActiveLevel, setHlsActiveLevel] = useState(-1);
+  // `hlsLevels` is the level array snapshot from hls.js. Lives in
+  // React state so the menu re-renders when the manifest finishes
+  // parsing (Hls.Events.MANIFEST_PARSED) — relying on `hlsRef.current.levels`
+  // alone meant the menu was empty the first time the user opened
+  // it because React didn't know to re-render.
+  const [hlsLevels, setHlsLevels] = useState([]);
+  // Live bandwidth estimate — hls.js exposes its measured throughput
+  // via Hls.Events.FRAG_LOADED. We surface it as a small badge so the
+  // user can see WHY auto mode picked the rendition it did.
+  const [hlsBandwidthKbps, setHlsBandwidthKbps] = useState(0);
+  // Buffering / quality-switch overlay state. True while hls.js is
+  // mid-segment-fetch on a new level OR the video element fires
+  // `waiting` (it ran out of buffered bytes).
+  const [hlsBuffering, setHlsBuffering] = useState(false);
+  const hlsRef = useRef(null);
+
   useEffect(() => {
     let cancelled = false;
     setStreamUrl(null);
     setQualities([]);
     setQuality(null);
+    setHlsUrl(null);
+    setHlsRenditions([]);
+    setHlsLevel(-1);
     getStreamInfo(fileId)
       .then((info) => {
         if (cancelled) return;
+        // HLS pipeline first — when stream-info says mode=hls the
+        // legacy mp4 picker is irrelevant.
+        if (info?.mode === "hls" && info?.hls_url) {
+          setHlsUrl(`${API_BASE_URL}${info.hls_url}`);
+          setHlsRenditions(info.renditions || []);
+          return;
+        }
         const picks = info?.qualities || [];
         setQualities(picks);
         // Honor the user's per-device default-quality preference
@@ -91,6 +134,141 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
       .catch(() => { if (!cancelled) setStreamUrl(null); });
     return () => { cancelled = true; };
   }, [fileId]);
+
+  // HLS attach/detach. Runs only when we have an hls_url. Safari
+  // (and iOS WebKit generally) plays HLS natively via <video src> —
+  // we detect that and skip hls.js entirely so the OS player owns
+  // the session. Everyone else uses hls.js with our Bearer token
+  // injected on every segment fetch via `xhrSetup`.
+  useEffect(() => {
+    if (!hlsUrl) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const canNativeHls = video.canPlayType("application/vnd.apple.mpegurl");
+    if (canNativeHls) {
+      // Safari path. We still need auth on the segment fetches —
+      // Safari sends cookies but our API uses Bearer tokens. Workaround
+      // is to set the cookie too OR fall through to hls.js even on
+      // Safari. For now, prefer hls.js everywhere we can — Safari can
+      // run it, just without MSE optimisations. Cleaner story.
+      // (Drop into the hls.js branch below.)
+    }
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        // Cookie auth: send the HttpOnly session cookie on every
+        // manifest + segment fetch via XHR `withCredentials`.
+        // Legacy localStorage Bearer is still set if the user is on
+        // a pre-cookie session — we add it via xhrSetup so the same
+        // session continues to play through transition.
+        xhrSetup(xhr) {
+          xhr.withCredentials = true;
+          try {
+            const legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt");
+            if (legacy) xhr.setRequestHeader("Authorization", `Bearer ${legacy}`);
+          } catch { /* private browsing */ }
+        },
+        // Modest startup buffer — gets the spinner off the screen
+        // faster while still letting the ABR logic settle.
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+      });
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(video);
+      hlsRef.current = hls;
+
+      // Live level / bandwidth surfacing for the UI badges. We
+      // listen for:
+      //   MANIFEST_PARSED → snapshot the level array into React
+      //   LEVEL_SWITCHED  → update `hlsActiveLevel` so the
+      //                      "Auto (720p)" readout stays accurate
+      //   FRAG_LOADED     → update measured bandwidth in kbps
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        const levels = (hls.levels || []).map((lvl) => ({
+          width: lvl.width,
+          height: lvl.height,
+          bitrate: lvl.bitrate,
+        }));
+        setHlsLevels(levels);
+        setHlsActiveLevel(hls.currentLevel);
+
+        // Honor the user's Streaming-quality preset (Settings →
+        // Playback) on first play. "auto" = let hls.js adapt
+        // (level === -1, the default). "best" locks to the highest
+        // rendition. "saver" locks to the lowest. "custom" leaves
+        // it at -1 too but the user is expected to flip per video.
+        let preset = "auto";
+        try {
+          preset = localStorage.getItem("neuthek.video.quality_preset") || "auto";
+        } catch {}
+        if (preset === "best" && levels.length > 0) {
+          const highest = levels.length - 1;
+          hls.currentLevel = highest;
+          setHlsLevel(highest);
+        } else if (preset === "saver" && levels.length > 0) {
+          hls.currentLevel = 0;
+          setHlsLevel(0);
+        }
+      });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_evt, data) => {
+        setHlsActiveLevel(data.level);
+        // Briefly show the buffering overlay so the user gets visual
+        // confirmation that quality is shifting; auto-clear after the
+        // first FRAG_LOADED at the new level.
+        setHlsBuffering(true);
+      });
+      hls.on(Hls.Events.FRAG_LOADED, (_evt, data) => {
+        setHlsBuffering(false);
+        // hls.js exposes the rolling average via the bandwidth
+        // estimator; falls back to instantaneous from the latest
+        // fragment when unavailable.
+        const avg = Math.round(
+          (hls.bandwidthEstimate ?? data?.frag?.stats?.bwEstimate ?? 0) / 1000,
+        );
+        if (avg > 0) setHlsBandwidthKbps(avg);
+      });
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        // Non-fatal hiccups are common during quality switches —
+        // hls.js recovers itself. Only log fatal errors so the dev
+        // console isn't noisy.
+        if (data?.fatal) {
+          console.warn("hls fatal:", data.type, data.details);
+          // Network errors are usually a stale auth token — try
+          // to recover by re-loading the source.
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            try { hls.startLoad(); } catch {}
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            try { hls.recoverMediaError(); } catch {}
+          }
+        }
+      });
+    } else if (canNativeHls) {
+      // Native HLS playback — Safari only. Set Authorization via a
+      // pre-signed cookie isn't viable here; for now Safari users
+      // need to be logged in via cookie session. Falls back to the
+      // browser's own ABR. Rare path; ship and iterate.
+      video.src = hlsUrl;
+    }
+
+    return () => {
+      const hls = hlsRef.current;
+      if (hls) {
+        try { hls.destroy(); } catch {}
+        hlsRef.current = null;
+      }
+    };
+  }, [hlsUrl]);
+
+  // Manual quality pick from the menu. -1 → auto (hls.js picks
+  // based on measured throughput). Anything else maps to a level
+  // index in the hls.js levels array.
+  const setHlsQualityLevel = (level) => {
+    const hls = hlsRef.current;
+    if (!hls) return;
+    hls.currentLevel = level;
+    setHlsLevel(level);
+  };
 
   // Used on the <video onError=> path AND when the user picks a
   // new quality. Refreshes the URL for whatever `quality` is
@@ -141,7 +319,18 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
-  const [speed, setSpeed] = useState(1.0);
+  // Initial playback speed honours the per-device preference set
+  // in Settings → Playback → Default playback speed. Falls back to
+  // 1× when the localStorage key is missing or malformed.
+  const [speed, setSpeed] = useState(() => {
+    try {
+      const raw = localStorage.getItem("neuthek.video.default_speed");
+      const n = parseFloat(raw || "");
+      return Number.isFinite(n) && n > 0 ? n : 1.0;
+    } catch {
+      return 1.0;
+    }
+  });
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [scrubbing, setScrubbing] = useState(false);
   const [showConsent, setShowConsent] = useState(false);
@@ -308,15 +497,35 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
         }
       }}
     >
-      {!streamUrl && (
+      {!streamUrl && !hlsUrl && (
         <div className="video-player__loading">
           <div className="video-player__spinner" />
           <span>Loading video…</span>
         </div>
       )}
+      {/* Buffering / quality-switch overlay. Shown ONLY when the
+          video has already started (we have a duration) and is now
+          paused waiting for bytes — the initial-load spinner above
+          handles the first-paint case. Subtle so it doesn't dominate
+          the frame; the spinner is centered, the message names what
+          the player is doing. */}
+      {hlsBuffering && duration > 0 && (
+        <div className="video-player__buffering" aria-live="polite">
+          <div className="video-player__spinner video-player__spinner--sm" />
+          <span>
+            {hlsActiveLevel !== hlsLevel && hlsLevel !== -1
+              ? `Switching to ${hlsLevels[hlsLevel]?.height || ""}p…`
+              : "Buffering…"}
+          </span>
+        </div>
+      )}
       <video
         ref={videoRef}
-        src={streamUrl || undefined}
+        // In HLS mode `src` is owned by hls.js (attachMedia) — we
+        // don't set it here, otherwise the browser tries to play the
+        // manifest as a binary file. Legacy mp4 mode keeps the
+        // signed `streamUrl` as src.
+        src={hlsUrl ? undefined : (streamUrl || undefined)}
         className="video-player__media"
         onPlay={() => {
           setPlaying(true);
@@ -329,7 +538,17 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
           onPlayingChange && onPlayingChange(false);
         }}
         onTimeUpdate={onTimeUpdate}
-        onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); }}
+        onLoadedMetadata={(e) => {
+          setDuration(e.currentTarget.duration);
+          // Apply the default-speed preference once the element has
+          // a manifest / metadata. Doing it on mount races with
+          // hls.js's own attachMedia path; doing it here is
+          // load-order-independent.
+          try { e.currentTarget.playbackRate = speed; } catch {}
+        }}
+        onWaiting={() => setHlsBuffering(true)}
+        onPlaying={() => setHlsBuffering(false)}
+        onCanPlay={() => setHlsBuffering(false)}
         onEnded={() => {
           setPlaying(false);
           setControlsVisible(true);
@@ -484,11 +703,76 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
             />
           </div>
 
-          {/* Quality menu — only renders when the backend reported
-              more than one tier. Rows uploaded before multi-quality
-              support land here with a single "auto" entry, so the
-              menu gracefully self-hides for them. */}
-          {qualities.length > 1 && (
+          {/* Quality menu. Two render paths:
+              - HLS mode: pull renditions from `hlsLevels` (snapshot
+                of hls.js's parsed manifest). "Auto" trigger shows
+                BOTH the user's pick AND the current adapted level
+                so it's clear what's playing — "Auto (720p)" beats
+                a bare "Auto" that gives no signal. Each level
+                lists its bitrate so the user can correlate
+                quality with bandwidth cost.
+              - Legacy mp4 mode: per-tier signed URLs from `qualities`.
+              Hidden when there's only one option in either path. */}
+          {hlsUrl && hlsLevels.length > 0 ? (
+            <details
+              className="video-player__speed video-player__quality"
+              open={showQualityMenu}
+              onToggle={(e) => setShowQualityMenu(e.currentTarget.open)}
+            >
+              <summary className="btn-icon" title="Quality">
+                <span className="mono" style={{ fontSize: 12 }}>
+                  {hlsLevel === -1 ? (
+                    <>
+                      Auto
+                      {hlsActiveLevel >= 0 && hlsLevels[hlsActiveLevel] && (
+                        <span style={{ opacity: 0.55, marginLeft: 3 }}>
+                          ({hlsLevels[hlsActiveLevel].height}p)
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    (hlsLevels[hlsLevel]?.height ?? "?") + "p"
+                  )}
+                </span>
+              </summary>
+              <div className="video-player__speed-menu video-player__quality-menu">
+                <button
+                  type="button"
+                  data-active={hlsLevel === -1}
+                  onClick={() => setHlsQualityLevel(-1)}
+                  title="Auto-pick the best quality your network can sustain"
+                >
+                  <span className="video-player__quality-label">Auto</span>
+                  <span className="video-player__quality-sub">
+                    {hlsActiveLevel >= 0 && hlsLevels[hlsActiveLevel]
+                      ? `Currently ${hlsLevels[hlsActiveLevel].height}p`
+                      : "Adapts to bandwidth"}
+                  </span>
+                </button>
+                {hlsLevels.map((lvl, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    data-active={idx === hlsLevel}
+                    onClick={() => setHlsQualityLevel(idx)}
+                  >
+                    <span className="video-player__quality-label">
+                      {lvl.height}p
+                    </span>
+                    <span className="video-player__quality-sub">
+                      {lvl.bitrate ? `${Math.round(lvl.bitrate / 1000)} kbps` : ""}
+                    </span>
+                  </button>
+                ))}
+                {hlsBandwidthKbps > 0 && (
+                  <div className="video-player__quality-foot">
+                    <Icon name="cloud" size={11}/>
+                    <span>Measured: {hlsBandwidthKbps >= 1000 ? `${(hlsBandwidthKbps/1000).toFixed(1)} Mbps` : `${hlsBandwidthKbps} kbps`}</span>
+                  </div>
+                )}
+              </div>
+            </details>
+          ) : qualities.length > 1 ? (
             <details
               className="video-player__speed"
               open={showQualityMenu}
@@ -510,7 +794,7 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
                 ))}
               </div>
             </details>
-          )}
+          ) : null}
 
           <details
             className="video-player__speed"

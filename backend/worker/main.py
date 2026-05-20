@@ -78,26 +78,90 @@ async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> 
             return
 
         # Video rows: the bytes above are an MP4, not an image — face
-        # pipeline expects pixels. Extract a middle keyframe via the
-        # existing ffmpeg helper, then run detection on that. We
-        # deliberately pick ONE frame instead of every keyframe
-        # because the same face appears across all of them in a
-        # talking-head video and the existing ArcFace clusterer
-        # would only collapse them on a second pass — running once
-        # is faster and gives the same final clustering when the
-        # video really is one person.
+        # pipeline expects pixels. Sample SEVERAL keyframes across the
+        # clip and run face detection on each.
+        #
+        # We used to do a single mid-clip frame on the assumption that
+        # the same face appears throughout. In practice talking-head
+        # videos have moments where the subject looks down / off
+        # camera / their face is partially occluded by hand
+        # gestures — and a single mid-clip sample lands on those
+        # often enough that real users (the ones who recorded the
+        # video!) don't get detected. Running detection on 4 frames
+        # across the timeline catches the face on at least one of
+        # them. The ArcFace clusterer collapses duplicate embeddings
+        # of the same person into a single Person row, so multiple
+        # detections of the user across keyframes don't fragment.
         if image.category == "video":
             from backend.summarize import _extract_keyframe, _probe_video_duration
             duration = _probe_video_duration(raw)
-            seek = (duration / 2) if duration and duration > 0 else 5.0
-            frame = _extract_keyframe(raw, seek)
-            if not frame:
+            if duration and duration > 2.0:
+                # Sample 1 keyframe per 5s of duration, capped at 24
+                # frames. The OLD hardcoded 4-frame scan missed people
+                # in videos with multiple subjects across the timeline:
+                # 4 evenly-spaced samples on a 60s clip mean a person
+                # who only appears 30-40s in could land entirely
+                # between samples. Matching the summarize-side density
+                # (also 1/5s, capped at 24) means the same frames are
+                # captioned AND face-scanned — same coverage budget,
+                # better recall on multi-person videos.
+                #
+                # The ArcFace clusterer dedupes the same person across
+                # frames via cosine similarity, so running on 12-24
+                # frames doesn't fragment one person into many rows.
+                MAX_FRAMES = 24
+                SECONDS_PER_FRAME = 5.0
+                n = max(4, min(MAX_FRAMES, int(round(duration / SECONDS_PER_FRAME))))
+                if n == 1:
+                    offsets = [duration * 0.5]
+                else:
+                    offsets = [
+                        max(0.5, duration * (0.10 + (0.80 * i / (n - 1))))
+                        for i in range(n)
+                    ]
+            else:
+                offsets = [0.5, 1.5, 3.0, 5.0]
+            frames: list[bytes] = []
+            for t in offsets:
+                f = _extract_keyframe(raw, t)
+                if f:
+                    frames.append(f)
+            if not frames:
                 logger.info(
-                    "worker.face_scan: no keyframe extractable for video %s",
-                    image_id,
+                    "worker.face_scan: no keyframes extractable for video %s "
+                    "(tried %d offsets)",
+                    image_id, len(offsets),
                 )
                 return
-            raw = frame
+            logger.info(
+                "worker.face_scan: %d/%d keyframes extracted for video %s",
+                len(frames), len(offsets), image_id,
+            )
+            # Run face detection on each keyframe. Each call appends
+            # any detected faces to the image's Face rows; the
+            # clusterer dedupes via cosine similarity so the same
+            # person isn't duplicated across keyframes.
+            detected_any = False
+            for idx, frame in enumerate(frames):
+                try:
+                    n = await process_image_for_faces(s, user, image, frame)
+                    if n:
+                        detected_any = True
+                        logger.info(
+                            "worker.face_scan: keyframe %d/%d detected %d face(s)",
+                            idx + 1, len(frames), n,
+                        )
+                except Exception:
+                    logger.exception(
+                        "worker.face_scan: pipeline failed on keyframe %d for %s",
+                        idx, image_id,
+                    )
+            if not detected_any:
+                logger.info(
+                    "worker.face_scan: no faces detected across %d keyframes for %s",
+                    len(frames), image_id,
+                )
+            return
 
         try:
             await process_image_for_faces(s, user, image, raw)
@@ -120,9 +184,9 @@ async def _process_transcode_video(
     from tempfile import TemporaryDirectory
     from uuid import uuid4
 
+    from backend.hls import transcode_to_hls_async
     from backend.models import Image
     from backend.storage import storage
-    from backend.transcode import transcode_video_async
 
     async with session_factory() as s:
         image = (
@@ -159,57 +223,81 @@ async def _process_transcode_video(
             return
 
         try:
-            result = await transcode_video_async(src_path, work)
+            result = await transcode_to_hls_async(src_path, work)
         except Exception:
-            logger.exception("worker.transcode: ffmpeg failed for %s", image_id)
+            logger.exception("worker.transcode: hls encode failed for %s", image_id)
             return
 
+        master = result.renditions[0]
         logger.info(
-            "worker.transcode: %s — %d tiers, %dx%d default, %.1fMB total, %s, %.1fs duration",
-            image_id, len(result.variants),
-            result.width, result.height,
-            sum(v.size for v in result.variants) / 1_000_000,
+            "worker.transcode: %s — HLS, %d renditions, master %dx%d, "
+            "%.1f MB total, %s, %.1fs duration",
+            image_id, len(result.renditions),
+            master.width, master.height,
+            result.total_bytes / 1_000_000,
             "GPU" if result.used_gpu else "CPU", result.duration_s,
         )
 
-        # Upload one MP4 per quality tier. Variant keys share a per-job
-        # prefix so a future bulk-delete by prefix is one S3 op rather
-        # than N. The default tier's key also goes into
-        # `served_blob_key` so existing read paths (which don't know
-        # about quality variants) keep working.
-        upload_prefix = f"users/{user_id}/served/{uuid4().hex}/{image.id}"
-        served_variants_map: dict[str, str] = {}
-        served_key: str | None = None
+        # Upload the HLS bundle to the served bucket. Layout:
+        #   users/<uid>/hls/<job>/master.m3u8
+        #   users/<uid>/hls/<job>/<label>/playlist.m3u8
+        #   users/<uid>/hls/<job>/<label>/segment_NNN.ts
+        # The whole bundle shares ONE prefix per job so a future
+        # bulk-delete-by-prefix is one S3 op rather than N. The
+        # prefix also doubles as the auth boundary the stream-HLS
+        # endpoint resolves against — every fetch under this prefix
+        # is gated to this image's owner.
+        hls_prefix = f"users/{user_id}/hls/{uuid4().hex}/{image.id}"
+        master_key = f"{hls_prefix}/master.m3u8"
+        uploaded_keys: list[str] = []  # for cleanup on later failure
+
+        async def _put(key: str, data: bytes, mime: str) -> None:
+            await asyncio.to_thread(
+                storage.put, storage.bucket_served, key, data, mime,
+            )
+            uploaded_keys.append(key)
+
         try:
-            for v in result.variants:
-                key = f"{upload_prefix}_{v.label}.mp4"
-                await asyncio.to_thread(
-                    storage.put,
-                    storage.bucket_served, key,
-                    v.path.read_bytes(),
-                    "video/mp4",
+            # Master variant playlist.
+            await _put(
+                master_key,
+                result.master_playlist_path.read_bytes(),
+                "application/vnd.apple.mpegurl",
+            )
+            # Each rendition: playlist + every segment.
+            for r in result.renditions:
+                rkey = f"{hls_prefix}/{r.label}/playlist.m3u8"
+                await _put(
+                    rkey, r.playlist_path.read_bytes(),
+                    "application/vnd.apple.mpegurl",
                 )
-                served_variants_map[v.label] = key
-                if v.label == result.default_label:
-                    served_key = key
+                for seg in r.segment_paths:
+                    skey = f"{hls_prefix}/{r.label}/{seg.name}"
+                    await _put(
+                        skey, seg.read_bytes(), "video/mp2t",
+                    )
         except Exception:
             logger.exception(
-                "worker.transcode: served upload failed for %s", image_id,
+                "worker.transcode: HLS upload failed for %s — cleaning up",
+                image_id,
             )
-            return
-        if served_key is None:
-            # Defensive — _tiers_for_source always yields at least one.
-            logger.error("worker.transcode: no default tier for %s", image_id)
+            for k in uploaded_keys:
+                try:
+                    await asyncio.to_thread(
+                        storage.delete, storage.bucket_served, k,
+                    )
+                except Exception:
+                    pass
             return
 
-        # Upload poster JPEG into the served bucket too (same lifecycle
-        # as the video — they're a unit).
+        # Poster JPEG into the served bucket too. Same lifecycle as
+        # the HLS bundle — gallery card reads `thumbnail_blob_key`
+        # for its background-image.
         poster_key: str | None = None
         try:
-            poster_key = f"users/{user_id}/served/{uuid4().hex}/{image.id}_poster.jpg"
-            await asyncio.to_thread(
-                storage.put,
-                storage.bucket_served, poster_key,
+            poster_key = f"{hls_prefix}/poster.jpg"
+            await _put(
+                poster_key,
                 result.poster_path.read_bytes(),
                 "image/jpeg",
             )
@@ -220,9 +308,26 @@ async def _process_transcode_video(
             )
             poster_key = None
 
-        # Persist column updates BEFORE deleting the original. If the
-        # commit fails we'd rather have orphaned served bytes than a
-        # row pointing at a deleted original.
+        # `served_variants` now records the HLS prefix + the
+        # rendition list with their bandwidths + resolutions. The
+        # streaming endpoint reads `hls_prefix` to resolve segment
+        # requests, and the frontend player reads `renditions` to
+        # decide whether to use hls.js at all.
+        served_variants = {
+            "hls_master": master_key,
+            "hls_prefix": hls_prefix,
+            "renditions": [
+                {
+                    "label": r.label,
+                    "width": r.width,
+                    "height": r.height,
+                    "bandwidth_bps": r.bandwidth_bps,
+                }
+                for r in result.renditions
+            ],
+        }
+
+        # Persist column updates BEFORE deleting the original.
         original_key_to_delete: str | None = None
         async with session_factory() as s:
             image2 = (
@@ -230,10 +335,8 @@ async def _process_transcode_video(
             ).scalar_one_or_none()
             if image2 is None:
                 # Row deleted while we were transcoding — clean up
-                # every served blob we just wrote so nothing orphans.
-                cleanup_keys: list[str] = [poster_key] if poster_key else []
-                cleanup_keys.extend(served_variants_map.values())
-                for k in cleanup_keys:
+                # every blob we just wrote.
+                for k in uploaded_keys:
                     try:
                         await asyncio.to_thread(
                             storage.delete, storage.bucket_served, k,
@@ -242,24 +345,48 @@ async def _process_transcode_video(
                         pass
                 return
             original_key_to_delete = image2.original_blob_key
-            image2.served_blob_key = served_key
-            image2.mime_type_served = "video/mp4"
-            image2.byte_size_served = result.served_size
-            image2.served_variants = served_variants_map
-            image2.width = result.width
-            image2.height = result.height
-            # `thumbnail_blob_key` is the column the gallery card pulls
-            # for its background-image. Setting it here means the video
-            # card stops showing the generic video glyph and starts
-            # showing the actual poster frame.
+            # `served_blob_key` points to the master manifest. The
+            # stream endpoint's HLS handler reads from served_variants;
+            # legacy callers that try to GET this as a single file
+            # will fetch the tiny m3u8 (a few KB) which surfaces a
+            # clean error path rather than mp4 bytes.
+            image2.served_blob_key = master_key
+            image2.mime_type_served = "application/vnd.apple.mpegurl"
+            image2.byte_size_served = result.total_bytes
+            image2.served_variants = served_variants
+            image2.width = master.width
+            image2.height = master.height
             if poster_key:
                 image2.thumbnail_blob_key = poster_key
-            # Drop the original per user policy: only keep the
-            # served copy. The blob delete happens AFTER commit so
-            # a transaction failure doesn't strand us with bytes
-            # gone + row still pointing at them.
-            image2.original_blob_key = None
-            image2.byte_size_original = None
+
+            # Respect the user's originals-retention policy. Before
+            # 2026-05 video uploads always dropped the original after
+            # transcode (the served mp4 was treated as the master).
+            # With HLS that's wrong: the renditions are re-encoded,
+            # so dropping the original means losing the only
+            # byte-identical copy. Now we set `original_expires_at`
+            # from the user's policy and let the daily sweeper drop
+            # it when the TTL passes. "immediate" policy still drops
+            # it right here (no point waiting); "forever" sets
+            # `original_expires_at = NULL` so the sweep skips it.
+            from backend.api.storage import policy_to_expiry
+            from backend.models import User as UserModel
+            owner = (
+                await s.execute(
+                    select(UserModel).where(UserModel.id == image2.user_id)
+                )
+            ).scalar_one()
+            policy = owner.original_retention_policy or "30d"
+            if policy == "immediate":
+                # Drop the bytes now — same as the legacy behavior.
+                image2.original_blob_key = None
+                image2.byte_size_original = None
+            else:
+                # Keep the original; just (re-)stamp the expiry to
+                # match the user's policy. The retention sweeper
+                # picks it up when due.
+                image2.original_expires_at = policy_to_expiry(policy)
+                original_key_to_delete = None  # don't delete blob below
             await s.commit()
 
         if original_key_to_delete:

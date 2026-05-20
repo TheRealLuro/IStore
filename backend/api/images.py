@@ -469,6 +469,30 @@ async def stream_info(
     """
     image = await _load_owned_image(image_id, user, session)
     variants = image.served_variants or {}
+
+    # HLS-mode short-circuit: when the row was transcoded by the
+    # new HLS pipeline (2026-05+), `served_variants["hls_master"]`
+    # holds the manifest key and `["renditions"]` holds the ladder.
+    # We return an `hls_url` instead of the legacy per-quality
+    # signed URLs — the player uses hls.js with that URL and
+    # adapts between renditions automatically. The legacy
+    # `qualities` array is left empty so old player builds fall
+    # back to whatever default URL the server can still mint.
+    if "hls_master" in variants:
+        rendition_list = variants.get("renditions") or []
+        return {
+            "mode": "hls",
+            # Relative URL — frontend prepends API_BASE_URL. Auth
+            # via standard Bearer header; hls.js sets it via
+            # xhrSetup, so no signed URLs required.
+            "hls_url": f"/images/{image.id}/hls/master.m3u8",
+            "renditions": rendition_list,
+            # Keep these fields shape-compatible with the legacy
+            # response so older clients don't crash on parse.
+            "default_quality": "auto",
+            "qualities": [],
+        }
+
     # Order tiers by the canonical descending size so the picker
     # reads top-down by resolution. Any unrecognized label (e.g. a
     # custom "240p" we add later) lands at the bottom in
@@ -615,6 +639,107 @@ async def stream_media(
         },
     )
 
+
+
+# ---------- HLS adaptive streaming ----------
+#
+# `served_variants["hls_master"]` (when present) points to a
+# master.m3u8 manifest in the served bucket. The video player asks
+# for that manifest, then for each rendition's playlist + segments.
+# This endpoint serves any file under the image's HLS prefix —
+# manifests, per-rendition playlists, and `.ts` segments alike —
+# with the right Content-Type so browser players don't refuse to
+# parse them.
+#
+# Auth: standard JWT (current_active_user). Unlike `/stream` (which
+# uses signed URLs because `<video src>` can't add headers), the HLS
+# player here is `hls.js` which uses XHR — so we can attach the
+# Bearer token on every segment fetch via `xhrSetup`. No signed
+# query params needed.
+
+
+_HLS_MIME_BY_EXT = {
+    ".m3u8": "application/vnd.apple.mpegurl",
+    ".ts":   "video/mp2t",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".vtt":  "text/vtt",
+}
+
+
+@router.get("/{image_id}/hls/{sub_path:path}")
+async def stream_hls(
+    image_id: UUID,
+    sub_path: str,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """Serve any file under an image's HLS prefix.
+
+    `sub_path` is a relative path like `master.m3u8`,
+    `720p/playlist.m3u8`, or `master/segment_005.ts`. We resolve it
+    against the image's recorded `hls_prefix` (set at transcode
+    time) before fetching from MinIO so a caller can't escape into
+    other users' blobs by passing `../`.
+    """
+    image = (
+        await session.execute(
+            select(Image).where(
+                Image.id == image_id,
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if image is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+
+    sv = image.served_variants or {}
+    prefix = sv.get("hls_prefix")
+    if not prefix:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "HLS not available for this file",
+        )
+
+    # Sanitise sub_path — reject anything with parent-traversal, a
+    # leading slash, NUL bytes, control characters, or backslashes
+    # (normalise to forward slash and then re-check). A clean
+    # relative path only. NUL especially matters because some
+    # filesystems / object stores truncate keys at the first \0,
+    # turning `safe.m3u8\0../../../../etc/passwd` into a valid-looking
+    # key that traverses on the storage backend's side.
+    clean = sub_path.replace("\\", "/").strip("/")
+    if (
+        not clean
+        or ".." in clean.split("/")
+        or "//" in clean
+        or any(ord(c) < 0x20 or ord(c) == 0x7F for c in clean)
+        or "\x00" in clean
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Bad sub_path")
+
+    key = f"{prefix.rstrip('/')}/{clean}"
+
+    # Pick Content-Type from the extension. Everything HLS players
+    # ask for is in `_HLS_MIME_BY_EXT`; unknown extensions get
+    # `application/octet-stream` which the player will likely reject
+    # — that's the correct behaviour (don't serve random files).
+    import os
+    _, ext = os.path.splitext(clean.lower())
+    mime = _HLS_MIME_BY_EXT.get(ext, "application/octet-stream")
+
+    try:
+        blob = await asyncio.to_thread(
+            storage.get, storage.bucket_served, key,
+        )
+    except Exception:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
+
+    headers = {
+        "Cache-Control": "private, max-age=300",
+        "Content-Length": str(len(blob)),
+    }
+    return Response(content=blob, media_type=mime, headers=headers)
 
 
 @router.get("/", response_model=list[ImageRead])
@@ -2513,7 +2638,21 @@ async def delete_image(
         )
     else:
         from datetime import datetime, timezone
-        image.deleted_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        image.deleted_at = now
+        # Tombstone the cloud_files row so the next sync doesn't
+        # resurrect the file from Drive. Migration 0039.
+        from backend.models import CloudFile
+        from sqlalchemy import update as sa_update
+        await session.execute(
+            sa_update(CloudFile)
+            .where(
+                CloudFile.user_id == user.id,
+                CloudFile.local_image_id == image.id,
+                CloudFile.excluded_at.is_(None),
+            )
+            .values(excluded_at=now)
+        )
     await session.commit()
 
 
@@ -2556,6 +2695,19 @@ async def bulk_delete(
         for img in images:
             img.deleted_at = now
         moved_ids = [img.id for img in images]
+        # Tombstone cloud_files for synced rows (migration 0039).
+        if moved_ids:
+            from backend.models import CloudFile
+            from sqlalchemy import update as sa_update
+            await session.execute(
+                sa_update(CloudFile)
+                .where(
+                    CloudFile.user_id == user.id,
+                    CloudFile.local_image_id.in_(moved_ids),
+                    CloudFile.excluded_at.is_(None),
+                )
+                .values(excluded_at=now)
+            )
     await session.commit()
     requested = {str(i) for i in ids}
     moved = {str(i) for i in moved_ids}

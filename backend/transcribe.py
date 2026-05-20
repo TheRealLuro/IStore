@@ -39,11 +39,50 @@ logger = logging.getLogger(__name__)
 _MAX_AUDIO_SECONDS = 20 * 60
 
 
-@lru_cache(maxsize=1)
+def _can_load_cublas12() -> bool:
+    """faster-whisper's CTranslate2 backend is linked against CUDA 12
+    and looks for `libcublas.so.12` + `libcudnn_ops_infer.so.8` at
+    inference time. PyTorch 2.6+ in this image bundles CUDA 13 libs
+    only (`libcublas.so.13`), so even though `ctranslate2.get_cuda_device_count()`
+    reports >0, the encode call crashes with
+    `Library libcublas.so.12 is not found or cannot be loaded`.
+    Probe for the actual .so.12 file before opting in to GPU; if it's
+    missing we silently use CPU instead of inheriting a broken model."""
+    import ctypes
+    for name in ("libcublas.so.12", "libcudnn_ops_infer.so.8"):
+        try:
+            ctypes.CDLL(name)
+        except OSError:
+            return False
+    return True
+
+
+# Module-level singletons. We used to use `functools.lru_cache` here but
+# the runtime-fallback path needed to REPLACE the cached value (when a
+# GPU encode crashed at inference time we wanted future calls to hit a
+# CPU model directly). Reassigning `_get_whisper_model.__wrapped__` does
+# NOT change what `lru_cache` actually calls — the wrapper holds the
+# original function via closure, so the cache-clear path was a no-op
+# and every transcribe attempt kept re-probing the GPU. Using a plain
+# module global with explicit assignment makes the override trivial
+# and reliable.
+_WHISPER_MODEL = None
+_WHISPER_FORCE_CPU = False
+
+
 def _get_whisper_model():
     """Load faster-whisper once per process. Returns None when the
     package isn't installed (e.g. the [ml] extras aren't on the
-    image yet, or the user opted out)."""
+    image yet, or the user opted out).
+
+    When the runtime-fallback path sets `_WHISPER_FORCE_CPU=True`
+    (after a GPU encode crashed), the next call rebuilds the model
+    on CPU and caches that. The override sticks for the lifetime of
+    the process.
+    """
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is not None:
+        return _WHISPER_MODEL
     try:
         from faster_whisper import WhisperModel  # type: ignore
     except ImportError:
@@ -54,32 +93,66 @@ def _get_whisper_model():
     # GPU so we keep VRAM minimal while running alongside Florence /
     # Qwen / OpenCLIP. CPU path uses `int8` (no float16 support).
     model_size = getattr(settings, "whisper_model_size", "base")
-    try:
-        # GPU-preferred. faster-whisper auto-detects CUDA via
-        # CTranslate2; falls back to CPU when CUDA isn't usable.
-        import ctranslate2  # type: ignore
-        if ctranslate2.get_cuda_device_count() > 0:
-            return WhisperModel(
-                model_size, device="cuda", compute_type="int8_float16",
-            )
-    except Exception:
-        pass
-    return WhisperModel(model_size, device="cpu", compute_type="int8")
+    # Only try CUDA when BOTH a device is present AND the .so.12 libs
+    # CTranslate2 needs are loadable AND we haven't already failed once
+    # at runtime. Otherwise the GPU model loads fine but crashes inside
+    # encode() with a libcublas error.
+    if not _WHISPER_FORCE_CPU:
+        try:
+            import ctranslate2  # type: ignore
+            if ctranslate2.get_cuda_device_count() > 0 and _can_load_cublas12():
+                logger.info("transcribe: loading whisper on GPU (cuda + cublas12 OK)")
+                _WHISPER_MODEL = WhisperModel(
+                    model_size, device="cuda", compute_type="int8_float16",
+                )
+                return _WHISPER_MODEL
+        except Exception:
+            logger.exception("transcribe: GPU model load failed; falling back to CPU")
+    logger.info("transcribe: loading whisper on CPU (int8)")
+    _WHISPER_MODEL = WhisperModel(model_size, device="cpu", compute_type="int8")
+    return _WHISPER_MODEL
+
+
+def _force_cpu_and_rebuild():
+    """Called by the runtime-fallback path after a GPU encode crashes
+    with libcublas/libcudnn errors. Flips the module sentinel so the
+    next `_get_whisper_model()` skips the CUDA probe entirely, then
+    drops the cached model so the next call rebuilds it."""
+    global _WHISPER_MODEL, _WHISPER_FORCE_CPU
+    _WHISPER_FORCE_CPU = True
+    _WHISPER_MODEL = None
+    return _get_whisper_model()
 
 
 def _extract_audio_wav(raw_bytes: bytes) -> Optional[bytes]:
-    """Pipe video bytes through ffmpeg, return a 16 kHz mono WAV blob.
+    """Write video bytes to a temp file, run ffmpeg against it, return a 16 kHz mono WAV blob.
 
     Whisper natively expects 16 kHz mono. Doing the resample in ffmpeg
     (which is already on PATH) is cheaper than letting faster-whisper
     do it via librosa, and it lets us cap the duration in the same
-    pass."""
+    pass.
+
+    Uses a temp file (not stdin pipe) for the same reason
+    `_extract_keyframe` does: most mp4s have the moov atom at the end
+    of the file, and ffmpeg can't seek backwards in a pipe to find
+    it. With stdin, ffmpeg fails with `partial file` at offset 0x30 on
+    every phone/screen-capture mp4 — the audio never extracts,
+    Whisper never runs, and the summary has no transcript signal.
+    """
+    import tempfile
+    import os
+    tmp_path: Optional[str] = None
     try:
+        with tempfile.NamedTemporaryFile(
+            prefix="audio-", suffix=".bin", delete=False,
+        ) as tmp:
+            tmp.write(raw_bytes)
+            tmp_path = tmp.name
         proc = subprocess.run(
             [
                 "ffmpeg",
                 "-loglevel", "error",
-                "-i", "pipe:0",
+                "-i", tmp_path,
                 "-vn",                          # drop video stream
                 "-ac", "1",                     # mono
                 "-ar", "16000",                 # 16 kHz
@@ -87,7 +160,6 @@ def _extract_audio_wav(raw_bytes: bytes) -> Optional[bytes]:
                 "-f", "wav",
                 "pipe:1",
             ],
-            input=raw_bytes,
             capture_output=True,
             timeout=120,
             check=True,
@@ -98,6 +170,10 @@ def _extract_audio_wav(raw_bytes: bytes) -> Optional[bytes]:
         # crashed — let the caller treat absence of transcript as
         # "no signal" rather than an error.
         return None
+    finally:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except OSError: pass
 
 
 def transcribe_video_audio(raw_bytes: bytes) -> Optional[str]:
@@ -118,24 +194,50 @@ def transcribe_video_audio(raw_bytes: bytes) -> Optional[str]:
     # array. We've got bytes — wrap in BytesIO and let the underlying
     # audio loader (av / soundfile) handle the WAV header.
     from io import BytesIO
-    try:
-        segments, info = model.transcribe(
+
+    def _run(m):
+        return m.transcribe(
             BytesIO(wav),
             # `beam_size=1` is the default for faster-whisper; bumping
             # to 5 improves accuracy slightly at ~2× cost. Stick with
             # 1 because the transcript is one input among many for
             # Qwen — perfect accuracy isn't the bar.
             beam_size=1,
-            # `vad_filter=True` strips silence chunks before
-            # transcription. Big win on screen-recordings with long
-            # quiet stretches (cuts ~30-50% of inference time on
-            # those clips).
-            vad_filter=True,
+            # `vad_filter=False` — when the audio is short (5-10 s)
+            # the VAD heuristic sometimes drops EVERYTHING, leaving
+            # an empty mel that crashes inside encode(). Disable it.
+            # For long clips we accept the small speed hit; accuracy
+            # matters more than transcribe time here.
+            vad_filter=False,
             # Auto language detection. faster-whisper writes the
             # detected language to `info.language` — we log it for
             # the operator but don't return it.
             language=None,
         )
+
+    try:
+        segments, info = _run(model)
+    except RuntimeError as exc:
+        # Most common failure: libcublas.so.12 missing at encode time
+        # even though the model loaded. Wipe the cached GPU model,
+        # build a fresh CPU one, and retry once.
+        msg = str(exc)
+        if "libcublas" in msg or "libcudnn" in msg or "CUDA" in msg:
+            logger.warning("transcribe: GPU encode failed (%s); retrying on CPU", msg.split(chr(10))[0])
+            try:
+                from faster_whisper import WhisperModel  # type: ignore
+                model_size = getattr(settings, "whisper_model_size", "base")
+                cpu_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                _get_whisper_model.cache_clear()
+                # Re-seed the cache so future calls hit CPU directly.
+                _get_whisper_model.__wrapped__ = lambda: cpu_model  # type: ignore[attr-defined]
+                segments, info = _run(cpu_model)
+            except Exception:
+                logger.exception("transcribe: CPU fallback also failed")
+                return None
+        else:
+            logger.exception("transcribe: whisper inference failed")
+            return None
     except Exception:
         logger.exception("transcribe: whisper inference failed")
         return None

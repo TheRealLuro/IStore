@@ -94,6 +94,17 @@ services:
       # but that key won't persist past a `down/up` cycle unless this
       # variable carries it forward.
       CLOUD_ENCRYPTION_KEY: ${CLOUD_ENCRYPTION_KEY:-}
+      # Google OAuth — used by BOTH "Sign in with Google" (auth flow)
+      # and "Connect Google Drive" (cloud sync). Set the client id +
+      # secret in the host `.env`; the redirect URIs default to the
+      # local dev hostnames and can be overridden when deploying.
+      # Without these set, /auth/google/login returns 503
+      # `not_configured` and the user sees "google auth doesn't
+      # exist" — that's the production gate, not a missing import.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
+      GOOGLE_SIGNIN_REDIRECT_URI: ${GOOGLE_SIGNIN_REDIRECT_URI:-http://localhost:8000/auth/google/callback}
       FRONTEND_BASE_URL: http://localhost:5173
       REQUIRE_SIGNED_DOWNLOADS: "false"
       # HF cache lives on the model_cache volume so a rebuild doesn't
@@ -172,6 +183,14 @@ services:
       # Same Fernet key as the API container — the worker reads
       # encrypted refresh tokens for cloud-sync jobs.
       CLOUD_ENCRYPTION_KEY: ${CLOUD_ENCRYPTION_KEY:-}
+      # Google OAuth credentials. The cloud-sync worker refreshes
+      # Drive access tokens via the same client id/secret pair the
+      # main API uses for the initial OAuth handshake, so the
+      # worker needs them too — otherwise hourly sweeps 503 with
+      # "Google OAuth client not configured" and silently fail.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
       WORKER_LOG_LEVEL: INFO

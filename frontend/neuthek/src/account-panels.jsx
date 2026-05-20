@@ -3,8 +3,9 @@
 import React, { useState as useStateSP, useMemo as useMemoSP } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
-import { Switch as SwitchSP } from "./primitives.jsx";
-import { getStorageUsage } from "@/api/storage";
+import { Switch as SwitchSP, Collapsible } from "./primitives.jsx";
+import { getStorageUsage, freeOriginalsNow, freeQualityVariants, getRetentionPolicy, setRetentionPolicy } from "@/api/storage";
+import { getProviderFolderStats } from "@/api/cloud";
 import { getSubscription, openPortal } from "@/api/billing";
 import {
   getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login,
@@ -15,12 +16,25 @@ import {
 import { backfillSummaries, backfillSummaryEmbeddings, backfillVision } from "@/api/files";
 import { API_BASE_URL, tokens } from "@/api/client";
 
-// Small helper for raw fetch() calls that need an Authorization header
-// the same way `api.*` builds one. Centralized so future header
-// changes (e.g. CSRF) land in one place.
+// Build a fetch init dict for cookie-auth + legacy-bearer fallback.
+// Cookie mode: `credentials: "include"` sends the HttpOnly session
+// cookie. Legacy mode: users mid-migration keep working via the
+// Authorization header until their session rolls over. Centralized
+// so a future auth change lands in one place.
+const authFetch = (extra = {}) => {
+  let legacy = null;
+  try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+  const headers = { ...(extra.headers || {}) };
+  if (legacy) headers.Authorization = `Bearer ${legacy}`;
+  return { credentials: "include", ...extra, headers };
+};
+// Back-compat shim — older code reads `tokenHeader()` for just the
+// headers slice. Returns headers only; callers should migrate to
+// `authFetch()` which also sets `credentials: "include"`.
 const tokenHeader = () => {
-  const t = tokens.get();
-  return t ? { Authorization: `Bearer ${t}` } : {};
+  let legacy = null;
+  try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+  return legacy ? { Authorization: `Bearer ${legacy}` } : {};
 };
 import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";
 import { useAuthStore } from "@/stores/authStore";
@@ -612,9 +626,7 @@ function FaceDetailPage() {
   const { data: people, isLoading } = useQuery({
     queryKey: ["people"],
     queryFn: async () => {
-      const r = await fetch(`${API_BASE_URL}/people/`, {
-        headers: tokenHeader(),
-      });
+      const r = await fetch(`${API_BASE_URL}/people/`, authFetch({}));
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     },
@@ -631,9 +643,7 @@ function FaceDetailPage() {
     if (busy) return;
     setBusy(true);
     try {
-      const r = await fetch(`${API_BASE_URL}/people/rescan`, {
-        method: "POST", headers: tokenHeader(),
-      });
+      const r = await fetch(`${API_BASE_URL}/people/rescan`, authFetch({ method: "POST" }));
       if (!r.ok) throw new Error("rescan failed");
       toast.success("Rescan queued. Faces will re-appear as the workers process them.");
       qc.invalidateQueries({ queryKey: ["people"] });
@@ -707,9 +717,7 @@ function FaceDetailPage() {
             if (!window.confirm("Withdraw face-recognition consent and delete every embedding? Photos are kept.")) return;
             setBusy(true);
             try {
-              const r = await fetch(`${API_BASE_URL}/consent/face-recognition/withdraw`, {
-                method: "POST", headers: tokenHeader(),
-              });
+              const r = await fetch(`${API_BASE_URL}/consent/face-recognition/withdraw`, authFetch({ method: "POST" }));
               if (!r.ok) throw new Error();
               toast.success("Face data deleted.");
               qc.invalidateQueries({ queryKey: ["people"] });
@@ -737,9 +745,7 @@ function LocationDetailPage() {
   const { data: geo, isLoading: geoLoading } = useQuery({
     queryKey: ["images-geo"],
     queryFn: async () => {
-      const r = await fetch(`${API_BASE_URL}/images/geo`, {
-        headers: tokenHeader(),
-      });
+      const r = await fetch(`${API_BASE_URL}/images/geo`, authFetch({}));
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     },
@@ -748,9 +754,7 @@ function LocationDetailPage() {
   const { data: facets } = useQuery({
     queryKey: ["facets"],
     queryFn: async () => {
-      const r = await fetch(`${API_BASE_URL}/images/facets`, {
-        headers: tokenHeader(),
-      });
+      const r = await fetch(`${API_BASE_URL}/images/facets`, authFetch({}));
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     },
@@ -801,9 +805,7 @@ function LocationDetailPage() {
             onClick={async () => {
               if (!window.confirm(`Permanently strip GPS from all ${gpsCount} existing photos? Map pins disappear.`)) return;
               try {
-                const r = await fetch(`${API_BASE_URL}/images/geo/strip-all`, {
-                  method: "POST", headers: tokenHeader(),
-                });
+                const r = await fetch(`${API_BASE_URL}/images/geo/strip-all`, authFetch({ method: "POST" }));
                 if (!r.ok) throw new Error();
                 toast.success("GPS removed from existing photos.");
               } catch {
@@ -1018,13 +1020,26 @@ const STORAGE_COLORS = {
   other:    { name: "Other",     color: "#ff9500" },
 };
 function StoragePage() {
+  const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ["storage"],
     queryFn: getStorageUsage,
     staleTime: 30_000,
   });
+  // Grand total — what's actually on disk for this user. The bar
+  // and the "X of Y" line both read this. Older builds returned just
+  // the served default-tier bytes here and quietly under-reported
+  // by 3-10× depending on how many videos + retained originals the
+  // user had.
   const used = data?.used_bytes ?? 0;
   const quota = data?.quota_bytes ?? 0;
+  const served = data?.served_bytes ?? 0;
+  const variants = data?.variants_bytes ?? 0;
+  const originals = data?.originals_bytes ?? 0;
+  const trash = data?.trash_bytes ?? 0;
+  const variantsCount = data?.variants_count ?? 0;
+  const originalsCount = data?.originals_count ?? 0;
+
   const cats = ["image", "video", "document", "other"].map((k) => {
     const def = STORAGE_COLORS[k];
     const bytes = data?.by_category?.[k] ?? 0;
@@ -1034,9 +1049,61 @@ function StoragePage() {
       color: def.color,
       bytes,
       size: fmtBytes(bytes),
-      pct: quota > 0 ? (bytes / quota) * 100 : 0,
+      // Percentages now relate to TOTAL USED so the stacked bar
+      // visually represents what fills the user's quota, instead
+      // of pretending every category is just its served-default
+      // share.
+      pct: used > 0 ? (bytes / used) * 100 : 0,
     };
   });
+
+  // What the user would have paid without our re-encoding —
+  // compression-savings line. Only meaningful when originals are
+  // still around to compare against; otherwise we hide it.
+  const compressionRatio = originals > 0 && served > 0
+    ? Math.max(0, Math.round((1 - served / originals) * 100))
+    : null;
+
+  const [busyOriginals, setBusyOriginals] = useStateSP(false);
+  const [busyVariants, setBusyVariants] = useStateSP(false);
+  const onFreeOriginals = async () => {
+    if (busyOriginals) return;
+    if (!window.confirm(
+      `Drop ${originalsCount} retained original${originalsCount === 1 ? "" : "s"} (${fmtBytes(originals)}). ` +
+      "The compressed copy stays — you can still view + download every file. " +
+      "Re-summarising AI features will use the compressed copy from this point. Continue?"
+    )) return;
+    setBusyOriginals(true);
+    try {
+      const r = await freeOriginalsNow();
+      toast.success(`Freed ${fmtBytes(r.bytes_freed)} (${r.items_dropped} originals)`);
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      qc.invalidateQueries({ queryKey: ["storage-usage"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not free originals");
+    } finally {
+      setBusyOriginals(false);
+    }
+  };
+  const onFreeVariants = async () => {
+    if (busyVariants) return;
+    if (!window.confirm(
+      `Drop ${variantsCount} extra video quality variant${variantsCount === 1 ? "" : "s"} (${fmtBytes(variants)}). ` +
+      "The default playback tier stays. Continue?"
+    )) return;
+    setBusyVariants(true);
+    try {
+      const r = await freeQualityVariants();
+      toast.success(`Freed ${fmtBytes(r.bytes_freed)} (${r.items_dropped} variants)`);
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      qc.invalidateQueries({ queryKey: ["storage-usage"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not drop variants");
+    } finally {
+      setBusyVariants(false);
+    }
+  };
+
   return (
     <>
       <DetSection title="Storage used" right={<span style={{ fontSize: 12, color: "var(--ink-3)" }}>{fmtBytes(used)} of {fmtBytes(quota)}</span>}>
@@ -1055,16 +1122,302 @@ function StoragePage() {
             ))}
           </div>
         </div>
-      </DetSection>
-
-      <DetSection title="Free up space">
-        <div className="det-card" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button className="btn btn--secondary" disabled title="Coming soon">Find duplicates</button>
-          <button className="btn btn--secondary" disabled title="Coming soon">Largest files</button>
-          <button className="btn btn--ghost" disabled title="Coming soon">Move videos to cold storage</button>
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 10, lineHeight: 1.55 }}>
+          The bar reflects every byte on disk for your account — the
+          compressed copies the viewer renders, the extra video
+          quality variants, your retained originals, and Trash.
+          {compressionRatio !== null && compressionRatio > 0 && (
+            <> Our re-encoder shrinks new uploads to about {100 - compressionRatio}% of their original size; you would be using <strong>{fmtBytes(originals + variants + trash + (served / (1 - compressionRatio / 100)) - used)}</strong> without it.</>
+          )}
         </div>
       </DetSection>
+
+      <DetSection title="Where your bytes are" desc="Click 'Free' to reclaim a section.">
+        <div className="det-card" style={{ padding: 0 }}>
+          <BytesRow
+            icon="layers" tone="green"
+            title="Compressed copies"
+            desc="The default preview shown in the viewer — never deleted while a file exists."
+            bytes={served} pct={used > 0 ? (served / used) * 100 : 0}
+          />
+          {variants > 0 && (
+            <BytesRow
+              icon="video" tone="purple"
+              title={`Video quality variants${variantsCount > 0 ? ` · ${variantsCount}` : ""}`}
+              desc={`Extra 480p / 720p / 1440p / 2160p tiers stored alongside the default. Dropping them keeps playback working at the default tier.`}
+              bytes={variants} pct={used > 0 ? (variants / used) * 100 : 0}
+              action={
+                <button className="btn btn--secondary btn--sm" onClick={onFreeVariants} disabled={busyVariants}>
+                  {busyVariants ? "Freeing…" : `Free ${fmtBytes(variants)}`}
+                </button>
+              }
+            />
+          )}
+          {originals > 0 && (
+            <BytesRow
+              icon="archive" tone="amber"
+              title={`Originals kept · ${originalsCount}`}
+              desc="Full-quality byte-identical copies kept for 30 days so AI features can re-process from the source. Drop them whenever — your library still works on the compressed copies."
+              bytes={originals} pct={used > 0 ? (originals / used) * 100 : 0}
+              action={
+                <button className="btn btn--secondary btn--sm" onClick={onFreeOriginals} disabled={busyOriginals}>
+                  {busyOriginals ? "Freeing…" : `Free ${fmtBytes(originals)}`}
+                </button>
+              }
+            />
+          )}
+          {trash > 0 && (
+            <BytesRow
+              icon="trash" tone="red"
+              title="Trash"
+              desc="Soft-deleted files. Recoverable from Trash; auto-purged after 30 days."
+              bytes={trash} pct={used > 0 ? (trash / used) * 100 : 0}
+            />
+          )}
+        </div>
+      </DetSection>
+
+      {(data?.linked_services?.length ?? 0) > 0 && (
+        <DetSection
+          title="Linked services"
+          desc="Cloud accounts you've connected. We hold compressed copies + metadata locally; the rest of the file count + size is on the provider's side."
+        >
+          <div className="det-card" style={{ padding: 0 }}>
+            {data.linked_services.map((svc) => (
+              <LinkedServiceRow key={svc.provider} svc={svc}/>
+            ))}
+          </div>
+        </DetSection>
+      )}
+
+      <RetentionPolicySection
+        originalsBytes={originals}
+        originalsCount={originalsCount}
+      />
     </>
+  );
+}
+
+// ---------- Originals retention policy ----------
+//
+// Per-user dial for "how long do we keep my originals?" Picking a
+// shorter window means we drop the bytes sooner — your quota goes
+// further but AI features (re-summarize, re-detect faces, etc.)
+// after the TTL passes have to work from the compressed copy
+// instead of the source.
+//
+// Changing the dial re-bases every retained original's expiry to
+// `uploaded_at + new_policy`. If that pushes anything into the
+// past, the sweep runs immediately and shows a "Freed X bytes"
+// toast. Picking "Forever" sets `original_expires_at = NULL`, so
+// the sweep never touches anything you upload from here on.
+const _POLICIES = [
+  {
+    value: "immediate",
+    label: "Drop immediately",
+    sub: "After AI processing finishes, the original goes. Quota stretches furthest. AI re-runs use the compressed copy.",
+  },
+  {
+    value: "24h",
+    label: "Keep for 24 hours",
+    sub: "Just enough room to re-run AI from the source the day after upload. Then the bytes go.",
+  },
+  {
+    value: "7d",
+    label: "Keep for 7 days",
+    sub: "A week's buffer. Re-summarize / re-detect within the week uses the original; after that, the compressed copy.",
+  },
+  {
+    value: "30d",
+    label: "Keep for 30 days (default)",
+    sub: "Legacy behavior. Plenty of room for a model upgrade or re-process.",
+  },
+  {
+    value: "forever",
+    label: "Keep forever",
+    sub: "Never drop the original. You always have the source bytes. Trades quota for permanence.",
+  },
+];
+function RetentionPolicySection({ originalsBytes, originalsCount }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ["retention-policy"],
+    queryFn: getRetentionPolicy,
+    staleTime: 60_000,
+  });
+  const current = data?.policy || "30d";
+  const [busy, setBusy] = useStateSP(null);
+  const onPick = async (next) => {
+    if (next === current || busy) return;
+    // For destructive picks (immediate / shorter than current),
+    // confirm explicitly because the change can drop bytes
+    // right away.
+    const isShortening = (() => {
+      const order = ["immediate", "24h", "7d", "30d", "forever"];
+      return order.indexOf(next) < order.indexOf(current);
+    })();
+    if (isShortening && originalsBytes > 0) {
+      const msg =
+        next === "immediate"
+          ? `Drop ${originalsCount} retained original${originalsCount === 1 ? "" : "s"} (${fmtBytes(originalsBytes)}) now? The compressed copy stays.`
+          : `Switch to "${_POLICIES.find(p => p.value === next).label}"? Existing originals older than the new window will be dropped now.`;
+      if (!window.confirm(msg)) return;
+    }
+    setBusy(next);
+    try {
+      const r = await setRetentionPolicy(next, true);
+      qc.invalidateQueries({ queryKey: ["retention-policy"] });
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      if (r.bytes_freed && r.bytes_freed > 0) {
+        toast.success(`Saved. Freed ${fmtBytes(r.bytes_freed)} (${r.items_dropped} originals).`);
+      } else {
+        toast.success("Retention policy saved.");
+      }
+    } catch (e) {
+      toast.error(e?.detail || "Could not update retention policy");
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <DetSection
+      title="Originals retention"
+      desc="How long we keep the byte-identical original of every file you upload. The compressed copy is unaffected — only the originals bucket bytes are governed by this."
+    >
+      <div className="det-card" style={{ padding: 0 }}>
+        {_POLICIES.map((p) => (
+          <label
+            key={p.value}
+            className="applist__row"
+            style={{ alignItems: "flex-start", cursor: "pointer", opacity: busy && busy !== p.value ? 0.5 : 1 }}
+          >
+            <div className="applist__row-icon" data-tone={p.value === "forever" ? "purple" : p.value === "immediate" ? "amber" : "ink"}>
+              <Icon name={p.value === "forever" ? "archive" : p.value === "immediate" ? "trash" : "history"} size={14}/>
+            </div>
+            <div className="applist__row-body">
+              <div className="applist__row-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {p.label}
+                {p.value === current && (
+                  <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 4, background: "var(--surface-2)", color: "var(--ink-2)", letterSpacing: 0.02 }}>
+                    CURRENT
+                  </span>
+                )}
+                {busy === p.value && <span style={{ fontSize: 11, color: "var(--ink-3)" }}>Saving…</span>}
+              </div>
+              <div className="applist__row-desc">{p.sub}</div>
+            </div>
+            <div className="applist__row-tail">
+              <input
+                type="radio"
+                name="retention-policy"
+                value={p.value}
+                checked={current === p.value}
+                disabled={isLoading || !!busy}
+                onChange={() => onPick(p.value)}
+                style={{ width: 16, height: 16, accentColor: "var(--ink)", cursor: "pointer" }}
+                aria-label={p.label}
+              />
+            </div>
+          </label>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 10, lineHeight: 1.55 }}>
+        Tradeoff: <strong>longer retention = less effective free space</strong>, because every retained original counts toward your quota.
+        Today your retained originals are <strong>{fmtBytes(originalsBytes)}</strong>{originalsCount > 0 ? ` across ${originalsCount} files` : ""}.
+        Switching to a shorter window drops everything past the new TTL immediately; we don't wait for the next sweep.
+      </div>
+    </DetSection>
+  );
+}
+
+// Linked-service row with lazy total-Drive-size fetch. We deliberately
+// keep this OUT of the main `/storage/usage` response because the
+// Drive walk takes ~3s on a 50k-file account — bad to block the
+// storage panel render on it. React Query handles the loading state
+// here so the row renders immediately with "syncing…" then upgrades
+// to "X files · Y GB total" when the walk finishes. 5-minute cache.
+function LinkedServiceRow({ svc }) {
+  const label =
+    svc.provider === "google_drive" ? "Google Drive" :
+    svc.provider === "github" ? "GitHub" :
+    svc.provider;
+  const localBytes = svc.served_bytes + svc.originals_bytes;
+  const { data: providerStats, isLoading } = useQuery({
+    queryKey: ["provider-folder-stats", svc.provider],
+    queryFn: () => getProviderFolderStats(svc.provider),
+    enabled: svc.status === "active",
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  return (
+    <div className="applist__row" style={{ alignItems: "flex-start" }}>
+      <div className="applist__row-icon" data-tone="blue">
+        <Icon name={svc.provider === "google_drive" ? "cloud" : "code"} size={14}/>
+      </div>
+      <div className="applist__row-body">
+        <div className="applist__row-title">{label}</div>
+        <div className="applist__row-desc">
+          {providerStats ? (
+            <>
+              <strong>{providerStats.file_count.toLocaleString()}</strong>{" "}
+              file{providerStats.file_count === 1 ? "" : "s"} in your {label}
+              {" · "}
+              <strong>{fmtBytes(providerStats.total_bytes)}</strong> total on the provider side
+              <br/>
+              <strong>{svc.files_mirrored.toLocaleString()}</strong> mirrored here ({fmtBytes(localBytes)} on disk locally)
+              {svc.last_synced_at && (
+                <> · last synced {new Date(svc.last_synced_at).toLocaleString()}</>
+              )}
+            </>
+          ) : (
+            <>
+              <strong>{svc.files_mirrored.toLocaleString()}</strong>{" "}
+              file{svc.files_mirrored === 1 ? "" : "s"} mirrored here · {fmtBytes(localBytes)} on disk locally
+              {isLoading && (
+                <> · <em style={{ color: "var(--ink-3)" }}>checking {label}…</em></>
+              )}
+              {svc.last_synced_at && (
+                <> · last synced {new Date(svc.last_synced_at).toLocaleString()}</>
+              )}
+            </>
+          )}
+          <br/>
+          <span style={{ color: "var(--ink-3)" }}>
+            The originals stay on your {label} account. neuthek mirrors compressed copies + metadata for what's been synced here.
+          </span>
+        </div>
+      </div>
+      <div className="applist__row-tail">
+        <span className="mono" style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: svc.status === "active" ? "var(--ok-bg, rgba(52,199,89,0.12))" : "var(--surface-2)", color: svc.status === "active" ? "var(--ok, #34c759)" : "var(--ink-3)" }}>
+          {svc.status}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Inline row helper for the "Where your bytes are" panel — same
+// visual rhythm as the other Settings rows but with a bytes column
+// + pct micro-bar.
+function BytesRow({ icon, tone, title, desc, bytes, pct, action }) {
+  return (
+    <div className="applist__row" style={{ alignItems: "flex-start" }}>
+      <div className="applist__row-icon" data-tone={tone}>
+        <Icon name={icon} size={14}/>
+      </div>
+      <div className="applist__row-body">
+        <div className="applist__row-title">{title}</div>
+        <div className="applist__row-desc">{desc}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+          <div style={{ flex: 1, maxWidth: 220, height: 4, borderRadius: 2, background: "var(--surface-2)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${Math.min(100, pct).toFixed(1)}%`, background: "var(--ink-2)" }}/>
+          </div>
+          <span style={{ fontSize: 12, color: "var(--ink-2)", fontVariantNumeric: "tabular-nums" }}>{fmtBytes(bytes)}</span>
+          <span style={{ fontSize: 11, color: "var(--ink-3)", fontVariantNumeric: "tabular-nums", minWidth: 38, textAlign: "right" }}>{pct.toFixed(1)}%</span>
+        </div>
+      </div>
+      {action && <div className="applist__row-tail">{action}</div>}
+    </div>
   );
 }
 
@@ -1278,11 +1631,13 @@ export function SecurityPanel({ twoFA, setTwoFA, Row, Chev }) {
         </div>
       </div>
 
-      <div className="applist__label">Two-factor</div>
-      <TwoFactorPage/>
+      <Collapsible label="Two-factor" defaultOpen id="sec-2fa">
+        <TwoFactorPage/>
+      </Collapsible>
 
-      <div className="applist__label">Active devices</div>
-      <DevicesPage/>
+      <Collapsible label="Active devices" id="sec-devices">
+        <DevicesPage/>
+      </Collapsible>
     </>
   );
 }
@@ -1346,55 +1701,56 @@ export function NotificationsPanel() {
         <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>
       ) : (
         <>
-          <div className="applist__label">Channels</div>
-          <div className="det-card" style={{ padding: 0 }}>
-            <table className="admin-table admin-table--compact" style={{ width: "100%" }}>
-              <thead>
-                <tr>
-                  <th>Notification</th>
-                  {(data?.channels || []).map((c) => (
-                    <th key={c} style={{ textAlign: "center", width: 90 }}>
-                      {NOTIF_CHANNEL_LABELS[c] || c}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(data?.kinds || []).map((k) => {
-                  const meta = NOTIF_KIND_LABELS[k] || { title: k, desc: "" };
-                  return (
-                    <tr key={k}>
-                      <td>
-                        <strong>{meta.title}</strong>
-                        {meta.desc && (
-                          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>
-                            {meta.desc}
-                          </div>
-                        )}
-                      </td>
-                      {(data?.channels || []).map((c) => {
-                        const on = byPair.get(`${k}:${c}`) ?? false;
-                        const key = `${k}:${c}`;
-                        return (
-                          <td key={c} style={{ textAlign: "center" }}>
-                            <SwitchSP
-                              on={on}
-                              onChange={() => toggle(k, c, on)}
-                              disabled={!!busy[key]}
-                              aria-label={`${meta.title} via ${c}`}
-                            />
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 10, padding: "0 4px" }}>
-            Security alerts default to on — we never silently disable them, even when this whole tab is otherwise off.
-          </div>
+          <Collapsible label="Channels" defaultOpen count={(data?.kinds || []).length} id="notif-channels">
+            <div className="det-card" style={{ padding: 0 }}>
+              <table className="admin-table admin-table--compact" style={{ width: "100%" }}>
+                <thead>
+                  <tr>
+                    <th>Notification</th>
+                    {(data?.channels || []).map((c) => (
+                      <th key={c} style={{ textAlign: "center", width: 90 }}>
+                        {NOTIF_CHANNEL_LABELS[c] || c}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data?.kinds || []).map((k) => {
+                    const meta = NOTIF_KIND_LABELS[k] || { title: k, desc: "" };
+                    return (
+                      <tr key={k}>
+                        <td>
+                          <strong>{meta.title}</strong>
+                          {meta.desc && (
+                            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 2 }}>
+                              {meta.desc}
+                            </div>
+                          )}
+                        </td>
+                        {(data?.channels || []).map((c) => {
+                          const on = byPair.get(`${k}:${c}`) ?? false;
+                          const key = `${k}:${c}`;
+                          return (
+                            <td key={c} style={{ textAlign: "center" }}>
+                              <SwitchSP
+                                on={on}
+                                onChange={() => toggle(k, c, on)}
+                                disabled={!!busy[key]}
+                                aria-label={`${meta.title} via ${c}`}
+                              />
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 10, padding: "0 4px" }}>
+              Security alerts default to on — we never silently disable them, even when this whole tab is otherwise off.
+            </div>
+          </Collapsible>
         </>
       )}
     </>
@@ -1421,30 +1777,112 @@ export function NotificationsPanel() {
 const PB_KEYS = {
   videoAutoplay: "neuthek.video.autoplay_sound",
   audioAutoplay: "neuthek.audio.autoplay_sound",
+  // Legacy localStorage key kept for back-compat — old builds wrote
+  // tier labels ("1080p", "720p", etc.) here. The new HLS-aware
+  // player reads BOTH keys; if the legacy key is set it's translated
+  // to the closest preset at mount time.
   defaultQuality: "neuthek.video.default_quality",
+  // 2026-05 HLS presets. Values:
+  //   "auto"   → hls.js adaptive (recommended). The player picks
+  //              the highest rendition the measured bandwidth can
+  //              sustain at each segment boundary.
+  //   "best"   → lock to the highest available rendition. Burns
+  //              bandwidth but never down-shifts; good on solid
+  //              connections.
+  //   "saver"  → lock to the lowest available rendition. Caps
+  //              cellular use. Talking-head clips stay legible
+  //              at 480p.
+  //   "custom" → don't preset anything; the player exposes the
+  //              full quality menu and the user picks per video.
+  qualityPreset: "neuthek.video.quality_preset",
+  // Default playback speed (1, 1.25, 1.5, 2). Persists across
+  // sessions so a user who watches everything at 1.5× doesn't
+  // have to flip it every clip.
+  defaultSpeed: "neuthek.video.default_speed",
 };
-const PB_QUALITIES = [
-  { value: "",       label: "Auto (highest available)" },
-  { value: "2160p",  label: "2160p (4K)" },
-  { value: "1440p",  label: "1440p" },
-  { value: "1080p",  label: "1080p (FHD)" },
-  { value: "720p",   label: "720p (HD)" },
-  { value: "480p",   label: "480p (SD — saves bandwidth)" },
+const PB_PRESETS = [
+  {
+    value: "auto",
+    label: "Auto",
+    sub: "Recommended. Adapts to your connection — full quality on Wi-Fi, lower on weak signal.",
+    icon: "cloud",
+    tone: "blue",
+  },
+  {
+    value: "best",
+    label: "Best available",
+    sub: "Always lock to the highest rendition. Most bandwidth, no down-shifts.",
+    icon: "play",
+    tone: "purple",
+  },
+  {
+    value: "saver",
+    label: "Data saver",
+    sub: "Lock to the lowest rendition (~480p). Caps cellular use; fine for talking heads.",
+    icon: "download",
+    tone: "amber",
+  },
+  {
+    value: "custom",
+    label: "Pick per video",
+    sub: "No default — open the quality menu on each clip and choose yourself.",
+    icon: "list",
+    tone: "ink",
+  },
 ];
+const PB_SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+
+// Local Row helper — matches the `Row` private component in account.jsx
+// visually (same .applist__row markup + tones), since we can't import
+// the private one. Keeps Playback's surface visually consistent with
+// every other Settings tab (Privacy, AI features, Security).
+function _Row({ icon, tone, title, desc, tail }) {
+  return (
+    <div className="applist__row">
+      {icon && (
+        <div className="applist__row-icon" data-tone={tone}>
+          <Icon name={icon} size={14}/>
+        </div>
+      )}
+      <div className="applist__row-body">
+        <div className="applist__row-title">{title}</div>
+        {desc && <div className="applist__row-desc">{desc}</div>}
+      </div>
+      {tail && <div className="applist__row-tail">{tail}</div>}
+    </div>
+  );
+}
 
 export function PlaybackPanel() {
-  // Pull initial state straight from localStorage; useState is per-
-  // component-mount so reads stay synchronous + each toggle write
-  // is reflected in the next render.
   const readBool = (k) => {
     try { return localStorage.getItem(k) === "on"; } catch { return false; }
   };
   const readStr = (k) => {
     try { return localStorage.getItem(k) || ""; } catch { return ""; }
   };
+  // Back-compat: if a user had `default_quality` set to a tier
+  // label ("1080p", "720p", etc.), translate to the closest preset
+  // on first read. Then write the preset key so future reads skip
+  // this translation.
+  const readPreset = () => {
+    let preset = readStr(PB_KEYS.qualityPreset);
+    if (preset) return preset;
+    const legacy = readStr(PB_KEYS.defaultQuality);
+    if (legacy === "") return "auto";          // legacy "Auto (highest)"
+    if (legacy === "480p") return "saver";      // legacy lowest pick
+    if (legacy === "2160p" || legacy === "1440p" || legacy === "1080p") return "best";
+    return "auto";
+  };
+  const readSpeed = () => {
+    const raw = readStr(PB_KEYS.defaultSpeed);
+    const n = parseFloat(raw);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  };
+
   const [videoAutoplay, setVideoAutoplay] = useStateSP(readBool(PB_KEYS.videoAutoplay));
   const [audioAutoplay, setAudioAutoplay] = useStateSP(readBool(PB_KEYS.audioAutoplay));
-  const [defaultQuality, setDefaultQuality] = useStateSP(readStr(PB_KEYS.defaultQuality));
+  const [preset, setPreset] = useStateSP(readPreset());
+  const [defaultSpeed, setDefaultSpeed] = useStateSP(readSpeed());
 
   const flipVideo = () => {
     const next = !videoAutoplay;
@@ -1456,65 +1894,112 @@ export function PlaybackPanel() {
     setAudioAutoplay(next);
     try { localStorage.setItem(PB_KEYS.audioAutoplay, next ? "on" : "off"); } catch {}
   };
-  const pickQuality = (q) => {
-    setDefaultQuality(q);
+  const pickPreset = (p) => {
+    setPreset(p);
     try {
-      if (q) localStorage.setItem(PB_KEYS.defaultQuality, q);
-      else localStorage.removeItem(PB_KEYS.defaultQuality);
+      localStorage.setItem(PB_KEYS.qualityPreset, p);
+      // Drop the legacy key so the back-compat shim doesn't keep
+      // overriding the new preset on next mount.
+      localStorage.removeItem(PB_KEYS.defaultQuality);
     } catch {}
+  };
+  const pickSpeed = (s) => {
+    setDefaultSpeed(s);
+    try { localStorage.setItem(PB_KEYS.defaultSpeed, String(s)); } catch {}
   };
 
   return (
     <>
-      <DetSection
-        title="Autoplay with sound"
-        desc="When you open a video or audio file, neuthek can start playback immediately with sound on. Browsers block unmuted autoplay until you explicitly opt in — these toggles flip that opt-in."
-      >
-        <div className="det-card" style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0" }}>
-            <div>
-              <div style={{ fontSize: 13.5, fontWeight: 500 }}>Videos</div>
-              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
-                Off → video opens muted and you click the volume icon to unmute.
-              </div>
-            </div>
-            <SwitchSP on={videoAutoplay} onChange={flipVideo} ariaLabel="Autoplay videos with sound"/>
-          </div>
-          <div style={{ borderTop: "1px solid var(--line-2)", margin: "8px 0" }}/>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0" }}>
-            <div>
-              <div style={{ fontSize: 13.5, fontWeight: 500 }}>Audio files</div>
-              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
-                Same behavior for `.mp3` / `.wav` / `.flac` and other audio formats.
-              </div>
-            </div>
-            <SwitchSP on={audioAutoplay} onChange={flipAudio} ariaLabel="Autoplay audio with sound"/>
-          </div>
+      <div className="appset__main-head">
+        <div>
+          <h3>Playback</h3>
+          <p>Defaults for how videos and audio files behave in the
+            preview surface. These live on this device — your phone
+            can prefer Data Saver while your desktop runs Auto
+            without any conflict.</p>
         </div>
-      </DetSection>
+      </div>
 
-      <DetSection
-        title="Default video quality"
-        desc="Which encoded tier the player loads first. The transcoder produces every tier the source supports — picking a lower one cuts bandwidth on mobile data without changing what's stored. You can still switch quality in the player at any time."
-      >
-        <div className="det-card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {PB_QUALITIES.map((q) => (
-            <label key={q.value} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", cursor: "pointer" }}>
-              <input
-                type="radio"
-                name="default-quality"
-                checked={defaultQuality === q.value}
-                onChange={() => pickQuality(q.value)}
-                style={{ accentColor: "var(--ink)" }}
-              />
-              <span style={{ fontSize: 13 }}>{q.label}</span>
-            </label>
-          ))}
-          <DetExplain style={{ marginTop: 8 }}>
-            "Auto" picks the highest tier available for each video. Older clips (uploaded before the multi-quality transcoder) only have one tier; in that case the player serves that one regardless of this setting.
-          </DetExplain>
+      <Collapsible label="Autoplay with sound" defaultOpen count={2} id="pb-autoplay">
+        <div className="applist">
+          <_Row icon="play" tone="sky" title="Videos start with sound"
+                desc={videoAutoplay
+                  ? "On — every video opens unmuted, no extra click."
+                  : "Off — videos open muted; click the volume icon to enable sound."}
+                tail={<SwitchSP on={videoAutoplay} onChange={flipVideo} ariaLabel="Autoplay videos with sound"/>}/>
+          <_Row icon="audio" tone="amber" title="Audio files start with sound"
+                desc={audioAutoplay
+                  ? "On — .mp3 / .wav / .flac etc. play immediately."
+                  : "Off — audio files open muted; click the volume icon."}
+                tail={<SwitchSP on={audioAutoplay} onChange={flipAudio} ariaLabel="Autoplay audio with sound"/>}/>
         </div>
-      </DetSection>
+      </Collapsible>
+
+      <Collapsible label="Streaming quality" defaultOpen count={PB_PRESETS.length} id="pb-quality">
+        <div className="applist">
+          {PB_PRESETS.map((p) => (
+            <_Row
+              key={p.value}
+              icon={p.icon}
+              tone={preset === p.value ? "purple" : p.tone}
+              title={p.label}
+              desc={p.sub}
+              tail={
+                <input
+                  type="radio"
+                  name="quality-preset"
+                  checked={preset === p.value}
+                  onChange={() => pickPreset(p.value)}
+                  style={{ accentColor: "var(--ink)", width: 16, height: 16, cursor: "pointer" }}
+                  aria-label={p.label}
+                />
+              }
+            />
+          ))}
+        </div>
+        <DetExplain>
+          Adaptive streaming (HLS): every new upload is segmented into
+          three quality tiers. The player downloads small chunks at
+          your selected level and — when you pick <strong>Auto</strong> —
+          shifts up or down at each segment boundary based on the
+          measured bandwidth. You'll see the current level next to
+          the "Auto" badge in the player when it changes.
+          <br/><br/>
+          Older clips that landed before the HLS pipeline use the
+          legacy quality picker and don't auto-adapt; this preset is
+          ignored on those.
+        </DetExplain>
+      </Collapsible>
+
+      <Collapsible label="Default playback speed" count={PB_SPEEDS.length} id="pb-speed">
+        <div className="applist">
+          {PB_SPEEDS.map((s) => (
+            <_Row
+              key={s}
+              icon={defaultSpeed === s ? "check" : "play"}
+              tone={defaultSpeed === s ? "purple" : "ink"}
+              title={`${s}× speed`}
+              desc={
+                s === 1 ? "Normal."
+                : s < 1 ? "Slower — useful for tutorial videos or accent-heavy speech."
+                : s === 1.5 ? "1.5× — common pick for podcasts + lectures."
+                : s === 2 ? "Double speed. Voices stay intelligible, music will sound weird."
+                : `${s}× speed.`
+              }
+              tail={
+                <input
+                  type="radio"
+                  name="default-speed"
+                  checked={defaultSpeed === s}
+                  onChange={() => pickSpeed(s)}
+                  style={{ accentColor: "var(--ink)", width: 16, height: 16, cursor: "pointer" }}
+                  aria-label={`${s}× speed`}
+                />
+              }
+            />
+          ))}
+        </div>
+      </Collapsible>
     </>
   );
 }

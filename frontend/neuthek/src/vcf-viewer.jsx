@@ -11,6 +11,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Icon, initials } from "./icons.jsx";
 import toast from "react-hot-toast";
 import { fetchMediaBlob, originalMediaUrl } from "@/api/files";
+import { safeHref } from "./safe-href.js";
 
 function unfold(text) {
   return text.replace(/\r?\n[ \t]/g, "");
@@ -160,13 +161,27 @@ export function VcfViewer({ fileId, fileName }) {
                           {a.label && <span className="vcf-card__label mono">{a.label}</span>}
                         </li>
                       ))}
-                      {c.urls.map((u, j) => (
-                        <li key={`u${j}`} className="vcf-card__row">
-                          <Icon name="share" size={12}/>
-                          <a href={u.value} target="_blank" rel="noreferrer noopener">{u.value}</a>
-                          {u.label && <span className="vcf-card__label mono">{u.label}</span>}
-                        </li>
-                      ))}
+                      {c.urls.map((u, j) => {
+                        // Scheme allow-list: a vcard with `URL:javascript:…`
+                        // would otherwise execute on click and exfiltrate
+                        // the JWT from localStorage. `safeHref` returns null
+                        // for anything that isn't http/https/mailto/tel/sms —
+                        // we render the raw text in that case so the user
+                        // can still SEE what was in the file without it
+                        // being clickable.
+                        const href = safeHref(u.value);
+                        return (
+                          <li key={`u${j}`} className="vcf-card__row">
+                            <Icon name="share" size={12}/>
+                            {href ? (
+                              <a href={href} target="_blank" rel="noreferrer noopener">{u.value}</a>
+                            ) : (
+                              <span title="Link uses an unsafe scheme and was disabled">{u.value}</span>
+                            )}
+                            {u.label && <span className="vcf-card__label mono">{u.label}</span>}
+                          </li>
+                        );
+                      })}
                       {c.bday && (
                         <li className="vcf-card__row">
                           <Icon name="calendar" size={12}/>

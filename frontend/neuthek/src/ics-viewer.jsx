@@ -13,6 +13,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { Icon } from "./icons.jsx";
 import toast from "react-hot-toast";
 import { fetchMediaBlob, originalMediaUrl } from "@/api/files";
+import { safeHref } from "./safe-href.js";
 
 function unfold(text) {
   // Per RFC 5545 §3.1 a long line MAY be split with CRLF + WSP.
@@ -155,12 +156,22 @@ export function IcsViewer({ fileId, fileName }) {
                     <Icon name="user" size={12}/> <span className="mono">{ev.organizer}</span>
                   </div>
                 )}
-                {ev.url && (
-                  <div className="ics-event__row">
-                    <Icon name="share" size={12}/>{" "}
-                    <a href={ev.url} target="_blank" rel="noreferrer noopener">{ev.url}</a>
-                  </div>
-                )}
+                {ev.url && (() => {
+                  // Same XSS hardening as the VCF viewer — an .ics file
+                  // with `URL:javascript:…` would otherwise be clickable
+                  // and run script in our origin.
+                  const href = safeHref(ev.url);
+                  return (
+                    <div className="ics-event__row">
+                      <Icon name="share" size={12}/>{" "}
+                      {href ? (
+                        <a href={href} target="_blank" rel="noreferrer noopener">{ev.url}</a>
+                      ) : (
+                        <span title="Link uses an unsafe scheme and was disabled">{ev.url}</span>
+                      )}
+                    </div>
+                  );
+                })()}
                 {ev.description && (
                   <div className="ics-event__desc">{ev.description}</div>
                 )}

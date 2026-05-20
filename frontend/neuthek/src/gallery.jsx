@@ -22,6 +22,8 @@ import toast from "react-hot-toast";
 import { RenameFolderModal, DeleteFolderModal } from "./folder-modals.jsx";
 import { EditableName } from "./nameable-chip.jsx";
 import { TagPicker, tagChipStyle } from "./tag-picker.jsx";
+import { QuickTagInput } from "./quick-tag.jsx";
+import { ShareModal } from "./share-modal.jsx";
 import { fileTypeInfo } from "./file-types.js";
 import { API_BASE_URL } from "@/api/client";
 
@@ -30,29 +32,58 @@ import { API_BASE_URL } from "@/api/client";
  *  Centralized so the FolderCard menu + any future bulk-action can
  *  share one code path. */
 async function downloadFolderAsZip(folder) {
-  const t = tokens.get();
   if (!folder?.id) return;
   toast.success(`Building ${folder.name || "folder"}.zip…`);
+  // Direct navigation download. The previous fetch+blob+createObjectURL
+  // path required buffering the ENTIRE zip in browser memory before
+  // the user got a save dialog — for a folder with multi-GB videos
+  // the tab would stall or OOM and the user saw "doesn't work."
+  //
+  // Direct navigation hands the response to the browser's native
+  // download manager, which streams bytes to disk. The session
+  // cookie rides along automatically on the top-level GET because
+  // it's set with SameSite=Lax — Lax allows cookies on top-level
+  // navigations even when the request comes from a different
+  // top-level frame (just not on cross-origin POST/iframe).
+  //
+  // We open in a HIDDEN iframe rather than `window.location.href = ...`
+  // because the latter would replace the current page if the response
+  // sets `Content-Disposition: attachment` slowly — the iframe
+  // approach keeps the user on the gallery while the download runs.
   try {
-    const r = await fetch(
-      `${API_BASE_URL}/folders/${folder.id}/download.zip`,
-      { headers: t ? { Authorization: `Bearer ${t}` } : {} },
-    );
-    if (!r.ok) {
+    const url = `${API_BASE_URL}/folders/${folder.id}/download.zip`;
+    // Quick auth pre-check so we surface 401/404 as a toast instead
+    // of dumping the user into a silent failed iframe. HEAD would be
+    // cheaper but the backend doesn't implement HEAD for zip — a
+    // GET with `Range: bytes=0-0` only fetches one byte before the
+    // browser drops the connection.
+    let legacy = null;
+    try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+    const probe = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      headers: {
+        Range: "bytes=0-0",
+        ...(legacy ? { Authorization: `Bearer ${legacy}` } : {}),
+      },
+    });
+    if (!probe.ok && probe.status !== 206) {
       let detail = "Download failed";
-      try { detail = (await r.json())?.detail || detail; } catch {}
+      try { detail = (await probe.json())?.detail || detail; } catch {}
       toast.error(detail);
       return;
     }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${(folder.name || "folder").replace(/[\\/]/g, "_")}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    // Abort the probe immediately — we only needed the status code.
+    try { probe.body?.cancel(); } catch {}
+    // Hand to the native download manager. A hidden iframe means the
+    // browser handles the streaming + save dialog without taking the
+    // user off the page.
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = url;
+    document.body.appendChild(iframe);
+    setTimeout(() => iframe.remove(), 60_000);
+    return;
   } catch (e) {
     toast.error("Download failed");
   }
@@ -420,13 +451,24 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
             <button className="cardmenu__item" onClick={() => { setMenuOpen(false); onRename && onRename(f); }}>
               <span className="cardmenu__icon"><Icon name="edit" size={14}/></span>Rename<span className="cardmenu__shortcut">F2</span>
             </button>
-            <button className="cardmenu__item" onClick={() => { setMenuOpen(false); onShare && onShare(f); }}>
+            <button
+              className="cardmenu__item"
+              onClick={(e) => {
+                // Stop bubble — the card's outer onClick would otherwise
+                // fire after we close the menu, opening the preview as
+                // soon as Share is clicked.
+                e.stopPropagation();
+                setMenuOpen(false);
+                onShare && onShare(f);
+              }}
+            >
               <span className="cardmenu__icon"><Icon name="users" size={14}/></span>Share…
             </button>
             <button
               className="cardmenu__item"
               onClick={(e) => {
                 e.stopPropagation();
+                setMenuOpen(false);
                 setTagPickerOpen(true);
               }}
             >
@@ -441,9 +483,15 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
                 // hand the user a blob: URL on an <a download>. Avoids the
                 // need for a query-param token + signed-URL handshake.
                 try {
-                  const token = tokens.get();
+                  // Cookie auth — credentials include sends the
+                  // HttpOnly session cookie. Legacy Bearer kept for
+                  // users mid-migration; will go away after we ship
+                  // a cookie variant of the TOTP login.
+                  let legacy = null;
+                  try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
                   const res = await fetch(originalUrl(f.id), {
-                    headers: token ? { Authorization: `Bearer ${token}` } : {},
+                    credentials: "include",
+                    headers: legacy ? { Authorization: `Bearer ${legacy}` } : {},
                   });
                   if (!res.ok) throw new Error(await res.text() || "download failed");
                   const blob = await res.blob();
@@ -518,16 +566,49 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
           </div>
         )}
       </div>
+
+      {/* Quick-tag popover. Lighter than the full TagPicker — just one
+          input + Enter to attach, with existing tags shown as
+          dismissable chips. Anchored top-right near the menu button.
+          The popup uses pointerdown (not mousedown) for outside-click
+          AND stops propagation on its own pointer events so the
+          gallery marquee tool doesn't eat the open click. */}
+      {tagPickerOpen && (
+        <div
+          className="quicktag-anchor"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          data-no-marquee="true"
+        >
+          <QuickTagInput
+            imageId={f.id}
+            attached={f.tagRows || []}
+            onClose={() => setTagPickerOpen(false)}
+          />
+        </div>
+      )}
+
     </div>
   );
 }
 
 // File-type filter chips
 function TypeChips({ active, onChange, files }) {
+  // Order: real backend categories first (Photos / Videos / Audio /
+  // Code / Documents), then forward-looking mock categories. The
+  // chip self-hides when no file of that type exists in the current
+  // batch (count === 0), so users on a docs-only library don't
+  // see Photos / Videos chips at all.
+  //
+  // 2026-05 — added `audio` + `code` chips. Audio files used to fall
+  // through to "doc" in the frontend mapping; code files used to
+  // share the document icon. Both are now distinct types.
   const types = [
     { id: "all",      label: "All",       icon: "library" },
     { id: "image",    label: "Photos",    icon: "image" },
     { id: "video",    label: "Videos",    icon: "video" },
+    { id: "audio",    label: "Audio",     icon: "audio" },
+    { id: "code",     label: "Code",      icon: "code" },
     { id: "doc",      label: "Documents", icon: "document" },
     { id: "contact",  label: "Contacts",  icon: "users" },
     { id: "password", label: "Vaults",    icon: "shield" },
@@ -622,6 +703,11 @@ function FolderCard({ folder, onEnter, onRequestRename, onRequestDelete }) {
       ref={ref}
       className="fcard"
       data-drophover={hover ? "true" : "false"}
+      // `data-card` opts the folder out of the gallery marquee tool —
+      // before this attribute landed, mousedown on a folder card
+      // started a selection-rectangle drag and the click never
+      // resolved to onEnter, so single-clicking a folder felt broken.
+      data-card={`folder-${folder.id}`}
       onClick={() => onEnter?.(folder)}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -705,7 +791,7 @@ export function GalleryView({
   typeFilter = "all", onTypeFilter, onRename,
   folderId = null, onEnterFolder,
   view = "gallery",
-  peopleFilter = null, onClearPeopleFilter,
+  peopleFilter = null, onClearPeopleFilter, onPersonPick,
   // Multi-select. `multiSelected` is a Set<string> of file ids; the
   // card check button toggles entries via `onMultiSelectToggle`.
   // Passing both as nullable means screens that don't want multi-
@@ -721,10 +807,22 @@ export function GalleryView({
   // Dedicated views (Starred / People / Map / Shared / Trash) and
   // mock-only type pills (contact / password / gamesave / iot) still
   // hide folders so the gallery doesn't mix unrelated content.
-  const REAL_TYPE_FILTERS = new Set(["all", "image", "video", "doc"]);
+  // Whitelist of REAL (server-emitted) categories. When the user
+  // selects one of these, we still show folders alongside the
+  // filtered file list — selecting a mock-only category (contact /
+  // password / etc.) hides folders because the backend doesn't
+  // produce those types.
+  const REAL_TYPE_FILTERS = new Set(["all", "image", "video", "audio", "code", "doc"]);
   const foldersAllowed = view === "gallery" && REAL_TYPE_FILTERS.has(typeFilter);
   const [renameTarget, setRenameTarget] = useStateG(null);
   const [deleteTarget, setDeleteTarget] = useStateG(null);
+  // Hoisted share target. Before this lived inside FileCard, where the
+  // modal's overlay click bubbled up to the card's onClick handler →
+  // preview opened → preview's OWN ShareModal opened underneath. The
+  // user saw a flicker between two stacked modals. Living up here, the
+  // modal renders OUTSIDE every card's DOM tree, so card-level click
+  // handlers don't fire on its overlay.
+  const [shareTarget, setShareTarget] = useStateG(null);
   const filtered = useMemoG(() => {
     let list = files;
     if (typeFilter !== "all") list = list.filter(f => f.type === typeFilter);
@@ -851,7 +949,9 @@ export function GalleryView({
         </div>
       )}
 
-      {!query && showPeopleStrip && typeFilter === "all" && <PeopleStrip/>}
+      {!query && showPeopleStrip && typeFilter === "all" && (
+        <PeopleStrip onPerson={onPersonPick}/>
+      )}
 
       {!query && showFolders && foldersAllowed && visibleFolders.length > 0 && (
         <div style={{ marginBottom: 18 }}>
@@ -911,7 +1011,18 @@ export function GalleryView({
           onSelect={onSelect}
           onMultiSelectToggle={onMultiSelectToggle}
           onRename={onRename}
+          onShare={setShareTarget}
           query={query}
+        />
+      )}
+      {/* Hoisted ShareModal — lives outside every card's DOM tree so
+          its overlay click can't bubble into a card's onClick handler.
+          Same `<ShareModal>` preview.jsx uses; one canonical surface. */}
+      {shareTarget && (
+        <ShareModal
+          imageId={shareTarget.id}
+          imageName={shareTarget.name}
+          onClose={() => setShareTarget(null)}
         />
       )}
     </div>
@@ -938,7 +1049,7 @@ export function GalleryView({
 //      took the per-move cost from ~12 ms to ~0.5 ms on a 200-card
 //      grid.
 function MarqueeGrid({
-  layoutMode, filtered, selected, multiSelected, onSelect, onMultiSelectToggle, onRename, query,
+  layoutMode, filtered, selected, multiSelected, onSelect, onMultiSelectToggle, onRename, onShare, query,
 }) {
   const gridRef = useRefG(null);
   const rectElRef = useRefG(null);
@@ -1092,6 +1203,14 @@ function MarqueeGrid({
         ".chip, .tag, .pill, .filter-strip, .type-chips, .toolbar, " +
         "details, summary"
       )) return;
+      // Suppress the marquee while ANY popup is open. Without this
+      // check, clicking OUTSIDE a popup (to close it) would also
+      // start a marquee drag — the user sees a selection rectangle
+      // appear when they were trying to dismiss the popup. The
+      // popup's own outside-click handler still runs on the same
+      // pointerdown and dismisses it; we just skip starting the
+      // drag so the UX feels right.
+      if (document.querySelector('[role="dialog"][data-no-marquee="true"]')) return;
       e.preventDefault();
       dragZone.setPointerCapture?.(e.pointerId);
       const { box, scroller, baseLeft, baseTop, cards } = measureCards();
@@ -1214,6 +1333,7 @@ function MarqueeGrid({
           onClick={() => onSelect(f)}
           onMultiSelectToggle={onMultiSelectToggle}
           onRename={onRename}
+          onShare={onShare}
         />
       )) : filtered.map(f => (
         <FileCard
@@ -1225,6 +1345,7 @@ function MarqueeGrid({
           onClick={() => onSelect(f)}
           onMultiSelectToggle={onMultiSelectToggle}
           onRename={onRename}
+          onShare={onShare}
         />
       ))}
       {/* Marquee rectangle. Painted via direct DOM mutation

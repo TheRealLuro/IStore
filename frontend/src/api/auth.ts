@@ -9,12 +9,17 @@ export class TotpRequiredError extends Error {
 }
 
 export async function login(email: string, password: string): Promise<User> {
+  // Cookie auth (2026-05+): the backend's /auth/cookie/login sets a
+  // HttpOnly Secure SameSite=Lax `neuthek_session` cookie and returns
+  // 204 No Content. We flip the localStorage breadcrumb so the
+  // bootstrap() check has something cheap to read on next mount; the
+  // real auth credential lives in the cookie, which JS can't see.
   try {
-    const res = await api.postForm<{ access_token: string; token_type: string }>(
-      "/auth/jwt/login",
+    await api.postForm<void>(
+      "/auth/cookie/login",
       { username: email, password },
     );
-    tokens.set(res.access_token);
+    tokens.set();
     return await me();
   } catch (e) {
     if (e instanceof ApiError && e.status === 401 && /totp_required/i.test(e.detail || "")) {
@@ -27,11 +32,24 @@ export async function login(email: string, password: string): Promise<User> {
 export async function loginWithTotp(
   email: string, password: string, totpCode: string,
 ): Promise<User> {
+  // TOTP login: the backend's /auth/jwt/login-totp returns the JWT in
+  // the response body (Bearer transport). We then exchange it for a
+  // cookie session by hitting /auth/cookie/login with the same
+  // credentials — but the simpler path is to just mint the cookie on
+  // the same TOTP endpoint. Until the backend ships that, we fall
+  // through to bearer mode for the totp path; the next non-totp login
+  // moves the user to cookie.
+  // TODO: add /auth/cookie/login-totp variant.
   const res = await api.postForm<{ access_token: string; token_type: string }>(
     "/auth/jwt/login-totp",
     { username: email, password, totp_code: totpCode },
   );
-  tokens.set(res.access_token);
+  // Legacy bearer mode — set the JWT into localStorage so subsequent
+  // requests authenticate via the Authorization header path that
+  // client.ts still supports as a fallback. Users with 2FA will move
+  // to cookie auth automatically once we add the TOTP cookie variant.
+  try { localStorage.setItem("neuthek.jwt", res.access_token); } catch {}
+  tokens.set();
   return await me();
 }
 
@@ -78,7 +96,20 @@ export async function updateMe(body: {
   return api.patch<User>("/users/me", body);
 }
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+  // Hit the cookie-logout route so the backend clears the
+  // `neuthek_session` cookie. JS-set cookie deletion is unreliable
+  // across browsers + the cookie is HttpOnly, so we rely on the
+  // server's Set-Cookie with Max-Age=0. The local breadcrumb +
+  // any leftover Bearer JWT is cleared by tokens.clear() AFTER the
+  // server confirms (or fails) so a transient network error doesn't
+  // strand the FE in a "looks signed in but isn't" state.
+  try {
+    await api.post<void>("/auth/cookie/logout");
+  } catch {
+    // Swallow — even if the server is unreachable we still want to
+    // clear the local state so the user UI signs them out.
+  }
   tokens.clear();
 }
 
@@ -155,8 +186,11 @@ export async function emptyAccountTrash(): Promise<{ deleted: number }> {
   return api.post<{ deleted: number }>("/account/trash/empty");
 }
 
-/** Trade a recovery code for a JWT. Drops the JWT into local storage
- * directly so the existing me() bootstrap picks the user up. */
+/** Trade a recovery code for a session. Same caveat as
+ *  `loginWithTotp` — the recovery-codes endpoint currently returns
+ *  Bearer JWT only; we stash it in legacy localStorage so requests
+ *  authenticate while the user re-establishes a normal session.
+ *  When the backend adds a cookie variant we'll flip this over. */
 export async function recoveryLogin(
   email: string,
   code: string,
@@ -165,7 +199,8 @@ export async function recoveryLogin(
     "/account/recovery-codes/login",
     { email, code },
   );
-  tokens.set(res.access_token);
+  try { localStorage.setItem("neuthek.jwt", res.access_token); } catch {}
+  tokens.set();
   return await me();
 }
 

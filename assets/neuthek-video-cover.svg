@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" width="1080" height="1920" role="img" aria-label="neuthek — intro video">
+  <defs>
+    <!-- Cosmic backdrop. Subtle vertical gradient so the cover has
+         depth rather than reading as flat black. Warmer at the
+         bottom keeps it from feeling cold / sterile. -->
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#04060c"/>
+      <stop offset="55%"  stop-color="#06070a"/>
+      <stop offset="100%" stop-color="#0b0905"/>
+    </linearGradient>
+
+    <!-- Wide radial glow behind the brand mark. This is the
+         "gravity well" — your eye lands here first. -->
+    <radialGradient id="hero-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="30%"  stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Tight glow specifically for the mark's active node, so the
+         "anchor" reads as the brightest point in the canvas. -->
+    <radialGradient id="node-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.85"/>
+      <stop offset="40%"  stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Corner vignette — the eye stays on the center column
+         (mark → wordmark → URL pill) instead of wandering. -->
+    <radialGradient id="vignette" cx="0.5" cy="0.5" r="0.78">
+      <stop offset="58%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.55"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ────── Background ────── -->
+  <rect width="1080" height="1920" fill="url(#bg-grad)"/>
+
+  <!-- ────── Ambient particles ──────
+       Faint scattered "stars" extending the constellation metaphor
+       beyond the mark itself. Low opacity, varied sizes — the brand
+       feels like it lives in a wider context, not just floating on
+       black. No connection lines here so they don't compete with the
+       mark's own graph. -->
+  <g fill="#ffffff" opacity="0.42">
+    <circle cx="120"  cy="180" r="1.5"/>
+    <circle cx="940"  cy="220" r="1.5"/>
+    <circle cx="180"  cy="380" r="1"/>
+    <circle cx="880"  cy="440" r="1"/>
+    <circle cx="60"   cy="560" r="1.5"/>
+    <circle cx="1010" cy="610" r="1"/>
+    <circle cx="200"  cy="780" r="1"/>
+    <circle cx="900"  cy="820" r="1.5"/>
+    <circle cx="120"  cy="1020" r="1"/>
+    <circle cx="980"  cy="1080" r="1"/>
+    <circle cx="80"   cy="1280" r="1.5"/>
+    <circle cx="1000" cy="1340" r="1"/>
+    <circle cx="180"  cy="1520" r="1"/>
+    <circle cx="940"  cy="1600" r="1.5"/>
+  </g>
+
+  <!-- ────── Hero glow behind the mark ──────
+       400px radius radial gradient centered on the mark's
+       composition center. Sells the "anchor" feel. -->
+  <circle cx="540" cy="640" r="540" fill="url(#hero-glow)"/>
+
+  <!-- ────── THE MARK — hero size ──────
+       Source viewBox is 0..32 (NeuthekMark.jsx). Scaled 28× to
+       land at 896 px tall, centered horizontally on the canvas
+       (translate is mark-center minus half the scaled width).
+       This is the cover's focal element — everything else is
+       supporting cast. -->
+  <g transform="translate(94, 188) scale(28)">
+    <!-- Connection lines first so the nodes paint over their endpoints. -->
+    <g stroke="#ffffff" stroke-width="0.55" stroke-linecap="round" opacity="0.70">
+      <line x1="9"  y1="22" x2="11" y2="9"/>
+      <line x1="11" y1="9"  x2="22" y2="22"/>
+      <line x1="22" y1="22" x2="24" y2="10"/>
+      <line x1="9"  y1="14" x2="17" y2="15"/>
+      <line x1="17" y1="15" x2="24" y2="10"/>
+    </g>
+    <!-- The non-anchor nodes — bright but quiet, so the active
+         node clearly leads. -->
+    <g fill="#ffffff">
+      <circle cx="9"  cy="22" r="1.4"/>
+      <circle cx="11" cy="9"  r="1.4"/>
+      <circle cx="22" cy="22" r="1.4"/>
+      <circle cx="9"  cy="14" r="1.0"/>
+      <circle cx="17" cy="15" r="1.0"/>
+    </g>
+  </g>
+
+  <!-- ────── Active node, painted ON TOP of the mark scale group
+       so we can stack a hand-tuned glow at canvas resolution.
+       Center at (24,10) in mark coords → (94 + 24*28, 188 + 10*28)
+       = (766, 468). -->
+  <g>
+    <circle cx="766" cy="468" r="120" fill="url(#node-glow)"/>
+    <circle cx="766" cy="468" r="78"  fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1"/>
+    <circle cx="766" cy="468" r="64"  fill="#ffffff"/>
+  </g>
+
+  <!-- ────── Wordmark — MASSIVE ──────
+       Geist bold, tracked tight. Sized to read at thumbnail-grid
+       distance: when this image scales to 270 px wide in a feed,
+       "neuthek" still reads cleanly. -->
+  <g font-family="Geist, 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+    <text x="540" y="1290" text-anchor="middle" font-size="220" font-weight="700" letter-spacing="-8" fill="#ffffff">neuthek</text>
+  </g>
+
+  <!-- ────── Small "INTRO VIDEO" label ──────
+       Mono caps, tracked wide. Sits directly under the wordmark
+       so the eye groups them; mono treatment differentiates it as
+       a meta-label rather than another headline. -->
+  <g font-family="'Geist Mono', ui-monospace, 'JetBrains Mono', SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="540" y="1392" text-anchor="middle" font-size="38" font-weight="500" letter-spacing="8" fill="#ffffff" fill-opacity="0.62">INTRO VIDEO</text>
+  </g>
+
+  <!-- ────── URL pill — visible, button-feel ──────
+       Filled white pill with dark text. Strong contrast against
+       the dark backdrop reads as the call-to-action without
+       shouting. Width sized so "neuthek.com" centers comfortably
+       with even padding. -->
+  <g transform="translate(290, 1660)">
+    <!-- Soft drop shadow so the pill lifts off the dark surface. -->
+    <rect x="0" y="6" width="500" height="120" rx="60" fill="#000000" opacity="0.45"/>
+    <!-- Pill body. -->
+    <rect x="0" y="0" width="500" height="120" rx="60" fill="#ffffff"/>
+    <!-- URL text in dark ink for max contrast. -->
+    <text x="250" y="78" text-anchor="middle"
+          font-family="Geist, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+          font-size="48" font-weight="700" letter-spacing="-1" fill="#0a0a0a">neuthek.com</text>
+  </g>
+
+  <!-- ────── Vignette over everything ────── -->
+  <rect width="1080" height="1920" fill="url(#vignette)" pointer-events="none"/>
+</svg>

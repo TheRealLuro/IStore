@@ -1333,10 +1333,19 @@ def _llm_rewrite_summary(
         if tags:
             ctx_lines.append(f"Existing tags: {', '.join(tags[:20])}")
         if ocr_text:
-            # 1500 chars fits the prompt budget alongside the multi-signal
-            # context above; whiteboards and screenshots stop truncating
-            # mid-equation. Qwen2.5 has ~3500-token effective input.
-            ctx_lines.append(f"Visible text in image: {ocr_text[:1500]}")
+            # `ocr_text` is repurposed by the video summarizer to carry
+            # the audio transcript (see `_summarize_video`). Label
+            # accordingly so the LLM knows whether it's looking at
+            # whiteboard OCR (image path) or spoken content (video
+            # path). 1500 chars fits the prompt budget alongside the
+            # multi-signal context above.
+            label = (
+                "Spoken content (what was said) — this carries the "
+                "actual subject of the video"
+                if content_type == "video"
+                else "Visible text in image"
+            )
+            ctx_lines.append(f"{label}: {ocr_text[:1500]}")
         if scene:
             ctx_lines.append(f"Scene: {scene.replace('_', ' ')}")
         if setting and setting != "unknown":
@@ -1348,21 +1357,64 @@ def _llm_rewrite_summary(
             (n or "").strip().lower() in {"me", "i"} for n in names
         )
 
-        instructions = (
-            "Write a dense, keyword-rich description (1-3 sentences, up "
-            "to ~70 words) of what's in this image. Pack in EVERY "
-            "distinct concrete noun, named person, scene cue, lighting "
-            "detail, action, and object from the inputs above — these "
-            "are the search keywords users will type later, so "
-            "redundancy with the inputs is good, not bad. "
-            "Use named people instead of phrases like 'a man'. "
-            "If visible text is provided, describe what the text is "
-            "ABOUT (e.g. 'matrix algebra equations', 'a chat "
-            "conversation', 'a recipe') rather than quoting it verbatim. "
-            "Do NOT begin with 'The image shows', 'This is a', or "
-            "'There is'. Output only the description — no preamble, no "
-            "quotes, no bullet lists."
-        )
+        # Video and image summaries need DIFFERENT prompts. The image
+        # path emphasises visual nouns and treats on-screen text as
+        # "describe what it's ABOUT" — for video that wipes out the
+        # actual spoken content, which the user cares about MORE than
+        # the visual frame. The video path treats transcript +
+        # on-screen text as half the signal (the SUBJECT of the
+        # clip) and the keyframe visuals as the other half.
+        if content_type == "video":
+            # Prompt rewrite (2026-05): the previous version had "(a) "
+            # and "(b) WHAT WAS SAID" + "what the camera shows" as
+            # numbered instruction clauses. Weaker LLM checkpoints
+            # interpreted those as STRUCTURAL HEADERS and emitted
+            # output like "**WHAT WAS SAID:** … **ON-SCREEN TEXT:** …
+            # **VISUAL SCENE:** …" — section markdown that leaked
+            # back to the user. The new instructions describe the
+            # blending intent without giving the model a literal
+            # template to copy.
+            #
+            # Also: paraphrase MORE aggressively. The previous version
+            # ended up producing near-verbatim transcripts when the
+            # transcript was short and Florence captions thin —
+            # Qwen took the path of least resistance and just echoed
+            # the spoken text. We now explicitly forbid quoting.
+            instructions = (
+                "Write a single paragraph (2-4 sentences, up to ~90 "
+                "words) describing this video as ONE coherent whole. "
+                "Blend what was said in the audio with what's visible "
+                "on screen — produce a single narrative, NOT a "
+                "frame-by-frame breakdown. Do NOT mention 'the first "
+                "frame', 'the second screenshot', or any other "
+                "enumeration of the keyframes — synthesize across "
+                "them. Do NOT produce sections, headings, bullet "
+                "points, or labels like 'WHAT WAS SAID'. Paraphrase "
+                "the spoken content into your own words; do not "
+                "quote it verbatim or repeat full sentences from the "
+                "transcript. Name concrete topics, people, places, "
+                "and decisions discussed instead of saying 'they talk "
+                "about technology'. Mention the visual setting "
+                "briefly. Use named people instead of 'a man'. Do "
+                "NOT begin with 'The video shows', 'This is a', or "
+                "'There is'. Output only the description."
+            )
+        else:
+            instructions = (
+                "Write a dense, keyword-rich description (1-3 sentences, up "
+                "to ~70 words) of what's in this image. Pack in EVERY "
+                "distinct concrete noun, named person, scene cue, lighting "
+                "detail, action, and object from the inputs above — these "
+                "are the search keywords users will type later, so "
+                "redundancy with the inputs is good, not bad. "
+                "Use named people instead of phrases like 'a man'. "
+                "If visible text is provided, describe what the text is "
+                "ABOUT (e.g. 'matrix algebra equations', 'a chat "
+                "conversation', 'a recipe') rather than quoting it verbatim. "
+                "Do NOT begin with 'The image shows', 'This is a', or "
+                "'There is'. Output only the description — no preamble, no "
+                "quotes, no bullet lists."
+            )
         if first_person:
             instructions += (
                 " The named person 'Me' is the photo owner — use first "
@@ -1390,10 +1442,15 @@ def _llm_rewrite_summary(
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         prompt_len = inputs.input_ids.shape[1]
 
+        # Video summaries are 2-4 sentences (~90 words = ~120 tokens
+        # for English). Image summaries are 1-3 sentences (~70
+        # words = ~95 tokens). Give video a bigger budget so the
+        # generation doesn't get cut mid-sentence and produce
+        # something that fails the rejection cap.
         with torch.no_grad():
             out_ids = model.generate(
                 **inputs,
-                max_new_tokens=140,
+                max_new_tokens=220 if content_type == "video" else 140,
                 do_sample=False,
                 num_beams=1,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
@@ -1403,10 +1460,57 @@ def _llm_rewrite_summary(
         reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
         # Guard against the LLM going off — JSON dumps, multi-paragraph
-        # ramble, etc. Collapse internal whitespace; keep up to ~700
-        # chars (was 400 — allowing 1-2 sentence descriptions).
+        # ramble, etc. Collapse internal whitespace.
+        # Caps: 700 chars for image (1-3 sentence) summaries, 1300
+        # chars for video (2-4 sentence, ~90 words) summaries. The
+        # old uniform 700-char cap rejected legitimate 90-word video
+        # outputs and fell back to the raw transcript verbatim.
         reply = re.sub(r"\s+", " ", reply).strip().strip('"').strip("'").strip()
-        if not reply or len(reply) > 700:
+        # Strip leaked markdown section headers — Qwen sometimes emits
+        # **WHAT WAS SAID:** / **VISUAL SCENE:** style prefixes despite
+        # the instructions telling it not to. Drop them so the user
+        # sees clean prose.
+        if content_type == "video":
+            reply = re.sub(
+                r"\*\*[A-Z][A-Z0-9 _\-]+\*\*[:\s]*", " ", reply,
+            ).strip()
+            # Strip frame-by-frame enumeration. Qwen-2.5-1.5B is a
+            # small model and treats the multi-keyframe Florence
+            # caption list as a per-frame instruction set despite
+            # the prompt forbidding it — outputs like "In the first
+            # frame ... In the second frame ..." dominate when
+            # there isn't much spoken content. We rewrite the most
+            # common patterns into neutral connective tissue so
+            # the summary still parses as one paragraph instead of
+            # a numbered breakdown.
+            FRAME_ENUM = re.compile(
+                r"\b(?:in\s+|at\s+)?(?:the\s+)?"
+                r"(?:first|second|third|fourth|fifth|sixth|seventh|"
+                r"eighth|next|final|last|opening|closing|"
+                r"earlier|later|following|preceding)"
+                r"\s+(?:frame|screenshot|image|shot|scene|clip|"
+                r"keyframe|snapshot|moment),?\s*",
+                re.IGNORECASE,
+            )
+            reply = FRAME_ENUM.sub("", reply)
+            # Also drop the conjunctive "Each frame captures a
+            # unique aspect" / "Each screenshot shows" boilerplate
+            # — same model tic, lower frequency.
+            reply = re.sub(
+                r"\b(?:Each|Every)\s+(?:frame|screenshot|image|shot|"
+                r"keyframe|snapshot)\s+(?:captures|shows|features|"
+                r"depicts|displays|reveals)\b[^.]*\.\s*",
+                "",
+                reply, flags=re.IGNORECASE,
+            )
+            # Collapse the gaps the stripping left behind. Capitalize
+            # the start of the first surviving sentence.
+            reply = re.sub(r"\s+", " ", reply).strip()
+            reply = re.sub(r"\.\s*([a-z])", lambda m: ". " + m.group(1).upper(), reply)
+            if reply and reply[0].islower():
+                reply = reply[0].upper() + reply[1:]
+        max_len = 1300 if content_type == "video" else 700
+        if not reply or len(reply) > max_len:
             return None
         # Ensure terminal punctuation.
         if reply[-1] not in ".!?":
@@ -1646,16 +1750,38 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
     """
     duration_s = _probe_video_duration(raw_bytes)
     if duration_s and duration_s > 0:
-        # 4 samples evenly inside [15%, 90%] of the duration. We bias
-        # away from the absolute start (logos, black) and the
-        # absolute end (credits, fade-out).
-        sample_pcts = [0.15, 0.40, 0.65, 0.90]
-        offsets = [max(0.5, duration_s * p) for p in sample_pcts]
+        # Sampling density scales with duration so a 30s clip gets a
+        # tight read (≤6 samples → one every ~5s) and a 30min lecture
+        # gets enough coverage to catch scene changes without
+        # Florence-captioning every frame at runtime cost.
+        # Cap at MAX_FRAMES so a 2h movie doesn't try to caption 720
+        # frames (90+ minutes of GPU time).
+        #
+        # The user asked for "frame-by-frame" — true 30fps would mean
+        # 30 captions/sec which is GPU-prohibitive AND redundant
+        # (consecutive frames look nearly identical). 1 sample / 5s
+        # is the sweet spot empirically: every meaningful scene
+        # transition in a typical phone clip / lecture / interview
+        # gets covered, summary cost stays under ~1 min on GPU.
+        MAX_FRAMES = 24
+        SECONDS_PER_FRAME = 5.0
+        n = max(4, min(MAX_FRAMES, int(round(duration_s / SECONDS_PER_FRAME))))
+        # Spread evenly inside [10%, 90%] so we skip the standard
+        # intro/outro black + fade and concentrate on the actual
+        # content. Bias toward earlier coverage where most clips
+        # peak in information density.
+        if n == 1:
+            offsets = [duration_s * 0.5]
+        else:
+            offsets = [
+                max(0.5, duration_s * (0.10 + (0.80 * i / (n - 1))))
+                for i in range(n)
+            ]
     else:
         # Unknown duration — fall back to fixed offsets, the last of
         # which (60s) will fail silently on shorter clips. ffmpeg just
         # returns the last frame at that point.
-        offsets = [1.0, 5.0, 15.0, 60.0]
+        offsets = [1.0, 3.0, 5.0, 10.0, 15.0, 30.0, 60.0]
     frames = [_extract_keyframe(raw_bytes, t) for t in offsets]
     frames = [f for f in frames if f]
 
@@ -1804,17 +1930,31 @@ def _derive_video_topic(summary: str, fallback: str) -> str:
 
 def _probe_video_duration(raw_bytes: bytes) -> Optional[float]:
     """Use ffprobe to read duration in seconds. Returns None on any
-    failure — the caller substitutes fixed offsets in that case."""
+    failure — the caller substitutes fixed offsets in that case.
+
+    Same temp-file approach as `_extract_keyframe`: piping through
+    stdin breaks on mp4s whose moov atom lives at the END of the file
+    (most phone recordings, screen captures). ffprobe with a real
+    file path can seek freely to the moov atom regardless of where
+    it sits in the container.
+    """
+    import tempfile
+    import os
+    tmp_path: Optional[str] = None
     try:
+        with tempfile.NamedTemporaryFile(
+            prefix="probe-", suffix=".bin", delete=False,
+        ) as tmp:
+            tmp.write(raw_bytes)
+            tmp_path = tmp.name
         proc = subprocess.run(
             [
                 "ffprobe",
                 "-loglevel", "error",
                 "-show_entries", "format=duration",
                 "-of", "csv=p=0",
-                "pipe:0",
+                tmp_path,
             ],
-            input=raw_bytes,
             capture_output=True,
             timeout=15,
         )
@@ -1824,35 +1964,84 @@ def _probe_video_duration(raw_bytes: bytes) -> Optional[float]:
         return float(s) if s else None
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
         return None
+    finally:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except OSError: pass
 
 
 def _extract_keyframe(raw_bytes: bytes, seek_seconds: float = 5) -> Optional[bytes]:
-    """Pipe video bytes through ffmpeg, capture one PNG frame, return bytes.
+    """Write bytes to a temp file, run ffmpeg against the file path, capture one PNG.
 
     Requires `ffmpeg` on PATH. Returns None on any failure (missing binary,
     unsupported container, seek past end of file, etc.) so the caller can
     degrade gracefully.
+
+    **Why a temp file instead of piping through stdin (2026-05 fix):**
+    Most consumer MP4s (phone recordings, screen captures, content from
+    Drive that wasn't run through `+faststart`) store the `moov` atom at
+    the END of the file. When ffmpeg reads from a pipe, it can't seek
+    backwards to that moov atom — the container parse fails with
+    `partial file` at offset 0x30. The user's library had this exact
+    issue on every video that went through HLS transcoding, because
+    after HLS the `original_blob_key` still pointed at the original
+    mp4 but the worker was piping it through stdin → ffmpeg failed →
+    every video got the generic fallback summary "Video file. Preview
+    unavailable." Writing to a temp file lets ffmpeg seek freely.
+
+    Uses **post-input** `-ss` (input file, then seek). The previous
+    pre-input form is faster but can land between keyframes on
+    poorly-indexed MP4s and return EMPTY stdout with exit code 0.
+    Post-input is decoder-accurate.
     """
+    import tempfile
+    import os
+    tmp_path: Optional[str] = None
     try:
+        # NamedTemporaryFile with delete=False so ffmpeg can open the
+        # path on Windows + we control the cleanup in the finally.
+        with tempfile.NamedTemporaryFile(
+            prefix="kf-", suffix=".bin", delete=False,
+        ) as tmp:
+            tmp.write(raw_bytes)
+            tmp_path = tmp.name
         proc = subprocess.run(
             [
                 "ffmpeg",
                 "-loglevel", "error",
+                "-i", tmp_path,
                 "-ss", f"{seek_seconds:.3f}",
-                "-i", "pipe:0",
                 "-frames:v", "1",
                 "-f", "image2pipe",
                 "-vcodec", "png",
                 "pipe:1",
             ],
-            input=raw_bytes,
             capture_output=True,
             timeout=30,
             check=True,
         )
+        if not proc.stdout:
+            # exit 0 with empty payload: seek landed past the last
+            # frame, or container has no decodable video stream.
+            logger.info(
+                "extract_keyframe: ffmpeg returned 0 bytes at seek=%.3fs; stderr=%r",
+                seek_seconds, proc.stderr.decode(errors="replace")[:200],
+            )
+            return None
         return proc.stdout
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except subprocess.CalledProcessError as exc:
+        logger.info(
+            "extract_keyframe: ffmpeg exit %d at seek=%.3fs; stderr=%r",
+            exc.returncode, seek_seconds,
+            (exc.stderr or b"").decode(errors="replace")[:200],
+        )
         return None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except OSError: pass
 
 
 # --- document --------------------------------------------------------------

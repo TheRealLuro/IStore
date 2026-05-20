@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from sqlalchemy import delete as sa_delete, func as sa_func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,43 +67,66 @@ class QuarantineSweepResult:
     cutoff_iso: str
 
 
-async def sweep_expired_originals(session: AsyncSession) -> SweepResult:
-    """Find expired originals, drop their blobs, null the column, audit it."""
+async def sweep_expired_originals(
+    session: AsyncSession,
+    *,
+    user_id: Optional[uuid.UUID] = None,
+) -> SweepResult:
+    """Find expired originals, drop their blobs, null the column, audit it.
+
+    `user_id` (optional) scopes the sweep to ONE user. Used by the
+    user-facing `POST /storage/free-originals` endpoint so clicking
+    "Free originals" in user A's settings doesn't sweep user B's
+    due-expired rows under user A's transaction (audit-misattribution
+    + cross-tenant info leak via the returned `bytes_freed` total).
+    When `user_id` is None (the daily cron path), all due originals
+    across all users are processed — that's the global behaviour the
+    docstring used to describe.
+    """
     now = datetime.now(timezone.utc)
 
-    expired = (
-        await session.execute(
-            select(
-                Image.id,
-                Image.user_id,
-                Image.original_blob_key,
-                Image.byte_size_original,
-            ).where(
-                Image.original_expires_at.is_not(None),
-                Image.original_expires_at < now,
-                Image.original_blob_key.is_not(None),
-            )
+    stmt = (
+        select(
+            Image.id,
+            Image.user_id,
+            Image.original_blob_key,
+            Image.byte_size_original,
+        ).where(
+            Image.original_expires_at.is_not(None),
+            Image.original_expires_at < now,
+            Image.original_blob_key.is_not(None),
         )
-    ).all()
+    )
+    if user_id is not None:
+        stmt = stmt.where(Image.user_id == user_id)
+
+    expired = (await session.execute(stmt)).all()
 
     blobs_deleted = 0
     blob_errors = 0
     bytes_freed = 0
-    user_counts: dict = {}
+    # Per-user counts of rows where the blob ACTUALLY deleted, so
+    # the audit row doesn't claim "X originals dropped" when really
+    # only `blobs_deleted` got past MinIO. The total row count
+    # (column-nulled) ends up in `rows_nulled` for the SweepResult.
+    user_deleted: dict = {}
+    user_errors: dict = {}
 
-    for image_id, user_id, blob_key, byte_size in expired:
+    for image_id, owner, blob_key, byte_size in expired:
         try:
             storage.delete(storage.bucket_originals, blob_key)
             blobs_deleted += 1
             if byte_size:
                 bytes_freed += int(byte_size)
+            user_deleted[owner] = user_deleted.get(owner, 0) + 1
         except Exception as exc:
             blob_errors += 1
             logger.warning("Retention sweep: blob delete failed for %s: %s", blob_key, exc)
-            # Still null the column — a missing blob isn't a reason to keep
-            # the dead pointer alive. Audit log records the discrepancy.
-        user_counts.setdefault(user_id, 0)
-        user_counts[user_id] += 1
+            user_errors[owner] = user_errors.get(owner, 0) + 1
+            # Still null the column below — a missing blob isn't a
+            # reason to keep the dead pointer alive. The audit row
+            # records the blob_errors so an orphaned-bytes condition
+            # in MinIO can be reconciled by a sysadmin later.
 
     rows_nulled = 0
     if expired:
@@ -113,16 +138,19 @@ async def sweep_expired_originals(session: AsyncSession) -> SweepResult:
         )
         rows_nulled = int(result.rowcount or 0)
 
-        # One audit row per affected user so each user has a deletion record
-        # they can later see in their export — and so the audit log is bounded
-        # by users not by blob count.
-        for user_id, count in user_counts.items():
+        # One audit row per affected user. We now record `blobs_deleted`
+        # (the actual MinIO ops that succeeded) and `blob_errors`
+        # separately so operators can reconcile orphan bytes from the
+        # audit log alone, instead of seeing "5 originals dropped" when
+        # really only 3 had their blobs deleted.
+        for owner in set(list(user_deleted.keys()) + list(user_errors.keys())):
             session.add(
                 AuditLog(
-                    user_id=user_id,
+                    user_id=owner,
                     action="retention.sweep_originals",
                     details={
-                        "originals_dropped": count,
+                        "blobs_deleted": user_deleted.get(owner, 0),
+                        "blob_errors": user_errors.get(owner, 0),
                         "swept_at": now.isoformat(),
                     },
                 )
@@ -137,6 +165,160 @@ async def sweep_expired_originals(session: AsyncSession) -> SweepResult:
         rows_nulled=rows_nulled,
         bytes_freed=bytes_freed,
     )
+
+
+# ----- Orphan-blob sweep -----
+#
+# Background: the `images.original_blob_key` / `served_blob_key` /
+# `thumbnail_blob_key` columns and the `served_variants` JSONB are
+# the source of truth for which MinIO objects we own. A row insert
+# writes the blob BEFORE committing the DB row, so a crash between
+# blob-write and row-commit leaves a blob with no reference. Same for
+# re-syncs that generate a fresh `uuid4().hex` prefix on every run —
+# the new path goes into the DB, the old blob stays in MinIO. Over
+# weeks of dev iteration this leaked ~17× the actual library size
+# (we measured 1742 original blobs in MinIO vs. 105 referenced by
+# the DB).
+#
+# This sweeper walks the originals + served buckets, computes the
+# set of "referenced" keys from the DB, and deletes everything that
+# isn't referenced. Idempotent. Slow (one bucket walk per call) so
+# we run it on the daily lifespan tick alongside the originals-TTL
+# sweep — not per request.
+
+
+@dataclass
+class OrphanSweepResult:
+    bucket: str
+    listed: int
+    deleted: int
+    bytes_freed: int
+    errors: int
+
+
+async def sweep_orphan_blobs(session: AsyncSession) -> list[OrphanSweepResult]:
+    """Delete every blob in `originals` and `served` that no Image row
+    points at. Skips face_crops (those have FK CASCADE handling) and
+    the quarantine bucket (sweep_expired_quarantine owns it).
+
+    The "referenced" set covers:
+      - Image.original_blob_key
+      - Image.served_blob_key
+      - Image.thumbnail_blob_key
+      - every entry in Image.served_variants (legacy mp4 tier keys)
+      - every object under Image.served_variants["hls_prefix"]
+    """
+    from backend.models import Image as ImageModel
+
+    # Pull every referenced key in one pass. Soft-deleted rows still
+    # count — their blobs stick around until Trash is emptied or the
+    # 30-day TTL sweep fires. We don't want to nuke their bytes here.
+    rows = (
+        await session.execute(
+            select(
+                ImageModel.original_blob_key,
+                ImageModel.served_blob_key,
+                ImageModel.thumbnail_blob_key,
+                ImageModel.served_variants,
+            )
+        )
+    ).all()
+
+    orig_refs: set[str] = set()
+    served_refs: set[str] = set()
+    hls_prefixes: list[str] = []
+    for orig, served, thumb, sv in rows:
+        if orig:
+            orig_refs.add(orig)
+        if served:
+            served_refs.add(served)
+        if thumb:
+            served_refs.add(thumb)
+        if isinstance(sv, dict):
+            for label, v in sv.items():
+                if label == "hls_prefix" and isinstance(v, str):
+                    hls_prefixes.append(v.rstrip("/") + "/")
+                elif label == "renditions":
+                    continue
+                elif label == "hls_master" and isinstance(v, str):
+                    served_refs.add(v)
+                elif isinstance(v, str):
+                    served_refs.add(v)
+                elif isinstance(v, dict) and isinstance(v.get("key"), str):
+                    served_refs.add(v["key"])
+
+    results: list[OrphanSweepResult] = []
+    # MinIO listing happens via the sync SDK; run in a thread so the
+    # asyncio loop stays free during a multi-bucket walk.
+    import asyncio as _asyncio
+
+    def _sweep(bucket: str, refs: set[str], allow_prefixes: list[str]) -> OrphanSweepResult:
+        listed = 0
+        deleted = 0
+        errors = 0
+        bytes_freed = 0
+        try:
+            objects = list(storage.client.list_objects(
+                bucket, prefix="users/", recursive=True,
+            ))
+        except Exception:
+            logger.exception("orphan-sweep: list_objects failed for %s", bucket)
+            return OrphanSweepResult(bucket=bucket, listed=0, deleted=0, bytes_freed=0, errors=1)
+        for obj in objects:
+            key = getattr(obj, "object_name", None)
+            if not key:
+                continue
+            listed += 1
+            if key in refs:
+                continue
+            # `allow_prefixes` lets HLS segments under `hls_prefix`
+            # survive even though their individual keys aren't in
+            # the served_variants top-level entries.
+            if any(key.startswith(p) for p in allow_prefixes):
+                continue
+            try:
+                size = int(getattr(obj, "size", 0) or 0)
+                storage.delete(bucket, key)
+                deleted += 1
+                bytes_freed += size
+            except Exception:
+                errors += 1
+        return OrphanSweepResult(
+            bucket=bucket, listed=listed, deleted=deleted,
+            bytes_freed=bytes_freed, errors=errors,
+        )
+
+    results.append(await _asyncio.to_thread(
+        _sweep, storage.bucket_originals, orig_refs, [],
+    ))
+    results.append(await _asyncio.to_thread(
+        _sweep, storage.bucket_served, served_refs, hls_prefixes,
+    ))
+
+    total_deleted = sum(r.deleted for r in results)
+    total_freed = sum(r.bytes_freed for r in results)
+    if total_deleted > 0:
+        session.add(
+            AuditLog(
+                user_id=None,
+                action="retention.sweep_orphans",
+                details={
+                    "buckets": [
+                        {
+                            "bucket": r.bucket, "listed": r.listed,
+                            "deleted": r.deleted, "bytes_freed": r.bytes_freed,
+                            "errors": r.errors,
+                        }
+                        for r in results
+                    ],
+                    "total_deleted": total_deleted,
+                    "total_bytes_freed": total_freed,
+                    "swept_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        )
+        await session.commit()
+    return results
 
 
 def _list_quarantine_objects():

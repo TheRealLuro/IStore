@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 240" width="1080" height="240" role="img" aria-label="neuthek.com">
+  <defs>
+    <!-- Subtle vertical sheen so the pill reads as a real surface
+         instead of a flat fill. Bottom is a touch darker so the
+         pill has a soft "weight" against any video backdrop. -->
+    <linearGradient id="pill-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#161616"/>
+      <stop offset="100%" stop-color="#080808"/>
+    </linearGradient>
+    <!-- Soft outer glow so the pill stays legible on busy / bright
+         video. Tuned wide + low-opacity rather than a hard stroke
+         so the edges don't fight the rounded shape. -->
+    <filter id="pill-glow" x="-10%" y="-30%" width="120%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feColorMatrix in="b" type="matrix"
+        values="0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0 0
+                0 0 0 0.55 0"/>
+    </filter>
+  </defs>
+
+  <!-- Drop shadow layer (separate so it sits underneath the pill). -->
+  <rect x="20" y="32" width="1040" height="180" rx="90" ry="90" fill="#000" filter="url(#pill-glow)"/>
+
+  <!-- Pill body. 90px corner radius = fully rounded ends at 180px height. -->
+  <rect x="20" y="20" width="1040" height="180" rx="90" ry="90" fill="url(#pill-grad)"/>
+
+  <!-- Hairline inner stroke — 1 px white at 8% opacity. Same
+       treatment NeuthekMark uses on its dark frame. -->
+  <rect x="21" y="21" width="1038" height="178" rx="89" ry="89" fill="none"
+        stroke="#ffffff" stroke-opacity="0.08" stroke-width="1"/>
+
+  <!-- ── Neuthek mark, scaled up from the 32×32 source to 120×120. ── -->
+  <!-- Group is translated to the left third of the pill, vertically
+       centered. The original viewBox is 0..32, so a 3.75× scale lands
+       at 120 px. We skip the dark frame (`bare` mode in the React
+       component) since the pill itself is the frame. -->
+  <g transform="translate(80, 60) scale(3.75)">
+    <g stroke="#ffffff" stroke-width="0.7" stroke-linecap="round" opacity="0.55">
+      <line x1="9"  y1="22" x2="11" y2="9"/>
+      <line x1="11" y1="9"  x2="22" y2="22"/>
+      <line x1="22" y1="22" x2="24" y2="10"/>
+      <line x1="9"  y1="14" x2="17" y2="15"/>
+      <line x1="17" y1="15" x2="24" y2="10"/>
+    </g>
+    <g fill="#ffffff">
+      <circle cx="9"  cy="22" r="1.4"/>
+      <circle cx="11" cy="9"  r="1.4"/>
+      <circle cx="22" cy="22" r="1.4"/>
+      <circle cx="9"  cy="14" r="1.0"/>
+      <circle cx="17" cy="15" r="1.0"/>
+      <!-- Active node — slightly larger, anchors the graph. -->
+      <circle cx="24" cy="10" r="2.3"/>
+    </g>
+  </g>
+
+  <!-- Vertical divider between mark and wordmark, very low contrast
+       (a brand-friendly "·" weight rather than a hard rule). -->
+  <line x1="240" y1="78" x2="240" y2="162" stroke="#ffffff" stroke-opacity="0.15" stroke-width="1"/>
+
+  <!-- Wordmark + URL.
+       Two-line stack: brand name on top (heavy weight, tracked tight),
+       domain underneath (lighter weight, slightly muted).
+       Geist with a stack of system fallbacks for any renderer that
+       doesn't have it locally — same fallback chain the app uses. -->
+  <g font-family="Geist, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" fill="#ffffff">
+    <text x="290" y="118" font-size="74" font-weight="700" letter-spacing="-2">neuthek</text>
+    <text x="290" y="172" font-size="38" font-weight="500" fill="#ffffff" fill-opacity="0.72" letter-spacing="0.5">neuthek.com</text>
+  </g>
+
+  <!-- Tiny accent dot — echoes the brand's "active node" — pinned
+       to the right edge for visual balance with the mark on the
+       left. Subtle, doesn't compete with the text. -->
+  <circle cx="1000" cy="110" r="6" fill="#ffffff"/>
+  <circle cx="1000" cy="110" r="14" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="1"/>
+</svg>

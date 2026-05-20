@@ -40,6 +40,31 @@ from backend.upload_validation import validate_upload
 logger = logging.getLogger(__name__)
 
 
+def _policy_to_expiry_safe(user: User):
+    """Resolve `user.original_retention_policy` to a concrete
+    `original_expires_at` value for INSERT.
+
+    Lives here (not in api/storage.py) so the upload code path
+    doesn't have to import an API module — circular-import safe.
+    The actual policy → timedelta math lives in
+    backend.api.storage.policy_to_expiry; we import lazily so a
+    transient ImportError can't kill an upload.
+
+    On any failure we return the legacy `now() + 30d` so the
+    upload still succeeds with the safest non-destructive default.
+    """
+    try:
+        from backend.api.storage import policy_to_expiry
+        return policy_to_expiry(user.original_retention_policy or "30d")
+    except Exception:
+        logger.exception(
+            "retention policy resolve failed for user %s; falling back to 30d",
+            user.id,
+        )
+        from datetime import timedelta
+        return datetime.now(timezone.utc) + timedelta(days=30)
+
+
 def _run_vision_sync(raw_bytes: bytes):
     """Loaded lazily so the FastAPI app doesn't import torch unless ML is installed."""
     from backend.vision.pipeline import process
@@ -309,7 +334,17 @@ async def store_upload(
     category = validated.category
 
     if category != "image":
-        return await _store_non_image(session, user, filename, raw_bytes, content_type, sha, category)
+        # Pass source_provider + folder_id through to the non-image
+        # path. Before this, every video/PDF/text synced from Drive
+        # landed at the gallery root with source_provider=NULL —
+        # the function signature didn't accept these kwargs and
+        # the caller's values were silently dropped.
+        return await _store_non_image(
+            session, user, filename, raw_bytes, content_type, sha, category,
+            source_provider=source_provider,
+            folder_id=folder_id,
+            skip_ai_training=skip_ai_training,
+        )
 
     # §B1 — strip EXIF from originals unless the user has explicitly
     # opted in. `gps_retention` keeps GPS subset, `exif_retention` keeps
@@ -426,6 +461,13 @@ async def store_upload(
         lossless=plan.lossless,
         bandit_arm_id=decision.arm_id,
         context_features=decision.context_features,
+        # Honor the user's per-account retention policy at INSERT
+        # time. The DB column has a `now() + 30d` server_default,
+        # but that's only applied when we don't pass a value —
+        # passing one (including `None` for "forever") overrides
+        # the default, which is what we want for any user who
+        # opted into a non-30d policy.
+        original_expires_at=_policy_to_expiry_safe(user),
     )
 
     if vision is not None:
@@ -514,6 +556,16 @@ async def _store_non_image(
     content_type: str | None,
     sha: bytes,
     category: str,
+    *,
+    # Cloud-sync attribution. Mirror the image-upload path so a video
+    # / PDF synced from Drive ends up in the "Google Drive" folder
+    # with `source_provider="google_drive"` instead of at the gallery
+    # root with no provenance.
+    source_provider: str | None = None,
+    folder_id: UUID | None = None,
+    # When True, the row stays out of summary/face-scan workers —
+    # mirrors the image path's `skip_ai_training` semantics.
+    skip_ai_training: bool = False,
 ) -> Image:
     """Documents / videos / other: stored as-is, no compression, no vision.
 
@@ -573,7 +625,21 @@ async def _store_non_image(
         quality=None,
         max_dim=None,
         lossless=None,
-        pending_face_scan=False,
+        # Sync-attribution + AI-training opt-out propagated from
+        # the caller (cloud sync sets both). Image-category uploads
+        # already plumbed these through; non-image uploads were
+        # silently dropping them, which left every synced video /
+        # PDF at the gallery root with no provider tag.
+        source_provider=source_provider,
+        folder_id=folder_id,
+        skip_ai_training=skip_ai_training,
+        # Background workers shouldn't pick up cloud-synced rows
+        # unless the user explicitly opts in (`pending_*` re-flips
+        # to True when they enable AI on the cloud link).
+        pending_face_scan=False if skip_ai_training else False,
+        # Mirror the image-upload path — non-image categories (docs,
+        # video, audio) honor the same per-user retention policy.
+        original_expires_at=_policy_to_expiry_safe(user),
     )
     session.add(image)
     await session.commit()

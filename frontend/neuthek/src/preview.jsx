@@ -72,14 +72,15 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     setStarred(!!file.is_starred);
   }, [file?.id, file?.is_starred, tagKey]);
 
-  // Real people for this image. Fires only when an image is selected and
-  // is gated on the user's face_recognition consent server-side — when
-  // consent is off, the endpoint returns []. We render nothing in that case.
-  const isImageFile = file?.type === "image";
+  // Real people for this image (or video — face_scan runs over video
+  // keyframes too). Gated on the user's face_recognition consent
+  // server-side — when consent is off, the endpoint returns []. We
+  // render nothing in that case.
+  const isFaceCapable = file?.type === "image" || file?.type === "video";
   const { data: imagePeople = [] } = useQuery({
     queryKey: ["image-people", file?.id],
     queryFn: () => getImagePeople(file.id),
-    enabled: !!file && isImageFile,
+    enabled: !!file && isFaceCapable,
     staleTime: 30_000,
   });
 
@@ -778,9 +779,9 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
           </div>
         ) : null}
 
-        {isImage && imagePeople.length > 0 && (
+        {isFaceCapable && imagePeople.length > 0 && (
           <div className="preview__section">
-            <div className="preview__section-label">People in this photo</div>
+            <div className="preview__section-label">{isVideo ? "People in this video" : "People in this photo"}</div>
             <div className="preview__faces">
               {imagePeople.map((p) => {
                 const labelled = !!p.person_display_name;
@@ -816,9 +817,9 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             (RetinaFace 0.3 → 0.15 → mediapipe). On the still-empty
             terminal state, surface a "manual add" hint — the actual
             user-drawn-box flow is a follow-up. */}
-        {isImage && imagePeople.length === 0 && (
+        {isFaceCapable && imagePeople.length === 0 && (
           <div className="preview__section">
-            <div className="preview__section-label">People in this photo</div>
+            <div className="preview__section-label">{isVideo ? "People in this video" : "People in this photo"}</div>
             {redetectState === "empty" ? (
               <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
                 No faces found, even after re-running detection at a lower

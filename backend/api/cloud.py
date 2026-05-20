@@ -55,6 +55,59 @@ class CloudLinkRead(BaseModel):
     ai_opted_in: bool = False
 
 
+class ProviderFolderStats(BaseModel):
+    """Stats on what's IN the linked Drive folder on the provider's
+    side. Lets the storage panel say "your Drive holds X GB across N
+    files; we've mirrored M of those here" so the user can reconcile
+    neuthek's local 1 GB footprint with their 28 GB Drive folder."""
+
+    provider: str
+    file_count: int
+    total_bytes: int
+
+
+@router.get("/folder-stats/{provider}", response_model=ProviderFolderStats | None)
+async def folder_stats(
+    provider: str,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProviderFolderStats | None:
+    """Return the user's total file count + byte size on the given
+    cloud provider. Walks the provider's API directly — for Drive
+    this is one paginated `files.list` walk (~3s on a 50k-file
+    account). Frontend calls this lazily from the storage panel so
+    a slow Drive doesn't block the page render.
+
+    Returns None when (a) no link exists for this user/provider,
+    (b) the link is revoked, (c) the provider API call failed —
+    callers render the section without the "X GB total" line.
+    """
+    link = (
+        await session.execute(
+            select(CloudLink)
+            .where(
+                CloudLink.user_id == user.id,
+                CloudLink.provider == provider,
+                CloudLink.status == "active",
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not link or not link.encrypted_refresh_token:
+        return None
+    from backend.cloud_sync import provider_folder_stats
+    stats = await provider_folder_stats(
+        provider, link.encrypted_refresh_token.encode("utf-8") if isinstance(link.encrypted_refresh_token, str) else link.encrypted_refresh_token,
+    )
+    if stats is None:
+        return None
+    return ProviderFolderStats(
+        provider=provider,
+        file_count=stats["file_count"],
+        total_bytes=stats["total_bytes"],
+    )
+
+
 @router.get("/links", response_model=list[CloudLinkRead])
 async def list_links(
     user: Annotated[User, Depends(current_active_user)],
@@ -187,41 +240,148 @@ class SyncResponse(BaseModel):
     provider: str
 
 
+# In-process progress board for cloud syncs. The browser used to hold
+# the HTTP request open for the entire sync — which, after we dropped
+# the image-only filter and started pulling EVERY file, can take
+# minutes for accounts with thousands of items. Uvicorn / the proxy
+# closes the connection mid-walk and the browser surfaces "Failed to
+# fetch." We now kick off the sync as a background task and let the
+# FE poll a status endpoint until done.
+#
+# Keys are (user_id, provider). Values: {state, started_at, counts,
+# error}. In-memory because a single backend process drives all
+# syncs today; scale-out would move this to Redis.
+import asyncio
+from datetime import datetime, timezone
+
+_SYNC_PROGRESS: dict[tuple, dict] = {}
+
+
+def _sync_key(user_id, provider: str) -> tuple:
+    return (str(user_id), provider)
+
+
+async def _run_sync_background(session_factory, user_id, provider: str) -> None:
+    """Background worker. Opens its own session because the request-scoped
+    session has long since closed by the time this runs."""
+    key = _sync_key(user_id, provider)
+    _SYNC_PROGRESS[key] = {
+        "state": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "counts": None,
+        "error": None,
+    }
+    try:
+        async with session_factory() as s:
+            from sqlalchemy import text as sql_text
+            # Workers don't go through the per-request middleware that
+            # stamps `app.current_user_id`, so the RLS policies on
+            # `images` / `image_geo` etc. would block writes. Bypass.
+            await s.execute(sql_text("SET LOCAL app.rls_bypass='on'"))
+            result = await sync_user_provider(s, user_id, provider)
+        _SYNC_PROGRESS[key] = {
+            "state": "done",
+            "started_at": _SYNC_PROGRESS[key]["started_at"],
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "counts": result,
+            "error": None,
+        }
+    except CloudSyncNotConfigured as exc:
+        _SYNC_PROGRESS[key] = {
+            "state": "error",
+            "started_at": _SYNC_PROGRESS[key]["started_at"],
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "counts": None,
+            "error": str(exc),
+        }
+    except Exception as exc:
+        logger.exception(
+            "background_sync: provider call failed user=%s provider=%s",
+            user_id, provider,
+        )
+        msg = _extract_provider_error_message(exc) or "Sync failed. Try again in a moment."
+        _SYNC_PROGRESS[key] = {
+            "state": "error",
+            "started_at": _SYNC_PROGRESS[key]["started_at"],
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "counts": None,
+            "error": msg,
+        }
+
+
 @router.post("/links/{link_id}/sync", response_model=SyncResponse)
 async def trigger_sync(
     link_id: int,
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> SyncResponse:
-    """Run a sync for one cloud link, synchronously, returning counts.
+    """Start a sync in the background and return immediately.
 
-    Synchronous because Drive listing for a typical user takes a few
-    seconds — fast enough for an API call, no need for arq yet. When
-    the sync grows past 30 seconds we'll move it behind the worker.
+    Previously synchronous — the API call held the HTTP request open
+    for the entire Drive walk + per-file download. For an account
+    with thousands of items that exceeds the browser's fetch timeout
+    AND any reverse-proxy idle limit, surfacing as "Failed to fetch."
+    Now we fire-and-forget and the FE polls
+    `GET /cloud/links/{id}/sync-status` for progress + final counts.
+
+    The response is the SAME shape as the legacy synchronous one but
+    populated with the zero counts; the FE treats `state=running`
+    as "sync just started, poll for updates." Idempotent — clicking
+    Sync again while one is already running returns the existing
+    progress instead of starting a second concurrent walk.
     """
     link = await session.get(CloudLink, link_id)
     if link is None or link.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
-    try:
-        result = await sync_user_provider(session, user.id, link.provider)  # type: ignore[arg-type]
-    except CloudSyncNotConfigured as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except Exception as exc:
-        # Catch provider-side failures (googleapiclient HttpError 403/404,
-        # GitHub 401, network errors) and translate to a clean 502 with
-        # the operator-actionable message extracted. Without this, the
-        # exception escapes the request thread and uvicorn drops the
-        # connection mid-response — the browser then surfaces it as
-        # "Failed to fetch" with no detail the user can act on.
-        logger.exception(
-            "trigger_sync: provider call failed user=%s provider=%s",
-            user.id, link.provider,
+    key = _sync_key(user.id, link.provider)
+    existing = _SYNC_PROGRESS.get(key)
+    if existing and existing.get("state") == "running":
+        # Already running — return zero counts; FE polls.
+        return SyncResponse(
+            provider=link.provider,
+            seen=0, pulled=0, skipped_unchanged=0, conflicts=0,
         )
-        msg = _extract_provider_error_message(exc) or "Sync failed. Try again in a moment."
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=msg) from exc
-    return SyncResponse(**result)
+    from backend.db import SessionLocal
+    asyncio.create_task(
+        _run_sync_background(SessionLocal, user.id, link.provider)
+    )
+    return SyncResponse(
+        provider=link.provider,
+        scanned=0, created=0, updated=0, deleted=0, skipped=0,
+        errors=0,
+    )
+
+
+@router.get("/links/{link_id}/sync-status")
+async def sync_status(
+    link_id: int,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Poll endpoint for an in-flight sync. Returns the latest
+    progress dict the background task wrote to `_SYNC_PROGRESS`.
+
+    Response shape:
+        {state: "idle" | "running" | "done" | "error",
+         started_at: iso8601 | null,
+         finished_at: iso8601 | null,
+         counts: SyncResponse | null,
+         error: str | null}
+    """
+    link = await session.get(CloudLink, link_id)
+    if link is None or link.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+    key = _sync_key(user.id, link.provider)
+    progress = _SYNC_PROGRESS.get(key)
+    if progress is None:
+        return {
+            "state": "idle",
+            "started_at": None,
+            "finished_at": None,
+            "counts": None,
+            "error": None,
+        }
+    return progress
 
 
 def _extract_provider_error_message(exc: Exception) -> str | None:
@@ -339,21 +499,41 @@ async def set_ai_opt_in(
         from sqlalchemy import select
         from backend import jobs as job_q
 
-        ids = (
+        # Fetch rows with their category + pending_face_scan so we can
+        # pick the RIGHT job type per row. Before this, the enqueue
+        # always used `enqueue_summarize` — videos never got
+        # face_scan jobs even though `pending_face_scan=True` had
+        # been set on them. That's why every video in the user's
+        # library showed `pending_face_scan=t` AND zero detected
+        # faces: the right job was never enqueued.
+        rows = (
             await session.execute(
-                select(ImageModel.id).where(
+                select(
+                    ImageModel.id,
+                    ImageModel.category,
+                    ImageModel.pending_face_scan,
+                ).where(
                     ImageModel.user_id == user.id,
                     ImageModel.source_provider == link.provider,
                     ImageModel.deleted_at.is_(None),
                     ImageModel.pending_summary.is_(True),
                 )
             )
-        ).scalars().all()
-        for img_id in ids:
+        ).all()
+        for img_id, category, needs_faces in rows:
             try:
-                # Fair-queue requires user_id so jobs land in this
-                # user's per-user list (round-robin between users).
-                if await job_q.enqueue_summarize(user.id, img_id):
+                # Mirror the dispatch from api/images.py + cloud_sync.py:
+                # face_scan_then_summarize when BOTH faces + summary
+                # are needed (image / video rows); face_scan alone for
+                # rows where summary is already done; summarize alone
+                # for the rest (audio, docs, images with face data).
+                if needs_faces and category in ("image", "video"):
+                    ok = await job_q.enqueue_face_scan_then_summarize(
+                        user.id, img_id,
+                    )
+                else:
+                    ok = await job_q.enqueue_summarize(img_id)
+                if ok:
                     enqueued += 1
             except Exception:
                 logger.exception("ai-opt-in: enqueue failed for %s", img_id)

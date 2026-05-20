@@ -24,13 +24,18 @@ from backend.api.tags import router as tags_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
 from backend.auth.google_sso import router as google_sso_router
-from backend.auth.users import auth_backend, fastapi_users
+from backend.auth.users import auth_backend, cookie_auth_backend, fastapi_users
 from backend.config import settings
 from backend.consent import router as consent_router
 from backend.context import reset_current_user_id, set_current_user_id
 from backend.db import engine
 from backend.schemas import UserCreate, UserRead, UserUpdate
-from backend.security import SecurityControlsMiddleware, validate_production_settings
+from backend.security import (
+    CsrfOriginMiddleware,
+    SecurityControlsMiddleware,
+    SecurityHeadersMiddleware,
+    validate_production_settings,
+)
 from backend.storage import storage
 
 
@@ -69,6 +74,64 @@ async def lifespan(app: FastAPI):
             pass
     asyncio.create_task(_prewarm_clip())
 
+    # §B4 — daily retention sweeper. Before this lived in the
+    # lifespan the 30-day original-TTL sweep was only reachable via
+    # the superuser endpoint, which meant in practice originals
+    # accumulated forever and storage cost ballooned. We now run
+    # `sweep_expired_originals` on a 24h tick. Sweeper is idempotent
+    # and a no-op when nothing is expired, so the cost on a healthy
+    # install is one Postgres query per day.
+    from backend.db import SessionLocal
+    from backend.retention import (
+        sweep_audit_log_anonymize,
+        sweep_expired_originals,
+        sweep_expired_quarantine,
+        sweep_feedback_events,
+        sweep_orphan_blobs,
+        sweep_scheduled_account_deletes,
+    )
+
+    async def _retention_loop():
+        # Wait a minute on first boot so we don't compete with the
+        # CLIP warmup + cloud-sync sweep for DB connections during
+        # the first second of life. Then run all five sweepers
+        # serially every 24 h. Each one writes its own audit row;
+        # any failure is logged + the loop continues to the next.
+        # Before this round only `sweep_expired_originals` was wired
+        # to a daily tick — quarantine bytes / consumed feedback
+        # rows / aged audit-log rows / scheduled-delete accounts
+        # accumulated indefinitely because no cron ever ran them.
+        import logging
+        log = logging.getLogger(__name__)
+        await asyncio.sleep(60)
+        while True:
+            for name, fn in (
+                ("originals", sweep_expired_originals),
+                ("quarantine", sweep_expired_quarantine),
+                ("feedback", sweep_feedback_events),
+                ("audit_anonymize", sweep_audit_log_anonymize),
+                ("account_deletes", sweep_scheduled_account_deletes),
+                # Orphan-blob sweep walks the MinIO buckets and deletes
+                # objects no Image row points at. Catches the leak from
+                # failed uploads / re-syncs where the blob was written
+                # before the DB row commit, AND any blob a prior delete
+                # didn't fully clean up. Runs last because it's the
+                # slowest (one full bucket listing per call) and we want
+                # the cheaper sweeps to land their audit rows first.
+                ("orphans", sweep_orphan_blobs),
+            ):
+                try:
+                    async with SessionLocal() as s:
+                        res = await fn(s)
+                    log.info("retention.%s: %s", name, res)
+                except Exception:
+                    log.exception(
+                        "retention.%s: sweep crashed — continuing", name,
+                    )
+            await asyncio.sleep(24 * 60 * 60)
+
+    retention_task = asyncio.create_task(_retention_loop())
+
     try:
         yield
     finally:
@@ -78,6 +141,11 @@ async def lifespan(app: FastAPI):
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+        retention_task.cancel()
+        try:
+            await retention_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def create_app() -> FastAPI:
@@ -88,23 +156,64 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Single source of truth for "origins we trust to make
+    # credentialed requests against this API." Used by BOTH the CORS
+    # middleware (browser-side enforcement) and the
+    # CsrfOriginMiddleware (server-side enforcement on
+    # cookie-authenticated mutating requests). Adding a new frontend
+    # origin = add it here once.
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:4173",
+        "http://127.0.0.1:4173",
+        "tauri://localhost",
+    ]
+    # Middleware order matters (and is counterintuitive).
+    # `add_middleware` does `user_middleware.insert(0, …)`, so the
+    # LAST middleware added becomes the OUTERMOST wrapper. The
+    # OUTERMOST sees every response on the way out, including
+    # 403/401 short-circuits from middlewares INSIDE it.
+    #
+    # We want CORS to be OUTERMOST so its `Access-Control-Allow-Origin`
+    # header lands on every response — including the 403s from
+    # CsrfOriginMiddleware. Previously CORS was added first (=
+    # innermost), so a Csrf 403 returned WITHOUT CORS headers and
+    # the browser surfaced it as "blocked by CORS policy" with no
+    # Allow-Origin header, obscuring the real error.
+    #
+    # Correct order:
+    #   1. SecurityControlsMiddleware  (innermost — closest to router)
+    #   2. SecurityHeadersMiddleware
+    #   3. CsrfOriginMiddleware
+    #   4. CORSMiddleware              (outermost — added last)
+    app.add_middleware(SecurityControlsMiddleware)
+    # Always-on baseline headers (CSP / HSTS / X-Frame / etc.). Sits
+    # between Security and Csrf so its headers land on every response,
+    # including Csrf 403s and Security 429s.
+    app.add_middleware(SecurityHeadersMiddleware)
+    # CSRF defence-in-depth: reject mutating requests that present
+    # our auth cookie but originate from an Origin we don't trust.
+    # See backend/security.py::CsrfOriginMiddleware for the exempt
+    # path list (login, health, public share routes).
+    app.add_middleware(CsrfOriginMiddleware, allowed_origins=tuple(allowed_origins))
+    # CORS added LAST so it's the OUTERMOST wrapper. Every response
+    # (including Csrf 403, Security 429, anything from the router)
+    # goes through CORS on the way out and picks up the
+    # `Access-Control-Allow-Origin` header. Without this ordering,
+    # the browser sees responses without the CORS header and
+    # surfaces them as generic "blocked by CORS policy" errors
+    # that hide the real backend error message.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:5174",
-            "http://127.0.0.1:5174",
-            "http://localhost:4173",
-            "http://127.0.0.1:4173",
-            "tauri://localhost",
-        ],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["X-Original-Expired"],
     )
-    app.add_middleware(SecurityControlsMiddleware)
 
     @app.middleware("http")
     async def user_context_boundary(request, call_next):  # noqa: ANN001
@@ -127,6 +236,15 @@ def create_app() -> FastAPI:
     app.include_router(
         fastapi_users.get_auth_router(auth_backend),
         prefix="/auth/jwt",
+        tags=["auth"],
+    )
+    # Cookie-based login/logout for browsers (HttpOnly + Secure +
+    # SameSite=Lax). Mounted alongside the Bearer JWT routes so
+    # programmatic callers keep working; the browser frontend uses
+    # /auth/cookie/login. See backend/auth/users.py for cookie attrs.
+    app.include_router(
+        fastapi_users.get_auth_router(cookie_auth_backend),
+        prefix="/auth/cookie",
         tags=["auth"],
     )
     app.include_router(

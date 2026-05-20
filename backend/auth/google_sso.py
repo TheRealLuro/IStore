@@ -567,15 +567,42 @@ async def google_callback(
             url=f"{fe_root}/#sso_error=account_inactive", status_code=302
         )
 
-    # 2FA gate: if the user has TOTP enabled, refuse the auto-login —
-    # SSO doesn't carry a TOTP code. Send them to the password sign-in
-    # path with a hint. This is the same posture as on_after_login in
-    # users.py: we never grant a JWT to a TOTP-enabled user without
-    # a verified code.
+    # 2FA policy for SSO (2026-05): when the user signed in with Google,
+    # Google itself authenticated them — including any 2FA Google has on
+    # their account. Requiring our TOTP on top would mean a 2FA-enabled
+    # user clicking "Sign in with Google" gets bounced back to the
+    # password screen with no clear path forward (the previous behaviour:
+    # redirect to `#sso_error=totp_required`, which felt like a lockout).
+    # We treat the Google sign-in itself as the second factor and skip
+    # our TOTP check on this path.
+    #
+    # The TOTP gate STILL fires on the password login path
+    # (UserManager.on_after_login in backend/auth/users.py), so users
+    # who deliberately log in with their password are still required
+    # to enter their code. SSO users implicitly relied on Google's
+    # 2FA when they granted us their account; that's the contract.
+    #
+    # An audit row records the bypass so a forensic timeline can see
+    # exactly when a user accessed the account via SSO vs. TOTP.
     if user.totp_enabled and user.totp_secret_enc:
-        return RedirectResponse(
-            url=f"{fe_root}/#sso_error=totp_required", status_code=302
-        )
+        from backend.db import SessionLocal
+        from backend.models import AuditLog
+        try:
+            async with SessionLocal() as s:
+                s.add(
+                    AuditLog(
+                        user_id=user.id,
+                        action="auth.sso.bypass_totp",
+                        details={
+                            "provider": "google",
+                            "email": email,
+                            "reason": "google_sso_second_factor",
+                        },
+                    )
+                )
+                await s.commit()
+        except Exception:
+            logger.exception("auth.google: audit write failed for sso/totp bypass")
 
     # Issue a JWT using the same strategy as /auth/jwt/login so every
     # downstream `current_active_user` dependency accepts it transparently.

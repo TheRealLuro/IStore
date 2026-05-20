@@ -21,6 +21,7 @@ import {
   listCloudLinks,
   setCloudAiOptIn,
   syncCloudLink,
+  getSyncStatus,
 } from "@/api/cloud";
 
 const PROVIDER_META = {
@@ -38,11 +39,20 @@ function fmtRel(iso) {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
+// Stable empty-array reference. Using a literal `[]` in
+// `useQuery({...}).data || []` creates a NEW array each render —
+// any useEffect that depends on `links` then sees a different
+// reference every cycle and fires on every render, which became
+// an infinite update-depth loop (the effect's setState triggered
+// the next render, which re-defaulted to `[]`, which fired the
+// effect again, …).
+const EMPTY_LINKS = Object.freeze([]);
+
 export function CloudSyncPanel() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(null); // link id currently syncing
   const [conflictsByLink, setConflictsByLink] = useState({});
-  const { data: links = [], isLoading, error } = useQuery({
+  const { data: links = EMPTY_LINKS, isLoading, error } = useQuery({
     queryKey: ["cloud-links"],
     queryFn: listCloudLinks,
     staleTime: 30_000,
@@ -50,24 +60,36 @@ export function CloudSyncPanel() {
 
   // Pull conflicts for any link whose status is "conflicts" so the
   // banner has something to show. One request per affected link.
+  //
+  // Depend on a STABLE PRIMITIVE — the comma-joined list of conflict
+  // link ids — so the effect only re-runs when the conflict set
+  // actually changes, not on every refetch that returns the same
+  // links with a new last_synced_at timestamp.
+  const conflictLinkIds = links
+    .filter((l) => l.status === "conflicts")
+    .map((l) => l.id)
+    .sort()
+    .join(",");
   useEffect(() => {
+    if (!conflictLinkIds) {
+      setConflictsByLink({});
+      return;
+    }
     let cancelled = false;
     (async () => {
       const next = {};
-      for (const link of links) {
-        if (link.status === "conflicts") {
-          try {
-            const resp = await listCloudConflicts(link.id);
-            if (!cancelled) next[link.id] = resp.conflicts;
-          } catch {
-            if (!cancelled) next[link.id] = [];
-          }
+      for (const id of conflictLinkIds.split(",")) {
+        try {
+          const resp = await listCloudConflicts(Number(id));
+          if (!cancelled) next[id] = resp.conflicts;
+        } catch {
+          if (!cancelled) next[id] = [];
         }
       }
       if (!cancelled) setConflictsByLink(next);
     })();
     return () => { cancelled = true; };
-  }, [links]);
+  }, [conflictLinkIds]);
 
   const onConnect = async (provider) => {
     try {
@@ -88,38 +110,61 @@ export function CloudSyncPanel() {
 
   const onSync = async (link) => {
     setBusy(link.id);
-    // backend.image.store_upload commits each file inside the sync
-    // loop, so a 2s poll of the files/folders/storage queries lets the
-    // gallery + sidebar counters update *while* the sync is still
-    // running, instead of a single big jump when the request finally
-    // returns. Bound the interval to the in-flight request — we clear
-    // it in `finally` so it never leaks past the sync.
-    const livePoll = setInterval(() => {
-      qc.invalidateQueries({ queryKey: ["files"] });
-      qc.invalidateQueries({ queryKey: ["folders"] });
-      qc.invalidateQueries({ queryKey: ["storage"] });
-      qc.invalidateQueries({ queryKey: ["cloud-links"] });
-    }, 2000);
+    // Sync flow (2026-05): the /sync endpoint kicks off a background
+    // task and returns immediately — for accounts with thousands of
+    // files the actual walk can take minutes, and the previous
+    // synchronous request used to die mid-flight with "failed to
+    // fetch" once the proxy / browser timed out. Now we POST once,
+    // then POLL /sync-status every 2 s until state ≠ "running". The
+    // gallery/folders/storage queries refresh on the same poll so
+    // the UI fills in as files land.
     let toastId;
+    let pollHandle = null;
+    const stopPolling = () => {
+      if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+    };
     try {
       toastId = toast.loading(
         `Syncing ${PROVIDER_META[link.provider]?.label || link.provider}…`,
       );
-      const r = await syncCloudLink(link.id);
-      const skipped = r.skipped_unchanged ? `, ${r.skipped_unchanged} unchanged` : "";
-      const conflicts = r.conflicts ? `, ${r.conflicts} conflicts` : "";
-      toast.success(
-        `${r.pulled} pulled from ${PROVIDER_META[r.provider]?.label || r.provider}${skipped}${conflicts}`,
-        { id: toastId },
-      );
-      qc.invalidateQueries({ queryKey: ["cloud-links"] });
-      qc.invalidateQueries({ queryKey: ["files"] });
-      qc.invalidateQueries({ queryKey: ["folders"] });
-      qc.invalidateQueries({ queryKey: ["storage"] });
+      await syncCloudLink(link.id);  // returns immediately
+      await new Promise((resolve) => {
+        pollHandle = setInterval(async () => {
+          // Refresh the gallery + counters every tick so the user
+          // sees files appearing while the walk is still running.
+          qc.invalidateQueries({ queryKey: ["files"] });
+          qc.invalidateQueries({ queryKey: ["folders"] });
+          qc.invalidateQueries({ queryKey: ["storage"] });
+          qc.invalidateQueries({ queryKey: ["cloud-links"] });
+          try {
+            const s = await getSyncStatus(link.id);
+            if (s.state === "done") {
+              const c = s.counts || {};
+              const skipped = c.skipped_unchanged ? `, ${c.skipped_unchanged} unchanged` : "";
+              const conflicts = c.conflicts ? `, ${c.conflicts} conflicts` : "";
+              toast.success(
+                `${c.pulled || 0} pulled from ${PROVIDER_META[link.provider]?.label || link.provider}${skipped}${conflicts}`,
+                { id: toastId },
+              );
+              stopPolling();
+              resolve();
+            } else if (s.state === "error") {
+              toast.error(s.error || "Sync failed", { id: toastId });
+              stopPolling();
+              resolve();
+            }
+            // state === "running" or "idle" → keep polling
+          } catch (e) {
+            // Don't fail the whole flow on a transient status-fetch
+            // error — the next tick will retry. Log to console.
+            console.warn("sync-status poll failed:", e);
+          }
+        }, 2000);
+      });
     } catch (e) {
       toast.error(e?.detail || e?.message || "Sync failed", { id: toastId });
     } finally {
-      clearInterval(livePoll);
+      stopPolling();
       setBusy(null);
     }
   };

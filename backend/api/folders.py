@@ -516,12 +516,24 @@ async def delete_folder(
     user: Annotated[User, Depends(current_active_user)] = ...,
     session: Annotated[AsyncSession, Depends(get_session)] = ...,
 ):
-    """Soft-delete a folder + its entire subtree of subfolders.
+    """Soft-delete a folder + its entire subtree of subfolders AND
+    every image inside that subtree.
 
-    Images inside detached folders have their `folder_id` set NULL via
-    the FK ON DELETE SET NULL — they re-appear at root rather than
-    disappearing with the folder. Hard delete (and image cleanup) lives
-    in the retention sweeper, same as image soft-delete.
+    Before this change, the folder delete only flipped the folder
+    rows' `deleted_at` — images inside stayed with their original
+    `folder_id` (pointing at the now-soft-deleted folder) and were
+    invisible BUT still occupied storage. The user saw "I deleted
+    this folder" but their quota didn't drop.
+
+    Now the cascade matches what the user means:
+      1. Folder + all subfolders → `deleted_at = now`
+      2. Every Image whose `folder_id` is in the subtree → also
+         `deleted_at = now` so the image shows up in Trash where
+         the user can either Restore or Empty (hard-delete).
+
+    The retention sweeper's normal 30-day Trash purge handles the
+    actual hard-delete of bytes — same path as deleting individual
+    files, just folder-scoped here.
     """
     folder = await session.get(Folder, folder_id)
     if (
@@ -532,18 +544,80 @@ async def delete_folder(
         raise HTTPException(status_code=404, detail="Folder not found")
 
     now = datetime.now(timezone.utc)
-    # Soft-delete the whole subtree in one statement using a recursive CTE.
-    # Avoids issuing N updates for deeply nested folders.
+    # Walk the subtree via the recursive CTE — same query that
+    # powers the descendants view + the zip-download path.
     descendants = (
         await session.execute(
             _descendants_query(folder_id)
         )
     ).scalars().all()
     ids = [folder_id, *descendants]
+    # Step 1: soft-delete every folder in the subtree.
     await session.execute(
         update(Folder)
         .where(Folder.id.in_(ids), Folder.user_id == user.id)
         .values(deleted_at=now, updated_at=now)
+    )
+    # Step 2: soft-delete every image whose folder_id is in that
+    # subtree. Filtered by user_id as a defence-in-depth even though
+    # the folder ids are already user-scoped.
+    affected_image_ids = (
+        await session.execute(
+            select(Image.id).where(
+                Image.folder_id.in_(ids),
+                Image.user_id == user.id,
+                Image.deleted_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    images_deleted = len(affected_image_ids)
+    if affected_image_ids:
+        await session.execute(
+            update(Image)
+            .where(Image.id.in_(affected_image_ids))
+            .values(deleted_at=now)
+        )
+
+    # Step 3 (migration 0039): tombstone the cloud_files rows so a
+    # subsequent sync doesn't resurrect the same files from the
+    # provider. Without this, deleting a synced folder put 30+ rows
+    # into Trash but the next sync ran `_ensure_remote_folder_tree`,
+    # didn't find a live folder with the same name (deleted_at
+    # filter), created a fresh sibling folder, and re-imported every
+    # file inside. The user saw "I deleted this 20 times and it
+    # keeps coming back."
+    from backend.models import CloudFile
+    if affected_image_ids:
+        await session.execute(
+            update(CloudFile)
+            .where(
+                CloudFile.user_id == user.id,
+                CloudFile.local_image_id.in_(affected_image_ids),
+                CloudFile.excluded_at.is_(None),
+            )
+            .values(excluded_at=now)
+        )
+    # The folder's own cloud_remote_path is the user's "stop syncing
+    # this branch" signal — `deleted_at IS NOT NULL` plus the existing
+    # cloud_remote_path lets `_ensure_remote_folder_tree` skip
+    # recreating the subtree on the next sync. No extra column write
+    # needed; step 1 already flipped deleted_at on every folder in
+    # the subtree.
+    # Audit the cascade so the user has a record of how many files
+    # the folder-delete actually swept.
+    from backend.models import AuditLog
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="folder.delete.cascade",
+            details={
+                "folder_id": str(folder_id),
+                "folder_name": folder.name,
+                "subtree_folders": len(ids),
+                "images_soft_deleted": images_deleted,
+                "deleted_at": now.isoformat(),
+            },
+        )
     )
     await session.commit()
 

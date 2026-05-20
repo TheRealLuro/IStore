@@ -8,6 +8,7 @@ from fastapi_users import BaseUserManager, FastAPIUsers, InvalidPasswordExceptio
 from fastapi_users.authentication import (
     AuthenticationBackend,
     BearerTransport,
+    CookieTransport,
     JWTStrategy,
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
@@ -278,6 +279,32 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
 
 bearer_transport = BearerTransport(tokenUrl="auth/jwt/login")
 
+# ---- HttpOnly cookie transport ----
+#
+# Primary transport for browser clients as of 2026-05. Storing the JWT
+# in `localStorage` (the previous BearerTransport flow) left it
+# reachable from any script in the origin — one XSS on a parsed
+# user-uploaded file became an account takeover. The cookie variant
+# is HttpOnly (JS can't read it), SameSite=Lax (blocks cross-origin
+# form-based CSRF in modern browsers), and Secure when running with
+# HTTPS in front (we lift the Secure flag in dev so localhost over
+# plain HTTP still authenticates — production gate validates this).
+#
+# We keep the BearerTransport alive in parallel for programmatic
+# callers (mobile apps, the eventual CLI). fastapi-users routes the
+# `current_user` dependency through whichever transport the request
+# supplied a token via, so both work simultaneously without route
+# duplication.
+COOKIE_NAME = "neuthek_session"
+cookie_transport = CookieTransport(
+    cookie_name=COOKIE_NAME,
+    cookie_max_age=settings.jwt_lifetime_seconds,
+    cookie_secure=settings.is_production,
+    cookie_httponly=True,
+    cookie_samesite="lax",
+    cookie_path="/",
+)
+
 
 def get_jwt_strategy() -> JWTStrategy:
     return JWTStrategy(
@@ -286,9 +313,19 @@ def get_jwt_strategy() -> JWTStrategy:
     )
 
 
+# Bearer kept for programmatic / non-browser clients.
 auth_backend = AuthenticationBackend(
     name="jwt",
     transport=bearer_transport,
+    get_strategy=get_jwt_strategy,
+)
+
+# Cookie is the browser default. `name` is distinct from the Bearer
+# backend so fastapi-users mounts /auth/cookie/login + /auth/cookie/logout
+# alongside /auth/jwt/login + /auth/jwt/logout.
+cookie_auth_backend = AuthenticationBackend(
+    name="cookie",
+    transport=cookie_transport,
     get_strategy=get_jwt_strategy,
 )
 
@@ -305,7 +342,13 @@ async def get_user_manager(
     yield UserManager(user_db)
 
 
-fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
+# Both backends registered. `current_user` accepts a token from
+# EITHER transport — cookie OR Authorization header — so the same
+# protected route works from a browser (cookie) and a CLI (Bearer)
+# without per-route plumbing.
+fastapi_users = FastAPIUsers[User, uuid.UUID](
+    get_user_manager, [cookie_auth_backend, auth_backend],
+)
 
 _current_active_user = fastapi_users.current_user(active=True)
 # C8 (admin dashboard) — gating dependency for every endpoint under

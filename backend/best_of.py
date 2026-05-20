@@ -287,12 +287,29 @@ async def best_of(
     ])
     sharpness_raw = [p[0] for p in raw_pairs]
     exposure_raw  = [p[1] for p in raw_pairs]
+    # Batch-normalize BOTH sharpness AND exposure. Previously only
+    # sharpness was min-max normalized — exposure stayed on a 0-100
+    # absolute scale, which gave any well-exposed photo a structural
+    # 20-25-point floor regardless of the rest of the batch. That's
+    # why one image kept winning across different selections: it had
+    # the best raw exposure compared to "ideal mid-gray" + had a
+    # face, so its absolute floor lapped the rest. Normalizing means
+    # ranks are now RELATIVE to the current batch, so each Best Of
+    # call ranks images against THEIR siblings, not against a global
+    # ideal.
     sharpness_norm = _normalize_minmax(sharpness_raw)
+    exposure_norm  = _normalize_minmax(exposure_raw)
 
     # Face quality: max detection confidence per image, from the
-    # existing FaceDetection rows (no new model run). Photos with no
-    # detected face get a neutral 50 so they don't dominate the
-    # composite when the selection is landscapes / pets.
+    # existing FaceDetection rows (no new model run). We now distinguish
+    # three cases:
+    #   (a) at least one image in the batch has a face → batch-normalize
+    #       face_scores so the best face in this selection sits at 100
+    #       and no-face images sit at 0
+    #   (b) NO image in the batch has a face → drop the face signal
+    #       entirely (rebalance weights below) instead of feeding 50s
+    #       which were biasing landscape batches by giving every photo
+    #       the same neutral 50
     face_rows = (
         await session.execute(
             select(FaceDetection.image_id, FaceDetection.detection_confidence)
@@ -302,16 +319,37 @@ async def best_of(
     face_max: dict = {}
     for img_id, conf in face_rows:
         face_max[img_id] = max(face_max.get(img_id, 0.0), float(conf or 0.0))
-    face_scores = [
-        (face_max[img.id] * 100.0) if img.id in face_max else 50.0
-        for img in rows
-    ]
+    has_any_face_in_batch = bool(face_max)
+    if has_any_face_in_batch:
+        face_raw = [
+            face_max[img.id] * 100.0 if img.id in face_max else 0.0
+            for img in rows
+        ]
+        face_scores = _normalize_minmax(face_raw)
+    else:
+        # No faces anywhere — face signal is meaningless for ranking.
+        # Setting all to 0 here means the composite math is consistent
+        # but the face weight gets redistributed in the loop below.
+        face_scores = [0.0] * len(rows)
 
     # Use-case CLIP cosine — only computed when mode='use_case'.
     # Accepts either a preset key (mapped via USE_CASE_PROMPTS) OR a
     # free-text string from the user (e.g. "garden", "vintage car"),
     # wrapped via _resolve_use_case_prompt into a photo-framed prompt.
+    #
+    # Scoring rewrite (2026-05): the previous `(cos-0.15)*500` mapping
+    # saturated fast — a 0.27 cosine scored 60, a 0.25 cosine scored
+    # 50, and most photos in any batch landed in the 0.18-0.28 range,
+    # so the differentiation was tiny. Combined with use_case's old
+    # 0.30 composite weight, the user's typed text barely moved the
+    # ranking. Fix: BATCH-NORMALIZE the cosines so the best match in
+    # the selection lands at 100 — the user's text now dominates,
+    # which is exactly what they want when they type "best portrait"
+    # or "vintage car". Also record `use_case_cos_raw` so the
+    # reason-text generator can tell the user how close the match
+    # actually was on the absolute scale.
     use_case_scores = [50.0] * len(rows)
+    use_case_cos_raw = [0.0] * len(rows)
     resolved_prompt: Optional[str] = None
     if mode == "use_case":
         resolved_prompt = _resolve_use_case_prompt(use_case)
@@ -324,15 +362,21 @@ async def best_of(
             )
             prompt_vec = _l2_norm_or_none(prompt_vec_raw)
             if prompt_vec is not None:
+                cosines: list[float] = []
                 for i, img in enumerate(rows):
                     emb = _l2_norm_or_none(img.clip_embedding)
                     if emb is None:
+                        cosines.append(0.0)
                         continue
                     cos = float(emb @ prompt_vec)
-                    # CLIP text↔image cosine ranges roughly 0.15-0.35 for
-                    # well-matched pairs. Stretch [0.15, 0.35] → [0, 100]
-                    # and clip.
-                    use_case_scores[i] = max(0.0, min(100.0, (cos - 0.15) * 500.0))
+                    cosines.append(cos)
+                    use_case_cos_raw[i] = cos
+                # Batch-normalize the cosines into 0-100 so the best
+                # match in THIS batch dominates. The raw cosine is
+                # preserved for the reason string so the user can
+                # tell whether the "best match" is actually good
+                # or merely the least bad option.
+                use_case_scores = _normalize_minmax(cosines)
         except Exception:
             logger.exception("best_of: use-case CLIP scoring failed")
 
@@ -345,31 +389,70 @@ async def best_of(
     else:
         clusters = [0] * len(rows)
 
-    # Composite score. Weights chosen so sharpness dominates (it's the
-    # most user-visible defect) but no single signal can carry. In
-    # use-case mode we shift weight onto the prompt match.
+    # Composite score. Weight rebalance (2026-05) — sharpness used to
+    # dominate overall mode at 0.55 (Laplacian-variance edge contrast),
+    # and exposure at 0.25 (mean luminance distance). Together that was
+    # 80% pixel-histogram features with zero semantic signal, so a
+    # high-contrast image with no face won every time regardless of
+    # CONTENT. Two changes:
+    #   1. In use_case mode, raise use_case weight from 0.30 → 0.55 so
+    #      the user's typed text (or preset) actually rules the ranking.
+    #      Sharpness drops to 0.20, exposure to 0.10, face to 0.15.
+    #      Quality still matters, but the user explicitly picked the
+    #      concept — semantic match should win.
+    #   2. When no image in the batch has a face (landscapes / docs /
+    #      pets), drop the face weight entirely and redistribute it
+    #      across the remaining signals proportionally.
     results: list[BestOfScore] = []
     for i, img in enumerate(rows):
         breakdown: dict[str, float] = {
             "sharpness": round(sharpness_norm[i], 1),
-            "exposure":  round(exposure_raw[i], 1),
+            "exposure":  round(exposure_norm[i], 1),
             "face":      round(face_scores[i], 1),
         }
         if mode == "use_case":
             breakdown["use_case"] = round(use_case_scores[i], 1)
-            weights = {"sharpness": 0.40, "exposure": 0.15, "face": 0.15, "use_case": 0.30}
+            weights = {
+                "sharpness": 0.20,
+                "exposure":  0.10,
+                "face":      0.15,
+                "use_case":  0.55,
+            }
         else:
             weights = {"sharpness": 0.55, "exposure": 0.25, "face": 0.20}
+
+        if not has_any_face_in_batch:
+            # Redistribute face weight across the remaining signals
+            # in proportion. Avoids the old behavior where every
+            # landscape got an identical 50 × 0.20 = 10 floor from
+            # the face term, which collapsed differentiation between
+            # otherwise-similar shots.
+            removed = weights.pop("face")
+            remaining_total = sum(weights.values())
+            for k in weights:
+                weights[k] += removed * (weights[k] / remaining_total)
+            breakdown.pop("face", None)
+
         score = sum(breakdown[k] * weights[k] for k in weights if k in breakdown)
 
         reasons: list[str] = []
         if breakdown["sharpness"] >= 85: reasons.append("sharpest in the batch")
         elif breakdown["sharpness"] < 20: reasons.append("noticeably soft")
-        if breakdown["exposure"] >= 90:   reasons.append("well-exposed")
-        elif breakdown["exposure"] < 40:  reasons.append("over- or under-exposed")
-        if breakdown["face"] >= 85:       reasons.append("clear face")
+        if breakdown["exposure"] >= 85:   reasons.append("best-exposed in the batch")
+        elif breakdown["exposure"] < 20:  reasons.append("over- or under-exposed vs. siblings")
+        if has_any_face_in_batch and breakdown.get("face", 0) >= 85:
+            reasons.append("clearest face in the batch")
         if mode == "use_case" and breakdown.get("use_case", 0) >= 80:
-            reasons.append(f"good match for '{use_case}'")
+            # Append the raw cosine so the user knows whether the win
+            # is a strong absolute match or just the least bad option
+            # in a poor batch.
+            raw_cos = use_case_cos_raw[i]
+            if raw_cos >= 0.25:
+                reasons.append(f"strong match for '{use_case}' (cos={raw_cos:.2f})")
+            elif raw_cos >= 0.18:
+                reasons.append(f"closest match for '{use_case}' in this batch (cos={raw_cos:.2f})")
+            else:
+                reasons.append(f"best of a weak match for '{use_case}' (cos={raw_cos:.2f})")
 
         results.append(BestOfScore(
             image_id=img.id,

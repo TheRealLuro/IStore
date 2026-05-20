@@ -244,10 +244,54 @@ class StatusSet(BaseModel):
 
 
 class StorageUsage(BaseModel):
+    """Honest storage accounting.
+
+    `used_bytes` is the GRAND TOTAL of bytes physically on disk for
+    this user — what you actually pay for at the bucket level. Older
+    builds returned just `served_bytes` here, which under-counted
+    silently because retained originals (originals_bytes) and the
+    extra video quality variants (variants_bytes) live alongside.
+    The component fields are exposed below so the UI can show the
+    user where their bytes went.
+
+      served_bytes      Default served blob per row — the one the
+                        viewer renders by default. For images this
+                        is the re-encoded preview; for videos it's
+                        the default quality tier (typically 1080p).
+      variants_bytes    Sum of the EXTRA video quality variants
+                        (480p / 720p / 1440p / 2160p) the transcoder
+                        emits alongside the default. Until 2026-05
+                        these were physically present in MinIO but
+                        excluded from the usage number.
+      originals_bytes   Bytes of originals still retained in the
+                        originals bucket (rows where
+                        original_blob_key IS NOT NULL). After the
+                        30-day TTL passes the retention sweeper
+                        drops these and the bytes move to zero.
+      trash_bytes       Soft-deleted rows (deleted_at IS NOT NULL).
+                        Recoverable from the Trash panel; emptied
+                        either by user action or the 30-day sweep.
+    """
+
     used_bytes: int
     quota_bytes: int
     by_category: dict[str, int]
     by_count: dict[str, int]
+    # New in 2026-05 — honest sub-totals so the UI can show where
+    # bytes are going. Older clients can ignore these and read
+    # `used_bytes` (now the grand total) the same way they used to.
+    served_bytes: int = 0
+    variants_bytes: int = 0
+    originals_bytes: int = 0
+    trash_bytes: int = 0
+    # Counts for the "Free up …" buttons.
+    originals_count: int = 0
+    variants_count: int = 0
+    # Per-provider cloud-link summary so the storage panel can
+    # honestly show "we hold N MB for X files synced from your
+    # Drive; the originals stay on Drive." Empty list when no
+    # cloud account is linked.
+    linked_services: list[dict] = []
 
 
 class ImageSearchHit(ImageRead):

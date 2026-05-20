@@ -1,4 +1,4 @@
-import { API_BASE_URL, tokens } from "./client";
+import { API_BASE_URL } from "./client";
 import type { FileItem } from "@/types/file";
 
 export interface UploadHandles {
@@ -34,8 +34,15 @@ export function uploadFileWithProgress(
 ): UploadHandles {
   const xhr = new XMLHttpRequest();
   xhr.open("POST", `${API_BASE_URL}/images/`);
-  const token = tokens.get();
-  if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+  // Cookie auth: send the session cookie with the upload. XHR
+  // doesn't ship cookies on cross-origin requests unless
+  // `withCredentials` is set explicitly.
+  xhr.withCredentials = true;
+  // Legacy localStorage Bearer fallback for users mid-migration.
+  try {
+    const legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt");
+    if (legacy) xhr.setRequestHeader("Authorization", `Bearer ${legacy}`);
+  } catch { /* private browsing */ }
 
   const total = file.size || 1;
   let uploaded = 0;

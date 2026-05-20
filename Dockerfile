@@ -34,12 +34,22 @@ RUN apt-get update \
 COPY pyproject.toml README.md /app/
 
 # Install order: base deps first (smaller layer that rarely changes),
-# then [ml] on top so a hotfix to base deps doesn't invalidate the
-# multi-GB torch download. INSTALL_ML can be flipped to 0 at build time
-# for a much smaller image when vision features aren't needed.
+# then [cloud] (Google OAuth + Drive client — small, ~5 MB) on top
+# of the base, then [ml] last so a hotfix to base deps doesn't
+# invalidate the multi-GB torch download. INSTALL_ML can be flipped
+# to 0 at build time for a much smaller image when vision features
+# aren't needed; [cloud] stays in unconditionally because Sign-in-
+# with-Google + Drive sync are core auth surfaces, not optional.
+#
+# Before this, `[cloud]` was never installed in the container — so
+# `from google_auth_oauthlib.flow import Flow` raised ImportError at
+# request time, and BOTH "Sign in with Google" and "Connect Drive"
+# returned 503 "google-auth-oauthlib is not installed" after every
+# container rebuild. Adding it to the image makes the install
+# survive `docker compose down && up`.
 ARG INSTALL_ML=1
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir . \
+    && pip install --no-cache-dir ".[cloud]" \
     && if [ "$INSTALL_ML" = "1" ]; then \
          pip install --no-cache-dir ".[ml]" ; \
        fi

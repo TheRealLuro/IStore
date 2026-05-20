@@ -149,7 +149,19 @@ function isCodeMime(mime) {
 
 function fileItemToNeuthek(f) {
   const cat = f.category;
-  let type = cat === "document" ? "doc" : cat === "image" ? "image" : cat === "video" ? "video" : "doc";
+  // Backend categories: image / video / document / audio / (more
+  // mock-only ones the FE shows but backend doesn't emit yet:
+  // contact / password / gamesave / iot).
+  // We map document → doc to match the type-chip naming on the FE.
+  // Before this mapping had audio falling through to `doc`, so MP3 /
+  // WAV files were buried under Documents and the audio type chip
+  // never appeared.
+  let type;
+  if (cat === "image")         type = "image";
+  else if (cat === "video")    type = "video";
+  else if (cat === "audio")    type = "audio";
+  else if (cat === "document") type = "doc";
+  else                          type = cat || "doc";
   // Special-case code / structured-text files: they're served as
   // `document` upstream but the gallery card + preview hero should
   // show a code icon, not the generic page-of-paper icon.
@@ -2514,6 +2526,7 @@ export function App() {
                   onEnterFolder={enterFolder}
                   peopleFilter={peopleFilter}
                   onClearPeopleFilter={() => setPeopleFilter(null)}
+                  onPersonPick={(p) => setPeopleFilter(p)}
                 />}
       </main>
 
