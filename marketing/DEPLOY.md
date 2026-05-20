@@ -12,8 +12,9 @@ Total time: ~10 minutes once you have a Render account.
 ## Prerequisites
 
 - A GitHub account.
-- The repo (`TheRealLuro/IStore`) on GitHub with the `main` branch up
-  to date — including all `marketing/` commits.
+- The repo (`TheRealLuro/Neuthek`, GitHub-renamed from the historical
+  `TheRealLuro/IStore` — redirects still work) with the `main` branch
+  up to date, including all `marketing/` commits.
 - A Render account at https://render.com (free tier is enough).
 
 To verify the code is pushed:

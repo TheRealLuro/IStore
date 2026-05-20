@@ -229,7 +229,7 @@ GitHub repos. Excludes secret-shaped filenames (`.env*`, `id_rsa*`,
    GITHUB_OAUTH_REDIRECT_URI=http://localhost:8000/cloud/callback/github
    ```
 
-3. Restart the backend container (`docker compose -p istore restart
+3. Restart the backend container (`docker compose -p neuthek restart
    backend`). In the app, **Account → Cloud sync → Connect GitHub**.
 
 The repo structure becomes the synthesized folder tree: each repo
@@ -355,7 +355,9 @@ icon in the topbar. Tokens are aligned to Apple HIG system grays
 Already wired:
 
 - File cards are `draggable` and emit a custom MIME
-  `application/x-istore-image` on drag start.
+  `application/x-istore-image` on drag start. (Name kept from the
+  pre-rebrand era so a tab open during deploy doesn't lose the
+  drop target on the new tab.)
 - Folder cards listen for that MIME on drag-over and drop, calling
   `moveImageToFolder(id, folderId)` which hits
   `PATCH /images/{id}/move`.

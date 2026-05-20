@@ -16,9 +16,11 @@ Used by:
 Design notes:
   - Stdlib only — runs before the venv is even created.
   - Idempotent: never overwrites an existing `.env` without `--reset`.
-  - Brand: the project is "neuthek"; internal database / bucket names
-    keep the historical `istore` prefix during the I.bis migration so
-    existing local data stays accessible.
+  - Brand: the project is "neuthek". Fresh installs land on `neuthek`
+    / `neuthek-*` defaults across DB role, DB name, MinIO buckets.
+    Operators upgrading from a pre-rebrand install can pin the
+    legacy `istore` / `istore-*` values in `.env` so existing data
+    on disk stays accessible.
 """
 from __future__ import annotations
 
@@ -230,9 +232,9 @@ ENV_TEMPLATE: list[tuple[str, str, str]] = [
     ("APP_ENV", "dev", "dev | prod — prod triggers the security boot validator"),
     ("FRONTEND_BASE_URL", "http://localhost:5173", "where the SPA is served from"),
 
-    ("POSTGRES_USER", "istore", "DB user (legacy name; storage layer rename in I.bis)"),
+    ("POSTGRES_USER", "neuthek", "DB user (fresh install default; legacy installs may pin `istore`)"),
     ("POSTGRES_PASSWORD", "", "fresh password generated at setup time"),
-    ("POSTGRES_DB", "istore", "DB name"),
+    ("POSTGRES_DB", "neuthek", "DB name (fresh install default; legacy installs may pin `istore`)"),
     ("DATABASE_URL", "", "asyncpg URL; derived from POSTGRES_* above"),
     ("DATABASE_URL_SYNC", "", "psycopg2 URL for Alembic; derived"),
     ("POSTGRES_AT_REST_ENCRYPTION", "", "host_volume | luks | os_disk | (empty) — A2 attestation"),
@@ -240,13 +242,13 @@ ENV_TEMPLATE: list[tuple[str, str, str]] = [
     ("REDIS_URL", "redis://localhost:6379/0", "Redis for rate-limits + job queue"),
 
     ("MINIO_ENDPOINT", "localhost:9000", "MinIO host:port"),
-    ("MINIO_ACCESS_KEY", "istore", "MinIO access key (root user)"),
+    ("MINIO_ACCESS_KEY", "neuthek", "MinIO access key (root user)"),
     ("MINIO_SECRET_KEY", "", "fresh secret generated at setup time"),
     ("MINIO_SECURE", "false", "true once TLS-terminated"),
-    ("MINIO_BUCKET_ORIGINALS", "istore-originals", ""),
-    ("MINIO_BUCKET_SERVED", "istore-served", ""),
-    ("MINIO_BUCKET_FACES", "istore-faces", ""),
-    ("MINIO_BUCKET_QUARANTINE", "istore-quarantine", ""),
+    ("MINIO_BUCKET_ORIGINALS", "neuthek-originals", ""),
+    ("MINIO_BUCKET_SERVED", "neuthek-served", ""),
+    ("MINIO_BUCKET_FACES", "neuthek-faces", ""),
+    ("MINIO_BUCKET_QUARANTINE", "neuthek-quarantine", ""),
     ("MINIO_SSE_MODE", "off", "off | sse-s3 | sse-kms"),
     ("MINIO_SSE_KMS_KEY_ID_CONTENT", "", "KMS key for content buckets (sse-kms only)"),
     ("MINIO_SSE_KMS_KEY_ID_BIOMETRIC", "", "KMS key for the biometric/faces bucket"),
@@ -295,7 +297,7 @@ ENV_TEMPLATE: list[tuple[str, str, str]] = [
     ("STRIPE_PRICE_ID_PRO", "", ""),
     ("STRIPE_PRICE_ID_BUSINESS", "", ""),
 
-    ("ISTORE_DATA_DIR", "data", "where neuthek puts local data when not using docker volumes"),
+    ("NEUTHEK_DATA_DIR", "data", "where neuthek puts local data when not using docker volumes"),
 ]
 
 
@@ -329,7 +331,7 @@ def build_env_values(data_dir: str) -> dict[str, str]:
         f"postgresql+psycopg2://{values['POSTGRES_USER']}:{pg_password}"
         f"@localhost:5432/{values['POSTGRES_DB']}"
     )
-    values["ISTORE_DATA_DIR"] = data_dir
+    values["NEUTHEK_DATA_DIR"] = data_dir
     return values
 
 

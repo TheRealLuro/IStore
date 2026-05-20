@@ -2,43 +2,43 @@
 	email {$ACME_EMAIL}
 }
 
-{$ISTORE_DOMAIN} {
+{$NEUTHEK_DOMAIN} {
 	encode zstd gzip
 
 	handle_path /minio/* {
-		reverse_proxy {$ISTORE_MINIO_UPSTREAM}
+		reverse_proxy {$NEUTHEK_MINIO_UPSTREAM}
 	}
 
 	handle /api/* {
 		uri strip_prefix /api
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle /auth/* {
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle /images/* {
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle /account/* {
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle /admin/* {
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle /consent/* {
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle /cloud/* {
-		reverse_proxy {$ISTORE_API_UPSTREAM}
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
 	handle {
-		reverse_proxy {$ISTORE_FRONTEND_UPSTREAM}
+		reverse_proxy {$NEUTHEK_FRONTEND_UPSTREAM}
 	}
 }
