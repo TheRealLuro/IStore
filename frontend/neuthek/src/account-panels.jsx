@@ -23,7 +23,7 @@ import { API_BASE_URL, tokens } from "@/api/client";
 // so a future auth change lands in one place.
 const authFetch = (extra = {}) => {
   let legacy = null;
-  try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+  try { legacy = localStorage.getItem("neuthek.jwt"); } catch {}
   const headers = { ...(extra.headers || {}) };
   if (legacy) headers.Authorization = `Bearer ${legacy}`;
   return { credentials: "include", ...extra, headers };
@@ -33,7 +33,7 @@ const authFetch = (extra = {}) => {
 // `authFetch()` which also sets `credentials: "include"`.
 const tokenHeader = () => {
   let legacy = null;
-  try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+  try { legacy = localStorage.getItem("neuthek.jwt"); } catch {}
   return legacy ? { Authorization: `Bearer ${legacy}` } : {};
 };
 import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";

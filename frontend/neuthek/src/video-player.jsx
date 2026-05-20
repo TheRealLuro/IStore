@@ -165,7 +165,7 @@ export function VideoPlayer({ fileId, fileName, onClose, onPlayingChange }) {
         xhrSetup(xhr) {
           xhr.withCredentials = true;
           try {
-            const legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt");
+            const legacy = localStorage.getItem("neuthek.jwt");
             if (legacy) xhr.setRequestHeader("Authorization", `Bearer ${legacy}`);
           } catch { /* private browsing */ }
         },

@@ -58,7 +58,7 @@ async function downloadFolderAsZip(folder) {
     // GET with `Range: bytes=0-0` only fetches one byte before the
     // browser drops the connection.
     let legacy = null;
-    try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+    try { legacy = localStorage.getItem("neuthek.jwt"); } catch {}
     const probe = await fetch(url, {
       method: "GET",
       credentials: "include",
@@ -89,13 +89,13 @@ async function downloadFolderAsZip(folder) {
   }
 }
 
-// Custom MIME used for HTML5 drag-and-drop of files. The legacy frontend
-// used the same key so we keep it for parity with anything else listening.
-// Custom MIME used for HTML5 drag-and-drop of files. The literal value
-// stays as `x-istore-image` for cross-tab compatibility with any open
-// sessions still running the previous build; the brand renamed but the
-// wire string is internal-only.
-const DND_MIME = "application/x-istore-image";
+// Custom MIME used for HTML5 drag-and-drop of files. Internal-only —
+// the SAME bundle reads and writes it; no other tab / extension /
+// downstream system consumes the value. Renamed to `x-neuthek-image`
+// alongside the project-wide istore→neuthek rebrand. A tab open
+// across the deploy will lose drag-and-drop once until reload, which
+// is acceptable for a single-author self-hosted app.
+const DND_MIME = "application/x-neuthek-image";
 
 export function Sidebar({ view, onView, onUpload, onAccount, attentionCount = 0, onAttention, user, counts }) {
   const u = user || { name: "Alex Rivera", email: "alex@example.com" };
@@ -488,7 +488,7 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
                   // users mid-migration; will go away after we ship
                   // a cookie variant of the TOTP login.
                   let legacy = null;
-                  try { legacy = localStorage.getItem("neuthek.jwt") || localStorage.getItem("istore.jwt"); } catch {}
+                  try { legacy = localStorage.getItem("neuthek.jwt"); } catch {}
                   const res = await fetch(originalUrl(f.id), {
                     credentials: "include",
                     headers: legacy ? { Authorization: `Bearer ${legacy}` } : {},
