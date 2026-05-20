@@ -60,26 +60,31 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="dev")
 
+    # Defaults: fresh installs land on neuthek-* names. Existing
+    # operators whose .env carries the historical `istore` /
+    # `istore-*` values keep working unchanged — the env var
+    # override wins over these defaults. See `.env.example` for the
+    # historical-vs-new mapping.
     database_url: str = Field(
-        default="postgresql+asyncpg://istore:istore@localhost:5432/istore"
+        default="postgresql+asyncpg://neuthek:neuthek@localhost:5432/neuthek"
     )
     database_url_sync: str = Field(
-        default="postgresql+psycopg2://istore:istore@localhost:5432/istore"
+        default="postgresql+psycopg2://neuthek:neuthek@localhost:5432/neuthek"
     )
 
     redis_url: str = Field(default="redis://localhost:6379/0")
 
     minio_endpoint: str = Field(default="localhost:9000")
-    minio_access_key: str = Field(default="istore")
-    minio_secret_key: str = Field(default="istorepass")
+    minio_access_key: str = Field(default="neuthek")
+    minio_secret_key: str = Field(default="neuthekpass")
     minio_secure: bool = Field(default=False)
-    minio_bucket_originals: str = Field(default="istore-originals")
-    minio_bucket_served: str = Field(default="istore-served")
-    minio_bucket_faces: str = Field(default="istore-faces")
-    minio_bucket_quarantine: str = Field(default="istore-quarantine")
+    minio_bucket_originals: str = Field(default="neuthek-originals")
+    minio_bucket_served: str = Field(default="neuthek-served")
+    minio_bucket_faces: str = Field(default="neuthek-faces")
+    minio_bucket_quarantine: str = Field(default="neuthek-quarantine")
     # C8.2 — fine-tune checkpoint storage. Contains .pkl / .safetensors
     # written by the trainer when D6 fine-tuning eventually lands.
-    minio_bucket_models: str = Field(default="istore-models")
+    minio_bucket_models: str = Field(default="neuthek-models")
     # off | sse-s3 | sse-kms. KMS mode can use distinct key IDs for content
     # and biometric buckets.
     minio_sse_mode: str = Field(default="off")

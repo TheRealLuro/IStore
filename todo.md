@@ -1,8 +1,10 @@
 # neuthek — Roadmap
 
-> Project renamed from **IStore → neuthek** on 2026-05-09. The codebase
-> directory layout still references `IStore` in places; rename can land
-> incrementally (folder, repo URL, package name, README, CI, infra).
+> Project renamed from **IStore → neuthek** on 2026-05-09. The
+> codebase, compose, Caddyfile, env vars, and tests have been
+> rebranded (see "I.bis.1" below for the landed work). What's left
+> trails into hosting/domain/brand-surface and the actual data
+> migration (DB rename + bucket copy) — see I.bis.2 / I.bis.3.
 
 This file tracks **what's still open** — broken, partial, or planned.
 Shipped work isn't listed here; read `git log` for that.
@@ -974,25 +976,36 @@ Decided 2026-05-09. The frontend already mounts as "neuthek"; the
 rest of the codebase, infra, and docs trail behind. Land each piece
 in its own commit so blame stays useful and reverts are cheap.
 
-### I.bis.1 Local checkout and code refs ⏳
-- Rename the repo directory `IStore/` → `neuthek/` on disk; update
-  any local `cd IStore` shortcuts.
-- Search/replace `IStore` → `neuthek` (case-preserving) across:
-  - `pyproject.toml` (`name`, `description`, console scripts).
-  - `frontend/package.json` (`"name": "istore-frontend"` →
-    `"name": "neuthek-frontend"`).
-  - `docker-compose*.yml`, `Dockerfile`s, image tags, network names.
-  - `alembic.ini` migration tag and any logger names.
-  - `backend/config.py` env prefixes (e.g. `ISTORE_*` → `NEUTHEK_*`)
-    with a deprecation read of the old prefix for one release.
-  - Test fixtures, sample data filenames, README, TERMS, PRIVACY,
-    SECURITY copy.
+### I.bis.1 Local checkout and code refs ✅ (landed)
+- ✅ `docker-compose*.yml`, `Dockerfile` references, env-var defaults
+  (`POSTGRES_USER/DB`, `MINIO_ACCESS_KEY/SECRET_KEY`, all four
+  `MINIO_BUCKET_*` names).
+- ✅ `backend/config.py` defaults flipped to `neuthek` / `neuthek-*`.
+- ✅ `backend/security.py` validator rejects BOTH `neuthek` and
+  legacy `istore` as known-weak credentials.
+- ✅ Caddyfile placeholders + prod compose env keys renamed
+  `ISTORE_*` → `NEUTHEK_*` with `${NEUTHEK_X:-${ISTORE_X}}` fallback
+  so legacy operator `.env` files still resolve.
+- ✅ `tests/conftest.py` test DB renamed `neuthek_phase4_test`;
+  Postgres credentials read from env vars with `neuthek` default.
+- ✅ `.env.example`, `README.md`, `SETUP.md`, `scripts/setup.py`,
+  `marketing/DEPLOY.md` updated.
+- 🟡 Still pending (out of this PR): `pyproject.toml` `name` is
+  already `neuthek` from a prior pass; `frontend/package.json`
+  remains `neuthek-frontend` (already correct); `alembic.ini`
+  migration tag — currently no project-specific tag set, fine.
+
+### I.bis.1.future — data migration ⏳
 - Storage bucket names — **do not rename live buckets**. Add new
   `neuthek-{originals,served,faces,…}` buckets in MinIO and run a
-  one-time mirror; flip the config when ready, retire the old names
-  after a backup window.
+  one-time mirror; flip the `.env` `MINIO_BUCKET_*` values when
+  ready, retire the old names after a backup window. Existing
+  operators with `istore-*` data pin those values in `.env` for
+  now.
 - Database name — same approach: pg_dump, restore into `neuthek`,
   flip `DATABASE_URL`, keep the old DB read-only for 30 days.
+  Existing operators with an `istore` Postgres role keep
+  `POSTGRES_USER=istore POSTGRES_DB=istore` in `.env` for now.
 
 ### I.bis.2 Hosting / external refs ⏳
 - GitHub repo rename (org admin) — GitHub keeps redirects, but update

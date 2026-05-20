@@ -4,11 +4,16 @@ The Phase 4 acceptance tests are integration-style: they require a real
 Postgres (the consent flow + face pipeline depend on pgvector / JSONB / async
 SQLAlchemy semantics that are not faithfully simulated by SQLite).
 
-To avoid clobbering the developer's `istore` dev database, these fixtures use
-a dedicated `istore_phase4_test` database that is dropped + recreated +
+To avoid clobbering the developer's dev database, these fixtures use a
+dedicated `neuthek_phase4_test` database that is dropped + recreated +
 migrated once per pytest session. Each test then truncates the user-scoped
 tables for isolation. Tests that don't need the DB (test_health, test_codecs,
 test_policy) ignore the `_test_db` fixture entirely.
+
+The Postgres role/password is read from `POSTGRES_USER` / `POSTGRES_PASSWORD`
+env vars with a `neuthek` default; legacy installs whose local Postgres still
+has the historical `istore` role can keep working by exporting
+`POSTGRES_USER=istore POSTGRES_PASSWORD=istore` before running pytest.
 """
 from __future__ import annotations
 
@@ -17,12 +22,14 @@ import uuid
 
 # Override DB env BEFORE backend modules import (Settings() reads env at
 # instantiation time, and backend.db creates the engine at module load).
-_TEST_DB_NAME = "istore_phase4_test"
+_TEST_DB_NAME = "neuthek_phase4_test"
+_PG_USER = os.environ.get("POSTGRES_USER", "neuthek")
+_PG_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "neuthek")
 os.environ["DATABASE_URL"] = (
-    f"postgresql+asyncpg://istore:istore@localhost:5432/{_TEST_DB_NAME}"
+    f"postgresql+asyncpg://{_PG_USER}:{_PG_PASSWORD}@localhost:5432/{_TEST_DB_NAME}"
 )
 os.environ["DATABASE_URL_SYNC"] = (
-    f"postgresql+psycopg2://istore:istore@localhost:5432/{_TEST_DB_NAME}"
+    f"postgresql+psycopg2://{_PG_USER}:{_PG_PASSWORD}@localhost:5432/{_TEST_DB_NAME}"
 )
 os.environ["APP_ENV"] = "test"
 os.environ["VISION_ENABLED"] = "false"  # No CLIP / face models in unit tests.
@@ -64,8 +71,8 @@ def _postgres_reachable() -> bool:
 
         c = psycopg2.connect(
             dbname="postgres",
-            user="istore",
-            password="istore",
+            user=_PG_USER,
+            password=_PG_PASSWORD,
             host="localhost",
             port=5432,
             connect_timeout=2,
@@ -86,8 +93,8 @@ def _test_db():
 
     admin = psycopg2.connect(
         dbname="postgres",
-        user="istore",
-        password="istore",
+        user=_PG_USER,
+        password=_PG_PASSWORD,
         host="localhost",
         port=5432,
     )
@@ -100,7 +107,7 @@ def _test_db():
         (_TEST_DB_NAME,),
     )
     cur.execute(f'DROP DATABASE IF EXISTS "{_TEST_DB_NAME}"')
-    cur.execute(f'CREATE DATABASE "{_TEST_DB_NAME}" OWNER istore')
+    cur.execute(f'CREATE DATABASE "{_TEST_DB_NAME}" OWNER {_PG_USER}')
     admin.close()
 
     from alembic import command

@@ -6,10 +6,13 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      ISTORE_DOMAIN: ${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}
-      ISTORE_API_UPSTREAM: backend:8000
-      ISTORE_FRONTEND_UPSTREAM: frontend:80
-      ISTORE_MINIO_UPSTREAM: minio:9000
+      # NEUTHEK_* keys mirror the Caddyfile placeholders. Legacy
+      # installs may set ISTORE_DOMAIN in .env; the shell-style
+      # default falls back to it so the rebrand is a no-op for them.
+      NEUTHEK_DOMAIN: ${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN:?set NEUTHEK_DOMAIN (or legacy ISTORE_DOMAIN) in .env}}
+      NEUTHEK_API_UPSTREAM: backend:8000
+      NEUTHEK_FRONTEND_UPSTREAM: frontend:80
+      NEUTHEK_MINIO_UPSTREAM: minio:9000
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -33,15 +36,15 @@ services:
       MINIO_ACCESS_KEY_FILE: /run/secrets/minio_access_key
       MINIO_SECRET_KEY_FILE: /run/secrets/minio_secret_key
       MINIO_SECURE: "true"
-      MINIO_BUCKET_ORIGINALS: istore-originals
-      MINIO_BUCKET_SERVED: istore-served
-      MINIO_BUCKET_FACES: istore-faces
-      MINIO_BUCKET_QUARANTINE: istore-quarantine
+      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-neuthek-originals}
+      MINIO_BUCKET_SERVED: ${MINIO_BUCKET_SERVED:-neuthek-served}
+      MINIO_BUCKET_FACES: ${MINIO_BUCKET_FACES:-neuthek-faces}
+      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-neuthek-quarantine}
       MINIO_SSE_MODE: ${MINIO_SSE_MODE:-sse-s3}
       MINIO_SSE_KMS_KEY_ID_CONTENT_FILE: /run/secrets/minio_kms_key_content
       MINIO_SSE_KMS_KEY_ID_BIOMETRIC_FILE: /run/secrets/minio_kms_key_biometric
       REDIS_URL: redis://redis:6379/0
-      FRONTEND_BASE_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}
+      FRONTEND_BASE_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN:?set NEUTHEK_DOMAIN (or legacy ISTORE_DOMAIN) in .env}}
       REQUIRE_SIGNED_DOWNLOADS: "true"
       SECRET_MANAGER: docker_secrets
       POSTGRES_AT_REST_ENCRYPTION: host_volume_confirmed
@@ -72,7 +75,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}
+        VITE_API_BASE_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN:?set NEUTHEK_DOMAIN (or legacy ISTORE_DOMAIN) in .env}}
         VITE_REQUIRE_SIGNED_DOWNLOADS: "true"
     restart: unless-stopped
 
@@ -80,15 +83,15 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: istore
+      POSTGRES_USER: ${POSTGRES_USER:-neuthek}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      POSTGRES_DB: istore
+      POSTGRES_DB: ${POSTGRES_DB:-neuthek}
     secrets:
       - postgres_password
     volumes:
       - ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT}}/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U istore -d istore"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neuthek} -d ${POSTGRES_DB:-neuthek}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -111,8 +114,8 @@ services:
     environment:
       MINIO_ROOT_USER_FILE: /run/secrets/minio_access_key
       MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret_key
-      MINIO_SERVER_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}/minio
-      MINIO_BROWSER_REDIRECT_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN}}/minio-console
+      MINIO_SERVER_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN:?set NEUTHEK_DOMAIN (or legacy ISTORE_DOMAIN) in .env}}/minio
+      MINIO_BROWSER_REDIRECT_URL: https://${NEUTHEK_DOMAIN:-${ISTORE_DOMAIN:?set NEUTHEK_DOMAIN (or legacy ISTORE_DOMAIN) in .env}}/minio-console
     command: server /data --console-address ":9001"
     secrets:
       - minio_access_key

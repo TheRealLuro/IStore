@@ -102,16 +102,18 @@ async def validate_production_settings() -> None:
             "dev/test — not the compose default, not blank, not a known weak value."
         )
     # Audit CR-8 — weak DB credential rejection. The dev compose
-    # falls back to `istore:istore@postgres:5432/istore`; without this
-    # guard a production deploy could ship with the weak default if
-    # the operator forgot to set POSTGRES_PASSWORD in .env. We parse
-    # the credential out of the async DSN (and the sync DSN — alembic
-    # uses it) and reject the known-weak set.
+    # falls back to `neuthek:neuthek@postgres:5432/neuthek` (and the
+    # historical `istore:istore@…` for operators on older .env
+    # files); without this guard a production deploy could ship
+    # with either weak default if the operator forgot to set
+    # POSTGRES_PASSWORD in .env. We parse the credential out of the
+    # async DSN (and the sync DSN — alembic uses it) and reject the
+    # known-weak set, including both the new and legacy product names.
     from urllib.parse import urlparse  # local import — only needed in this validator path
 
     _weak_db_passwords = {
-        "", "istore", "postgres", "password", "changeme", "change-me",
-        "admin", "root", "test", "secret",
+        "", "neuthek", "istore", "postgres", "password", "changeme",
+        "change-me", "admin", "root", "test", "secret",
     }
     for label, dsn in (
         ("DATABASE_URL", settings.database_url),
@@ -124,22 +126,27 @@ async def validate_production_settings() -> None:
         if password.lower() in _weak_db_passwords:
             errors.append(
                 f"{label} carries a known-weak password — reject the "
-                "compose default `istore` (and any blank / `postgres` "
-                "/ `password` / `changeme` value). Set POSTGRES_PASSWORD "
-                "to a rotated random secret in .env before deploying."
+                "compose defaults (`neuthek`, legacy `istore`, blank, "
+                "or any of `postgres` / `password` / `changeme`). Set "
+                "POSTGRES_PASSWORD to a rotated random secret in .env "
+                "before deploying."
             )
             break  # one message is enough; both DSNs share the same root cause
 
     # MinIO access key + secret share the same problem. The compose
-    # defaults are `istore:istorepass`; production validators in the
-    # rest of this function force MINIO_SECURE=true and the SSE config,
-    # so the weak-credential leak would surface in prod logs as
-    # "access denied"-shaped errors, but better to refuse the boot.
+    # defaults are `neuthek:neuthekpass` (new) and `istore:istorepass`
+    # (legacy); production validators in the rest of this function
+    # force MINIO_SECURE=true and the SSE config, so the weak-credential
+    # leak would surface in prod logs as "access denied"-shaped errors,
+    # but better to refuse the boot.
     _weak_minio_passwords = {
-        "", "istore", "istorepass", "minio", "minioadmin", "password",
-        "changeme", "secret",
+        "", "neuthek", "neuthekpass", "istore", "istorepass",
+        "minio", "minioadmin", "password", "changeme", "secret",
     }
-    if settings.minio_access_key.lower() in {"", "istore", "minio", "minioadmin", "admin"}:
+    _weak_minio_access_keys = {
+        "", "neuthek", "istore", "minio", "minioadmin", "admin",
+    }
+    if settings.minio_access_key.lower() in _weak_minio_access_keys:
         errors.append(
             "MINIO_ACCESS_KEY is a known-weak compose default — set it "
             "to a rotated value in .env before deploying."

@@ -24,7 +24,7 @@ class Storage:
         # `.pkl` / `.safetensors` files written by the trainer when a
         # fine-tune (D6) finishes. The `model_runs` row points at the
         # object key so the admin Models tab can offer a download.
-        self.bucket_models = getattr(settings, "minio_bucket_models", "istore-models")
+        self.bucket_models = getattr(settings, "minio_bucket_models", "neuthek-models")
 
     def _bucket_names(self) -> Iterable[str]:
         return (

@@ -398,7 +398,7 @@ FastAPI auto-generates the full OpenAPI doc at `/docs`. Highlights:
 ```bash
 pytest                  # full suite
 pytest tests/test_c9_filters.py -v   # one file
-MINIO_SECRET_KEY=istorepass pytest   # if your local .env has an empty MinIO secret
+MINIO_SECRET_KEY=neuthekpass pytest   # if your local .env has an empty MinIO secret
 ```
 
 Coverage areas:
@@ -441,7 +441,7 @@ Pulled straight from `todo.md`. Items are spec'd but not yet shipped.
 | **F3 Lite no-AI profile** | Setup-wizard option to disable Florence + Qwen, fall back to BLIP + sumy. For Raspberry-Pi-class hosts. |
 | **G3 Real-time team editing** | y.js + relay WebSocket. Documents only at first. |
 | **H1–H4 Docs + CI cleanup** | README + comment-balance sweep + GitHub-ready .md + ruff/mypy/tsc CI gates. Unblocks the public source release. |
-| **I.bis Project rename** | IStore → neuthek internal cleanup (env-var prefixes, bucket names, package metadata). Frontend already mounts as neuthek; storage names retain the historical prefix during the migration. |
+| **I.bis Project rename** | ✅ Landed. IStore → neuthek across env-var prefixes (`ISTORE_*` → `NEUTHEK_*` with shell-fallback for legacy installs), bucket names (`istore-*` → `neuthek-*` for fresh installs; existing operators pin the legacy values in `.env` to keep their data), compose/Caddyfile placeholders, README/SETUP/scripts/conftest. Production validator treats both names as known-weak passwords. |
 
 ## Contributing
 

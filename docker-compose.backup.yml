@@ -39,7 +39,7 @@ services:
       # credentials the API container uses; in prod you'd typically
       # provision a dedicated read-only-replicating role with
       # pg_dump-specific privileges, but for self-host we share.
-      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
       # age public key (recipient). REQUIRED. Generate locally with
       # `age-keygen -o ~/.config/age/neuthek.key`; the public-key line
       # at the top of that file is what goes here.

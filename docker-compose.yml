@@ -5,17 +5,21 @@ services:
     restart: unless-stopped
     environment:
       # DEV-ONLY defaults. Audit CR-8: these fall back to the weak
-      # `istore` literal when no .env is present; the production
-      # validator (`backend.security.validate_production_settings`)
-      # rejects them when APP_ENV is anything other than dev/test/local.
-      # Set strong values in .env before deploying.
-      POSTGRES_USER: ${POSTGRES_USER:-istore}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-istore}
-      POSTGRES_DB: ${POSTGRES_DB:-istore}
+      # `neuthek` literal when no .env is present (legacy installs
+      # may still carry `istore` from the pre-rebrand era — both
+      # values are in the validator's known-weak set). The
+      # production validator (backend.security.validate_production_
+      # settings) rejects either of them when APP_ENV is anything
+      # other than dev/test/local. Set strong values in .env before
+      # deploying.
+      POSTGRES_USER: ${POSTGRES_USER:-neuthek}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neuthek}
+      POSTGRES_DB: ${POSTGRES_DB:-neuthek}
     ports:
       # Loopback-only host binding. Audit CR-8: previously `5432:5432`
       # bound to 0.0.0.0 on the host, making the dev Postgres (with
-      # `istore:istore` defaults) reachable from anywhere on the LAN
+      # `neuthek:neuthek` defaults, or `istore:istore` on legacy
+      # installs) reachable from anywhere on the LAN
       # via Docker Desktop's all-NIC default. Loopback keeps the
       # service usable for local clients (psql, pgcli) without
       # exposing the weak credentials to coffee-shop wifi.
@@ -23,7 +27,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-istore} -d ${POSTGRES_DB:-istore}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neuthek} -d ${POSTGRES_DB:-neuthek}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -53,16 +57,18 @@ services:
     restart: unless-stopped
     environment:
       # DEV-ONLY defaults. Audit CR-8: the production validator
-      # rejects `istore` / `istorepass` outside dev/test, so this
-      # falls back to the weak literal only on a local `docker
-      # compose up` with no .env present. Replace in .env before
-      # any non-localhost-reachable deploy.
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-istore}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-istorepass}
+      # rejects `neuthek` / `neuthekpass` (and the legacy
+      # `istore` / `istorepass` from pre-rebrand installs) outside
+      # dev/test, so this falls back to the weak literal only on a
+      # local `docker compose up` with no .env present. Replace in
+      # .env before any non-localhost-reachable deploy.
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-neuthek}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-neuthekpass}
     command: server /data --console-address ":9001"
     ports:
       # Loopback-only host bind — audit CR-8. The MinIO admin console
-      # (port 9001) on 0.0.0.0 with default `istore:istorepass`
+      # (port 9001) on 0.0.0.0 with default `neuthek:neuthekpass`
+      # (or legacy `istore:istorepass`)
       # credentials was a remote-bucket-takeover primitive for any
       # LAN attacker. The S3 API on 9000 has the same exposure.
       # `mc alias set local http://127.0.0.1:9000 ...` still works
@@ -99,17 +105,17 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: dev
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
-      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-istore}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-istorepass}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-neuthek}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-neuthekpass}
       MINIO_SECURE: "false"
-      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-istore-originals}
-      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-istore-served}
-      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-istore-faces}
-      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-istore-quarantine}
+      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-neuthek-originals}
+      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-neuthek-served}
+      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-neuthek-faces}
+      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-neuthek-quarantine}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
       JWT_LIFETIME_SECONDS: "86400"
       # Fernet key for symmetric encryption of TOTP secrets + cloud-OAuth
@@ -201,17 +207,17 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: dev
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
-      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-istore}:${POSTGRES_PASSWORD:-istore}@postgres:5432/${POSTGRES_DB:-istore}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-istore}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-istorepass}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-neuthek}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-neuthekpass}
       MINIO_SECURE: "false"
-      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-istore-originals}
-      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-istore-served}
-      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-istore-faces}
-      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-istore-quarantine}
+      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-neuthek-originals}
+      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-neuthek-served}
+      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-neuthek-faces}
+      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-neuthek-quarantine}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
       # Same Fernet key as the API container — the worker reads
       # encrypted refresh tokens for cloud-sync jobs.
