@@ -149,8 +149,10 @@ def _encode_one_rendition(
     playlist = out_dir / "playlist.m3u8"
     segment_pattern = str(out_dir / "segment_%03d.ts")
 
+    from backend.ffmpeg_args import safe_input_args
     cmd: list[str] = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        *safe_input_args(),
         "-i", str(src),
         # Lanczos scaler — same quality knob the legacy mp4 path uses.
         "-vf", f"scale={width}:{height}:flags=lanczos",

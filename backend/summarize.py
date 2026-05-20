@@ -1947,10 +1947,12 @@ def _probe_video_duration(raw_bytes: bytes) -> Optional[float]:
         ) as tmp:
             tmp.write(raw_bytes)
             tmp_path = tmp.name
+        from backend.ffmpeg_args import safe_input_args
         proc = subprocess.run(
             [
                 "ffprobe",
                 "-loglevel", "error",
+                *safe_input_args(),
                 "-show_entries", "format=duration",
                 "-of", "csv=p=0",
                 tmp_path,
@@ -2005,10 +2007,12 @@ def _extract_keyframe(raw_bytes: bytes, seek_seconds: float = 5) -> Optional[byt
         ) as tmp:
             tmp.write(raw_bytes)
             tmp_path = tmp.name
+        from backend.ffmpeg_args import safe_input_args
         proc = subprocess.run(
             [
                 "ffmpeg",
                 "-loglevel", "error",
+                *safe_input_args(),
                 "-i", tmp_path,
                 "-ss", f"{seek_seconds:.3f}",
                 "-frames:v", "1",
