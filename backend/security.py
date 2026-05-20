@@ -345,6 +345,17 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
 
     _AUTH_PATHS = {
         "/auth/jwt/login",
+        # /auth/cookie/login is the browser FE's primary login route.
+        # Before this entry existed the cookie-flavored login was the
+        # ONLY public auth endpoint with no rate-limit and no audit row
+        # — the dispatch() short-circuit at `path in self._AUTH_PATHS`
+        # treated it as a non-auth route. The credential-attempt
+        # check at the bottom of dispatch() already matches via
+        # `path.endswith("/login")`, so adding the path here is the
+        # only change required to get per-IP burst + per-identity
+        # lockout + `auth.login.succeeded`/`failed` audit rows for
+        # browser logins.
+        "/auth/cookie/login",
         # §1.2.2 — TOTP login endpoint. Same per-IP burst + lockout
         # policy as the password path so a TOTP-enabled account can't
         # be code-guessed.
