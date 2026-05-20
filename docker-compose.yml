@@ -4,11 +4,22 @@ services:
     container_name: neuthek-postgres
     restart: unless-stopped
     environment:
+      # DEV-ONLY defaults. Audit CR-8: these fall back to the weak
+      # `istore` literal when no .env is present; the production
+      # validator (`backend.security.validate_production_settings`)
+      # rejects them when APP_ENV is anything other than dev/test/local.
+      # Set strong values in .env before deploying.
       POSTGRES_USER: ${POSTGRES_USER:-istore}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-istore}
       POSTGRES_DB: ${POSTGRES_DB:-istore}
     ports:
-      - "5432:5432"
+      # Loopback-only host binding. Audit CR-8: previously `5432:5432`
+      # bound to 0.0.0.0 on the host, making the dev Postgres (with
+      # `istore:istore` defaults) reachable from anywhere on the LAN
+      # via Docker Desktop's all-NIC default. Loopback keeps the
+      # service usable for local clients (psql, pgcli) without
+      # exposing the weak credentials to coffee-shop wifi.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +33,12 @@ services:
     container_name: neuthek-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Loopback-only — audit CR-8. Redis has no auth in this compose,
+      # exposing it to the LAN means anyone on the network can FLUSHALL
+      # or read OAuth PKCE verifiers / auth-lockout counters / job
+      # queue entries. Local clients (redis-cli, RedisInsight) still
+      # work over 127.0.0.1.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,12 +52,23 @@ services:
     container_name: neuthek-minio
     restart: unless-stopped
     environment:
+      # DEV-ONLY defaults. Audit CR-8: the production validator
+      # rejects `istore` / `istorepass` outside dev/test, so this
+      # falls back to the weak literal only on a local `docker
+      # compose up` with no .env present. Replace in .env before
+      # any non-localhost-reachable deploy.
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-istore}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-istorepass}
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      # Loopback-only host bind — audit CR-8. The MinIO admin console
+      # (port 9001) on 0.0.0.0 with default `istore:istorepass`
+      # credentials was a remote-bucket-takeover primitive for any
+      # LAN attacker. The S3 API on 9000 has the same exposure.
+      # `mc alias set local http://127.0.0.1:9000 ...` still works
+      # for any developer tooling that runs on the same host.
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -114,7 +141,13 @@ services:
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
     ports:
-      - "8000:8000"
+      # Loopback-only — audit CR-8. The dev backend runs with
+      # SECURITY_RATE_LIMITS_ENABLED=false and the weak default JWT
+      # secret; exposing it on 0.0.0.0 made it a one-step takeover
+      # on any LAN. Production deploys terminate at a reverse proxy
+      # on a separate network namespace; the dev compose never
+      # needs the port reachable beyond the host.
+      - "127.0.0.1:8000:8000"
     volumes:
       # Bind-mount source for hot-reload. `uvicorn --reload` picks up
       # edits the same way the host venv does.
@@ -253,7 +286,14 @@ services:
       VITE_API_BASE_URL: http://localhost:8000
       VITE_REQUIRE_SIGNED_DOWNLOADS: "false"
     ports:
-      - "5173:5173"
+      # Loopback-only — audit F14. Vite serves the source tree and
+      # HMR websocket unauthenticated; on 0.0.0.0 anyone on the
+      # network could browse the working tree (including in-progress
+      # secrets accidentally typed into a file). `--host 0.0.0.0`
+      # inside the container is still required for the port mapping
+      # to reach the dev server; the security boundary is the host
+      # bind here, not the container's internal listener.
+      - "127.0.0.1:5173:5173"
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
