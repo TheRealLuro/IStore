@@ -1,72 +1,136 @@
+# syntax=docker/dockerfile:1.7
+#
+# Two-stage build (CR-7 + F17 from audit_findings/REPORT.md):
+#
+#   1. `builder` — installs pip dependencies into a venv at /opt/venv.
+#      Carries the compilers (build-essential, git) needed to build any
+#      sdist-only wheels among [cloud]/[ml] deps.
+#
+#   2. `runtime` — copies the venv across, installs ONLY the runtime
+#      shared libraries (libpq5, OpenCV deps, ffmpeg), creates an
+#      unprivileged `neuthek` user, and launches uvicorn as that user.
+#
+# Why the split:
+#   - F17 — before this, build-essential + git stayed in the final
+#     image. An attacker who landed an in-container RCE got gcc, make,
+#     and git to develop further exploits and exfiltrate.
+#   - CR-7 — before this, the runtime had no USER directive and uvicorn
+#     ran as root. The compose layer bind-mounts `./backend`,
+#     `./migrations`, `./alembic.ini`, `./policies`, AND the host
+#     HuggingFace cache RW into the container, so any RCE-shaped bug
+#     (one of the pickle-loading model paths, an ffmpeg CVE, a Pillow
+#     parser flaw) could rewrite the host's source tree and poison the
+#     HF cache for the next boot.
+#
+# Image-size cost: ~600 MB shaved off (no build tools in runtime).
+# Re-uses build cache aggressively: pyproject.toml is COPYed before
+# source, and `pip install --no-cache-dir` makes the venv layer
+# deterministic per pyproject content.
+
+
+# ---------- Stage 1: build venv ----------
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Compilers + git for any sdist that needs to build C extensions
+# (some [ml] deps fall back to source build when no manylinux wheel
+# matches the runner platform). libpq-dev is here too — even though
+# psycopg2-binary ships a wheel, asyncpg's compile-from-sdist path
+# wants headers if a wheel miss ever happens.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         build-essential git libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Metadata first so the (slow, multi-GB) dep-install layer is cached
+# across source-only edits.
+COPY pyproject.toml README.md /build/
+
+# venv at /opt/venv so we can copy it whole into the runtime stage.
+# Activation is via PATH below — no `source` needed at runtime.
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+
+# Same install order as before this refactor: base + [cloud] always,
+# [ml] gated by INSTALL_ML so test runners / CI can opt out of the
+# ~3 GB torch download. [cloud] stays unconditional because Sign-in-
+# with-Google + Drive sync are core auth surfaces, not optional.
+ARG INSTALL_ML=1
+RUN /opt/venv/bin/pip install --no-cache-dir ".[cloud]" \
+    && if [ "$INSTALL_ML" = "1" ]; then \
+         /opt/venv/bin/pip install --no-cache-dir ".[ml]" ; \
+       fi
+
+
+# ---------- Stage 2: runtime ----------
 FROM python:3.12-slim AS runtime
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH="/opt/venv/bin:$PATH"
 
-WORKDIR /app
-
-# System deps:
+# Runtime-only shared libraries. NOTHING compiles in this stage.
 #   libpq5         — Postgres client used by psycopg2/asyncpg
 #   curl           — health probes
 #   libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
-#                  — required by OpenCV / Pillow image codecs (insightface,
-#                    pymupdf, etc.) at runtime in [ml] mode
-#   ffmpeg         — video / audio transcoding pipeline (backend/transcode.py).
-#                    Bookworm's ffmpeg ships with libx264, libfdk-aac
-#                    alternative (libfdk not by default — we use built-in
-#                    aac), AND h264_nvenc when run inside the ml-worker
-#                    container with NVIDIA passthrough enabled (see
-#                    docker-compose.yml ml-worker `deploy.resources`).
-#                    The backend container also gets ffmpeg so it can
-#                    inspect uploads / generate poster frames inline if
-#                    we ever need a synchronous path.
-#   build-essential, git — needed when pip builds wheels from sdist
+#                  — required at IMPORT TIME by OpenCV / Pillow image
+#                    codecs (insightface, pymupdf, etc.) when [ml] is on
+#   ffmpeg         — video/audio transcoding (backend/transcode.py).
+#                    Bookworm's ffmpeg ships libx264 + built-in aac;
+#                    h264_nvenc is available when the ml-worker has
+#                    NVIDIA passthrough enabled per docker-compose.yml.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          libpq5 curl \
          libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
          ffmpeg \
-         build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the project metadata first so dependency-install layer is
-# cached across source edits.
-COPY pyproject.toml README.md /app/
+# Non-root user.
+#   - UID 1000 matches the common host-user UID on Linux dev boxes,
+#     so bind mounts of ./backend etc. don't fight host filesystem
+#     ownership.
+#   - `-r` makes it a system account (no password, no aging).
+#   - `/usr/sbin/nologin` shell prevents accidental interactive login.
+#   - HOME at /home/neuthek so any tool that writes to ~/.cache (HF,
+#     pip wheel cache, etc.) lands in a writable place.
+RUN useradd -r -u 1000 -m -d /home/neuthek -s /usr/sbin/nologin neuthek
 
-# Install order: base deps first (smaller layer that rarely changes),
-# then [cloud] (Google OAuth + Drive client — small, ~5 MB) on top
-# of the base, then [ml] last so a hotfix to base deps doesn't
-# invalidate the multi-GB torch download. INSTALL_ML can be flipped
-# to 0 at build time for a much smaller image when vision features
-# aren't needed; [cloud] stays in unconditionally because Sign-in-
-# with-Google + Drive sync are core auth surfaces, not optional.
-#
-# Before this, `[cloud]` was never installed in the container — so
-# `from google_auth_oauthlib.flow import Flow` raised ImportError at
-# request time, and BOTH "Sign in with Google" and "Connect Drive"
-# returned 503 "google-auth-oauthlib is not installed" after every
-# container rebuild. Adding it to the image makes the install
-# survive `docker compose down && up`.
-ARG INSTALL_ML=1
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir ".[cloud]" \
-    && if [ "$INSTALL_ML" = "1" ]; then \
-         pip install --no-cache-dir ".[ml]" ; \
-       fi
+# Bring the venv across. Owned by root because /opt/venv is read-only
+# at runtime — neuthek runs the python binary but never modifies the
+# venv directory tree. (Pip writes go to /home/neuthek/.local if
+# they're ever issued, which they shouldn't be in production.)
+COPY --from=builder /opt/venv /opt/venv
 
-# Source last so editing app code only rebuilds the small final layer.
-COPY backend /app/backend
-COPY migrations /app/migrations
-COPY alembic.ini /app/alembic.ini
-# Policy texts hashed at consent grant time (face-recognition v1, etc).
-# Without this, /consent/*/grant 500s with FileNotFoundError on the
-# /app/policies path. The dev compose layer also bind-mounts this dir
-# so edits to the policy take effect without a rebuild.
-COPY policies /app/policies
+WORKDIR /app
+
+# Source + metadata. `--chown` so a future runtime-side write (e.g. an
+# operator running `docker exec` to apply a hotfix) doesn't trip on
+# root-owned files.
+COPY --chown=neuthek:neuthek pyproject.toml README.md /app/
+COPY --chown=neuthek:neuthek backend /app/backend
+COPY --chown=neuthek:neuthek migrations /app/migrations
+COPY --chown=neuthek:neuthek alembic.ini /app/alembic.ini
+COPY --chown=neuthek:neuthek policies /app/policies
+
+# Pre-create the HF cache target so HuggingFace can fall back to a
+# named volume when the host bind mount isn't present. Without this,
+# transformers would try to mkdir /models as `neuthek` and fail if
+# /models is root-owned.
+RUN mkdir -p /models && chown neuthek:neuthek /models
+
+# Drop privileges. Every command from here runs as neuthek (UID 1000).
+USER neuthek
 
 EXPOSE 8000
 
-# `alembic upgrade head` runs on every container start so a fresh
-# environment ends up at the latest schema. `--reload` is intentionally
-# omitted here; the dev compose layer adds it back via command override.
+# `alembic upgrade head` runs on every container start. The CMD does
+# not need a shell wrapper for security; using sh -c here is fine
+# because no part of the command is user-controlled.
 CMD ["sh", "-c", "alembic upgrade head && uvicorn backend.app:app --host 0.0.0.0 --port 8000 --log-level info"]
