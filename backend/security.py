@@ -101,6 +101,55 @@ async def validate_production_settings() -> None:
             "JWT_SECRET must be a strong (>=32 char) rotated value outside "
             "dev/test — not the compose default, not blank, not a known weak value."
         )
+    # Audit CR-8 — weak DB credential rejection. The dev compose
+    # falls back to `istore:istore@postgres:5432/istore`; without this
+    # guard a production deploy could ship with the weak default if
+    # the operator forgot to set POSTGRES_PASSWORD in .env. We parse
+    # the credential out of the async DSN (and the sync DSN — alembic
+    # uses it) and reject the known-weak set.
+    from urllib.parse import urlparse  # local import — only needed in this validator path
+
+    _weak_db_passwords = {
+        "", "istore", "postgres", "password", "changeme", "change-me",
+        "admin", "root", "test", "secret",
+    }
+    for label, dsn in (
+        ("DATABASE_URL", settings.database_url),
+        ("DATABASE_URL_SYNC", settings.database_url_sync),
+    ):
+        try:
+            password = urlparse(dsn).password or ""
+        except Exception:
+            password = ""
+        if password.lower() in _weak_db_passwords:
+            errors.append(
+                f"{label} carries a known-weak password — reject the "
+                "compose default `istore` (and any blank / `postgres` "
+                "/ `password` / `changeme` value). Set POSTGRES_PASSWORD "
+                "to a rotated random secret in .env before deploying."
+            )
+            break  # one message is enough; both DSNs share the same root cause
+
+    # MinIO access key + secret share the same problem. The compose
+    # defaults are `istore:istorepass`; production validators in the
+    # rest of this function force MINIO_SECURE=true and the SSE config,
+    # so the weak-credential leak would surface in prod logs as
+    # "access denied"-shaped errors, but better to refuse the boot.
+    _weak_minio_passwords = {
+        "", "istore", "istorepass", "minio", "minioadmin", "password",
+        "changeme", "secret",
+    }
+    if settings.minio_access_key.lower() in {"", "istore", "minio", "minioadmin", "admin"}:
+        errors.append(
+            "MINIO_ACCESS_KEY is a known-weak compose default — set it "
+            "to a rotated value in .env before deploying."
+        )
+    if settings.minio_secret_key.lower() in _weak_minio_passwords:
+        errors.append(
+            "MINIO_SECRET_KEY is a known-weak compose default — set it "
+            "to a rotated random secret in .env before deploying."
+        )
+
     if settings.secret_manager in {"", "env_file"}:
         errors.append("SECRET_MANAGER must be docker_secrets or a platform secret manager.")
     if settings.postgres_at_rest_encryption != "host_volume_confirmed":
