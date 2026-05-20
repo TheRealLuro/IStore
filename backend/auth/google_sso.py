@@ -79,6 +79,60 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/google", tags=["auth"])
 
 
+class SsoEmailTakenError(Exception):
+    """Raised when the SSO email-fallback bind would attach Google to
+    a pre-existing local account that hasn't proven email ownership.
+
+    Caught explicitly in the /auth/google/callback handler and
+    surfaced as `#sso_error=email_taken` so the FE can tell the user
+    the account exists but must complete verification (or link from
+    inside the authenticated session via /auth/google/link) before
+    they can sign in with Google. See `_is_safe_email_bind` for the
+    safety predicate and audit finding CR-5 for the takeover scenario.
+    """
+
+
+def _is_safe_email_bind(existing: User | None) -> bool:
+    """Return True iff it's safe to attach a freshly-authenticated
+    Google identity to an existing local row found by email-fallback.
+
+    The dangerous case (audit finding CR-5) is:
+
+      1. Attacker calls POST /auth/register with the victim's address
+         and an attacker-chosen password. fastapi-users creates the
+         row with `is_verified=False` and the attacker's hashed
+         password. The attacker never clicks the verify link.
+      2. Real victim later signs in with Google.
+      3. SSO callback finds the row by email, sets `google_sub`,
+         flips `is_verified=True`, returns it as the authenticated
+         user. The attacker's password keeps working too — silent
+         account-hybrid takeover.
+
+    Safe bindings:
+      - `existing is None` — no row exists yet; the caller will
+        create a fresh SSO-only row.
+      - `existing.is_verified` — the user proved ownership of the
+        address through the email-verify flow already.
+      - `existing.hashed_password is None` — SSO-only signup row;
+        the email IS the identity in this case.
+
+    Refused binding:
+      - An unverified row that DOES have a password. We cannot
+        distinguish "the legitimate user just hasn't verified yet"
+        from "an attacker pre-registered this address", so we err
+        on the side of refusing. The user can recover by clicking
+        the verify link in their inbox; once verified they can
+        sign in with Google.
+    """
+    if existing is None:
+        return True
+    if existing.is_verified:
+        return True
+    if existing.hashed_password is None:
+        return True
+    return False
+
+
 # ---------- HMAC-signed state (same pattern as cloud_sync) ----------------
 
 
@@ -335,11 +389,21 @@ async def _find_or_create_user(
         # Google account at "victim@neuthek.local" could impersonate
         # the existing user. We refuse unverified emails outright
         # before reaching this point.
-        existing = (
+        by_email = (
             await session.execute(
                 select(User).where(User.email == email)
             )
         ).scalar_one_or_none()
+        # Audit finding CR-5 — pre-registration takeover. An attacker
+        # who registered the victim's email but never verified would
+        # otherwise have their hashed_password bound to the Google
+        # identity the victim brings on first SSO sign-in. Refuse
+        # the bind unless the existing row has already proven email
+        # ownership (is_verified) OR was created as SSO-only
+        # (hashed_password is None). See `_is_safe_email_bind`.
+        if not _is_safe_email_bind(by_email):
+            raise SsoEmailTakenError(email)
+        existing = by_email
     if existing is not None:
         changed = False
         # Backfill google_sub if this is the first time we've seen one.
@@ -561,6 +625,20 @@ async def google_callback(
             )
             await session.commit()
             await session.refresh(user)
+        except SsoEmailTakenError:
+            # CR-5 — email-fallback refused on an unverified
+            # password-bearing row. The FE renders the generic
+            # `Google sign-in failed (email_taken)` message; users
+            # who legitimately want to link Google to an existing
+            # account can sign in with their password and use
+            # /auth/google/link from settings instead.
+            logger.info(
+                "auth.google: email-takeover bind refused for %s (unverified existing account)",
+                email,
+            )
+            return RedirectResponse(
+                url=f"{fe_root}/#sso_error=email_taken", status_code=302
+            )
         except Exception:
             logger.exception("auth.google: failed to find/create user for %s", email)
             return RedirectResponse(
