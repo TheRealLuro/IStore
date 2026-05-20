@@ -602,8 +602,23 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
                 {"detail": exc.detail}, status_code=exc.status_code
             )
 
-        lock_key = f"auth:lock:{request.url.path}:{identity or ip}"
-        fail_key = f"auth:fail:{request.url.path}:{identity or ip}"
+        # Audit A5 — lockout key now includes BOTH identity and IP so
+        # an attacker on one IP can't lock the real victim out from
+        # every other IP. The previous key `auth:lock:{path}:{identity}`
+        # gave any attacker who knew a target email a 60s–15min DoS
+        # lever against named users (admins, public personas, the
+        # sole owner of a self-hosted instance). Per-IP burst rate
+        # limit at line 585 still catches single-IP brute force;
+        # distributed brute force needs a separate CAPTCHA/WAF layer
+        # (out of audit scope).
+        #
+        # When `identity` is empty (no email in body), we fall back to
+        # ip-only — same as before — because there's nothing to scope
+        # on. That's the share-preview path, where the ip-only key
+        # IS the intended unit.
+        lock_scope = f"{identity}:{ip}" if identity else ip
+        lock_key = f"auth:lock:{request.url.path}:{lock_scope}"
+        fail_key = f"auth:fail:{request.url.path}:{lock_scope}"
         locked = await get_counter(lock_key)
         if locked:
             await _audit_auth_event(
