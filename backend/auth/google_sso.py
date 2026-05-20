@@ -72,6 +72,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth.users import current_active_user
 from backend.config import settings
 from backend.db import SessionLocal, get_session
+from backend.key_derivation import oauth_sso_state_key
 from backend.models import User
 
 logger = logging.getLogger(__name__)
@@ -95,8 +96,14 @@ def _build_state(link_user_id: UUID | None = None) -> str:
         payload = f"link:{link_user_id}.{nonce}"
     else:
         payload = nonce
+    # CR-3: HKDF-derived subkey, distinct from cloud_sync's OAuth state
+    # key. Without this, an SSO state minted here was indistinguishable
+    # from a cloud-sync state under the same secret — confused-deputy
+    # risk if either codepath ever loosened its verifier. The keys also
+    # differ from session-JWT / signed-URL / reset-token keys, so one
+    # leak no longer compromises everything.
     mac = hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        oauth_sso_state_key(),
         payload.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
@@ -110,7 +117,7 @@ def _verify_state(state: str) -> bool:
     if state.count(".") == 1:
         nonce, mac = state.split(".", 1)
         expected = hmac.new(
-            settings.jwt_secret.encode("utf-8"),
+            oauth_sso_state_key(),
             nonce.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
@@ -119,7 +126,7 @@ def _verify_state(state: str) -> bool:
     if state.count(".") == 2 and state.startswith("link:"):
         payload, mac = state.rsplit(".", 1)
         expected = hmac.new(
-            settings.jwt_secret.encode("utf-8"),
+            oauth_sso_state_key(),
             payload.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()

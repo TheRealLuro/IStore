@@ -7,6 +7,11 @@ from hashlib import sha256
 from uuid import UUID
 
 from backend.config import settings
+from backend.key_derivation import (
+    signed_download_key,
+    signed_share_key,
+    signed_stream_key,
+)
 
 
 def _payload(image_id: UUID, user_id: UUID, variant: str, expires: int) -> bytes:
@@ -14,8 +19,12 @@ def _payload(image_id: UUID, user_id: UUID, variant: str, expires: int) -> bytes
 
 
 def sign_download(image_id: UUID, user_id: UUID, variant: str, expires: int) -> str:
+    # Per CR-3: each signed-URL family signs under its own subkey
+    # derived from jwt_secret via HKDF, so a leak of one family's
+    # HMAC (e.g. via a log-oracle attack against share URLs) doesn't
+    # let an attacker forge owner-download URLs or session JWTs.
     return hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        signed_download_key(),
         _payload(image_id, user_id, variant, expires),
         sha256,
     ).hexdigest()
@@ -89,8 +98,11 @@ def _share_payload(share_id: UUID, variant: str, expires: int) -> bytes:
 
 
 def sign_share_download(share_id: UUID, variant: str, expires: int) -> str:
+    # CR-3: distinct subkey from sign_download / sign_stream so a
+    # share URL HMAC can't be reused as an owner-download HMAC under
+    # the same secret.
     return hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        signed_share_key(),
         _share_payload(share_id, variant, expires),
         sha256,
     ).hexdigest()
@@ -152,8 +164,12 @@ def _stream_payload(
 def sign_stream(
     image_id: UUID, user_id: UUID, expires: int, quality: str = "",
 ) -> str:
+    # CR-3: separate stream subkey. Combined with the `stream:`
+    # payload prefix this gives two independent guarantees that a
+    # download URL can't be replayed as a stream URL and vice-versa
+    # — payload domain separation AND key domain separation.
     return hmac.new(
-        settings.jwt_secret.encode("utf-8"),
+        signed_stream_key(),
         _stream_payload(image_id, user_id, expires, quality),
         sha256,
     ).hexdigest()
