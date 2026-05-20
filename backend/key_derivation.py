@@ -38,14 +38,15 @@ onto its own subkey too.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 from functools import lru_cache
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from backend.config import settings
 
 
-# 256-bit subkeys. Sha-256 makes 256-bit the natural fit; signed URLs
+# 256-bit subkeys. SHA-256 makes 256-bit the natural fit; signed URLs
 # and OAuth states use them as HMAC keys (HMAC of any length works,
 # 256 bits is the recommended minimum for SHA-256).
 _DERIVED_LEN = 32
@@ -55,30 +56,6 @@ _DERIVED_LEN = 32
 # at the call site to invalidate every signature minted under the
 # previous one without touching unrelated domains.
 _LABEL_PREFIX = b"neuthek:"
-
-
-def _hkdf_extract(salt: bytes, ikm: bytes) -> bytes:
-    """RFC 5869 §2.2 HKDF-Extract. With an empty salt this collapses
-    to HMAC-SHA256(zeros, ikm); we use a fixed zero salt because the
-    root `jwt_secret` is already required to be ≥32 chars of entropy
-    by `validate_production_settings`, so an extra per-deploy salt
-    adds no security and creates a rotation footgun."""
-    return hmac.new(salt or (b"\x00" * 32), ikm, hashlib.sha256).digest()
-
-
-def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
-    """RFC 5869 §2.3 HKDF-Expand. Returns `length` bytes derived from
-    the pseudorandom key `prk` keyed by the context-specific `info`."""
-    out = b""
-    block = b""
-    counter = 1
-    while len(out) < length:
-        block = hmac.new(
-            prk, block + info + bytes([counter]), hashlib.sha256
-        ).digest()
-        out += block
-        counter += 1
-    return out[:length]
 
 
 def derive_subkey(purpose: bytes) -> bytes:
@@ -92,11 +69,31 @@ def derive_subkey(purpose: bytes) -> bytes:
     when two call sites are the SAME domain, e.g. `_build_state` and
     `_verify_state` in google_sso.py). Using different labels for
     distinct domains is what closes finding CR-3.
+
+    Implementation uses HKDF-SHA256 (RFC 5869) via the `cryptography`
+    library's canonical `HKDF` primitive — NOT a bare hash. Static
+    scanners may try to flag SHA-256 as "weak password hashing", but
+    that warning applies to user-password storage (where you want
+    argon2 / bcrypt because the input is low-entropy and you want
+    work-factor brute-force resistance). The input here is
+    `settings.jwt_secret`, a high-entropy server-side key enforced
+    ≥32 chars by `validate_production_settings`. HKDF is the correct
+    primitive: it's defined precisely to expand a high-entropy
+    secret into multiple domain-separated subkeys.
+
+    We pass `salt=None` because the root secret is already required to
+    be high-entropy; per RFC 5869 §3.1 a null salt is acceptable and
+    HKDF-Extract collapses to HMAC under a fixed zero key.
     """
     if not purpose:
         raise ValueError("purpose must be a non-empty byte string")
-    prk = _hkdf_extract(b"", settings.jwt_secret.encode("utf-8"))
-    return _hkdf_expand(prk, _LABEL_PREFIX + purpose, _DERIVED_LEN)
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=_DERIVED_LEN,
+        salt=None,
+        info=_LABEL_PREFIX + purpose,
+    )
+    return hkdf.derive(settings.jwt_secret.encode("utf-8"))
 
 
 def derive_subkey_str(purpose: bytes) -> str:
