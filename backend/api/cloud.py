@@ -385,7 +385,7 @@ async def sync_status(
 
 
 def _extract_provider_error_message(exc: Exception) -> str | None:
-    """Pull the human-readable error text out of a Google/GitHub client
+    """Pull the human-readable error text out of a Google API client
     exception so the FE can show "enable the Drive API" instead of a
     blank "internal error" page. Returns None when the message isn't
     a known provider-error shape — callers fall back to a generic

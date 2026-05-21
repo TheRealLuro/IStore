@@ -438,8 +438,8 @@ const APPSET_NAV = [
   // using it" surface, distinct from privacy / consent.
   { id: "playback",      label: "Playback",      icon: "play",     tone: "sky"    },
   { id: "ai",            label: "AI features",   icon: "sparkles", tone: "purple" },
-  // §C2 — Drive + GitHub sync. Lives between AI features and Your data
-  // because it's where most users will go after enabling AI features
+  // §C2 — Drive sync. Lives between AI features and Your data because
+  // it's where most users will go after enabling AI features
   // ("now let me pull in my Drive photos").
   { id: "cloud",         label: "Cloud sync",    icon: "cloud",    tone: "sky"    },
   { id: "data",          label: "Your data",     icon: "download", tone: "green"  },
@@ -1091,7 +1091,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                 <div className="appset__main-head">
                   <div>
                     <h3>Cloud sync</h3>
-                    <p>Pull files from Drive or GitHub. Read-only. AI off by default.</p>
+                    <p>Pull files from Google Drive. Read-only. AI off by default.</p>
                   </div>
                 </div>
                 <CloudSyncPanel/>
