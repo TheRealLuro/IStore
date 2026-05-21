@@ -58,11 +58,13 @@ async def run_hourly_sweep() -> None:
                 links = (
                     await session.execute(
                         select(CloudLink).where(
-                            # `error` and `conflicts` links still get
-                            # swept — the user may have resolved the
-                            # underlying issue and we'd otherwise leave
-                            # the link stuck forever.
-                            CloudLink.status.in_(("active", "conflicts", "error"))
+                            # `error`, `conflicts`, and `over_quota` links
+                            # still get swept — the user may have resolved
+                            # the underlying issue (or freed up space) and
+                            # we'd otherwise leave the link stuck forever.
+                            CloudLink.status.in_(
+                                ("active", "conflicts", "error", "over_quota")
+                            )
                         )
                     )
                 ).scalars().all()

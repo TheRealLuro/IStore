@@ -108,6 +108,66 @@ router = APIRouter(prefix="/storage", tags=["storage"])
 # Hard-coded for now; later move to a `users.quota_bytes` column or a tier table.
 DEFAULT_QUOTA_BYTES = 100 * 1024 * 1024 * 1024  # 100 GB
 
+
+def effective_quota_bytes(user: User) -> int:
+    """Resolve `users.quota_bytes` (admin/billing override) → fall back
+    to the global default.
+
+    Co-located with `DEFAULT_QUOTA_BYTES` so callers outside this
+    module (cloud_sync, archive_upload, …) don't have to duplicate the
+    null-coalescing logic and accidentally diverge."""
+    return user.quota_bytes if user.quota_bytes is not None else DEFAULT_QUOTA_BYTES
+
+
+async def compute_used_bytes_fast(
+    session: AsyncSession, user_id,
+) -> int:
+    """Return a SQL-only estimate of the user's current footprint.
+
+    Same component sum as GET /storage/usage (`served + originals +
+    trash`) MINUS the MinIO-stat'd variants pass — that loop costs O(N
+    videos) network round-trips and we'd be running it at every cloud-
+    sync entry to enforce the quota. Variants are almost always a
+    small fraction of total bytes and only apply to a subset of videos
+    that the transcoder has finished, so the under-count is bounded;
+    cloud-sync callers can apply a safety buffer if they care about
+    the gap.
+
+    Used by the cloud-sync quota check (audit CR-4). Not currently
+    used by the public `/storage/usage` response — that one still
+    walks variants because the user IS owed a precise number.
+    """
+    served_q = select(
+        func.coalesce(func.sum(Image.byte_size_served), 0),
+    ).where(Image.user_id == user_id, Image.deleted_at.is_(None))
+    served = int((await session.execute(served_q)).scalar_one() or 0)
+
+    orig_q = select(
+        func.coalesce(func.sum(Image.byte_size_original), 0),
+    ).where(
+        Image.user_id == user_id,
+        Image.deleted_at.is_(None),
+        Image.original_blob_key.is_not(None),
+    )
+    originals = int((await session.execute(orig_q)).scalar_one() or 0)
+
+    trash_q = select(
+        func.coalesce(
+            func.sum(
+                func.coalesce(Image.byte_size_served, 0)
+                + case(
+                    (Image.original_blob_key.is_not(None),
+                     func.coalesce(Image.byte_size_original, 0)),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+    ).where(Image.user_id == user_id, Image.deleted_at.is_not(None))
+    trash = int((await session.execute(trash_q)).scalar_one() or 0)
+
+    return served + originals + trash
+
 # Video variant labels the transcoder emits. The DEFAULT served tier
 # is what `served_blob_key` already points at — typically 1080p — and
 # its size lives in `byte_size_served`, so we exclude it from the
