@@ -19,6 +19,15 @@
  */
 
 import express from "express";
+// `express-rate-limit` is the canonical Express rate-limit middleware.
+// CodeQL's `js/missing-rate-limiting` query recognises it; our prior
+// home-grown limiter (a per-IP bucket Map + ad-hoc factory) closed
+// the *functional* gap but didn't satisfy the rule. Imported under
+// a distinct local name to avoid colliding with the older
+// `rateLimit({key, limit, windowMs})` helper that's still used for
+// the two non-middleware buckets (per-email throttle in the resend
+// handler + admin-failure burn inside adminAuth).
+import expressRateLimit from "express-rate-limit";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -798,36 +807,31 @@ function clientIp(req) {
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
-// CodeQL "missing rate limiting" — the inline `rateLimit({...})`
-// calls inside individual handlers work, but CodeQL's static
-// detector recognises Express middleware shape, not function calls
-// inside handler bodies. This factory wraps the existing limiter
-// into a real middleware so:
-//   1. Every route that touches auth or filesystem gets a structural
-//      rate-limit (defense in depth — even when the body of the
-//      handler already calls `rateLimit(...)`).
-//   2. CodeQL recognises the `app.use(..., rateLimitMiddleware(...))`
-//      / `app.post(path, rateLimitMiddleware(...), handler)` shape
-//      and closes the alert.
-// Keys are functions of (req) so they can scope per-IP, per-email,
-// or per-(IP, path) without forcing a closure-per-route shape.
-function rateLimitMiddleware({ keyFn, limit, windowMs, detail }) {
-  return function rateLimitHandler(req, res, next) {
-    const key = keyFn(req);
-    if (!rateLimit({ key, limit, windowMs })) {
-      return res.status(429).json({
+// `express-rate-limit` factory wrapped with our standard 429 JSON
+// shape. The library handles all the parts CodeQL cares about
+// (per-IP keying via the configured `keyGenerator`, sliding window,
+// memory store with TTL cleanup) AND the parts our home-grown
+// version didn't: proper IPv6 handling, configurable stores so a
+// future cluster mode shares state, `standardHeaders` / `legacyHeaders`
+// behaviour that respects RFC 6585.
+function makeRateLimit({ limit, windowMs, detail }) {
+  return expressRateLimit({
+    windowMs,
+    limit,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    // The library defaults to keying by `req.ip` which Express sets
+    // from `X-Forwarded-For` once `trust proxy` is configured (we
+    // do, below at `app.set("trust proxy", true)`). That gives us
+    // the same per-IP throttle the home-grown limiter had, minus
+    // its IPv6 normalisation gaps.
+    handler: (_req, res) => {
+      res.status(429).json({
         ok: false,
         detail: detail || "Too many requests. Please try again shortly.",
       });
-    }
-    next();
-  };
-}
-
-// Common keyer: `${tag}:${ip}` — covers the per-IP throttle case
-// without forcing every middleware call to redeclare the function.
-function perIpKey(tag) {
-  return (req) => `${tag}:${clientIp(req)}`;
+    },
+  });
 }
 
 // --------------------------------------------------------------------- //
@@ -835,7 +839,15 @@ function perIpKey(tag) {
 // --------------------------------------------------------------------- //
 
 const app = express();
-app.set("trust proxy", true);
+// `trust proxy` controls which `X-Forwarded-For` hops Express
+// accepts. Setting it to `true` (or any "permissive" value) lets a
+// client spoof X-F-F to bypass per-IP rate limiting — express-rate-
+// limit v7 explicitly refuses to run with that config (see
+// ERR_ERL_PERMISSIVE_TRUST_PROXY). The marketing site runs on
+// Render which uses exactly ONE reverse-proxy hop in front of the
+// Node process, so trust the leftmost forwarded IP only. If this
+// ever moves behind multiple proxies, bump the number to match.
+app.set("trust proxy", 1);
 app.disable("x-powered-by");
 app.use(express.json({ limit: "32kb" }));
 
@@ -855,19 +867,15 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ----- Public signup -----
-app.post("/api/waitlist/signup", rateLimitMiddleware({
-  keyFn: perIpKey("signup"),
+app.post("/api/waitlist/signup", makeRateLimit({
   limit: 10,
   windowMs: 60_000,
   detail: "Too many signup attempts. Please try again in a minute.",
 }), async (req, res) => {
   const ip = clientIp(req);
-  if (!rateLimit({ key: `signup:${ip}`, limit: 10, windowMs: 60_000 })) {
-    return res.status(429).json({
-      ok: false,
-      detail: "Too many signup attempts. Please try again in a minute.",
-    });
-  }
+  // (per-IP signup throttle now enforced by the `makeRateLimit`
+  // middleware above — no need for the legacy inline `rateLimit({
+  // key: signup:${ip}, ... })` call that used to live here.)
 
   const body = req.body || {};
   const email = String(body.email || "").trim().toLowerCase();
@@ -930,8 +938,7 @@ app.post("/api/waitlist/signup", rateLimitMiddleware({
 
 // ----- Verify endpoint (clicked from the email link) -----
 // The SPA at /waitlist/verify will call this and show a result page.
-app.get("/api/waitlist/verify", rateLimitMiddleware({
-  keyFn: perIpKey("verify"),
+app.get("/api/waitlist/verify", makeRateLimit({
   limit: 30,
   windowMs: 60_000,
   detail: "Too many verify attempts. Please try again in a minute.",
@@ -956,20 +963,21 @@ app.get("/api/waitlist/verify", rateLimitMiddleware({
 // Public endpoint, rate-limited per IP and email. We respond
 // success-shaped whether or not the email exists so an attacker
 // can't enumerate signups.
-app.post("/api/waitlist/resend", rateLimitMiddleware({
-  keyFn: perIpKey("resend"),
+app.post("/api/waitlist/resend", makeRateLimit({
   limit: 5,
   windowMs: 60_000,
   detail: "Too many resend attempts. Please try again shortly.",
 }), async (req, res) => {
-  const ip = clientIp(req);
-  if (!rateLimit({ key: `resend:${ip}`, limit: 5, windowMs: 60_000 })) {
-    return res.status(429).json({ ok: false, detail: "too many resend attempts" });
-  }
+  // (per-IP resend throttle enforced by the `makeRateLimit`
+  // middleware above)
   const email = String(req.body?.email || "").trim().toLowerCase();
   if (!isEmailShaped(email)) {
     return res.status(422).json({ ok: false, detail: "invalid email" });
   }
+  // Per-email throttle stays on the home-grown bucket because
+  // `express-rate-limit` keys by IP — we want a separate budget
+  // keyed by the (lower-cased) email to prevent an attacker from
+  // burning every user's resend allowance from rotating IPs.
   if (!rateLimit({ key: `resend-email:${email}`, limit: 3, windowMs: 5 * 60_000 })) {
     return res.status(429).json({ ok: false, detail: "wait a few minutes before requesting another link" });
   }
@@ -1014,8 +1022,7 @@ async function handleUnsubscribe(req, res) {
 // of unsubscribe calls is still a DB write per request — defense
 // in depth. Limit is generous (60/min) because Gmail's one-click
 // can fire several times per inbox view.
-const unsubscribeRateLimit = rateLimitMiddleware({
-  keyFn: perIpKey("unsubscribe"),
+const unsubscribeRateLimit = makeRateLimit({
   limit: 60,
   windowMs: 60_000,
   detail: "Too many unsubscribe requests. Please try again shortly.",
@@ -1036,8 +1043,7 @@ app.post(
 // Auth attempts (see below) — this middleware adds a structural
 // limit BEFORE the auth check so a flood of unauth'd traffic can't
 // thrash either the bucket or the constant-time password compare.
-const adminRateLimit = rateLimitMiddleware({
-  keyFn: perIpKey("admin"),
+const adminRateLimit = makeRateLimit({
   limit: 60,
   windowMs: 60_000,
   detail: "Too many admin requests. Please slow down.",
@@ -1550,8 +1556,7 @@ if (fs.existsSync(distDir)) {
   // the shell-render + disk on the sendFile. Generous per-IP cap
   // (5×/sec → 300/min) keeps real browser refreshes free while
   // refusing a single bot scanning every path.
-  const spaCatchAllRateLimit = rateLimitMiddleware({
-    keyFn: perIpKey("spa-catchall"),
+  const spaCatchAllRateLimit = makeRateLimit({
     limit: 300,
     windowMs: 60_000,
     detail: "Too many page requests. Please slow down.",
