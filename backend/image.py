@@ -35,7 +35,7 @@ from backend.consent import is_scope_active
 from backend.models import Image, ImageGeo, ImageTag, Tag, User
 from backend.policy import VisionContext, pick_plan_with_bandit
 from backend.storage import storage
-from backend.upload_validation import validate_upload
+from backend.upload_validation import UploadValidationError, validate_upload
 
 logger = logging.getLogger(__name__)
 
@@ -131,28 +131,53 @@ async def _upsert_tags(
         )
 
 
-def _strip_exif_bytes(data: bytes, mime: str | None) -> bytes | None:
+class ExifStripFailure(Exception):
+    """Raised by `_strip_exif_bytes` when an EXIF-carrying image can't
+    be re-encoded without metadata. Caller MUST translate this into a
+    422 upload rejection — silently falling back to the original
+    EXIF-bearing bytes (audit U5) violates the §B1 privacy contract.
+    """
+
+
+def _strip_exif_bytes(data: bytes, mime: str | None) -> bytes:
     """Return a copy of `data` with the EXIF block removed.
 
     §B1: when the user hasn't opted into `gps_retention` or
     `exif_retention`, the originals bucket should never see EXIF
     metadata. We re-encode through Pillow without the `exif=` kwarg
     so the output has no APP1 marker / no embedded GPS / camera
-    fingerprint. Returns the new bytes, or None when we can't
-    safely strip (unknown format, decode failure) — caller falls
-    back to the original bytes so we never silently produce broken
-    output.
+    fingerprint.
 
-    JPEG / WebP / TIFF are the formats that carry EXIF in our
-    pipeline; PNG/GIF don't. For PNG/GIF this is a no-op (returns
-    the input bytes unchanged so the caller's hash math stays
-    stable).
+    Contract (audit U5):
+
+      - PNG / GIF / non-image MIME → returns `data` unchanged.
+        These formats don't carry EXIF in our pipeline; nothing to
+        strip. Caller treats this as a no-op.
+
+      - JPEG / WebP / TIFF → returns re-encoded bytes with the EXIF
+        block dropped. RAISES `ExifStripFailure` if Pillow fails
+        the round-trip; the caller MUST surface this as a 422
+        rejection rather than silently shipping the unstripped
+        original (the pre-U5 behavior leaked EXIF whenever Pillow
+        hiccupped on a particular image).
+
+      - Other image/* MIME (e.g. image/svg+xml, image/avif before
+        re-encode) → RAISES. The caller's job is to make sure
+        only the supported set reaches this function; if it
+        doesn't, refuse the upload rather than guess.
     """
     if not mime or not mime.startswith("image/"):
-        return None
+        # Non-image MIMEs reach this function only as defense-in-depth;
+        # there's literally no EXIF concept for them. No-op.
+        return data
     if mime in {"image/png", "image/gif"}:
         # No EXIF in these formats — nothing to strip.
         return data
+    if mime not in {"image/jpeg", "image/webp", "image/tiff"}:
+        raise ExifStripFailure(
+            f"Cannot strip EXIF from unsupported image MIME {mime!r}; "
+            "refusing upload to honor your privacy settings."
+        )
     try:
         with PILImage.open(BytesIO(data)) as pil:
             pil.load()
@@ -163,16 +188,129 @@ def _strip_exif_bytes(data: bytes, mime: str | None) -> bytes | None:
                 )
             elif mime == "image/webp":
                 pil.save(out, format="WEBP", lossless=True)
-            elif mime == "image/tiff":
+            else:  # image/tiff (validated above)
                 # Sanitize already converts TIFF→PNG for served; for
                 # originals we keep TIFF but drop EXIF.
                 pil.save(out, format="TIFF")
-            else:
-                return None
             return out.getvalue()
-    except Exception:
-        logger.exception("strip_exif: re-encode failed; keeping original bytes")
-        return None
+    except Exception as exc:
+        # Audit U5 — the pre-fix behavior was to log + return None,
+        # and the caller fell back to the original bytes (with EXIF
+        # intact). That silently violated the §B1 promise every
+        # time Pillow hiccupped on a particular JPEG/WebP/TIFF.
+        # Raise instead so the upload is refused.
+        logger.exception("strip_exif: re-encode failed for %s — refusing upload", mime)
+        raise ExifStripFailure(
+            "Could not strip EXIF metadata from your image. The upload "
+            "was rejected to keep your privacy settings honored — try "
+            "re-exporting the file from your photo tool and uploading "
+            "again."
+        ) from exc
+
+
+class VideoMetadataStripFailure(Exception):
+    """Audit U6 — raised when ffmpeg can't remux a video to drop its
+    metadata atoms. Caller MUST translate this into a 422 rejection,
+    same shape as `ExifStripFailure` does for image EXIF.
+    """
+
+
+def _strip_video_metadata(data: bytes, mime: str | None) -> bytes:
+    """Re-mux a video / audio container with `-map_metadata -1` so
+    the originals bucket never sees EXIF-equivalent metadata atoms.
+
+    Container metadata in MP4 / MOV / WebM carries GPS coordinates
+    (`udta.©xyz` in MOV/MP4), device model, software, recording
+    timestamps, and sometimes embedded thumbnails. Pre-U6 the
+    non-image path stored raw bytes verbatim — opting out of
+    `gps_retention` / `exif_retention` did nothing for videos.
+
+    Uses `-c copy` so this is a fast remux (no re-encode); peak cost
+    is one ffmpeg subprocess + a temp file. Subprocess timeout is
+    capped at 60 s; runs the same `safe_input_args()` whitelist as
+    every other ffmpeg call in the pipeline (audit CR-6).
+
+    Raises `VideoMetadataStripFailure` on any ffmpeg error. Caller
+    surfaces as a 422 — never silently keeps the unstripped video.
+    """
+    if not mime or not (mime.startswith("video/") or mime.startswith("audio/")):
+        return data
+
+    import subprocess
+    import tempfile
+    import os
+    from backend.ffmpeg_args import safe_input_args
+
+    in_path: str | None = None
+    out_path: str | None = None
+    # Preserve the container by suffix so ffmpeg picks the right
+    # demuxer/muxer (webm vs mp4 vs mov etc.). Falls back to mp4 if
+    # the MIME doesn't map cleanly.
+    suffix_by_mime = {
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+        "video/webm": ".webm",
+        "video/x-matroska": ".mkv",
+        "audio/mpeg": ".mp3",
+        "audio/wav": ".wav",
+        "audio/flac": ".flac",
+        "audio/ogg": ".ogg",
+    }
+    suffix = suffix_by_mime.get(mime, ".bin")
+
+    try:
+        with tempfile.NamedTemporaryFile(prefix="vm-in-", suffix=suffix, delete=False) as tmp_in:
+            tmp_in.write(data)
+            in_path = tmp_in.name
+        with tempfile.NamedTemporaryFile(prefix="vm-out-", suffix=suffix, delete=False) as tmp_out:
+            out_path = tmp_out.name
+
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            *safe_input_args(),
+            "-i", in_path,
+            # The privacy-critical flags. -1 drops EVERY metadata
+            # stream (global + per-stream). Without this, MOV/MP4
+            # `udta` atoms (incl. ©xyz GPS) pass through `-c copy`.
+            "-map_metadata", "-1",
+            # Per-stream metadata. Without this, FFmpeg keeps
+            # per-stream tags like "creation_time" / "encoder" on
+            # each audio/video stream.
+            "-map_metadata:s:v", "-1",
+            "-map_metadata:s:a", "-1",
+            # No chapter atoms either — they can carry titles +
+            # descriptions sourced from the recording device.
+            "-map_chapters", "-1",
+            # Remux only — no re-encode. Fast (~1s for a 10-min
+            # clip) and keeps the user's content byte-identical
+            # apart from the dropped metadata atoms.
+            "-c", "copy",
+            "-y",
+            out_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, timeout=60)
+        if proc.returncode != 0:
+            raise VideoMetadataStripFailure(
+                "Could not strip metadata from your video. The upload "
+                "was rejected to keep your privacy settings honored. "
+                f"ffmpeg detail: {proc.stderr.decode('utf-8', errors='replace')[:500]}"
+            )
+        with open(out_path, "rb") as f:
+            return f.read()
+    except VideoMetadataStripFailure:
+        raise
+    except Exception as exc:
+        logger.exception("strip_video_metadata: ffmpeg invocation failed for %s", mime)
+        raise VideoMetadataStripFailure(
+            "Could not strip metadata from your video. The upload was "
+            "rejected to keep your privacy settings honored — try "
+            "re-exporting the file and uploading again."
+        ) from exc
+    finally:
+        for p in (in_path, out_path):
+            if p:
+                try: os.unlink(p)
+                except OSError: pass
 
 
 def _exif_gps(raw_bytes: bytes) -> dict | None:
@@ -334,6 +472,23 @@ async def store_upload(
     category = validated.category
 
     if category != "image":
+        # Audit U6 — strip container-level metadata from videos &
+        # audios before they reach the originals bucket. MP4 / MOV
+        # `udta.©xyz` carries GPS; container tags carry device model,
+        # software, recording timestamps. Pre-U6 these passed through
+        # untouched regardless of consent — opting out of
+        # gps_retention / exif_retention did nothing for video.
+        if category in {"video", "audio"}:
+            keep_gps = await is_scope_active(session, user.id, "gps_retention")
+            keep_camera = await is_scope_active(session, user.id, "exif_retention")
+            if not (keep_gps or keep_camera):
+                try:
+                    stripped = _strip_video_metadata(raw_bytes, content_type)
+                except VideoMetadataStripFailure as exc:
+                    raise UploadValidationError(str(exc), 422) from exc
+                if stripped is not raw_bytes and stripped != raw_bytes:
+                    raw_bytes = stripped
+                    sha = hashlib.sha256(raw_bytes).digest()
         # Pass source_provider + folder_id through to the non-image
         # path. Before this, every video/PDF/text synced from Drive
         # landed at the gallery root with source_provider=NULL —
@@ -357,8 +512,15 @@ async def store_upload(
     keep_gps = await is_scope_active(session, user.id, "gps_retention")
     keep_camera = await is_scope_active(session, user.id, "exif_retention")
     if not (keep_gps or keep_camera):
-        stripped = _strip_exif_bytes(raw_bytes, content_type)
-        if stripped is not None:
+        try:
+            stripped = _strip_exif_bytes(raw_bytes, content_type)
+        except ExifStripFailure as exc:
+            # Audit U5 — propagate as a 422 instead of silently
+            # falling back to the original EXIF-bearing bytes.
+            raise UploadValidationError(str(exc), 422) from exc
+        # Only re-hash when the bytes actually changed (PNG/GIF
+        # passthrough returns the input unchanged).
+        if stripped is not raw_bytes and stripped != raw_bytes:
             raw_bytes = stripped
             sha = hashlib.sha256(raw_bytes).digest()
 
