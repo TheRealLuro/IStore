@@ -506,11 +506,39 @@ def _inspect_zip_safety(
         raise UploadValidationError(f"{error_label} has too many entries.", 415)
     compressed = sum(max(i.compress_size, 0) for i in infos) or 1
     uncompressed = sum(max(i.file_size, 0) for i in infos)
+    # Audit U2 — three layered checks. The cumulative ratio (legacy)
+    # only catches archives that are uniformly bomb-shaped. A single
+    # bomb entry hidden among many small ones averages out and slips
+    # through — until the per-entry ratio + total-uncompressed cap
+    # below catch it. All three checks remain so the archive must
+    # pass under every angle.
     if uncompressed > compressed * settings.upload_max_archive_ratio:
         raise UploadValidationError(
             f"{error_label} expansion ratio is too high.", 415
         )
+    if uncompressed > settings.upload_max_archive_total_uncompressed_bytes:
+        raise UploadValidationError(
+            f"{error_label} total uncompressed size is too large.", 415
+        )
     for info in infos:
+        # Per-entry uncompressed cap — refuses the "one giant entry,
+        # many tiny ones" zip-bomb shape that defeats the average-
+        # based ratio gate above.
+        if info.file_size > settings.upload_max_archive_entry_uncompressed_bytes:
+            raise UploadValidationError(
+                f"{error_label} contains an entry that is too large.", 415
+            )
+        # Per-entry ratio — refuses any single entry whose declared
+        # uncompressed-to-compressed ratio is above the cap, even if
+        # the archive's cumulative ratio is fine. Ratio of 1 for
+        # zero-size compressed entries is acceptable.
+        if (
+            info.compress_size > 0
+            and info.file_size > info.compress_size * settings.upload_max_archive_ratio
+        ):
+            raise UploadValidationError(
+                f"{error_label} contains an over-expanding entry.", 415
+            )
         name = info.filename.replace("\\", "/")
         path = PurePosixPath(name)
         parts = [p for p in path.parts if p not in {"", "."}]
