@@ -746,8 +746,11 @@ async def stream_hls(
 async def list_images(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    limit: int = 100,
-    offset: int = 0,
+    # Audit D1 — `Query(ge, le)` caps. Without these, a single
+    # `limit=10_000_000` request fans out to one Pydantic row per
+    # match → memory DoS. Cap matches admin.py:139's pattern.
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
     scene: Annotated[str | None, Query(max_length=64)] = None,
     content_type: Annotated[str | None, Query(max_length=32)] = None,
     tag: Annotated[str | None, Query(max_length=64)] = None,
@@ -2078,7 +2081,11 @@ async def backfill_doc_thumbs(
 async def backfill_summary_embeddings(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    limit: int = 1000,
+    # Audit D1 — cap on batch size. CLIP encode is GPU-bound so a
+    # 100k-image batch would block the inference pool for ~hours
+    # AND OOM the row materialization. Operators can run multiple
+    # batches if they need more throughput.
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
 ) -> dict:
     """One-shot: encode summaries that have one but no
     `summary_clip_embedding` yet. New summaries get encoded
@@ -2133,7 +2140,10 @@ async def backfill_summaries(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     background: BackgroundTasks,
-    limit: int = 500,
+    # Audit D1 — cap on batch size. Summarize uses Florence-2 +
+    # Qwen — heavy GPU pipeline; large batches monopolize the
+    # ml-worker and starve other users.
+    limit: Annotated[int, Query(ge=1, le=2000)] = 500,
     force: bool = False,
     category: Annotated[
         str | None, Query(pattern="^(image|video|document|audio|other)$")
@@ -2285,7 +2295,12 @@ async def backfill_vision(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     background: BackgroundTasks,
-    limit: int = 500,
+    # Audit D1 — cap on batch size. Vision pass = CLIP + face
+    # detect + scene classify; expensive. Cross-references audit
+    # finding J2 (this endpoint is what starves the global ML
+    # pool); the cap is one layer of defense, the global semaphore
+    # in J2's separate fix is the other.
+    limit: Annotated[int, Query(ge=1, le=2000)] = 500,
 ) -> dict:
     """Re-run the vision classification pass on images that don't have a
     scene label / content type set.

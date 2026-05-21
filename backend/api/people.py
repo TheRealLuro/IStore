@@ -14,7 +14,7 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy import update as sa_update
@@ -827,7 +827,11 @@ async def regenerate_crops(
     background: BackgroundTasks,
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    limit: int = 1000,
+    # Audit D1 — cap on batch size. Re-crop = one storage.get +
+    # one Pillow re-encode per detection; large batches monopolize
+    # the worker pool. Operators wanting a full library re-crop
+    # can run multiple batches.
+    limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
 ) -> RegenerateCropsResponse:
     """Re-crop every existing face detection with landmark-aligned framing.
 
