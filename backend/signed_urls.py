@@ -87,23 +87,40 @@ def verify_download(
 # ---------- Share grants (todo §1.1 / G1) ----------
 #
 # Recipients of a share grant aren't the owner of the image, so the
-# user-keyed signature above can't authorize them. We sign against the
-# `share_id` instead — verification re-checks the grant row's
-# revoked/expired/recipient state at serve time on top of the HMAC
-# match, so a stolen URL can't outlive the grant it came from.
+# user-keyed signature above can't authorize them. We sign against
+# (share_id, recipient_user_id, variant, expires). Audit U3 — adding
+# the recipient identity to the signed payload pins the URL to a
+# specific recipient even though the byte-serving endpoint stays
+# anonymous; downstream code (audit row at fetch time) records the
+# recipient_id from the signed payload, giving the owner a real
+# forensic trail when a URL leaks. Verification still re-checks the
+# grant row's revoked/expired/recipient state at serve time on top
+# of the HMAC match, so a stolen URL can't outlive the grant.
 
 
-def _share_payload(share_id: UUID, variant: str, expires: int) -> bytes:
-    return f"share:{share_id}:{variant}:{expires}".encode("utf-8")
+def _share_payload(
+    share_id: UUID,
+    recipient_user_id: UUID,
+    variant: str,
+    expires: int,
+) -> bytes:
+    return (
+        f"share:{share_id}:{recipient_user_id}:{variant}:{expires}".encode("utf-8")
+    )
 
 
-def sign_share_download(share_id: UUID, variant: str, expires: int) -> str:
+def sign_share_download(
+    share_id: UUID,
+    recipient_user_id: UUID,
+    variant: str,
+    expires: int,
+) -> str:
     # CR-3: distinct subkey from sign_download / sign_stream so a
     # share URL HMAC can't be reused as an owner-download HMAC under
     # the same secret.
     return hmac.new(
         signed_share_key(),
-        _share_payload(share_id, variant, expires),
+        _share_payload(share_id, recipient_user_id, variant, expires),
         sha256,
     ).hexdigest()
 
@@ -112,14 +129,18 @@ def make_signed_share_download(
     *,
     base_url: str,
     share_id: UUID,
+    recipient_user_id: UUID,
     variant: str,
 ) -> dict[str, str]:
     ttl = _capped_ttl()
     expires = int(time.time()) + ttl
-    sig = sign_share_download(share_id, variant, expires)
+    sig = sign_share_download(share_id, recipient_user_id, variant, expires)
     root = base_url.rstrip("/")
     return {
-        "url": f"{root}/shares/{share_id}/signed/{variant}?expires={expires}&sig={sig}",
+        "url": (
+            f"{root}/shares/{share_id}/signed/{variant}"
+            f"?uid={recipient_user_id}&expires={expires}&sig={sig}"
+        ),
         "expires_at": datetime.fromtimestamp(expires, tz=timezone.utc).isoformat(),
     }
 
@@ -127,6 +148,7 @@ def make_signed_share_download(
 def verify_share_download(
     *,
     share_id: UUID,
+    recipient_user_id: UUID,
     variant: str,
     expires: int,
     sig: str,
@@ -138,7 +160,7 @@ def verify_share_download(
         return False
     if expires - now > settings.download_url_ttl_max_seconds:
         return False
-    expected = sign_share_download(share_id, variant, expires)
+    expected = sign_share_download(share_id, recipient_user_id, variant, expires)
     return hmac.compare_digest(expected, sig)
 
 

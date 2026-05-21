@@ -569,10 +569,22 @@ async def share_asset_url(
     if image is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Share not available.")
 
+    # Audit S4 — the URL-mint audit was here, fires once per
+    # recipient-page-load even when no bytes are fetched. Moved into
+    # `share_signed_download` below so each ACTUAL byte-fetch lands
+    # an audit row: an owner watching their dashboard sees N rows
+    # for N redemptions, which is the leak-detection signal we
+    # actually want. A leaked URL redeemed 47 times from 12 IPs
+    # now leaves a 47-row trail instead of the 1-row trail.
+    #
+    # We still record the URL-mint as a separate, lighter audit so
+    # the dashboard can distinguish "user opened the share page"
+    # (`share.asset.url_minted`) from "bytes were served"
+    # (`share.asset.viewed`, fires at fetch).
     await add_audit(
         session,
         user_id=user.id,
-        action="share.asset.viewed",
+        action="share.asset.url_minted",
         details={
             "share_id": str(grant.id),
             "image_id": str(grant.image_id),
@@ -583,9 +595,17 @@ async def share_asset_url(
     )
     await session.commit()
 
+    # Audit U3 — bind the recipient's user_id into the signed
+    # payload. The byte-serving endpoint stays anonymous (no auth
+    # dep) but the URL is now pinned to (share_id, recipient_id)
+    # tuple. A leaked URL still serves bytes within TTL — that's
+    # by design for the embed/<img> use case — but the audit row
+    # at fetch time records the recipient_id from the SIGNED
+    # payload, giving the owner a forensic trail when a URL leaks.
     signed = make_signed_share_download(
         base_url=str(request.base_url),
         share_id=grant.id,
+        recipient_user_id=user.id,
         variant=variant,
     )
     return ShareSignedUrl(url=signed["url"], expires_at=signed["expires_at"])
@@ -595,12 +615,22 @@ async def share_asset_url(
 async def share_signed_download(
     share_id: UUID,
     variant: str,
+    uid: UUID,
     expires: int,
     sig: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Response:
+    # Audit U3 — `uid` is the recipient user_id signed into the
+    # URL by `share_asset_url`. The verify call must receive it so
+    # an attacker can't reuse another recipient's URL: HMAC is
+    # bound to (share_id, uid, variant, expires).
     if not verify_share_download(
-        share_id=share_id, variant=variant, expires=expires, sig=sig
+        share_id=share_id,
+        recipient_user_id=uid,
+        variant=variant,
+        expires=expires,
+        sig=sig,
     ):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Invalid or expired download URL"
@@ -609,6 +639,13 @@ async def share_signed_download(
         await session.execute(select(ShareGrant).where(ShareGrant.id == share_id))
     ).scalar_one_or_none()
     if grant is None or not _is_active(grant):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Share not available.")
+    # Audit U3 (continued) — defense-in-depth: even though the HMAC
+    # already binds `uid`, double-check the grant's current
+    # recipient_user_id matches. A signed URL minted before the
+    # owner revoked + re-shared to a different recipient should
+    # not still serve bytes via the old URL.
+    if grant.recipient_user_id is not None and grant.recipient_user_id != uid:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Share not available.")
     if variant == "original" and grant.permission != "view_download":
         raise HTTPException(
@@ -625,6 +662,25 @@ async def share_signed_download(
     ).scalar_one_or_none()
     if image is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Share not available.")
+
+    # Audit S4 — record the actual byte-serve here, not the URL
+    # mint. Each redemption gets its own row, with the redeeming
+    # IP + UA. A leaked URL redeemed 47 times from 12 IPs leaves
+    # a 47-row trail instead of the 1 row the previous mint-time
+    # audit left.
+    await add_audit(
+        session,
+        user_id=uid,
+        action="share.asset.viewed",
+        details={
+            "share_id": str(grant.id),
+            "image_id": str(grant.image_id),
+            "variant": variant,
+            "ip": client_ip(request),
+            "user_agent": request.headers.get("user-agent"),
+        },
+    )
+    await session.commit()
 
     if variant == "original":
         if image.original_blob_key is None:
