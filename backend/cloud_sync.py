@@ -557,10 +557,75 @@ async def sync_user_provider(
         all_remote_parent_paths={e.get("remote_parent_path") or "" for e in entries},
     )
 
+    # CR-4 — quota gating for cloud-sync.
+    #
+    # Pre-fix, a user with a 100 GB cap could `POST /cloud/links/{id}/sync`
+    # against a 10 TB Drive and we'd happily download every byte before
+    # the FS quota check (which lives on the user's account-level
+    # storage panel, NOT on the write path) caught up. By the time
+    # MinIO ran out of space the cluster was already wedged.
+    #
+    # Shape of the gate:
+    #   * Pre-flight: compute the user's current footprint (SQL-only,
+    #     skips MinIO stat()) and derive `budget_remaining`. If the
+    #     user is already at-or-over quota, fail-fast with a single
+    #     audit row and an empty result; the FE sees `pulled=0,
+    #     skipped_over_quota=seen` and can prompt the user to upgrade
+    #     or free up space.
+    #   * Per-entry: each entry exposes `size_bytes` from the listing
+    #     (Drive's `size` field, GitHub's `tree.size`). If the next
+    #     download would push the budget below zero, skip it + audit
+    #     `cloud.sync.skipped_quota`. We keep the loop going — a
+    #     smaller entry later in the list may still fit, and aborting
+    #     the whole sync on the first oversized entry would feel
+    #     surprising.
+    #   * Post-write: decrement the running budget by the *actual*
+    #     stored bytes (EXIF strip + transcode can shave a few % off
+    #     the Drive-reported number).
+    from backend.api.storage import compute_used_bytes_fast, effective_quota_bytes
+
+    used_bytes = await compute_used_bytes_fast(session, user_id)
+    quota_bytes = effective_quota_bytes(user)
+    budget_remaining = max(0, quota_bytes - used_bytes)
+
     seen = 0
     pulled = 0
     skipped_unchanged = 0
+    skipped_over_quota = 0
     conflicts: list[str] = []
+
+    if budget_remaining <= 0:
+        await add_audit(
+            session,
+            user_id=user_id,
+            action="cloud.sync.over_quota",
+            details={
+                "provider": provider,
+                "quota_bytes": quota_bytes,
+                "used_bytes": used_bytes,
+                "entries_pending": len(entries),
+            },
+        )
+        # Update link status so the FE shows "over quota" instead of
+        # "active" while the user reclaims space.
+        link.last_synced_at = datetime.now(timezone.utc)
+        link.status = "over_quota"
+        await session.commit()
+        logger.warning(
+            "cloud_sync: user=%s provider=%s at-or-over quota — "
+            "used=%d / quota=%d, refusing to download %d pending entries",
+            user_id, provider, used_bytes, quota_bytes, len(entries),
+        )
+        return {
+            "seen": len(entries),
+            "pulled": 0,
+            "skipped_unchanged": 0,
+            "skipped_over_quota": len(entries),
+            "conflicts": 0,
+            "conflict_remote_ids": [],
+            "provider": provider,
+            "over_quota": True,
+        }
 
     for entry in entries:
         seen += 1
@@ -629,11 +694,61 @@ async def sync_user_provider(
                 )
                 continue
 
+        # CR-4 per-entry quota gate. The listing tells us the
+        # remote-reported size up front, so we can refuse to download
+        # an entry that we already know won't fit. Without this gate,
+        # a 5 GB Drive file would be fully fetched into memory + then
+        # rejected at `store_upload` time — wasted bandwidth and a
+        # memory spike. Missing/zero `size_bytes` (some providers
+        # don't always populate it) falls through to the legacy
+        # behavior: download + let the rest of the pipeline decide.
+        entry_size = int(entry.get("size_bytes") or 0)
+        if entry_size > budget_remaining:
+            skipped_over_quota += 1
+            await add_audit(
+                session,
+                user_id=user_id,
+                action="cloud.sync.skipped_quota",
+                details={
+                    "provider": provider,
+                    "remote_id": entry["remote_id"],
+                    "remote_path": entry.get("remote_path"),
+                    "entry_size_bytes": entry_size,
+                    "budget_remaining": budget_remaining,
+                    "quota_bytes": quota_bytes,
+                },
+            )
+            continue
+
         try:
             blob = await _provider_download(provider, refresh_token, entry)
         except Exception:
             logger.exception(
                 "%s download failed for %s", provider, entry["remote_id"]
+            )
+            continue
+
+        # Safety net: even when the listing-reported size was 0 or
+        # missing, the actual byte count is now known. If the
+        # downloaded blob alone would blow the budget, drop it on the
+        # floor before `store_upload` writes it to MinIO. This closes
+        # the gap for providers / endpoints that don't populate `size`
+        # on the listing.
+        if len(blob) > budget_remaining:
+            skipped_over_quota += 1
+            await add_audit(
+                session,
+                user_id=user_id,
+                action="cloud.sync.skipped_quota",
+                details={
+                    "provider": provider,
+                    "remote_id": entry["remote_id"],
+                    "remote_path": entry.get("remote_path"),
+                    "entry_size_bytes": len(blob),
+                    "budget_remaining": budget_remaining,
+                    "quota_bytes": quota_bytes,
+                    "reason": "post_download_size_check",
+                },
             )
             continue
 
@@ -748,22 +863,45 @@ async def sync_user_provider(
             existing.sha256 = entry.get("sha256")
             existing.last_synced_at = datetime.now(timezone.utc)
         pulled += 1
+        # Decrement the running budget. Use the MAX of (the listing's
+        # reported size, the actual stored bytes) so an attacker who
+        # under-reports size on the listing — passing the per-entry
+        # gate cheaply — still gets debited the real footprint. The
+        # stored bytes are the truth on disk; the listing claim is
+        # what we'd otherwise let slip through. Falling back to the
+        # downloaded blob length is the defensive case for when both
+        # columns are NULL (shouldn't happen on a successful upload).
+        actual_bytes = (
+            int(image.byte_size_served or 0)
+            + int(image.byte_size_original or 0)
+        ) or len(blob)
+        budget_remaining = max(
+            0, budget_remaining - max(actual_bytes, entry_size),
+        )
 
     link.last_synced_at = datetime.now(timezone.utc)
-    link.status = "active" if not conflicts else "conflicts"
+    if skipped_over_quota and pulled == 0:
+        link.status = "over_quota"
+    elif conflicts:
+        link.status = "conflicts"
+    else:
+        link.status = "active"
     await session.commit()
     logger.info(
         "cloud_sync: sync user=%s provider=%s seen=%d pulled=%d "
-        "skipped=%d conflicts=%d",
-        user_id, provider, seen, pulled, skipped_unchanged, len(conflicts),
+        "skipped=%d skipped_quota=%d conflicts=%d budget_remaining=%d",
+        user_id, provider, seen, pulled, skipped_unchanged,
+        skipped_over_quota, len(conflicts), budget_remaining,
     )
     return {
         "seen": seen,
         "pulled": pulled,
         "skipped_unchanged": skipped_unchanged,
+        "skipped_over_quota": skipped_over_quota,
         "conflicts": len(conflicts),
         "conflict_remote_ids": conflicts,
         "provider": provider,
+        "over_quota": bool(skipped_over_quota and pulled == 0),
     }
 
 
@@ -1050,6 +1188,16 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
                 # harmless re-download.
                 md5_hex = f.get("md5Checksum") or ""
                 sha = bytes.fromhex(md5_hex.ljust(64, "0"))[:32] if md5_hex else None
+                # Drive returns `size` as a stringified int (e.g. "1048576")
+                # for regular files, and omits it entirely for Google-native
+                # docs (which we already filter out above). Defensive int()
+                # so an unexpected non-integer value collapses to 0 rather
+                # than crashing the listing.
+                size_raw = f.get("size")
+                try:
+                    size_bytes = int(size_raw) if size_raw is not None else 0
+                except (TypeError, ValueError):
+                    size_bytes = 0
                 out.append({
                     "remote_id": f["id"],
                     "name": f["name"],
@@ -1058,6 +1206,7 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
                     "remote_path": f["name"],
                     "remote_parent_path": parent_path,
                     "sha256": sha,
+                    "size_bytes": size_bytes,
                 })
             page_token = resp.get("nextPageToken")
             if not page_token:
@@ -1273,6 +1422,10 @@ def _github_collect_entries_sync(refresh_token: str) -> list[dict]:
                 # because we key cloud_files on (user_id, provider,
                 # remote_id) which already includes the SHA.
                 "sha256": bytes.fromhex(node["sha"].ljust(64, "0"))[:32],
+                # `size` from git/trees is already bytes; mirrored into
+                # `size_bytes` so the cloud-sync quota check (audit
+                # CR-4) has a uniform field across providers.
+                "size_bytes": int(node.get("size") or 0),
                 "_repo_full_name": repo_full_name,
                 "_blob_sha": node["sha"],
             })
