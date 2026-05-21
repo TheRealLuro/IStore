@@ -2,6 +2,68 @@
   "_comment": "Server-readable mirror of marketing/src/data/updates.ts. When you add or edit an entry there, copy the same shape here so the Express server's per-route prerender (server.mjs) injects the full text into the HTML response for AI crawlers + search engines that don't render JS.",
   "updates": [
     {
+      "slug": "2026-w21-end-to-end-security-audit",
+      "title": "End-to-end security audit: 25 PRs of hardening across the stack",
+      "published": "2026-05-23",
+      "week": "Week of May 23, 2026",
+      "summary": "This week was the most thorough security review neuthek has had. Every backend route, the cloud-sync OAuth flow, file uploads, sharing, and infrastructure config got read end-to-end with two static scanners plus per-domain deep review. The result: 152 findings catalogued and triaged, 25 PRs landed, and a stack of static-analysis alerts (CodeQL, Dependabot) closed across backend, marketing, and the SPA. None of this changes how neuthek looks day-to-day — but you'd notice the day someone tried to abuse the things we hardened.",
+      "tags": ["security-audit", "privacy", "cloud-sync", "authentication", "self-host"],
+      "body": {
+        "found": [
+          "Cloud sync had no per-user storage quota check on the download path: a 100 GB user could trigger a sync against a 10 TB Drive and we'd happily fetch every byte before the disk filled up.",
+          "Clicking 'Disconnect' on a Google Drive link only deleted the local record — the refresh token kept living on Google's side until you manually disconnected at myaccount.google.com/permissions.",
+          "Two browser tabs (or the hourly cron tick + a manual click) hitting 'Sync now' simultaneously would both walk Drive in parallel and double-import the same files.",
+          "Drive API rate-limit responses (429) or server hiccups (5xx) silently skipped files on a sync run — they'd reappear next sweep, but a sustained Google rate window could starve a fresh sync entirely.",
+          "The brute-force-protection lockout was keyed only by email, so someone with a list of email addresses could deliberately lockout other users by guessing 5 bad passwords for each.",
+          "Resetting your password or disabling 2FA stopped working sessions from being created, but old JWTs issued before the change kept working until their expiry — a long-lived stolen token survived a password rotation.",
+          "If a stranger had registered your email + an attacker-chosen password before you ever visited neuthek (without verifying the email), then 'Sign in with Google' for the same address would attach Google to that pre-existing row — a quiet account takeover.",
+          "Pagination endpoints accepted any limit value: a request with limit=10_000_000 would dutifully try to materialize ten million rows before falling over.",
+          "Manually labelling a face on someone else's photo had no ownership check — a different user could write into your image_persons table from a guessable image ID.",
+          "Archive uploads (zip, 7z, rar) had a cumulative compression-ratio cap but no per-entry size cap — a zip with one 50 GB entry would pass the gate.",
+          "EXIF strip failures on uploaded photos were swallowed silently, so a malformed image could end up served to recipients with original GPS coordinates intact. Video metadata wasn't being stripped at all.",
+          "Share URLs were signed but not bound to the recipient — anyone with the link plus the email could replay it as a different account, and we only audited the share creation event, not each fetch.",
+          "Backend containers ran as root, exposed every port on 0.0.0.0 by default, and the production-only config validator didn't catch weak defaults (blank JWT_SECRET, dev-only Postgres password, FRONTEND_BASE_URL missing from ALLOWED_ORIGINS, half-configured Google OAuth).",
+          "The marketing site's per-IP rate limiter trusted X-Forwarded-For without bound, so an attacker rotating that header could bypass throttles entirely.",
+          "Static-analysis scanners (CodeQL) flagged 30+ alerts across the stack: backend ReDoS in search, OAuth open-redirect on /auth/google/callback and /cloud/callback, stack-trace exposure in admin observability endpoints, marketing missing-rate-limit on 8 routes + URL substring sanitisation, and SPA client-side URL-redirect + http iframe."
+        ],
+        "fixed": [
+          "Cloud-sync quota enforcement runs three layered checks inside the sync loop: pre-flight (refuse to start if you're already at quota), per-entry size gate against Drive's listing-reported size (refuses to download an entry that won't fit), and a post-download safety net (catches lies on missing-size cases). The running budget decrements at the larger of (actual stored bytes, listing-claimed bytes) so a listing under-report can't game the loop.",
+          "Disconnecting a cloud link now POSTs to Google's OAuth revoke endpoint before deleting the local row. Best-effort: a hung Google endpoint doesn't stall your click, but a successful revoke means your Google account stops listing neuthek as a connected service. The outcome (revoked / revoke_failed / decrypt_failed / skipped) lands in your audit log.",
+          "Per-link Redis mutex (cloud:sync:lock:{link_id}) gates the HTTP route and the hourly cron sweep through the same lock. 30-minute TTL is a crash-safety net; the release path drops the key on success and failure. Gracefully falls back to in-process locking when Redis isn't available (dev-only).",
+          "Drive API calls now retry on 429 / 5xx with jittered exponential backoff (1 s → 30 s, 5 attempts, honors Retry-After). Wraps both the listing pass and the per-file download.",
+          "Login lockout keys are now {path}:{identity}:{ip} — an attacker spamming bad passwords for someone else's email can only lock out their own IP from that email, not the legitimate user's other devices.",
+          "Added token_version to users. The JWT-decode path rejects tokens whose tv claim is older than the current row. Password reset, 2FA disable, and admin-initiated revoke all bump it, so a stolen token dies immediately on credential change.",
+          "The SSO email-bind safety predicate now refuses to attach a Google identity to an existing unverified row that has a password (the takeover case). Verified rows + SSO-only rows continue to bind normally.",
+          "Every paginated endpoint declares Annotated[int, Query(ge=1, le=500)] (or per-endpoint cap) so FastAPI rejects bad values at the validation boundary before any DB work. limit=10M now 422s instead of OOM-ing.",
+          "image_persons writes ownership-check the image IDs up front: an INSERT for an image you don't own is dropped before it touches the table.",
+          "Archive extracts enforce per-entry uncompressed cap (200 MB), per-entry ratio check, total uncompressed cap (400 MB), and the existing cumulative ratio. All four gates run before bytes leave the buffer.",
+          "EXIF strip failures now raise an exception that the upload endpoint catches as 422 — broken metadata refuses the upload rather than serving it intact. Video uploads pass through ffmpeg with `-map_metadata -1 -c copy` so video metadata strips too.",
+          "Signed share URLs now bind the recipient's user_id; an attacker can't replay a leaked link from a different account. Every share-fetch writes an audit row, not just creation.",
+          "Containers are now non-root (uid=1000 neuthek), built multi-stage (smaller, faster image), and all dev ports bind to 127.0.0.1 by default. The production-config validator at boot refuses to start if any of a dozen safety conditions fail.",
+          "Marketing's rate limiter swapped to express-rate-limit (which CodeQL recognises) + 'trust proxy' tightened from `true` to `1` — closing a real X-Forwarded-For spoofing gap, not just an analyzer warning.",
+          "Every CodeQL alert in scope is closed: ReDoS patterns rewritten to linear-time, OAuth `?error=` query params allow-listed (RFC 6749 + OIDC standard codes), system-probe stack-traces redacted from admin responses, http iframes refused unless protocol is https or host is localhost, client-side redirects rebound through URL → pathname so they can only land same-origin.",
+          "Audit log details have a 4 KiB cap with a PII-key scrubber (email, password, token, key) so a retention sweep can anonymize old rows without losing structural signal."
+        ],
+        "newFeatures": [
+          "Per-user storage quota actually enforced — cloud_links.status flips to 'over_quota' when you hit your cap, and the hourly worker keeps trying once you free space.",
+          "Cloud-sync 'over quota' surface: API returns `{over_quota: true, skipped_over_quota: N}` so the UI can prompt to upgrade or reclaim instead of failing silently.",
+          "Production startup validator refuses to boot with weak defaults: blank or short JWT_SECRET, dev Postgres password, dev CLOUD_ENCRYPTION_KEY, FRONTEND_BASE_URL not in ALLOWED_ORIGINS, half-configured Google OAuth (client_id without secret), insecure MinIO config, JWT lifetime > 7 days, missing SMTP host, missing STRIPE_WEBHOOK_SECRET when billing is on.",
+          "Audit-log retention sweeper now anonymizes PII keys in `details` JSONB columns as well as the indexed columns — a leak of old audit rows can't reconstruct emails or tokens.",
+          "GitHub removed as a cloud-sync provider (public repos turned the gallery into READMEs + build configs); Drive stays the only wired provider.",
+          "ffmpeg's `-protocol_whitelist` is now `file` only for user-uploaded media, so a maliciously-crafted video can't trigger an SSRF via `concat:` or `http://`."
+        ],
+        "why": "Security isn't a feature, it's a floor. Every piece of work in this release is something you'd never see in normal use — but you'd notice immediately the day someone tried to abuse it. We don't want to be the personal cloud that did everything right except the one thing. Two findings stood out as 'this would have been bad day one': the cloud-sync quota bypass (a malicious shared file in your Drive could have made us download terabytes you can't store) and the SSO email-takeover (an attacker who pre-registered your email could have ended up with access once you signed in with Google). Both closed. The rest is the steady defense-in-depth work that turns a working product into a trustworthy one — proper container privilege separation, real rate limiting that can't be spoofed, JWT revocation that respects password resets, and the boring-but-critical input-validation caps that stop a single bad request from taking the service down.",
+        "whatTheyDo": [
+          "Nothing to do — every fix applies automatically on the next deploy. New uploads, syncs, shares, and sign-ins all run under the tighter rules from this release.",
+          "If you're self-hosting: `git pull && docker compose down && docker compose up -d --build` picks up the new container layer (non-root uid=1000, multi-stage build). On first boot the production-config validator runs; if anything's still on a dev default it'll refuse to start and tell you which env var to set.",
+          "If you forked the marketing server.mjs: the per-IP rate limit now requires `trust proxy: 1` (not `true`) to be enforceable. The default in this release is safe; if your override sets `trust proxy: true` an attacker rotating X-Forwarded-For can defeat the throttle.",
+          "If you'd noticed any cloud-sync getting stuck mid-walk: the new per-link Redis mutex has a 30-minute TTL that auto-clears stale state, so a `POST /cloud/links/{id}/sync` after a worker crash will just work instead of being permanently blocked.",
+          "If you change your password or disable 2FA: every existing JWT for your account is invalidated immediately. The next API call returns 401 and the FE walks you back through sign-in.",
+          "Old JWTs from before this deploy continue to work normally — token_version was initialized to 0 on every existing user and only bumps when YOU change a credential. Nothing forces a global re-login."
+        ]
+      }
+    },
+    {
       "slug": "2026-w20-google-drive-sync-and-google-sign-in",
       "title": "Google Drive sync + Sign in with Google: bring your photos and your account in one click",
       "published": "2026-05-16",
