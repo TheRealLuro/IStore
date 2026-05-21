@@ -313,7 +313,31 @@ const ALLOWED_USE_CASES = new Set([
   "professional",
   "other",
 ]);
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// CodeQL "polynomial regex" — the prior pattern was
+//   /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+// with three overlapping `[^\s@]+` quantifiers around `@` and `.`.
+// Since `.` ∈ `[^\s@]`, the engine has multiple ways to split a
+// string like `a@b.c.d.e`, and on adversarial input with many `.`s
+// the backtracking is polynomial in length.
+//
+// Two-part fix:
+//   1. Tighten the final segment to `[^\s@.]+` so the trailing dot
+//      anchors the second/third split point unambiguously → linear
+//      time on every input.
+//   2. Callers MUST length-check first (`email.length > 254` per
+//      RFC 5321) BEFORE running the regex, so even pathological
+//      input is bounded by a constant. `isEmailShaped` below
+//      enforces both gates in the right order; route handlers should
+//      use it instead of calling the regex directly.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@.]+$/;
+
+function isEmailShaped(email) {
+  if (typeof email !== "string") return false;
+  // Length cap FIRST — bounds the regex worst-case at O(254²) which
+  // is constant time regardless of what the attacker sends.
+  if (email.length === 0 || email.length > 254) return false;
+  return EMAIL_RE.test(email);
+}
 
 // --------------------------------------------------------------------- //
 // Storage layer — Postgres or SQLite, same interface.
@@ -324,9 +348,27 @@ let store; // { upsertSignup, listSignups, markNotified, init }
 if (DATABASE_URL) {
   // -------- Postgres (Render Postgres path) --------
   const { default: pg } = await import("pg");
+
+  // CodeQL "incomplete URL substring sanitization" — checking
+  // `DATABASE_URL.includes("render.com")` would also match a
+  // hostname like `render.com.evil.tld` if some future operator
+  // configuration ever piped untrusted input in. DATABASE_URL is
+  // operator-set in practice, but parsing the hostname first is
+  // free correctness: we now compare the actual hostname against
+  // a suffix instead of doing a substring match on the whole URL.
+  function isRenderManagedHost(connStr) {
+    try {
+      const u = new URL(connStr);
+      const host = u.hostname.toLowerCase();
+      return host === "render.com" || host.endsWith(".render.com");
+    } catch {
+      return false;
+    }
+  }
+
   const pool = new pg.Pool({
     connectionString: DATABASE_URL,
-    ssl: DATABASE_URL.includes("render.com") || process.env.PGSSL === "require"
+    ssl: isRenderManagedHost(DATABASE_URL) || process.env.PGSSL === "require"
       ? { rejectUnauthorized: false }
       : undefined,
   });
@@ -756,6 +798,38 @@ function clientIp(req) {
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
+// CodeQL "missing rate limiting" — the inline `rateLimit({...})`
+// calls inside individual handlers work, but CodeQL's static
+// detector recognises Express middleware shape, not function calls
+// inside handler bodies. This factory wraps the existing limiter
+// into a real middleware so:
+//   1. Every route that touches auth or filesystem gets a structural
+//      rate-limit (defense in depth — even when the body of the
+//      handler already calls `rateLimit(...)`).
+//   2. CodeQL recognises the `app.use(..., rateLimitMiddleware(...))`
+//      / `app.post(path, rateLimitMiddleware(...), handler)` shape
+//      and closes the alert.
+// Keys are functions of (req) so they can scope per-IP, per-email,
+// or per-(IP, path) without forcing a closure-per-route shape.
+function rateLimitMiddleware({ keyFn, limit, windowMs, detail }) {
+  return function rateLimitHandler(req, res, next) {
+    const key = keyFn(req);
+    if (!rateLimit({ key, limit, windowMs })) {
+      return res.status(429).json({
+        ok: false,
+        detail: detail || "Too many requests. Please try again shortly.",
+      });
+    }
+    next();
+  };
+}
+
+// Common keyer: `${tag}:${ip}` — covers the per-IP throttle case
+// without forcing every middleware call to redeclare the function.
+function perIpKey(tag) {
+  return (req) => `${tag}:${clientIp(req)}`;
+}
+
 // --------------------------------------------------------------------- //
 // Express app.
 // --------------------------------------------------------------------- //
@@ -781,7 +855,12 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ----- Public signup -----
-app.post("/api/waitlist/signup", async (req, res) => {
+app.post("/api/waitlist/signup", rateLimitMiddleware({
+  keyFn: perIpKey("signup"),
+  limit: 10,
+  windowMs: 60_000,
+  detail: "Too many signup attempts. Please try again in a minute.",
+}), async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit({ key: `signup:${ip}`, limit: 10, windowMs: 60_000 })) {
     return res.status(429).json({
@@ -800,7 +879,7 @@ app.post("/api/waitlist/signup", async (req, res) => {
   const newsletter_opt_in =
     body.newsletter_opt_in === true || body.newsletter_opt_in === "true";
 
-  if (!EMAIL_RE.test(email) || email.length > 254) {
+  if (!isEmailShaped(email)) {
     return res.status(422).json({
       ok: false,
       detail: "Invalid email address.",
@@ -851,7 +930,12 @@ app.post("/api/waitlist/signup", async (req, res) => {
 
 // ----- Verify endpoint (clicked from the email link) -----
 // The SPA at /waitlist/verify will call this and show a result page.
-app.get("/api/waitlist/verify", async (req, res) => {
+app.get("/api/waitlist/verify", rateLimitMiddleware({
+  keyFn: perIpKey("verify"),
+  limit: 30,
+  windowMs: 60_000,
+  detail: "Too many verify attempts. Please try again in a minute.",
+}), async (req, res) => {
   const token = String(req.query.token || "");
   if (!token) return res.status(400).json({ ok: false, detail: "missing token" });
   const claims = verifyVerifyToken(token);
@@ -872,13 +956,18 @@ app.get("/api/waitlist/verify", async (req, res) => {
 // Public endpoint, rate-limited per IP and email. We respond
 // success-shaped whether or not the email exists so an attacker
 // can't enumerate signups.
-app.post("/api/waitlist/resend", async (req, res) => {
+app.post("/api/waitlist/resend", rateLimitMiddleware({
+  keyFn: perIpKey("resend"),
+  limit: 5,
+  windowMs: 60_000,
+  detail: "Too many resend attempts. Please try again shortly.",
+}), async (req, res) => {
   const ip = clientIp(req);
   if (!rateLimit({ key: `resend:${ip}`, limit: 5, windowMs: 60_000 })) {
     return res.status(429).json({ ok: false, detail: "too many resend attempts" });
   }
   const email = String(req.body?.email || "").trim().toLowerCase();
-  if (!EMAIL_RE.test(email) || email.length > 254) {
+  if (!isEmailShaped(email)) {
     return res.status(422).json({ ok: false, detail: "invalid email" });
   }
   if (!rateLimit({ key: `resend-email:${email}`, limit: 3, windowMs: 5 * 60_000 })) {
@@ -920,18 +1009,42 @@ async function handleUnsubscribe(req, res) {
     return res.status(500).json({ ok: false, detail: "unsubscribe failed" });
   }
 }
-app.get("/api/waitlist/unsubscribe", handleUnsubscribe);
+// Both unsubscribe entry points get a per-IP rate limit. The token
+// itself is HMAC-signed so brute force is infeasible, but a flood
+// of unsubscribe calls is still a DB write per request — defense
+// in depth. Limit is generous (60/min) because Gmail's one-click
+// can fire several times per inbox view.
+const unsubscribeRateLimit = rateLimitMiddleware({
+  keyFn: perIpKey("unsubscribe"),
+  limit: 60,
+  windowMs: 60_000,
+  detail: "Too many unsubscribe requests. Please try again shortly.",
+});
+app.get("/api/waitlist/unsubscribe", unsubscribeRateLimit, handleUnsubscribe);
 // Accept POST with either JSON body or `application/x-www-form-urlencoded`
 // (Gmail sends `application/x-www-form-urlencoded` with body
 // `List-Unsubscribe=One-Click` plus the token from the URL).
 app.post(
   "/api/waitlist/unsubscribe",
+  unsubscribeRateLimit,
   express.urlencoded({ extended: false }),
   handleUnsubscribe
 );
 
+// Per-IP rate limit applied to every /api/admin/* route ahead of
+// adminAuth. `adminAuth` itself burns the bucket on failed Basic
+// Auth attempts (see below) — this middleware adds a structural
+// limit BEFORE the auth check so a flood of unauth'd traffic can't
+// thrash either the bucket or the constant-time password compare.
+const adminRateLimit = rateLimitMiddleware({
+  keyFn: perIpKey("admin"),
+  limit: 60,
+  windowMs: 60_000,
+  detail: "Too many admin requests. Please slow down.",
+});
+
 // ----- Admin: send newsletter for a specific weekly update -----
-app.post("/api/admin/newsletter/send", adminAuth, async (req, res) => {
+app.post("/api/admin/newsletter/send", adminRateLimit, adminAuth, async (req, res) => {
   const slug = String(req.body?.slug || "").trim();
   if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
 
@@ -1013,7 +1126,7 @@ app.post("/api/admin/newsletter/send", adminAuth, async (req, res) => {
 // Returns the same HTML body the broadcast would send, with a sample
 // unsubscribe URL. Useful for "does this look right" QA before
 // pulling the trigger on a real send.
-app.get("/api/admin/newsletter/preview", adminAuth, async (req, res) => {
+app.get("/api/admin/newsletter/preview", adminRateLimit, adminAuth, async (req, res) => {
   const slug = String(req.query?.slug || "").trim();
   if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
   const entry = UPDATE_INDEX.find((u) => u.slug === slug);
@@ -1027,7 +1140,7 @@ app.get("/api/admin/newsletter/preview", adminAuth, async (req, res) => {
 });
 
 // ----- Admin: list eligible recipients + previously-sent count for a slug -----
-app.get("/api/admin/newsletter/recipients", adminAuth, async (req, res) => {
+app.get("/api/admin/newsletter/recipients", adminRateLimit, adminAuth, async (req, res) => {
   const slug = String(req.query?.slug || "").trim();
   if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
   const entry = UPDATE_INDEX.find((u) => u.slug === slug);
@@ -1046,7 +1159,7 @@ app.get("/api/admin/newsletter/recipients", adminAuth, async (req, res) => {
 // ----- Admin: re-send verify for a specific row -----
 // `adminAuth` is declared below as a function declaration, so it's
 // hoisted into module scope and safe to reference here.
-app.post("/api/admin/waitlist/:id/resend-verify", adminAuth, async (req, res) => {
+app.post("/api/admin/waitlist/:id/resend-verify", adminRateLimit, adminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, detail: "bad id" });
   const row = await store.findById(id);
@@ -1093,13 +1206,13 @@ function adminAuth(req, res, next) {
   next();
 }
 
-app.get("/api/admin/waitlist", adminAuth, async (req, res) => {
+app.get("/api/admin/waitlist", adminRateLimit, adminAuth, async (req, res) => {
   const limit = Math.max(1, Math.min(500, parseInt(req.query.limit, 10) || 500));
   const rows = await store.listSignups(limit);
   res.json(rows);
 });
 
-app.patch("/api/admin/waitlist/:id/notified", adminAuth, async (req, res) => {
+app.patch("/api/admin/waitlist/:id/notified", adminRateLimit, adminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id) || id <= 0) {
     return res.status(400).json({ ok: false, detail: "bad id" });
@@ -1430,7 +1543,20 @@ if (fs.existsSync(distDir)) {
     return null;
   }
 
-  app.get("*", (req, res, next) => {
+  // CodeQL "missing rate limiting on filesystem access" — the SPA
+  // catch-all reads index.html on every request. The cache header
+  // is `no-cache, no-store, must-revalidate` so it won't be cached
+  // by upstream proxies either. A flood of these would burn CPU on
+  // the shell-render + disk on the sendFile. Generous per-IP cap
+  // (5×/sec → 300/min) keeps real browser refreshes free while
+  // refusing a single bot scanning every path.
+  const spaCatchAllRateLimit = rateLimitMiddleware({
+    keyFn: perIpKey("spa-catchall"),
+    limit: 300,
+    windowMs: 60_000,
+    detail: "Too many page requests. Please slow down.",
+  });
+  app.get("*", spaCatchAllRateLimit, (req, res, next) => {
     if (req.path.startsWith("/api/")) return next();
     const meta = metaForPath(req.path);
     if (meta) {
