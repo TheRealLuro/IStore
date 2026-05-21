@@ -79,6 +79,64 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/google", tags=["auth"])
 
 
+# Allow-list of `?error=` values the /auth/google/callback handler is
+# willing to echo back to the FE via `#sso_error=…`.
+#
+# Two sources merge here:
+#   - RFC 6749 §4.1.2.1 + OIDC core §3.1.2.6 standard authorization
+#     error codes (`invalid_request`, `access_denied`, ...). These are
+#     what a well-behaved authorization server actually sends.
+#   - The small set of internal sso_error codes the FE auth.jsx
+#     handler maps to user-facing copy (`not_configured`,
+#     `email_unverified`, `totp_required`, `account_inactive`). The
+#     /callback path doesn't *normally* set these from Google's
+#     `error` param, but pinning them in the allow-list keeps the
+#     allow-list authoritative: anything the FE knows how to render
+#     is allowed, anything else collapses to `unknown`.
+#
+# Stored as a dict so the keys are lower-cased for case-insensitive
+# matching while the values are the canonical strings echoed back.
+_ALLOWED_OAUTH_ERRORS: dict[str, str] = {
+    code: code
+    for code in (
+        # RFC 6749 §4.1.2.1
+        "invalid_request",
+        "unauthorized_client",
+        "access_denied",
+        "unsupported_response_type",
+        "invalid_scope",
+        "server_error",
+        "temporarily_unavailable",
+        # OIDC core §3.1.2.6
+        "interaction_required",
+        "login_required",
+        "account_selection_required",
+        "consent_required",
+        "invalid_request_uri",
+        "invalid_request_object",
+        "request_not_supported",
+        "request_uri_not_supported",
+        "registration_not_supported",
+        # FE-known internal codes (kept in sync with auth.jsx)
+        "not_configured",
+        "email_unverified",
+        "totp_required",
+        "account_inactive",
+        "email_taken",
+        "bad_state",
+        "token_exchange_failed",
+        "no_id_token",
+        "bad_id_token",
+        "no_email",
+        "no_subject",
+        "link_user_missing",
+        "google_already_linked",
+        "link_internal",
+        "internal",
+    )
+}
+
+
 class SsoEmailTakenError(Exception):
     """Raised when the SSO email-fallback bind would attach Google to
     a pre-existing local account that hasn't proven email ownership.
@@ -496,7 +554,24 @@ async def google_callback(
     """
     fe_root = settings.frontend_base_url.rstrip("/")
     if error:
-        return RedirectResponse(url=f"{fe_root}/#sso_error={error}", status_code=302)
+        # CodeQL "URL redirection from remote source": the `error` query
+        # param is set by Google (or whoever else hits the callback URL),
+        # so we cannot trust its contents. The fragment lives after `#`
+        # which sandboxes the value from path/host, but an attacker
+        # could still slip CRLFs, escape sequences, or oversize garbage
+        # in to confuse downstream proxies + log scrapers. Pin to the
+        # RFC 6749 §4.1.2.1 / OIDC standard codes plus the small set of
+        # FE-known sso_error strings; anything else collapses to
+        # `unknown` and the raw value is logged for diagnostics.
+        sanitized = _ALLOWED_OAUTH_ERRORS.get(error.lower(), "unknown")
+        if sanitized == "unknown":
+            logger.warning(
+                "auth.google: callback received non-allowlisted error code (logged but not echoed): %r",
+                error[:64],
+            )
+        return RedirectResponse(
+            url=f"{fe_root}/#sso_error={sanitized}", status_code=302
+        )
     if not code or not state or not _verify_state(state):
         return RedirectResponse(
             url=f"{fe_root}/#sso_error=bad_state", status_code=302

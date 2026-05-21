@@ -274,9 +274,31 @@ def _extract_self_intent(q: str) -> tuple[bool, str]:
     # If stripping leaves filler words like "of" / "at" hanging,
     # those would noise CLIP slightly — clean trailing/leading
     # short prepositions. Don't be aggressive; just the obvious ones.
-    stripped = re.sub(r"^(of|at|in|with|by|on|for|to|from)\b\s*", "", stripped, flags=re.IGNORECASE)
-    stripped = re.sub(r"\s+(of|at|in|with|by|on|for|to|from)$", "", stripped, flags=re.IGNORECASE)
-    return True, stripped
+    #
+    # CodeQL "polynomial regex on uncontrolled data" — the previous
+    # patterns were `^(...)\b\s*` / `\s+(...)$`, both with unbounded
+    # `\s` quantifiers anchored against user input. On adversarial
+    # input like `"          x"` the engine retried the `\s+` match
+    # at every starting position → O(n²) backtracking.
+    # The two `re.sub` calls above (`\s+` collapse + `.strip()`)
+    # guarantee `stripped` has at most ONE leading/trailing space
+    # at this point, so switching to a literal-space pattern + a
+    # non-capturing group makes the pattern linear-time. A final
+    # `.strip()` cleans up the lone leading space the first sub
+    # leaves behind on match.
+    stripped = re.sub(
+        r"^(?:of|at|in|with|by|on|for|to|from) ?",
+        "",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    stripped = re.sub(
+        r" (?:of|at|in|with|by|on|for|to|from)$",
+        "",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    return True, stripped.strip()
 
 
 async def _resolve_self_image_ids(
