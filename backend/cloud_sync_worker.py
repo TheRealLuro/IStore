@@ -42,6 +42,7 @@ async def run_hourly_sweep() -> None:
         CloudSyncNotConfigured,
         sync_user_provider,
     )
+    from backend.cloud_sync_lock import sync_lock
 
     # First tick delay so we don't fight startup work for the first
     # minute of the process. After that, sleep `cloud_sync_interval_seconds`
@@ -69,23 +70,34 @@ async def run_hourly_sweep() -> None:
                     )
                 ).scalars().all()
             for link in links:
-                try:
-                    async with SessionLocal() as session:
-                        await sync_user_provider(
-                            session, link.user_id, link.provider,
+                # CS9 — acquire the per-link Redis mutex before
+                # syncing. If a user just clicked "Sync now" on this
+                # link, the HTTP handler is already mid-flight and
+                # holds the lock; skip + log so we don't race.
+                async with sync_lock(link.id) as acquired:
+                    if not acquired:
+                        logger.info(
+                            "cloud-sync skip link=%s provider=%s reason=lock_held",
+                            link.id, link.provider,
                         )
-                except CloudSyncNotConfigured as exc:
-                    # Missing creds / encryption key — log once at
-                    # info, not error. Operator's call.
-                    logger.info(
-                        "cloud-sync skip link=%s provider=%s reason=%s",
-                        link.id, link.provider, exc,
-                    )
-                except Exception:
-                    logger.exception(
-                        "cloud-sync failed link=%s provider=%s",
-                        link.id, link.provider,
-                    )
+                        continue
+                    try:
+                        async with SessionLocal() as session:
+                            await sync_user_provider(
+                                session, link.user_id, link.provider,
+                            )
+                    except CloudSyncNotConfigured as exc:
+                        # Missing creds / encryption key — log once
+                        # at info, not error. Operator's call.
+                        logger.info(
+                            "cloud-sync skip link=%s provider=%s reason=%s",
+                            link.id, link.provider, exc,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "cloud-sync failed link=%s provider=%s",
+                            link.id, link.provider,
+                        )
         except Exception:
             logger.exception("cloud-sync sweep iteration crashed")
 

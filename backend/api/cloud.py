@@ -261,9 +261,19 @@ def _sync_key(user_id, provider: str) -> tuple:
     return (str(user_id), provider)
 
 
-async def _run_sync_background(session_factory, user_id, provider: str) -> None:
+async def _run_sync_background(
+    session_factory, user_id, provider: str, link_id: int,
+) -> None:
     """Background worker. Opens its own session because the request-scoped
-    session has long since closed by the time this runs."""
+    session has long since closed by the time this runs.
+
+    Holds the CS9 per-link Redis mutex for the duration of the sync so
+    a parallel manual click on another uvicorn worker OR the hourly
+    cron tick can't double-pull. The lock is link-scoped (not (user,
+    provider)) so two different cloud accounts the user owns can sync
+    in parallel."""
+    from backend.cloud_sync_lock import sync_lock
+
     key = _sync_key(user_id, provider)
     _SYNC_PROGRESS[key] = {
         "state": "running",
@@ -271,42 +281,62 @@ async def _run_sync_background(session_factory, user_id, provider: str) -> None:
         "counts": None,
         "error": None,
     }
-    try:
-        async with session_factory() as s:
-            from sqlalchemy import text as sql_text
-            # Workers don't go through the per-request middleware that
-            # stamps `app.current_user_id`, so the RLS policies on
-            # `images` / `image_geo` etc. would block writes. Bypass.
-            await s.execute(sql_text("SET LOCAL app.rls_bypass='on'"))
-            result = await sync_user_provider(s, user_id, provider)
-        _SYNC_PROGRESS[key] = {
-            "state": "done",
-            "started_at": _SYNC_PROGRESS[key]["started_at"],
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "counts": result,
-            "error": None,
-        }
-    except CloudSyncNotConfigured as exc:
-        _SYNC_PROGRESS[key] = {
-            "state": "error",
-            "started_at": _SYNC_PROGRESS[key]["started_at"],
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "counts": None,
-            "error": str(exc),
-        }
-    except Exception as exc:
-        logger.exception(
-            "background_sync: provider call failed user=%s provider=%s",
-            user_id, provider,
-        )
-        msg = _extract_provider_error_message(exc) or "Sync failed. Try again in a moment."
-        _SYNC_PROGRESS[key] = {
-            "state": "error",
-            "started_at": _SYNC_PROGRESS[key]["started_at"],
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "counts": None,
-            "error": msg,
-        }
+    async with sync_lock(link_id) as acquired:
+        if not acquired:
+            # Another worker (other uvicorn process / cron) is mid-
+            # sync for this link. The trigger_sync handler already
+            # checked the in-process progress dict and the lock state
+            # before getting here, but a parallel acquire can still
+            # lose the race. Treat the second arrival as a no-op so
+            # the caller's poll sees the existing run finish out.
+            _SYNC_PROGRESS[key] = {
+                "state": "running",
+                "started_at": _SYNC_PROGRESS[key]["started_at"],
+                "counts": None,
+                "error": None,
+            }
+            logger.info(
+                "background_sync: lock contention user=%s provider=%s "
+                "link=%s — bowing to in-flight sibling",
+                user_id, provider, link_id,
+            )
+            return
+        try:
+            async with session_factory() as s:
+                from sqlalchemy import text as sql_text
+                # Workers don't go through the per-request middleware that
+                # stamps `app.current_user_id`, so the RLS policies on
+                # `images` / `image_geo` etc. would block writes. Bypass.
+                await s.execute(sql_text("SET LOCAL app.rls_bypass='on'"))
+                result = await sync_user_provider(s, user_id, provider)
+            _SYNC_PROGRESS[key] = {
+                "state": "done",
+                "started_at": _SYNC_PROGRESS[key]["started_at"],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "counts": result,
+                "error": None,
+            }
+        except CloudSyncNotConfigured as exc:
+            _SYNC_PROGRESS[key] = {
+                "state": "error",
+                "started_at": _SYNC_PROGRESS[key]["started_at"],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "counts": None,
+                "error": str(exc),
+            }
+        except Exception as exc:
+            logger.exception(
+                "background_sync: provider call failed user=%s provider=%s",
+                user_id, provider,
+            )
+            msg = _extract_provider_error_message(exc) or "Sync failed. Try again in a moment."
+            _SYNC_PROGRESS[key] = {
+                "state": "error",
+                "started_at": _SYNC_PROGRESS[key]["started_at"],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "counts": None,
+                "error": msg,
+            }
 
 
 @router.post("/links/{link_id}/sync", response_model=SyncResponse)
@@ -343,7 +373,9 @@ async def trigger_sync(
         )
     from backend.db import SessionLocal
     asyncio.create_task(
-        _run_sync_background(SessionLocal, user.id, link.provider)
+        _run_sync_background(
+            SessionLocal, user.id, link.provider, link.id,
+        )
     )
     return SyncResponse(
         provider=link.provider,

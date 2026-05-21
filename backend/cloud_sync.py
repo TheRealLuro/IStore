@@ -1052,6 +1052,12 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
     import asyncio
 
     def _work() -> list[dict]:
+        # CS10 — every `.execute()` call below is wrapped via
+        # `with_drive_retry`, so transient Drive 429 / 5xx errors get
+        # retried with exponential backoff instead of aborting the
+        # listing partway through.
+        from backend.cloud_sync_retry import with_drive_retry
+
         drive = _drive_client(refresh_token)
         # Map of folder_id → (name, parent_id) for every folder the
         # user owns. We resolve full paths from this dict so the
@@ -1059,13 +1065,16 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
         folder_map: dict[str, tuple[str, str | None]] = {}
         page_token: str | None = None
         while True:
-            resp = drive.files().list(
-                q="mimeType = 'application/vnd.google-apps.folder' and trashed = false",
-                spaces="drive",
-                fields="nextPageToken, files(id,name,parents)",
-                pageToken=page_token,
-                pageSize=200,
-            ).execute()
+            resp = with_drive_retry(
+                lambda: drive.files().list(
+                    q="mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                    spaces="drive",
+                    fields="nextPageToken, files(id,name,parents)",
+                    pageToken=page_token,
+                    pageSize=200,
+                ).execute(),
+                op="drive.files.list(folders)",
+            )
             for f in resp.get("files", []):
                 parents = f.get("parents") or []
                 folder_map[f["id"]] = (f["name"], parents[0] if parents else None)
@@ -1106,16 +1115,19 @@ async def _drive_collect_entries(refresh_token: str) -> list[dict]:
             "and mimeType != 'application/vnd.google-apps.folder'"
         )
         while True:
-            resp = drive.files().list(
-                q=DRIVE_FILES_QUERY,
-                spaces="drive",
-                fields=(
-                    "nextPageToken, "
-                    "files(id,name,mimeType,modifiedTime,size,parents,md5Checksum)"
-                ),
-                pageToken=page_token,
-                pageSize=100,
-            ).execute()
+            resp = with_drive_retry(
+                lambda: drive.files().list(
+                    q=DRIVE_FILES_QUERY,
+                    spaces="drive",
+                    fields=(
+                        "nextPageToken, "
+                        "files(id,name,mimeType,modifiedTime,size,parents,md5Checksum)"
+                    ),
+                    pageToken=page_token,
+                    pageSize=100,
+                ).execute(),
+                op="drive.files.list(files)",
+            )
             for f in resp.get("files", []):
                 parents = f.get("parents") or []
                 parent_id = parents[0] if parents else None
@@ -1304,17 +1316,29 @@ def _drive_list_images(drive) -> Iterable[dict]:
 
 
 def _drive_download(drive, file_id: str) -> bytes:
-    """Download a Drive file's bytes."""
-    from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+    """Download a Drive file's bytes.
+
+    Wrapped in `with_drive_retry` (CS10) so a transient Drive 429
+    / 5xx on `next_chunk()` retries with exponential backoff instead
+    of skipping the file. Per-chunk retries would be tighter but
+    `MediaIoBaseDownload` is stateful and re-running it from scratch
+    is simpler than threading retry into the chunk loop."""
     from io import BytesIO
 
-    request = drive.files().get_media(fileId=file_id)
-    buf = BytesIO()
-    downloader = MediaIoBaseDownload(buf, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    return buf.getvalue()
+    from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+
+    from backend.cloud_sync_retry import with_drive_retry
+
+    def _download_once() -> bytes:
+        request = drive.files().get_media(fileId=file_id)
+        buf = BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
+    return with_drive_retry(_download_once, op=f"drive.files.get_media({file_id})")
 
 
 def _parse_drive_time(raw: str | None) -> datetime | None:
