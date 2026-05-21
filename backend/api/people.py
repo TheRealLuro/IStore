@@ -374,6 +374,46 @@ async def detect_and_label(
     # §C4.2 — "Me" -> user.display_name. Raises 422 if no display name.
     name = resolve_self_name(user, name)
 
+    # Audit D2 — ownership gate. Filter body.image_ids down to the
+    # IDs the caller actually owns. The pre-D2 implementation
+    # bulk-inserted ImagePerson rows on every body.image_id BEFORE
+    # the per-image loop (lines below) checked ownership, so an
+    # attacker could plant `(victim_image_id, attacker_person_id,
+    # attacker_user_id)` rows. The FK only proves the image exists
+    # somewhere, not that the caller owns it.
+    #
+    # We silently filter (rather than 404) to preserve the existing
+    # "skip images that aren't yours" UX the per-image loop already
+    # implements — switching to an all-or-nothing reject would
+    # surprise legitimate callers and double as an existence-probe
+    # oracle. The body cap of 50 image_ids upstream means one extra
+    # SELECT per call.
+    owned_image_ids = set(
+        (
+            await session.execute(
+                select(Image.id).where(
+                    Image.id.in_(body.image_ids),
+                    Image.user_id == user.id,
+                    Image.deleted_at.is_(None),
+                )
+            )
+        ).scalars().all()
+    )
+    # Re-bind body.image_ids to the filtered list so every downstream
+    # use of `body.image_ids` (pre_existing fetch, ImagePerson bulk
+    # insert, per-image scan loop) only sees authorized ids.
+    body.image_ids = [iid for iid in body.image_ids if iid in owned_image_ids]
+    if not body.image_ids:
+        # Nothing to do. Don't allocate a Person row for an attack
+        # that submitted only foreign / non-existent ids.
+        return {
+            "person_id": None,
+            "display_name": name,
+            "images_scanned": 0,
+            "new_faces": 0,
+            "no_face_images": [],
+        }
+
     # Find or create the target person.
     target = (
         await session.execute(
