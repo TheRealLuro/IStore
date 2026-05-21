@@ -201,7 +201,7 @@ def _inspect_generic_member_list(
     """
     if len(members) > settings.upload_max_archive_entries:
         raise UploadValidationError("Archive has too many entries.", 415)
-    for path, _size, _is_dir in members:
+    for path, size, _is_dir in members:
         if not _path_is_safe(path):
             raise UploadValidationError("Archive contains an unsafe path.", 415)
         parts = [
@@ -210,9 +210,29 @@ def _inspect_generic_member_list(
         ]
         if len(parts) > settings.upload_max_archive_depth:
             raise UploadValidationError("Archive nesting is too deep.", 415)
+        # Audit U2 — per-entry uncompressed cap. The 7z/rar member
+        # tuple carries only uncompressed `size` (no per-entry
+        # compressed bytes available from py7zr / rarfile in a
+        # reliable way across versions), so we can't enforce a
+        # per-entry ratio the way we do for zip. The per-entry cap
+        # + the total cap below still catch the "one bomb hidden
+        # among many smalls" attack: every entry individually has
+        # to be ≤ upload_max_bytes-worth of uncompressed bytes.
+        if int(size or 0) > settings.upload_max_archive_entry_uncompressed_bytes:
+            raise UploadValidationError(
+                "Archive contains an entry that is too large.", 415,
+            )
     total_uncompressed = sum(int(s or 0) for _p, s, _d in members)
     if total_uncompressed > max(raw_size, 1) * settings.upload_max_archive_ratio:
         raise UploadValidationError("Archive expansion ratio is too high.", 415)
+    # Audit U2 — hard total-uncompressed ceiling, independent of
+    # cumulative ratio. Without this an archive at exactly 1× ratio
+    # could still be hundreds of MB of decoded bytes; the cap
+    # bounds peak memory during iteration.
+    if total_uncompressed > settings.upload_max_archive_total_uncompressed_bytes:
+        raise UploadValidationError(
+            "Archive total uncompressed size is too large.", 415,
+        )
 
 
 def _iter_7z_entries(archive, members: list[tuple[str, int, bool]]) -> Iterable[ArchiveEntry]:

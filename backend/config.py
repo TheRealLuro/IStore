@@ -101,6 +101,19 @@ class Settings(BaseSettings):
     upload_max_archive_entries: int = Field(default=5_000)
     upload_max_archive_depth: int = Field(default=10)
     upload_max_archive_ratio: int = Field(default=5)
+    # Audit U2 — per-entry + total uncompressed caps. The cumulative
+    # ratio above (5) only catches archives where the AVERAGE entry
+    # is ≥5× compressed. A single 200 MB bomb hidden among 4999
+    # small entries averages to ~4× and slips through. These two
+    # caps make it impossible to land more than one upload-budget-
+    # worth of uncompressed bytes per entry AND more than two
+    # upload-budget-worth across the whole archive.
+    upload_max_archive_entry_uncompressed_bytes: int = Field(
+        default=200 * 1024 * 1024  # 200 MB — matches upload_max_bytes
+    )
+    upload_max_archive_total_uncompressed_bytes: int = Field(
+        default=400 * 1024 * 1024  # 400 MB — 2× per-entry cap
+    )
     # §B4 — how long rejected-upload payloads sit in the quarantine
     # bucket before the retention sweeper deletes them. The audit row
     # written at rejection time persists forever; this controls only
