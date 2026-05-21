@@ -105,11 +105,26 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   // main.tsx re-routes through SharedView. Returns true when a redirect
   // fired so callers can skip the usual onSignedIn callback.
   const redirectIfNext = () => {
-    if (nextUrl) {
-      window.location.href = nextUrl;
+    if (!nextUrl) return false;
+    // CodeQL `js/client-side-unvalidated-url-redirection` was flagging
+    // `window.location.href = nextUrl` even though `safeNextPath`
+    // above already rejects every non-same-origin pattern (protocol-
+    // relative `//`, scheme tokens like `javascript:` / `data:`, raw
+    // CR/LF, anything not starting with a single `/`). The taint
+    // tracker can't always see through the regex-based whitelist, so
+    // we add an explicit defence in depth that the tracker DOES
+    // recognise: resolve the target against `window.location.origin`,
+    // then assign only the path + search + hash. This guarantees the
+    // navigation stays same-origin regardless of what slipped past
+    // `safeNextPath` in some future edit, and CodeQL recognises the
+    // `URL`-then-`pathname` shape as a sanitiser.
+    try {
+      const dest = new URL(nextUrl, window.location.origin);
+      window.location.assign(dest.pathname + dest.search + dest.hash);
       return true;
+    } catch {
+      return false;
     }
-    return false;
   };
   const [email, setEmail] = useStateA("");
   const [pwd, setPwd] = useStateA("");
