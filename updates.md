@@ -1,23 +1,28 @@
 # Updates queue — pending publish
 
-Working draft for the next weekly /updates entry on the marketing site.
-Everything below shipped between W20's publish (2026-05-16) and the
-end of this week. Drop the next entries you ship into the same
-buckets; copy the whole file into `marketing/src/data/updates.ts`
-(+ mirror to `updates-index.json` + bump `sitemap.xml`) at end of
-week and clear this file.
+Working draft for upcoming weekly /updates entries on the marketing site.
+Drop the next entries you ship into the same buckets; when an entry
+is ready to publish, copy it into `marketing/src/data/updates.ts`
+(+ mirror to `updates-index.json` + bump `sitemap.xml`) and remove
+the block from this file.
 
-Last published: **W20 (2026-05-16) — Google Drive sync + Sign in with
-Google**. Next entry target: **W22, publish 2026-05-30**. W21 below
-covers the engine-plumbing batch; W22 (newest, top of file) covers
-filtering, setup tooling, search rewrite, and a long list of UX bugs.
+Last published: **W21 (2026-05-23) — End-to-end security audit**.
+Next entry targets:
+- **W22, publish 2026-05-30** — engine plumbing (fair queue, real
+  Best Of, dev capacity calculator). The audit week bumped this
+  down from its original W21 slot.
+- **W23, publish 2026-06-06** — multi-axis filtering, search rewrite,
+  C5.1 setup script, themed video/audio/CSV/ICS/VCF viewers.
+
+Drafts are ordered newest-first below (W23 multi-axis is the top
+block, W22 fair-queue below it).
 
 ---
 
-## 2026-w22 — Multi-axis filtering, smarter search, fewer "looks broken" bugs
+## 2026-w23 — Multi-axis filtering, smarter search, fewer "looks broken" bugs
 
-**Slug:** `2026-w22-multi-axis-filtering-and-bug-bundle`
-**Week label:** `Week of May 30, 2026`
+**Slug:** `2026-w23-multi-axis-filtering-and-bug-bundle`
+**Week label:** `Week of June 6, 2026`
 **Tags:** `["filtering","search","map","tags","setup","preview","cleanup"]`
 
 ### Summary
@@ -377,10 +382,10 @@ time-series — but the bones are now in place.
 
 ---
 
-## 2026-w21 — Engine plumbing week: fair queue, real Best-Of, dev capacity calculator
+## 2026-w22 — Engine plumbing week: fair queue, real Best-Of, dev capacity calculator
 
-**Slug:** `2026-w21-fair-queue-best-of-and-dev-capacity`
-**Week label:** `Week of May 23, 2026`
+**Slug:** `2026-w22-fair-queue-best-of-and-dev-capacity`
+**Week label:** `Week of May 30, 2026`
 **Tags:** `["fair-queue","best-of","dev-dashboard","aeo","newsletter","email-verification","privacy"]`
 
 ### Summary
