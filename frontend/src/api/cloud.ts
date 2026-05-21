@@ -1,12 +1,12 @@
 // §C2 — cloud sync client. The hosted deployment may not have OAuth
-// configured (`google_oauth_client_id` / `github_oauth_client_id`
-// empty in `.env`), in which case every endpoint returns 503. Callers
-// should catch + treat 503 as "show the 'configure cloud sync first'
-// hint" rather than a hard error.
+// configured (`google_oauth_client_id` empty in `.env`), in which
+// case every endpoint returns 503. Callers should catch + treat 503
+// as "show the 'configure cloud sync first' hint" rather than a hard
+// error.
 
 import { api } from "./client";
 
-export type CloudProvider = "google_drive" | "github";
+export type CloudProvider = "google_drive";
 
 export interface CloudLink {
   id: number;

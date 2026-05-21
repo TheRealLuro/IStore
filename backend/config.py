@@ -222,7 +222,7 @@ class Settings(BaseSettings):
     # appends `/verify?token=...` directly.
     frontend_base_url: str = Field(default="http://localhost:5173")
 
-    # ---- Phase 13 (C2) cloud sync — Drive / GitHub / Dropbox / OneDrive ----
+    # ---- Phase 13 (C2) cloud sync — Drive (Dropbox / OneDrive hooked, not implemented) ----
     # Symmetric Fernet key used by backend.secret_box to encrypt OAuth
     # refresh tokens at rest. Generate with:
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -249,15 +249,6 @@ class Settings(BaseSettings):
     # URI list in the Console needs both entries.
     google_signin_redirect_uri: str = Field(
         default="http://localhost:8000/auth/google/callback"
-    )
-
-    # §C2 — GitHub OAuth (second provider). Same "empty → endpoints
-    # 503" pattern. The redirect_uri must match the value registered
-    # at GitHub → Settings → Developer settings → OAuth Apps.
-    github_oauth_client_id: str = Field(default="")
-    github_oauth_client_secret: str = Field(default="")
-    github_oauth_redirect_uri: str = Field(
-        default="http://localhost:8000/cloud/callback/github"
     )
 
     # §C2 — hourly cloud-sync sweep. The lifespan-managed background

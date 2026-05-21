@@ -210,8 +210,11 @@ class Image(Base):
     skip_ai_training: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    # §C2 — source provider tag ('google_drive', 'github', …). Lets us
-    # show "From Drive" badges + power the per-source AI opt-in.
+    # §C2 — source provider tag ('google_drive', …). Lets us show
+    # "From Drive" badges + power the per-source AI opt-in. Historic
+    # rows may have 'github' here from when that provider existed;
+    # the column intentionally stays a free-form String(16) so old
+    # data keeps rendering instead of failing a CHECK constraint.
     source_provider: Mapped[Optional[str]] = mapped_column(
         String(16), nullable=True
     )
@@ -803,7 +806,7 @@ class FeedbackEvent(Base):
 
 
 class CloudLink(Base):
-    """C2 — third-party storage link (Drive / GitHub / Dropbox / …).
+    """C2 — third-party storage link (Drive; Dropbox + OneDrive stubbed).
 
     `encrypted_refresh_token` is a placeholder for the eventual
     A2/A3-gated implementation: today the column stores a plaintext

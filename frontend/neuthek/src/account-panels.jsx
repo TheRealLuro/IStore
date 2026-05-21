@@ -1339,7 +1339,6 @@ function RetentionPolicySection({ originalsBytes, originalsCount }) {
 function LinkedServiceRow({ svc }) {
   const label =
     svc.provider === "google_drive" ? "Google Drive" :
-    svc.provider === "github" ? "GitHub" :
     svc.provider;
   const localBytes = svc.served_bytes + svc.originals_bytes;
   const { data: providerStats, isLoading } = useQuery({

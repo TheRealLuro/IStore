@@ -58,7 +58,6 @@ const SECTIONS = [
     desc: "Pull files from external sources, read-only.",
     items: [
       { name: "Google Drive (drive.readonly)",      status: "optional", note: "Connect from Settings → Cloud sync. Pull-only; we never write back" },
-      { name: "GitHub repositories (read scope)",   status: "optional", note: "Same panel. Limited Use AI off by default" },
       { name: "Hourly background sweep",            status: "live", note: "Re-syncs every active link; conflicts surface as a banner" },
       { name: "Per-source AI opt-in",               status: "live", note: "Drive content excluded from training by default per Google Limited Use" },
       { name: "Dropbox / OneDrive",                 status: "planned", note: "Same OAuth shape, just not wired yet" },

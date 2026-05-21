@@ -449,8 +449,8 @@ async def store_upload(
     # via the cloud-link settings UI; flipping it re-queues the file
     # through the normal summarize/face-scan workers.
     skip_ai_training: bool = False,
-    # §C2 — provider identifier ('google_drive', 'github', …) when the
-    # ingest came from a cloud sync; mirrored into
+    # §C2 — provider identifier ('google_drive', …) when the ingest
+    # came from a cloud sync; mirrored into
     # `images.source_provider` for the UI badge + per-source bulk ops.
     source_provider: str | None = None,
     # §C2 — optional pre-assigned folder for the synthesized remote

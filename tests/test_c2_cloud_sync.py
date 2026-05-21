@@ -1,6 +1,6 @@
 """§C2 — cloud sync acceptance.
 
-Drive + GitHub OAuth involves outbound HTTP we can't make in pytest,
+Drive OAuth involves outbound HTTP we can't make in pytest,
 so the tests focus on the surface the API exposes and on the
 synthesized folder + Limited Use plumbing. End-to-end Drive flow is
 exercised manually + via the integration runbook in SETUP.md.
@@ -119,6 +119,7 @@ async def test_ensure_remote_folder_tree_creates_hierarchy(db_client):
         # Build tree for parents "Photos/Vacation/2024" and "Docs"
         mapping = await _ensure_remote_folder_tree(
             s, user, "Google Drive",
+            provider="google_drive",
             all_remote_parent_paths={"Photos/Vacation/2024", "Docs"},
         )
         await s.commit()
@@ -132,6 +133,7 @@ async def test_ensure_remote_folder_tree_creates_hierarchy(db_client):
         # Re-invoking is idempotent — same ids come back.
         mapping2 = await _ensure_remote_folder_tree(
             s, user, "Google Drive",
+            provider="google_drive",
             all_remote_parent_paths={"Photos/Vacation/2024", "Docs"},
         )
         assert mapping2 == mapping

@@ -1,9 +1,13 @@
 """C2 cloud-sync worker — Google Drive (read-only).
 
-Drive is the first provider we wire up because it has the cleanest
-public API and the most consistent OAuth story. GitHub / Dropbox /
-OneDrive land later behind the same `connect_provider` /
-`complete_oauth` / `sync_user_provider` interface.
+Drive is the only provider currently wired up. Dropbox / OneDrive
+hooks are kept as `CloudProvider` literal entries + scope dicts so
+the same `connect_provider` / `complete_oauth` / `sync_user_provider`
+interface can light them up later, but every entrypoint short-
+circuits with `CloudSyncNotConfigured` for anything other than
+`google_drive` today. GitHub used to be a second provider; it was
+removed because public repos turned the gallery into a dumping
+ground of READMEs + build configs.
 
 End-to-end flow
 ---------------
@@ -116,7 +120,7 @@ def _verify_state(state: str) -> UUID:
 
 logger = logging.getLogger(__name__)
 
-CloudProvider = Literal["google_drive", "github", "dropbox", "onedrive"]
+CloudProvider = Literal["google_drive", "dropbox", "onedrive"]
 
 
 PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
@@ -136,11 +140,9 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
         "email",
         "profile",
     ],
-    # GitHub support was removed by user request — repos turned out to
-    # not be a natural fit for a personal storage app (every public
-    # repo turns the gallery into a dumping ground of READMEs and
-    # build configs). Dropbox / OneDrive scopes are kept here so the
-    # OAuth shape is recorded if we ever turn them on.
+    # Dropbox / OneDrive scopes are kept here so the OAuth shape is
+    # recorded if we ever turn them on; the corresponding listing +
+    # download helpers don't exist yet.
     "dropbox": ["files.content.read"],
     "onedrive": ["Files.Read.All", "offline_access"],
 }
@@ -304,27 +306,6 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
         # Stash so `complete_oauth` can pair the code with the verifier.
         if flow.code_verifier:
             await _stash_pkce_verifier(state, flow.code_verifier)
-    elif provider == "github":
-        if not settings.github_oauth_client_id or not settings.github_oauth_client_secret:
-            raise CloudSyncNotConfigured(
-                "GitHub OAuth client not configured. Set "
-                "GITHUB_OAUTH_CLIENT_ID + GITHUB_OAUTH_CLIENT_SECRET in .env. "
-                "See SETUP.md > GitHub."
-            )
-        from urllib.parse import urlencode
-        params = urlencode({
-            "client_id": settings.github_oauth_client_id,
-            "redirect_uri": settings.github_oauth_redirect_uri,
-            "scope": " ".join(PROVIDER_SCOPES["github"]),
-            "state": signed_state,
-            # Forces GitHub to re-show the consent screen even when the
-            # user has previously authorized the app — keeps the
-            # scope list visible.
-            "prompt": "consent",
-            "allow_signup": "false",
-        })
-        auth_url = f"https://github.com/login/oauth/authorize?{params}"
-        state = signed_state
     else:  # pragma: no cover — gated above
         raise CloudSyncNotConfigured(f"Provider '{provider}' not implemented")
 
@@ -415,40 +396,6 @@ async def complete_oauth(
                         )
         except Exception:
             logger.exception("cloud_sync: id_token decode skipped (non-fatal)")
-    else:  # github
-        import requests
-        if not settings.github_oauth_client_id or not settings.github_oauth_client_secret:
-            raise CloudSyncNotConfigured(
-                "GitHub OAuth client not configured."
-            )
-        # GitHub's classic OAuth flow returns a `access_token` that
-        # doesn't expire (per https://docs.github.com/en/apps/oauth-apps).
-        # We persist it in the same `encrypted_refresh_token` column
-        # — the column name is a Drive-era artifact; the contents
-        # are an opaque bearer secret either way.
-        r = requests.post(
-            "https://github.com/login/oauth/access_token",
-            headers={"Accept": "application/json"},
-            data={
-                "client_id": settings.github_oauth_client_id,
-                "client_secret": settings.github_oauth_client_secret,
-                "code": code,
-                "redirect_uri": settings.github_oauth_redirect_uri,
-                "state": state,
-            },
-            timeout=30,
-        )
-        if r.status_code != 200:
-            raise CloudSyncNotConfigured(
-                f"GitHub token exchange failed: {r.status_code}"
-            )
-        payload = r.json()
-        refresh_token_to_store = payload.get("access_token")
-        scopes = payload.get("scope") or ",".join(PROVIDER_SCOPES["github"])
-        if not refresh_token_to_store:
-            raise CloudSyncNotConfigured(
-                "GitHub did not return an access token. Try again."
-            )
 
     encrypted = encrypt_token(refresh_token_to_store)
 
@@ -492,7 +439,7 @@ async def sync_user_provider(
 
     Behaviour:
       - **Pull-only.** Never writes back to the remote. `drive.readonly`
-        scope on Google + `repo` read on GitHub.
+        scope on Google.
       - **Folder mirroring.** A root folder named `{Provider display
         name}` is created under the user's root; every remote folder
         gets a matching neuthek folder under it.
@@ -543,8 +490,6 @@ async def sync_user_provider(
 
     if provider == "google_drive":
         entries = await _drive_collect_entries(refresh_token)
-    elif provider == "github":
-        entries = await _github_collect_entries(refresh_token)
     else:  # already gated above; defensive.
         entries = []
 
@@ -573,7 +518,7 @@ async def sync_user_provider(
     #     skipped_over_quota=seen` and can prompt the user to upgrade
     #     or free up space.
     #   * Per-entry: each entry exposes `size_bytes` from the listing
-    #     (Drive's `size` field, GitHub's `tree.size`). If the next
+    #     (Drive's `size` field). If the next
     #     download would push the budget below zero, skip it + audit
     #     `cloud.sync.skipped_quota`. We keep the loop going — a
     #     smaller entry later in the list may still fit, and aborting
@@ -912,7 +857,6 @@ def _provider_display_name(provider: CloudProvider) -> str:
     """Human-readable label for the synthesized root folder."""
     return {
         "google_drive": "Google Drive",
-        "github": "GitHub",
         "dropbox": "Dropbox",
         "onedrive": "OneDrive",
     }.get(provider, provider.title())
@@ -965,7 +909,7 @@ async def _ensure_remote_folder_tree(
 
     Returns a `{parent_path: folder_id}` map for every parent path
     referenced in the listing. The root entry (key `""`) maps to the
-    provider's root folder ("Google Drive", "GitHub", …).
+    provider's root folder (e.g. "Google Drive").
 
     Each path component is created under its parent if missing.
     Re-runs are idempotent — existing folders are reused via the
@@ -1097,10 +1041,6 @@ async def _provider_download(
     if provider == "google_drive":
         return await asyncio.to_thread(
             lambda: _drive_download(_drive_client(refresh_token), entry["remote_id"]),
-        )
-    if provider == "github":
-        return await asyncio.to_thread(
-            _github_download, refresh_token, entry["remote_id"], entry["remote_path"],
         )
     raise CloudSyncNotConfigured(f"Provider '{provider}' not implemented.")
 
@@ -1298,197 +1238,6 @@ async def provider_folder_stats(
     except Exception:
         logger.exception("provider_folder_stats: %s walk failed", provider)
     return None
-
-
-# ---------- GitHub ------------------------------------------------------
-
-
-def _github_collect_entries_sync(refresh_token: str) -> list[dict]:
-    """List image files in every repo the user owns. Each repo becomes
-    a top-level folder; folders inside the repo become sub-folders.
-
-    Skips files matching common secret patterns (`.env`, `*.key`,
-    `id_rsa`, …) per the §C2 spec.
-    """
-    import requests  # py-requests is a dep of google-api-python-client
-    from urllib.parse import quote
-
-    headers = {
-        "Authorization": f"Bearer {refresh_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    # Authorise the whole repo. Images, source code, structured-text
-    # configs, markdown, and PDFs are all valid — `validate_upload`
-    # decides the per-file fate downstream. We deliberately keep a
-    # broad allowlist (not a blocklist) so a `.deb` or `.tar.gz`
-    # doesn't slip in: those would just blow up validation and
-    # eat the worker thread.
-    SYNCABLE_EXTS = {
-        # Images (existing)
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp", ".tiff",
-        # PDFs + documents
-        ".pdf",
-        # Plain text + markup + configs
-        ".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml",
-        ".toml", ".ini", ".cfg", ".conf", ".properties",
-        ".xml", ".plist", ".rst", ".adoc", ".tex",
-        # Code (kept in sync with backend/upload_validation.py:_CODE_EXTS)
-        ".html", ".htm", ".css", ".scss", ".sass", ".less", ".svg",
-        ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte",
-        ".py", ".pyi", ".rb", ".php", ".java", ".kt", ".kts", ".scala",
-        ".swift", ".go", ".rs", ".c", ".h", ".cpp", ".cc", ".cxx",
-        ".hpp", ".cs", ".dart", ".lua", ".r", ".pl",
-        ".sh", ".bash", ".zsh", ".fish", ".ps1", ".sql",
-        ".clj", ".ex", ".exs", ".elm", ".erl", ".hs", ".ml", ".mli",
-        ".nim", ".zig", ".v",
-        ".graphql", ".gql", ".proto", ".diff", ".patch",
-        ".ipynb",
-    }
-    # Basenames worth syncing even without an extension (Dockerfile,
-    # Makefile, etc).
-    SYNCABLE_BASENAMES = {
-        "dockerfile", "makefile", "gnumakefile",
-        "rakefile", "gemfile", "podfile", "vagrantfile", "procfile",
-        "readme",
-    }
-    SECRET_PATTERNS = (
-        ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519",
-        "credentials.json", "service_account.json",
-    )
-    SECRET_SUFFIXES = (".key", ".pem", ".p12", ".pfx", ".kdbx", ".dump")
-    # Per-file size cap: GitHub blobs over this get skipped so a single
-    # huge JSON dataset doesn't soak a sync run. 25 MB matches GitHub's
-    # web-UI render cap so anything bigger isn't meaningfully viewable
-    # anyway.
-    MAX_BLOB_SIZE = 25 * 1024 * 1024
-
-    def _is_secret(path: str) -> bool:
-        base = path.rsplit("/", 1)[-1].lower()
-        if base in SECRET_PATTERNS:
-            return True
-        # Hidden directory entries like `.git/config` or `secrets/...`.
-        if base.startswith(".env"):
-            return True
-        if any(base.endswith(s) for s in SECRET_SUFFIXES):
-            return True
-        return False
-
-    def _walk_repo(repo_full_name: str, default_branch: str) -> list[dict]:
-        # GitHub trees API — `?recursive=1` returns up to 100k entries
-        # in one call (truncates above that). For repos that big we
-        # accept the cap and let the user revisit it.
-        tree_url = (
-            f"https://api.github.com/repos/{repo_full_name}/git/trees/"
-            f"{quote(default_branch)}?recursive=1"
-        )
-        r = requests.get(tree_url, headers=headers, timeout=30)
-        if r.status_code != 200:
-            return []
-        tree = r.json().get("tree", [])
-        out: list[dict] = []
-        for node in tree:
-            if node.get("type") != "blob":
-                continue
-            path = node.get("path") or ""
-            if _is_secret(path):
-                continue
-            base = path.rsplit("/", 1)[-1]
-            ext = "." + base.rsplit(".", 1)[-1].lower() if "." in base else ""
-            base_lower = base.lower()
-            # Match by extension OR by recognized basename (Dockerfile,
-            # Makefile, etc). Without the basename fallback the user
-            # would get all the code but none of the build configs that
-            # tie a repo together.
-            if ext not in SYNCABLE_EXTS and base_lower not in SYNCABLE_BASENAMES:
-                continue
-            # Skip blobs over the per-file cap. `size` is reported in
-            # bytes by the git/trees API. Missing field → assume small.
-            if (node.get("size") or 0) > MAX_BLOB_SIZE:
-                continue
-            parent_path = repo_full_name
-            if "/" in path:
-                parent_path = f"{repo_full_name}/{path.rsplit('/', 1)[0]}"
-            out.append({
-                "remote_id": f"{repo_full_name}@{node['sha']}",
-                "name": path.rsplit("/", 1)[-1],
-                "mime_type": None,  # let validate_upload sniff
-                "modified_at": None,  # GitHub doesn't track per-blob mtime
-                "remote_path": f"{repo_full_name}/{path}",
-                "remote_parent_path": parent_path,
-                # `node['sha']` is the git blob SHA-1 (20 bytes hex,
-                # 40 chars). Pad to 32 bytes so it fits the sha256
-                # column shape; collisions across users are non-issue
-                # because we key cloud_files on (user_id, provider,
-                # remote_id) which already includes the SHA.
-                "sha256": bytes.fromhex(node["sha"].ljust(64, "0"))[:32],
-                # `size` from git/trees is already bytes; mirrored into
-                # `size_bytes` so the cloud-sync quota check (audit
-                # CR-4) has a uniform field across providers.
-                "size_bytes": int(node.get("size") or 0),
-                "_repo_full_name": repo_full_name,
-                "_blob_sha": node["sha"],
-            })
-        return out
-
-    # List the authenticated user's own repos (the spec specifically
-    # said "own repos" — not stars or contribs).
-    repos: list[dict] = []
-    page = 1
-    while True:
-        r = requests.get(
-            "https://api.github.com/user/repos",
-            headers=headers,
-            params={"affiliation": "owner", "per_page": 100, "page": page},
-            timeout=30,
-        )
-        if r.status_code != 200:
-            break
-        batch = r.json()
-        repos.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-
-    entries: list[dict] = []
-    for repo in repos:
-        if repo.get("archived"):
-            continue
-        full = repo.get("full_name")
-        branch = repo.get("default_branch") or "main"
-        if not full:
-            continue
-        entries.extend(_walk_repo(full, branch))
-    return entries
-
-
-async def _github_collect_entries(refresh_token: str) -> list[dict]:
-    import asyncio
-    return await asyncio.to_thread(_github_collect_entries_sync, refresh_token)
-
-
-def _github_download(refresh_token: str, remote_id: str, remote_path: str) -> bytes:
-    """Pull a single GitHub blob via the contents API."""
-    import requests
-    # remote_id is `{repo_full_name}@{blob_sha}`.
-    repo, _, blob_sha = remote_id.partition("@")
-    if not repo or not blob_sha:
-        raise CloudSyncNotConfigured(f"Malformed remote_id: {remote_id!r}")
-    # `git/blobs/{sha}` returns base64-encoded bytes for any size; the
-    # contents API has a 1 MB cap that's awkward for photos.
-    url = f"https://api.github.com/repos/{repo}/git/blobs/{blob_sha}"
-    r = requests.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {refresh_token}",
-            "Accept": "application/vnd.github+json",
-        },
-        timeout=60,
-    )
-    r.raise_for_status()
-    data = r.json()
-    import base64
-    return base64.b64decode(data.get("content") or "")
 
 
 # ---------- low-level Drive helpers --------------------------------------

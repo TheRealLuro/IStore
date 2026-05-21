@@ -89,7 +89,7 @@ export interface StorageUsage {
 }
 
 export interface LinkedService {
-  provider: string;       // "google_drive" | "github" | …
+  provider: string;       // "google_drive" | …
   status: string;         // "active" | "pending" | "revoked"
   files_mirrored: number;
   served_bytes: number;

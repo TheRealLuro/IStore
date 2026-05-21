@@ -1666,9 +1666,7 @@ export function App() {
     const failed = params.get("cloud_error");
     if (!connected && !failed) return;
     if (connected) {
-      const label = connected === "google_drive"
-        ? "Google Drive"
-        : connected === "github" ? "GitHub" : connected;
+      const label = connected === "google_drive" ? "Google Drive" : connected;
       toast.success(`Connected to ${label}. Open Cloud sync to pull your files.`);
       setAccountTab("cloud");
       setShowAccount(true);
