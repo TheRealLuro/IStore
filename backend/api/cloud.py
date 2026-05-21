@@ -41,6 +41,49 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cloud", tags=["cloud"])
 
 
+# Allow-list of `?error=` values the /cloud/callback handler is
+# willing to echo back to the FE via `?cloud_error=…`.
+#
+# Same shape as `backend/auth/google_sso.py::_ALLOWED_OAUTH_ERRORS`
+# (RFC 6749 §4.1.2.1 + OIDC core §3.1.2.6 + the internal codes the
+# FE auth/cloud-sync handlers know how to render). Anything outside
+# the allow-list collapses to `unknown` and the raw value is logged
+# at WARNING for diagnostics.
+#
+# Keys are lower-cased for case-insensitive matching; values are the
+# canonical strings echoed back.
+_ALLOWED_CLOUD_OAUTH_ERRORS: dict[str, str] = {
+    code: code
+    for code in (
+        # RFC 6749 §4.1.2.1
+        "invalid_request",
+        "unauthorized_client",
+        "access_denied",
+        "unsupported_response_type",
+        "invalid_scope",
+        "server_error",
+        "temporarily_unavailable",
+        # OIDC core §3.1.2.6
+        "interaction_required",
+        "login_required",
+        "account_selection_required",
+        "consent_required",
+        "invalid_request_uri",
+        "invalid_request_object",
+        "request_not_supported",
+        "request_uri_not_supported",
+        "registration_not_supported",
+        # FE-known internal codes (kept in sync with app.jsx
+        # `cloud_error` handler)
+        "missing_code_or_state",
+        "unsupported_provider",
+        "bad_state",
+        "not_configured",
+        "internal",
+    )
+}
+
+
 class CloudLinkRead(BaseModel):
     id: int
     provider: str
@@ -182,8 +225,27 @@ async def oauth_callback(
     fe_root = settings.frontend_base_url.rstrip("/")
 
     if error:
+        # CodeQL "URL redirection from remote source": the `error`
+        # query param is set by the OAuth provider (or whoever else
+        # hits the callback URL), so we cannot trust its contents.
+        # The query string lives in the URL we send a 302 to, so an
+        # attacker could otherwise inject CRLFs / oversize garbage /
+        # attacker-chosen strings into the FE's
+        # `Could not finish connecting (${failed})` text. Pin `error`
+        # to an allow-list of RFC 6749 / OIDC standard codes plus the
+        # FE-known internal codes; anything else collapses to
+        # `unknown` and the raw value is logged once for diagnostics.
+        sanitized_error = _ALLOWED_CLOUD_OAUTH_ERRORS.get(
+            error.lower(), "unknown",
+        )
+        if sanitized_error == "unknown":
+            logger.warning(
+                "cloud_callback: received non-allowlisted error code "
+                "(logged but not echoed): %r",
+                error[:64],
+            )
         return RedirectResponse(
-            url=f"{fe_root}/?cloud_error={error}", status_code=302
+            url=f"{fe_root}/?cloud_error={sanitized_error}", status_code=302
         )
     if not code or not state:
         return RedirectResponse(
@@ -193,6 +255,15 @@ async def oauth_callback(
         return RedirectResponse(
             url=f"{fe_root}/?cloud_error=unsupported_provider", status_code=302
         )
+    # Re-bind `provider` to the canonical allow-listed key from
+    # PROVIDER_SCOPES rather than the raw path param. The membership
+    # check above already guarantees the two strings are equal, but
+    # rebinding makes the data-flow explicit to CodeQL's
+    # `py/url-redirection` query (which couldn't otherwise prove that
+    # the value flowing into the final `?cloud_connected={provider}`
+    # redirect on line ~250 is from a closed set) AND prevents future
+    # refactors from accidentally widening the input.
+    provider = next(p for p in PROVIDER_SCOPES if p == provider)
 
     # Verify the HMAC-signed state we issued in connect_provider. This
     # is the OAuth CSRF defense: without it, an attacker could craft a
