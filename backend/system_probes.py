@@ -918,8 +918,17 @@ async def sample_redis() -> dict[str, Any]:
             "queue_depth": depth,
             "active_jobs": active,
         }
-    except Exception as e:
-        return {"reachable": False, "error": str(e)[:160]}
+    except Exception:
+        # CodeQL "stack-trace exposure" — `str(e)` here flowed all the
+        # way out to the admin observability endpoints (GET /admin/
+        # overview, GET /admin/tasks). Even admin-only surfaces are a
+        # bad place to leak raw exception text: a Redis ConnectionError
+        # carries the URL (with credentials in some configs), and a
+        # google-auth refresh failure carries the client_id. Log the
+        # full exception server-side; surface a generic marker to the
+        # admin UI so it can still render "redis is down."
+        logger.exception("sample_redis: probe failed")
+        return {"reachable": False, "error": "probe_failed"}
 
 
 # ---------- MinIO ----------
@@ -993,15 +1002,23 @@ async def sample_minio() -> dict[str, Any]:
                         "name": name, "exists": True,
                         "objects": count, "size_bytes": size, "capped": capped,
                     })
-                except Exception as e:
-                    buckets.append({"name": name, "exists": None, "error": str(e)[:160]})
+                except Exception:
+                    # See CodeQL note in sample_redis(). MinIO error
+                    # text leaks endpoint hostnames / access-key IDs.
+                    logger.exception(
+                        "sample_minio: per-bucket probe failed for %s", name,
+                    )
+                    buckets.append({
+                        "name": name, "exists": None, "error": "probe_failed",
+                    })
             return {
                 "reachable": True,
                 "endpoint": settings.minio_endpoint,
                 "buckets": buckets,
             }
-        except Exception as e:
-            return {"reachable": False, "error": str(e)[:160]}
+        except Exception:
+            logger.exception("sample_minio: outer probe failed")
+            return {"reachable": False, "error": "probe_failed"}
 
     import asyncio
     result = await asyncio.to_thread(_sample_sync)
@@ -1031,8 +1048,11 @@ def sample_db_pool() -> dict[str, Any]:
             "overflow": getattr(pool, "overflow", lambda: None)() if callable(getattr(pool, "overflow", None)) else None,
         }
         return info
-    except Exception as e:
-        return {"reachable": False, "error": str(e)[:160]}
+    except Exception:
+        # See CodeQL note in sample_redis(). asyncpg/sqlalchemy errors
+        # carry the connection DSN which contains credentials.
+        logger.exception("sample_db_pool: probe failed")
+        return {"reachable": False, "error": "probe_failed"}
 
 
 # ---------- Configured models ----------
