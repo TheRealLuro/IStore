@@ -51,7 +51,32 @@ async function downloadFolderAsZip(folder) {
   // sets `Content-Disposition: attachment` slowly — the iframe
   // approach keeps the user on the gallery while the download runs.
   try {
-    const url = `${API_BASE_URL}/folders/${folder.id}/download.zip`;
+    const rawUrl = `${API_BASE_URL}/folders/${folder.id}/download.zip`;
+    // CodeQL `js/functionality-from-untrusted-source`: an http://
+    // API endpoint would let a MITM substitute the response body for
+    // a malicious file. `API_BASE_URL` defaults to http://127.0.0.1:8000
+    // for dev and is supposed to be overridden via VITE_API_BASE_URL
+    // to https://… for production, but operator misconfiguration
+    // could leave the http default in place. Refuse the download
+    // unless the URL is either https or pointed at localhost (where
+    // MITM isn't a meaningful threat). Parsing with `new URL` also
+    // gives CodeQL an unambiguous sanitiser to track.
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(rawUrl, window.location.origin);
+    } catch {
+      toast.error("Download failed (bad URL)");
+      return;
+    }
+    const isLocalDev =
+      parsedUrl.hostname === "localhost" || parsedUrl.hostname === "127.0.0.1";
+    if (parsedUrl.protocol !== "https:" && !isLocalDev) {
+      toast.error(
+        "Download disabled: API endpoint must use HTTPS in production.",
+      );
+      return;
+    }
+    const url = parsedUrl.href;
     // Quick auth pre-check so we surface 401/404 as a toast instead
     // of dumping the user into a silent failed iframe. HEAD would be
     // cheaper but the backend doesn't implement HEAD for zip — a
