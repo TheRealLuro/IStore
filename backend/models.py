@@ -80,6 +80,28 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         TIMESTAMP(timezone=True), nullable=True
     )
 
+    # Audit A8 — session-JWT revocation handle.
+    #
+    # Every JWT minted for this user embeds the current value as a
+    # `tv` claim. The decode path compares the claim to this column
+    # and rejects the token if they differ. Bumping the column
+    # (UPDATE users SET token_version = token_version + 1) therefore
+    # invalidates every live session for this user — the "log out
+    # everywhere / I've been compromised" primitive.
+    #
+    # Bumped automatically on:
+    #   - password reset                (UserManager.on_after_reset_password)
+    #   - 2FA disable                   (api.two_factor.two_factor_disable)
+    #
+    # Operators (admin) can bump manually via SQL until a CLI lands.
+    # Default 1 so existing rows + freshly-restored backups validate
+    # cleanly against tokens minted with `tv=1`. NEVER assign 0 —
+    # the decode path treats a missing-claim token as `tv=1` so a
+    # pre-A8 token still authenticates during the deploy window.
+    token_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="1"
+    )
+
     images: Mapped[list["Image"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )

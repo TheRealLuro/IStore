@@ -215,6 +215,12 @@ async def two_factor_disable(
     user.totp_secret_enc = None
     user.totp_enabled = False
     user.totp_verified_at = None
+    # Audit A8 — turning 2FA off is a security-posture downgrade.
+    # Bump token_version so every JWT minted while 2FA was ON gets
+    # rejected on next request. Forces a fresh sign-in with the new
+    # (weaker) policy in place and shuts out an attacker who'd
+    # disabled 2FA from a stolen session.
+    user.token_version = (user.token_version or 1) + 1
     await add_audit(
         session, user_id=user.id, action="account.2fa.disabled", details={},
     )

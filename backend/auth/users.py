@@ -273,6 +273,25 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_reset_password(
         self, user: User, request: Optional[Request] = None
     ) -> None:
+        # Audit A8 — bump token_version so every JWT minted under the
+        # old password becomes invalid on next request. Without this,
+        # an attacker who had a live cookie when the legitimate user
+        # reset (panic-reset → "I think someone got in") would keep
+        # their session for up to `jwt_lifetime_seconds`. The bump
+        # commits in this same session so the row reflects the new
+        # version before the next decode tries to verify the claim.
+        try:
+            from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+            db: _AsyncSession = self.user_db.session  # type: ignore[attr-defined]
+            user.token_version = (user.token_version or 1) + 1
+            await db.commit()
+        except Exception:
+            logger.exception(
+                "on_after_reset_password: token_version bump failed for %s — "
+                "old sessions may remain valid until expiry",
+                user.id,
+            )
+
         # Best-effort post-reset notice — same template flow as
         # send_reset_email but a one-liner so we don't add a fourth
         # template just for this.
@@ -318,8 +337,93 @@ cookie_transport = CookieTransport(
 )
 
 
-def get_jwt_strategy() -> JWTStrategy:
-    return JWTStrategy(
+class VersionedJWTStrategy(JWTStrategy):
+    """JWT strategy with per-user `token_version` revocation (audit A8).
+
+    Every minted JWT carries a `tv` claim with the user's current
+    `token_version`. On decode, the strategy loads the user (the
+    parent does this anyway) and rejects the token if the claim
+    doesn't match the row's current value. Bumping `token_version`
+    therefore invalidates every live session for that user.
+
+    Backwards-compat: tokens minted by the pre-A8 build have no `tv`
+    claim. We treat a missing claim as `tv=1` (the column default),
+    so legacy tokens validate cleanly until they expire — no forced
+    sign-out on the deploy that ships this code.
+
+    Note on key separation: the audit's CR-3 fix moved every other
+    HMAC domain off `settings.jwt_secret` onto HKDF-derived subkeys.
+    The session JWT itself still uses the raw secret in this
+    revision because moving it requires a one-shot "log everyone out
+    once" event. With `token_version` in place, that move can ship
+    as a separate PR (operator triggers the global bump by changing
+    the secret + bumping `MAX(token_version)+1` on every row).
+    """
+
+    # JWT claim name. Short on purpose — every authenticated request
+    # carries this in the cookie + decoded payload; a 2-byte key
+    # adds up at high QPS.
+    CLAIM_TOKEN_VERSION = "tv"
+
+    async def write_token(self, user: "User") -> str:  # type: ignore[override]
+        from fastapi_users.jwt import generate_jwt
+        data = {
+            "sub": str(user.id),
+            "aud": self.token_audience,
+            self.CLAIM_TOKEN_VERSION: int(getattr(user, "token_version", 1) or 1),
+        }
+        return generate_jwt(
+            data, self.encode_key, self.lifetime_seconds, algorithm=self.algorithm,
+        )
+
+    async def read_token(
+        self,
+        token: Optional[str],
+        user_manager: BaseUserManager,
+    ):
+        # First: delegate to the parent for signature/audience/expiry
+        # checks + user fetch. If anything fails there, the parent
+        # returns None and we honor that — keeps the no-claim happy
+        # path identical to the upstream behavior.
+        user = await super().read_token(token, user_manager)
+        if user is None or token is None:
+            return user
+
+        # Decode the claim ourselves. We KNOW the signature + audience
+        # checks already passed (the parent didn't return None), so
+        # PyJWTError here would mean a between-the-lines weirdness we
+        # can safely reject.
+        import jwt as _jwt
+        try:
+            payload = _jwt.decode(
+                token,
+                self.decode_key,
+                audience=self.token_audience,
+                algorithms=[self.algorithm],
+            )
+        except _jwt.PyJWTError:
+            return None
+
+        claimed_tv = payload.get(self.CLAIM_TOKEN_VERSION, 1)
+        try:
+            claimed_tv = int(claimed_tv)
+        except (TypeError, ValueError):
+            return None
+
+        current_tv = int(getattr(user, "token_version", 1) or 1)
+        if claimed_tv != current_tv:
+            # The user bumped their token_version (password reset,
+            # 2FA disable). The token is stale; refuse.
+            logger.info(
+                "auth.token.revoked user=%s claimed_tv=%s current_tv=%s",
+                user.id, claimed_tv, current_tv,
+            )
+            return None
+        return user
+
+
+def get_jwt_strategy() -> VersionedJWTStrategy:
+    return VersionedJWTStrategy(
         secret=settings.jwt_secret,
         lifetime_seconds=settings.jwt_lifetime_seconds,
     )
