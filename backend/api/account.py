@@ -31,7 +31,7 @@ from uuid import UUID
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import delete as sa_delete, func as sa_func, select, text
@@ -610,7 +610,12 @@ async def _build_export_zip(
 async def get_account_activity(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    limit: int = 50,
+    # Audit D1 — cap aligned with the existing `min(limit, 200)`
+    # body guard. With Query validation, `limit=10_000_000` 422s
+    # at the routing layer instead of clamping silently — the
+    # clamp suggested the caller's intent succeeded, masking that
+    # they may have been DoS-probing.
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> list[dict]:
     """User-visible activity log. Returns the caller's most recent audit
     events — `auth.login`, `consent.*.grant`, `images.rename`,
@@ -622,7 +627,7 @@ async def get_account_activity(
             select(AuditLog)
             .where(AuditLog.user_id == user.id)
             .order_by(AuditLog.created_at.desc())
-            .limit(min(limit, 200))
+            .limit(limit)  # Query(le=200) above bounds this at routing time
         )
     ).scalars().all()
     return [

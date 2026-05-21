@@ -352,7 +352,14 @@ async def semantic_search(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     q: Annotated[str, Query(min_length=1, max_length=200)],
-    limit: int = 30,
+    # Audit D1 — cap on result fan-out. The self-only short-circuit
+    # path returns up to `limit` rows ordered by uploaded_at; the
+    # main CLIP path uses `limit` as the top-K of the vector index
+    # plus row hydration per hit. Cap at 100 — well above any
+    # legitimate UI use (gallery shows ~30 hits per page), well
+    # below the millions-of-rows scan a malicious caller could
+    # request.
+    limit: Annotated[int, Query(ge=1, le=100)] = 30,
 ) -> list[dict]:
     # Reject empty-after-trim and ultra-short queries early. The CLIP +
     # FTS layers downstream both degrade badly on single characters
