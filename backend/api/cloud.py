@@ -454,10 +454,53 @@ async def revoke_link(
     # annotation or drop the future import; we drop the annotation here.
     """Drop a cloud link. The accompanying cloud_files rows aren't
     auto-deleted — local images stay (the user can manage them), the
-    diff index just stops being a useful reference."""
+    diff index just stops being a useful reference.
+
+    CS3 — before deleting the row, ask Google to revoke the refresh
+    token so the user's Google account stops listing this app as a
+    connected service. Best-effort: revoke failures get audited but
+    do NOT block the local delete (the user clicked "disconnect"
+    and the row going away is the bigger correctness guarantee than
+    Google's account-listing hygiene).
+    """
     row = await session.get(CloudLink, link_id)
     if row is None or row.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found")
+
+    from backend.audit import add_audit
+
+    revoke_outcome: str = "skipped"
+    if row.provider == "google_drive" and row.encrypted_refresh_token:
+        from backend.cloud_sync import revoke_google_refresh_token
+        from backend.secret_box import decrypt as decrypt_token
+        try:
+            refresh_token = decrypt_token(
+                row.encrypted_refresh_token.encode("ascii")
+            )
+        except Exception:
+            # Decryption failed (e.g. CLOUD_ENCRYPTION_KEY rotated
+            # since the row was written). Nothing we can revoke;
+            # local delete still goes through.
+            logger.exception(
+                "revoke_link: refresh-token decrypt failed link=%s — "
+                "proceeding with local delete only",
+                link_id,
+            )
+            revoke_outcome = "decrypt_failed"
+        else:
+            ok = await revoke_google_refresh_token(refresh_token)
+            revoke_outcome = "revoked" if ok else "revoke_failed"
+
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="cloud.link.revoked",
+        details={
+            "link_id": link_id,
+            "provider": row.provider,
+            "revoke_outcome": revoke_outcome,
+        },
+    )
     await session.execute(
         sa_delete(CloudLink).where(CloudLink.id == link_id)
     )
