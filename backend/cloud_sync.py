@@ -1252,6 +1252,78 @@ async def provider_folder_stats(
     return None
 
 
+# ---------- token revocation ---------------------------------------------
+
+
+# Google's OAuth 2.0 token revocation endpoint. Revoking a refresh
+# token there invalidates the whole grant — every access token + the
+# refresh token itself, across every API the original consent
+# covered. Documented at:
+#   https://developers.google.com/identity/protocols/oauth2/web-server#tokenrevoke
+GOOGLE_OAUTH_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+
+
+async def revoke_google_refresh_token(refresh_token: str) -> bool:
+    """POST to Google's revoke endpoint. Returns True iff Google
+    confirmed the revocation, False on any other outcome.
+
+    Audit CS3 — DELETE /cloud/links/{id} used to just drop the
+    `cloud_links` row, leaving Google's grant active on the user's
+    Google account. Users had to also visit
+    `myaccount.google.com/permissions` to actually disconnect — a
+    silent privacy footgun. We now call revoke before the DB delete
+    so disconnecting in neuthek really means disconnecting.
+
+    The revoke is best-effort:
+      * 200 → success.
+      * 400 with `invalid_token` → already revoked (or never valid).
+        We treat that as a no-op success because the user's intent
+        is satisfied.
+      * Network error / 5xx / anything else → False. The caller
+        proceeds with the local delete regardless; the row going
+        away matters more than the remote-side hygiene, and the
+        user can manually revoke from Google's UI if they really
+        need to.
+
+    Always runs under a tight timeout so a hung Google endpoint
+    can't stall the DELETE request indefinitely.
+    """
+    try:
+        import httpx  # type: ignore
+    except ImportError:
+        logger.warning("revoke_google_refresh_token: httpx not installed; skipping revoke")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                GOOGLE_OAUTH_REVOKE_URL,
+                data={"token": refresh_token},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception:
+        logger.exception("revoke_google_refresh_token: network error")
+        return False
+    if resp.status_code == 200:
+        return True
+    if resp.status_code == 400:
+        # `invalid_token` here means the token is already gone or
+        # never existed — user's intent is satisfied either way.
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict) and body.get("error") == "invalid_token":
+            logger.info(
+                "revoke_google_refresh_token: token already revoked / unknown"
+            )
+            return True
+    logger.warning(
+        "revoke_google_refresh_token: unexpected status=%s body=%s",
+        resp.status_code, resp.text[:200],
+    )
+    return False
+
+
 # ---------- low-level Drive helpers --------------------------------------
 
 
