@@ -510,17 +510,25 @@ async def sweep_audit_log_anonymize(
     *,
     retention_days: int | None = None,
 ) -> AuditAnonymizeResult:
-    """NULL `user_id` on audit rows older than the retention horizon.
+    """NULL `user_id` AND scrub PII out of `details` on audit rows
+    older than the retention horizon.
 
     "Archive" in the spec — but cold storage would just hide the rows;
     the link from `audit_log` to a user is the data-protection
-    concern, so we anonymize in place. The action + timestamp + details
-    survive (operator can still answer "did a delete happen here?"
-    forensically); only the per-user identifier goes.
+    concern, so we anonymize in place. The action + timestamp +
+    NON-PII details survive (operator can still answer "did a delete
+    happen here?" forensically); the per-user identifier goes AND
+    every PII-shaped key in `details` is replaced with None.
 
-    Skips rows already anonymized (`user_id IS NULL`) so re-running is
-    a no-op. Self-record: the sweep writes its own audit row with
-    user_id=NULL, which is fine — it's a system action.
+    PII-key set lives in `backend.audit.PII_DETAILS_KEYS` so every
+    audit-row writer and this sweeper stay in sync. Audit F12 — the
+    pre-fix sweeper only NULLed `user_id`, leaving emails and IPs in
+    the JSONB blob indefinitely. GDPR storage-limitation now extends
+    to the blob too.
+
+    Skips rows already anonymized + already-scrubbed (re-running is a
+    no-op modulo idempotency on the scrub side, which is also idempotent
+    — re-setting a None key to None is a noop).
     """
     days = retention_days if retention_days is not None else settings.audit_log_retention_days
     if days <= 0:
@@ -537,13 +545,52 @@ async def sweep_audit_log_anonymize(
         .values(user_id=None)
     )
     anon = int(res.rowcount or 0)
-    if anon:
+
+    # Audit F12 — JSONB-blob scrub. We don't try to do this in pure
+    # SQL because the PII-key set lives in Python and stays in
+    # lock-step with add_audit's allowlist. The set of rows to scrub
+    # is bounded by the cutoff anyway, so a Python-side loop is
+    # acceptable (cron-driven, daily).
+    from backend.audit import PII_DETAILS_KEYS
+
+    rows_with_details = (
+        await session.execute(
+            select(AuditLog).where(
+                AuditLog.created_at < cutoff,
+                AuditLog.details.is_not(None),
+            )
+        )
+    ).scalars().all()
+
+    scrubbed_blob_rows = 0
+    for row in rows_with_details:
+        if not isinstance(row.details, dict) or not row.details:
+            continue
+        # Only build the scrubbed dict if there's at least one PII
+        # key actually present — avoids touching JSONB on every row
+        # the sweeper has already processed.
+        if not any(k in PII_DETAILS_KEYS for k in row.details.keys()):
+            continue
+        # Only count if we actually CHANGED something (a row whose
+        # PII keys are already None has nothing to do).
+        changed = False
+        scrubbed = dict(row.details)
+        for k in list(scrubbed.keys()):
+            if k in PII_DETAILS_KEYS and scrubbed[k] is not None:
+                scrubbed[k] = None
+                changed = True
+        if changed:
+            row.details = scrubbed
+            scrubbed_blob_rows += 1
+
+    if anon or scrubbed_blob_rows:
         session.add(
             AuditLog(
                 user_id=None,
                 action="retention.sweep_audit_anonymize",
                 details={
                     "rows_anonymized": anon,
+                    "rows_blob_scrubbed": scrubbed_blob_rows,
                     "cutoff": cutoff.isoformat(),
                     "retention_days": days,
                     "swept_at": now.isoformat(),
