@@ -1,3 +1,12 @@
+# Pin the compose project name to `neuthek` so image tags, the
+# default network, and `docker compose` CLI output match the rebrand
+# regardless of which directory the file lives in (the legacy clone
+# is at C:/Users/.../IStore, which would otherwise tag images as
+# `istore-backend`, `istore-ml-worker`, etc.). With this set, every
+# build emits neuthek-backend:latest / neuthek-ml-worker:latest, and
+# the network is `neuthek_default` instead of `istore_default`.
+name: neuthek
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
