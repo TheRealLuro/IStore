@@ -152,8 +152,26 @@ function initialsAcc(name) {
 // verified / 2FA / Google-linked / age-confirmed status at a glance.
 // Each badge maps a boolean on the User payload to a color + label.
 function UserStatusBadges({ user }) {
+  // §B / user-feedback fix: when an account was created via Sign in with
+  // Google, the SSO callback flips `is_verified=true` automatically
+  // (Google attested the address via the id_token's `email_verified=true`
+  // claim). The previous label here read "Email verified" for that case
+  // too, which was confusing — users reported "it says my email is
+  // verified but I never clicked a verify link". Distinguish the two
+  // confirmation paths in the chip text so the source of verification
+  // is visible. Heuristic: a Google-linked + verified account where no
+  // password has been set is almost certainly SSO-only ⇒ "Verified via
+  // Google". A Google-linked account WITH a password is ambiguous (the
+  // user may have verified by email first, then linked Google later);
+  // fall back to the plain "Email verified" label in that case so we
+  // don't claim Google-attestation that didn't happen.
+  const verifiedViaGoogle =
+    user?.is_verified && user?.google_linked && user?.password_set === false;
+  const verifiedLabel = verifiedViaGoogle
+    ? "Verified via Google"
+    : "Email verified";
   const items = [
-    { ok: user?.is_verified, on: "Email verified", off: "Email unverified" },
+    { ok: user?.is_verified, on: verifiedLabel, off: "Email unverified" },
     { ok: user?.totp_enabled, on: "2FA on", off: "2FA off" },
     { ok: user?.google_linked, on: "Google linked", off: null },
     { ok: user?.age_confirmed, on: null, off: "Age not confirmed" },
@@ -257,7 +275,11 @@ function UserStateGrid({ user }) {
     { k: "Display name", v: user?.display_name || user?.name || "—" },
     { k: "Role", v: user?.role || "user" },
     { k: "Account active", v: user?.is_active ? "Yes" : "No" },
-    { k: "Email verified", v: user?.is_verified ? "Yes" : "No" },
+    { k: "Email verified", v: user?.is_verified
+        ? (user?.google_linked && user?.password_set === false
+            ? "Yes — via Google"
+            : "Yes")
+        : "No" },
     { k: "Age confirmed", v: user?.age_confirmed ? "Yes (13+)" : "Not yet" },
     { k: "Two-factor auth", v: user?.totp_enabled ? "Enabled" : "Off" },
     { k: "Google linked", v: user?.google_linked ? "Yes" : "No" },

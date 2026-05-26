@@ -1757,14 +1757,15 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
         # Cap at MAX_FRAMES so a 2h movie doesn't try to caption 720
         # frames (90+ minutes of GPU time).
         #
-        # The user asked for "frame-by-frame" — true 30fps would mean
-        # 30 captions/sec which is GPU-prohibitive AND redundant
-        # (consecutive frames look nearly identical). 1 sample / 5s
-        # is the sweet spot empirically: every meaningful scene
-        # transition in a typical phone clip / lecture / interview
-        # gets covered, summary cost stays under ~1 min on GPU.
-        MAX_FRAMES = 24
-        SECONDS_PER_FRAME = 5.0
+        # User feedback (2026-05) — bumped sample density from 1/5s to
+        # 1/3s. The old rate undersampled short phone clips (a 15-second
+        # video got only 4 frames covering 10-90%, missing the
+        # information-dense middle). 1 sample / 3s is still cheap
+        # on GPU (~50% more Florence calls) and gives meaningful scene
+        # coverage on the 10-60s clips that dominate the dataset, while
+        # the MAX_FRAMES cap of 30 keeps long videos bounded.
+        MAX_FRAMES = 30
+        SECONDS_PER_FRAME = 3.0
         n = max(4, min(MAX_FRAMES, int(round(duration_s / SECONDS_PER_FRAME))))
         # Spread evenly inside [10%, 90%] so we skip the standard
         # intro/outro black + fade and concentrate on the actual
@@ -1785,11 +1786,50 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
     frames = [_extract_keyframe(raw_bytes, t) for t in offsets]
     frames = [f for f in frames if f]
 
+    # Caption-quality filter — Florence occasionally emits a single
+    # filler word ("photograph", "image") or a known-hallucinated
+    # opener on a frame that's too dark / too noisy to parse. Those
+    # captions pollute the rollup (Qwen treats them as facts). Reject
+    # captions that are too short OR start with a common hallucination
+    # prefix and aren't followed by substantive content. The good
+    # captions on adjacent frames usually carry the same context.
+    _HALLUCINATION_PREFIXES = (
+        "a picture of ",
+        "a photo of ",
+        "an image of ",
+        "screenshot of ",
+        "the image shows ",
+    )
+
+    def _caption_is_useful(cap: str) -> bool:
+        if not cap:
+            return False
+        stripped = cap.strip().rstrip(".")
+        # Word-count gate. Empirically, captions <5 words on a
+        # `<MORE_DETAILED_CAPTION>` task are filler.
+        words = stripped.split()
+        if len(words) < 5:
+            return False
+        # Reject hallucination prefixes ONLY when they're nearly the
+        # whole caption (i.e. "a picture of a man" → reject; "a
+        # picture of a man holding a clipboard" → keep).
+        low = stripped.lower()
+        for prefix in _HALLUCINATION_PREFIXES:
+            if low.startswith(prefix) and len(words) < 8:
+                return False
+        return True
+
     captions: list[str] = []
+    dropped_low_quality = 0
     for frame in frames:
         cap = _florence_caption(frame)
-        if cap:
-            captions.append(cap.strip().rstrip("."))
+        if not cap:
+            continue
+        cleaned = cap.strip().rstrip(".")
+        if _caption_is_useful(cleaned):
+            captions.append(cleaned)
+        else:
+            dropped_low_quality += 1
 
     # Audio transcription — captures what was SAID, which is usually
     # more informative than what the visuals show on talking-head /
@@ -1892,6 +1932,33 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
         points.append(f"Sampled {len(captions)} keyframes")
 
     cat = _classify_content(summary, image.original_filename, "video")
+
+    # Record summary_signals on the image so quality regressions are
+    # debuggable post-hoc. Same `image.__dict__["summary_signals"] =
+    # ...` pattern the image pipeline uses (see ~line 567) — avoids
+    # SQLAlchemy state-load on an expired column and the async-greenlet
+    # crash that triggers. The caller's `_mark_done` reads this dict
+    # and writes it as JSONB.
+    signals: dict = {
+        "kind": "video",
+        "duration_s": float(duration_s) if duration_s else None,
+        "frame_count": len(frames),
+        "caption_count": len(captions),
+        "dropped_low_quality_captions": dropped_low_quality,
+        "has_transcript": bool(transcript),
+        "transcript_chars": len(transcript) if transcript else 0,
+        "qwen_succeeded": bool(summary) and summary not in (
+            "Video file. Preview unavailable.",
+        ),
+    }
+    # Merge with any signals the caller already set so we don't clobber.
+    existing = image.__dict__.get("summary_signals") or {}
+    if isinstance(existing, dict):
+        existing.update(signals)
+        image.__dict__["summary_signals"] = existing
+    else:
+        image.__dict__["summary_signals"] = signals
+
     return SummaryResult(
         topic=topic, summary=summary, points=points[:5], content_type=cat,
     )
