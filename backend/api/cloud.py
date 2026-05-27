@@ -14,6 +14,7 @@ can toast.
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import secrets as _ic_secrets
 import shutil as _ic_shutil
@@ -832,11 +833,29 @@ class ICloudStartRequest(BaseModel):
     password: str
 
 
+class ICloudTrustedDevice(BaseModel):
+    """Trusted-device entry surfaced by pyicloud's
+    `service.trusted_devices`. We pass the redacted phone / device
+    name through to the FE so the user can see WHERE Apple sent
+    their code — and pick a different device if the first one
+    didn't deliver. The `id` is the JSON-stringified original dict
+    that `send_verification_code` consumes; opaque to the FE.
+    """
+    id: str
+    label: str
+
+
 class ICloudStartResponse(BaseModel):
     requires_2fa: bool = False
     session_id: str | None = None
     link_id: int | None = None
     message: str | None = None
+    # §C4.6 — populated when requires_2fa is True. Helps the user
+    # confirm Apple actually sent a code (and to which device).
+    # Empty when Apple's auto-push fires correctly and the user
+    # doesn't need a fallback.
+    trusted_devices: list[ICloudTrustedDevice] = []
+    code_sent_to: str | None = None
 
 
 @router.post("/icloud/start", response_model=ICloudStartResponse)
@@ -930,21 +949,57 @@ async def icloud_start(
             message="Session already trusted — no 2FA needed.",
         )
 
-    if requires_2sa:
-        # Older two-step-authentication (SMS-based). pyicloud doesn't
-        # auto-push a code in this branch — we have to explicitly
-        # request one to a trusted device. Pick the first device,
-        # which is typically the user's primary phone. The user-
-        # facing modal then asks for the SMS code.
+    if requires_2sa or requires_2fa:
+        # Both branches now go through the SAME path: explicitly ask
+        # Apple to send a code via `send_verification_code`. We used
+        # to only do this for `requires_2sa` and rely on Apple's
+        # auto-push for `requires_2fa` — but the auto-push fails
+        # silently for some accounts (Apple's anti-abuse heuristics,
+        # offline trusted devices, or accounts that mix legacy + new
+        # 2FA flags). Users would see "enter the code" but no code
+        # would ever arrive. Calling send_verification_code() in
+        # both branches makes the delivery explicit; we also return
+        # the trusted-device list so the FE can show WHERE the code
+        # was sent and let the user pick a different device on
+        # resend.
+        device_list: list[ICloudTrustedDevice] = []
+        code_sent_to: str | None = None
         try:
-            devices = svc.trusted_devices
-            if devices:
-                await asyncio.to_thread(
-                    svc.send_verification_code, devices[0]
+            raw_devices = list(svc.trusted_devices or [])
+            for dev in raw_devices:
+                # pyicloud's device dicts use varied key names per
+                # account flavor. Build a user-readable label out
+                # of whatever we get; fall back to a generic string
+                # if none of the expected fields exist.
+                label = (
+                    dev.get("deviceName")
+                    or dev.get("phoneNumber")
+                    or dev.get("name")
+                    or "Trusted device"
                 )
+                device_list.append(ICloudTrustedDevice(
+                    id=_json.dumps(dev, sort_keys=True),
+                    label=str(label),
+                ))
+            if raw_devices:
+                try:
+                    await asyncio.to_thread(
+                        svc.send_verification_code, raw_devices[0]
+                    )
+                    code_sent_to = device_list[0].label
+                except Exception:
+                    # If Apple rejects the send (rate-limited,
+                    # device offline, ...) we still want the modal
+                    # to render with the device list so the user
+                    # can retry on a different one.
+                    logger.exception(
+                        "icloud_start: send_verification_code "
+                        "failed on device %r",
+                        device_list[0].label,
+                    )
         except Exception:
             logger.exception(
-                "icloud_start: send_verification_code failed; "
+                "icloud_start: trusted_devices probe failed; "
                 "user will need to fall back to Settings → Apple ID"
             )
         _ICLOUD_PENDING[session_id] = {
@@ -953,27 +1008,14 @@ async def icloud_start(
             "apple_id": payload.apple_id,
             "password": payload.password,
             "tmp_dir": tmp_dir,
-            "is_2sa": True,
+            "is_2sa": requires_2sa,
             "created_at": datetime.now(timezone.utc),
         }
         return ICloudStartResponse(
-            requires_2fa=True, session_id=session_id,
-        )
-
-    if requires_2fa:
-        # Modern 2FA — Apple should auto-push a code to trusted
-        # iDevices. If it doesn't, the user can get one from
-        # Settings → Apple ID → Sign-In & Security on any iDevice.
-        _ICLOUD_PENDING[session_id] = {
-            "service": svc,
-            "user_id": user.id,
-            "apple_id": payload.apple_id,
-            "password": payload.password,
-            "tmp_dir": tmp_dir,
-            "created_at": datetime.now(timezone.utc),
-        }
-        return ICloudStartResponse(
-            requires_2fa=True, session_id=session_id,
+            requires_2fa=True,
+            session_id=session_id,
+            trusted_devices=device_list,
+            code_sent_to=code_sent_to,
         )
 
     # Neither 2FA nor 2SA, AND not flagged as trusted — fall back to
@@ -988,6 +1030,87 @@ async def icloud_start(
         link_id=link_id,
         message="iCloud connected (no 2FA challenge from Apple).",
     )
+
+
+class ICloudResendRequest(BaseModel):
+    session_id: str
+    # `device_id` is the opaque JSON-stringified trusted_devices
+    # entry from /start's response. Omit to resend to the first
+    # device (same as /start's default).
+    device_id: str | None = None
+
+
+class ICloudResendResponse(BaseModel):
+    code_sent_to: str | None = None
+
+
+@router.post("/icloud/resend-code", response_model=ICloudResendResponse)
+async def icloud_resend_code(
+    payload: ICloudResendRequest,
+    user: Annotated[User, Depends(current_active_user)],
+) -> ICloudResendResponse:
+    """Re-request a 2FA code, optionally to a different trusted
+    device. Used by the FE's modal when Apple's first delivery
+    doesn't arrive (push silent-failed, SMS lost, etc).
+
+    No DB writes; just talks to Apple via the stashed pyicloud
+    session. The session must still be pending (5-min TTL).
+    """
+    _icloud_sweep_pending()
+    pending = _ICLOUD_PENDING.get(payload.session_id)
+    if pending is None or pending["user_id"] != user.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Sign-in session not found or expired. Start over.",
+        )
+    svc = pending["service"]
+    try:
+        raw_devices = list(svc.trusted_devices or [])
+    except Exception:
+        logger.exception("icloud_resend: trusted_devices raised")
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Couldn't reach iCloud's device list. Try again.",
+        )
+    if not raw_devices:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "No trusted devices on this Apple ID. Use Settings → "
+            "Apple ID → Sign-In & Security → Get Verification Code "
+            "on a device already signed in to this account.",
+        )
+    # Pick which device to send to. Match against the opaque
+    # device_id (JSON-stringified) from /start's response.
+    pick = raw_devices[0]
+    label = (
+        pick.get("deviceName") or pick.get("phoneNumber")
+        or pick.get("name") or "Trusted device"
+    )
+    if payload.device_id:
+        try:
+            wanted = _json.loads(payload.device_id)
+            for dev in raw_devices:
+                if dev == wanted:
+                    pick = dev
+                    label = (
+                        dev.get("deviceName") or dev.get("phoneNumber")
+                        or dev.get("name") or "Trusted device"
+                    )
+                    break
+        except Exception:
+            pass  # fall through to first device
+    try:
+        await asyncio.to_thread(svc.send_verification_code, pick)
+    except Exception:
+        logger.exception(
+            "icloud_resend: send_verification_code failed on %r", label
+        )
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"Apple refused to send a code to {label}. Try another "
+            f"device or use Settings → Apple ID → Get Verification Code.",
+        )
+    return ICloudResendResponse(code_sent_to=label)
 
 
 class ICloudVerifyRequest(BaseModel):

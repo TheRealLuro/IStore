@@ -26,6 +26,7 @@ import {
   getSyncStatus,
   icloudStart,
   icloudVerify,
+  icloudResendCode,
   protonStart,
   protonVerify,
   megaStart,
@@ -479,6 +480,14 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
   const [code, setCode] = useState("");
   const [sessionId, setSessionId] = useState(null);
   const [busy, setBusy] = useState(false);
+  // §C4.6 — track WHERE Apple sent the code so the user can confirm
+  // it actually went somewhere (Apple's auto-push sometimes fails
+  // silently for accounts with stale device state). The device list
+  // lets the user resend to a different trusted device if the first
+  // one doesn't deliver.
+  const [codeSentTo, setCodeSentTo] = useState(null);
+  const [trustedDevices, setTrustedDevices] = useState([]);
+  const [resending, setResending] = useState(false);
 
   // Reset whenever the modal re-opens so a previous failed attempt
   // doesn't leak its state into the next try.
@@ -490,6 +499,9 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
       setCode("");
       setSessionId(null);
       setBusy(false);
+      setCodeSentTo(null);
+      setTrustedDevices([]);
+      setResending(false);
     }
   }, [open]);
 
@@ -505,6 +517,8 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
       const r = await icloudStart(appleId, password);
       if (r.requires_2fa) {
         setSessionId(r.session_id || null);
+        setCodeSentTo(r.code_sent_to || null);
+        setTrustedDevices(r.trusted_devices || []);
         setStep("code");
       } else {
         // Trusted device — link was persisted immediately.
@@ -606,34 +620,77 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
 
         {step === "code" && (
           <form onSubmit={onSubmitCode} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 13, color: "var(--ink-2)" }}>
-              Check your iDevice for a 6-digit code, then enter it
-              below.
+            {/* §C4.6 — the backend now explicitly calls
+                send_verification_code() before stashing the
+                session, so by the time we render this view Apple
+                HAS been asked to deliver a code somewhere. Show
+                the user exactly where, and offer to retry on a
+                different device if the first one doesn't arrive
+                (Apple's push fails silently for offline devices /
+                anti-abuse heuristics). */}
+            <div style={{ fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5 }}>
+              {codeSentTo ? (
+                <>Code sent to <strong style={{ color: "var(--ink)" }}>{codeSentTo}</strong>. Enter it below.</>
+              ) : (
+                <>Apple should send a 6-digit code to one of your trusted devices. Enter it below.</>
+              )}
             </div>
-            {/* §C4.6 — Apple sometimes sends the "new sign-in"
-                email but doesn't push the 2FA code automatically
-                (depending on which trusted devices are online, push
-                state, and Apple's anti-abuse heuristics). The user
-                got an email but no code → this hint tells them
-                where to find it manually. The "Get Verification
-                Code" path always works once the user has at least
-                one trusted device. */}
-            <div style={{
-              padding: "10px 12px",
-              background: "var(--surface-2)",
-              border: "1px solid var(--line)",
-              borderRadius: 8,
-              fontSize: 11.5,
-              lineHeight: 1.5,
-              color: "var(--ink-3)",
-            }}>
-              <strong style={{ color: "var(--ink-2)" }}>No code yet?</strong>
-              {" "}On any trusted iPhone / iPad / Mac: open{" "}
-              <strong>Settings → [your name] → Sign-In &amp; Security
-              → Get Verification Code</strong>. The push doesn&rsquo;t
-              always auto-arrive (it depends on which devices are
-              online), but this menu surfaces a code on demand.
-            </div>
+            {/* If the code doesn't arrive within ~30 s, the user
+                can pick a different device from the dropdown OR
+                fall back to "Get Verification Code" in iDevice
+                Settings. Both paths are surfaced so the user is
+                never stuck. */}
+            {trustedDevices.length > 0 && (
+              <details style={{
+                fontSize: 11.5,
+                color: "var(--ink-3)",
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                padding: "8px 12px",
+              }}>
+                <summary style={{ cursor: "pointer", color: "var(--ink-2)" }}>
+                  Didn&rsquo;t get the code? Try a different device.
+                </summary>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {trustedDevices.map((dev) => (
+                    <button
+                      key={dev.id}
+                      type="button"
+                      className="btn btn--ghost btn--sm"
+                      disabled={resending || busy}
+                      onClick={async () => {
+                        if (!sessionId) return;
+                        setResending(true);
+                        try {
+                          const r = await icloudResendCode(sessionId, dev.id);
+                          setCodeSentTo(r.code_sent_to || dev.label);
+                          toast.success(`Code sent to ${r.code_sent_to || dev.label}`);
+                        } catch (e) {
+                          toast.error(e?.detail || "Couldn't resend the code.");
+                        } finally {
+                          setResending(false);
+                        }
+                      }}
+                      style={{
+                        justifyContent: "flex-start",
+                        textAlign: "left",
+                        fontFamily: "monospace",
+                        fontSize: 12,
+                      }}
+                    >
+                      Send to {dev.label}
+                    </button>
+                  ))}
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>
+                    Still nothing? On any iPhone / iPad / Mac signed in
+                    to this Apple ID, open{" "}
+                    <strong>Settings → [your name] → Sign-In &amp;
+                    Security → Get Verification Code</strong>.
+                  </div>
+                </div>
+              </details>
+            )}
             <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
               Verification code
               <input

@@ -133,6 +133,16 @@ export async function getProviderFolderStats(
 // + persists the link. No browser redirect involved — the whole
 // dance lives inside a modal.
 
+export interface ICloudTrustedDevice {
+  /** Opaque token to pass to /icloud/resend-code. The backend
+   *  matches it against the original pyicloud trusted_devices
+   *  entry. Don't try to interpret. */
+  id: string;
+  /** Human-readable label — e.g. "iPhone 14", "+1 ***-***-1234".
+   *  Use as-is in the FE; never parse. */
+  label: string;
+}
+
 export interface ICloudStartResponse {
   requires_2fa: boolean;
   /** Set when requires_2fa is true. Pass it back to /icloud/verify
@@ -142,6 +152,11 @@ export interface ICloudStartResponse {
    *  disabled account) — the link was persisted immediately. */
   link_id?: number;
   message?: string;
+  /** §C4.6 — populated when requires_2fa is true. List of devices
+   *  Apple knows about for this account; lets the FE show "code
+   *  sent to: <label>" and offer resend on a different device. */
+  trusted_devices?: ICloudTrustedDevice[];
+  code_sent_to?: string;
 }
 
 export async function icloudStart(
@@ -157,6 +172,15 @@ export async function icloudVerify(
 ): Promise<{ link_id: number }> {
   return api.post<{ link_id: number }>(
     "/cloud/icloud/verify", { session_id, code },
+  );
+}
+
+export async function icloudResendCode(
+  session_id: string, device_id?: string,
+): Promise<{ code_sent_to: string | null }> {
+  return api.post<{ code_sent_to: string | null }>(
+    "/cloud/icloud/resend-code",
+    { session_id, device_id: device_id ?? null },
   );
 }
 
