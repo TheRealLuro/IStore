@@ -46,7 +46,7 @@ const FAQS: FaqItem[] = [
     topic: "About",
     id: "who-is-neuthek-for",
     q: "Who is neuthek for?",
-    a: "neuthek is built for people who currently use Google Photos, iCloud Photos, OneDrive, or Dropbox for their personal photo and document libraries, but want stronger privacy, full ownership of their data, and natural-language search. Practical fits include families consolidating their photo library, creatives organizing portfolios, students archiving coursework, and developers who want a self-hostable Drive replacement on their own hardware.",
+    a: "neuthek is built for people who currently use Google Photos, iCloud Photos, Dropbox, Proton Drive, or MEGA for their personal photo and document libraries, but want stronger privacy, full ownership of their data, and natural-language search. Practical fits include families consolidating their photo library, creatives organizing portfolios, students archiving coursework, and developers who want a self-hostable Drive replacement on their own hardware.",
   },
 
   // ---- Privacy & data ownership ----
@@ -72,7 +72,25 @@ const FAQS: FaqItem[] = [
     topic: "Privacy",
     id: "encryption",
     q: "Is my data encrypted?",
-    a: "TLS is enforced for all client connections via Caddy. At rest, object storage supports SSE-S3 and SSE-KMS modes depending on backend. Refresh tokens for cloud-sync integrations (Google Drive) are encrypted with Fernet before being written to disk. Password hashes use Argon2. Postgres at-rest encryption is recommended at the OS or volume layer and documented in the self-host setup.",
+    a: "TLS is enforced for all client connections via Caddy. At rest, object storage supports SSE-S3 and SSE-KMS modes depending on backend. Refresh tokens for cloud-sync integrations are encrypted with Fernet before being written to disk. Password hashes use Argon2id. Postgres at-rest encryption is recommended at the OS or volume layer and documented in the self-host setup.",
+  },
+  {
+    topic: "Privacy",
+    id: "is-neuthek-end-to-end-encrypted",
+    q: "Is neuthek end-to-end encrypted?",
+    a: "No — not today. Files are encrypted in transit (HTTPS) and at rest (on-disk encryption + Fernet for credentials). The server holds the keys so it can run the AI features on your behalf. End-to-end encryption — where your device holds the key and we cannot decrypt — is on the roadmap, Mega/Proton-class. We will ship it feature by feature with explicit trade-offs (semantic search, captions, and face recognition all lose capability when their inputs become ciphertext we cannot read). We will not call neuthek \"end-to-end encrypted\" until it actually is — calling it that before then is exactly what the FTC went after Zoom for in 2020.",
+  },
+  {
+    topic: "Privacy",
+    id: "do-you-collect-or-sell-data",
+    q: "Do you collect, train on, or sell my data?",
+    a: "No to all three. We don't collect what we don't need — an email address for the launch ping is the entire mandatory collection today. We don't train AI models on your content; the vision models we run (OpenCLIP, Florence-2, Qwen2.5, RetinaFace, ArcFace) are pre-trained, frozen, and never fine-tuned. We don't sell or share personal information for cross-context behavioral advertising as defined by CCPA/CPRA; we honor the Global Privacy Control browser signal as an opt-out anyway. These three claims are not aspirational — they are substantiated by contracts with our subprocessors, by the absence of a training pipeline in our codebase, and by an audit-ready policy that requires 30 days' notice + opt-in if it ever changes.",
+  },
+  {
+    topic: "Privacy",
+    id: "what-about-bipa-and-illinois",
+    q: "What about BIPA / Illinois biometric law for face recognition?",
+    a: "Face recognition is off by default. Enabling it requires a separate consent step that is BIPA-compliant: a written release per 740 ILCS 14/15(b), a publicly published retention schedule of three years (740 ILCS 14/15(a)), and an explicit statement that we do not sell, lease, or trade biometric identifiers (740 ILCS 14/15(c)–(d)). The consent ledger captures your account name, timestamp, the consent-text version, and your confirmation. Disabling face recognition deletes every face embedding and cluster immediately. Illinois, Texas (CUBI), and Washington (H.B. 1493) residents are covered by the same flow.",
   },
 
   // ---- Search & AI ----
@@ -141,8 +159,8 @@ const FAQS: FaqItem[] = [
   {
     topic: "Migration",
     id: "migrate-from-google-photos",
-    q: "Can I migrate from Google Photos / iCloud / OneDrive / Dropbox?",
-    a: "Yes. For Google Drive (which holds Google Photos exports plus general Drive files), neuthek has built-in cloud sync — Settings → Cloud sync → Connect Google Drive grants read-only access to your Drive folder tree, mirrors it into neuthek, and runs an hourly background sweep for new files. For iCloud / OneDrive / Dropbox, the current path is: use the provider's bulk export (Apple's Privacy Portal, OneDrive's download-as-zip, Dropbox's account-export) then drag the folder into neuthek for upload. Direct iCloud / OneDrive / Dropbox sync integrations are on the roadmap.",
+    q: "Can I migrate from Google Photos / iCloud / Dropbox / Proton Drive / MEGA?",
+    a: "Yes — five cloud providers wired up directly. Google Drive (which holds Google Photos exports plus general Drive files) and Dropbox both use OAuth 2.0 with read-only scopes — neuthek can never write back. iCloud Drive connects via Apple-ID with the modern HSA-2 push prompt to a trusted iDevice, with SMS fallback when Apple's lockout kicks in. Proton Drive and MEGA use email + password through rclone — Proton and MEGA preserve their server-side E2E inside their products; once neuthek ingests, we hold plaintext so AI can run on it (the same trade-off you'd make installing their desktop sync clients). OneDrive isn't currently supported — Microsoft's Personal SDK license terms made it the wrong fit; we recommend exporting OneDrive to a local folder and uploading.",
   },
   {
     topic: "Migration",
@@ -156,7 +174,7 @@ const FAQS: FaqItem[] = [
     topic: "Pricing",
     id: "how-much-will-it-cost",
     q: "How much will it cost?",
-    a: "Self-host is free, forever. Managed hosted pricing is being finalized and will be published on the /hosting page before launch. The plan is: a free tier with a modest storage cap, a Pro tier for personal use, and a Business tier for shared / family use — all paid through Stripe.",
+    a: "Nothing announced yet. Self-host (when the open-source build drops) will be free, forever. Hosted plans + pricing get published on /hosting at launch — not before. We're explicitly not pre-announcing tiers so we don't lock ourselves into something that doesn't fit the costs we end up at when we run the service. Join the waitlist to be notified the moment pricing goes live.",
   },
   {
     topic: "Pricing",
@@ -184,7 +202,7 @@ export default function Faq() {
     setLink("canonical", "https://neuthek.com/faq");
     setMeta("og:title", "FAQ — neuthek", "property");
     setMeta("og:description",
-      "Answers about neuthek: what it is, how AI search works, privacy, self-host vs managed, pricing, file support, and migration from Google Photos / iCloud / OneDrive / Dropbox.", "property");
+      "Answers about neuthek: what it is, how AI search works, privacy, end-to-end encryption roadmap, self-host vs managed, pricing, file support, and migration from Google Photos / iCloud / Dropbox / Proton Drive / MEGA.", "property");
     setMeta("og:url", "https://neuthek.com/faq", "property");
   }, []);
 
@@ -276,7 +294,7 @@ export default function Faq() {
             <p>
               Still not sure if neuthek is for you?{" "}
               <Link to="/compare">See the side-by-side comparison</Link>{" "}
-              with Google Photos, iCloud, OneDrive, and Dropbox, or{" "}
+              with Google Photos, iCloud, Dropbox, Proton Drive, and MEGA, or{" "}
               <Link to="/roadmap">check the roadmap</Link> for what's
               landing next.
             </p>
