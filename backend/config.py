@@ -297,6 +297,16 @@ class Settings(BaseSettings):
         default="http://localhost:8000/cloud/callback/pcloud"
     )
 
+    # §C4.6 — iCloud Drive. pyicloud persists per-Apple-ID trust state
+    # (cookies, keyring) under this directory; we create one subdirectory
+    # per CloudLink (named after the link id) so multiple iCloud
+    # accounts on the same neuthek instance stay isolated. Production
+    # deployments should mount this as a persistent volume — the trust
+    # token Apple issues after 2FA is good for ~30 days and saves the
+    # user from re-entering their password on every sync, but only as
+    # long as the cookie files survive container restarts.
+    pyicloud_cookie_root: str = Field(default="/var/neuthek/pyicloud")
+
     # §C2 — hourly cloud-sync sweep. The lifespan-managed background
     # task pulls every active CloudLink at this cadence. Set to 0 (or
     # flip cloud_sync_hourly_enabled=false) to disable in test/dev runs
