@@ -160,6 +160,15 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   // Marking the code as used + returning a JWT happens server-side.
   const [recoveryMode, setRecoveryMode] = useStateA(false);
   const [recoveryCode, setRecoveryCode] = useStateA("");
+  // §H#7b — code-entry mode for the email-link sign-in. After the
+  // user clicks "Email me a sign-in link" we both fire the
+  // /request endpoint AND flip into this mode, which shows a
+  // 6-digit code input below a "check your email" note. The user
+  // can either click the link in their inbox OR type the code
+  // here. Useful when the device with the email isn't the same
+  // device they want to sign in on.
+  const [signinCodeMode, setSigninCodeMode] = useStateA(false);
+  const [signinCode, setSigninCode] = useStateA("");
   // §C6 — "Forgot password?" modal state. The link below the
   // sign-in password field opens the modal; submit fires the
   // forgot-password endpoint (which always responds the same way
@@ -327,7 +336,14 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       try {
         setSubmitting(true);
         let u;
-        if (recoveryMode) {
+        if (signinCodeMode) {
+          // §H#7b — magic-link 6-digit code path. POST email + code
+          // to /auth/email-link/consume-code. The helper persists
+          // the returned JWT via tokens.set then fetches /users/me,
+          // matching the shape of every other auth path.
+          const { consumeSigninCode } = await import("@/api/auth");
+          u = await consumeSigninCode(email.trim(), signinCode.trim());
+        } else if (recoveryMode) {
           // §C6c — recovery-code path. The server marks the code as
           // used + returns a JWT in the same shape as /jwt/login, so
           // the rest of the post-login flow stays identical.
@@ -353,11 +369,13 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
         }
         const msg = e instanceof ApiError
           ? (e.status === 400 || e.status === 401
-              ? (recoveryMode
-                  ? "That recovery code didn't match. Each code only works once; try the next one."
-                  : totpNeeded
-                    ? "Wrong 2FA code — check your authenticator app and try again."
-                    : "Wrong email or password.")
+              ? (signinCodeMode
+                  ? "That code didn't match, or it's already been used. Check the email or request a fresh code."
+                  : recoveryMode
+                    ? "That recovery code didn't match. Each code only works once; try the next one."
+                    : totpNeeded
+                      ? "Wrong 2FA code — check your authenticator app and try again."
+                      : "Wrong email or password.")
               : e.detail)
           : "Sign-in failed. Check your connection.";
         setAuthError(msg);
@@ -591,13 +609,22 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
 
           <div className="auth__divider"><span>or with email</span></div>
 
-          {/* §H#7 — passwordless sign-in via emailed link. Mounted
-              above the email/password fields so it's visible BEFORE
-              the user starts typing a password they may not remember.
-              Sign-up doesn't get this option (it would create
-              a half-bootstrapped account with no password); sign-in
-              only. */}
-          {!isSignup && !recoveryMode && (
+          {/* §H#7 — passwordless sign-in via emailed link + 6-digit
+              code. Mounted above the email/password fields so it's
+              visible BEFORE the user starts typing a password they
+              may not remember. Sign-up doesn't get this option
+              (would create a half-bootstrapped account with no
+              password); sign-in only.
+
+              Clicking the button does two things:
+                1. POST /auth/email-link/request — server mails the
+                   user a link AND a 6-digit code.
+                2. Flip the form into signinCodeMode so the user can
+                   type the code directly without leaving this tab
+                   (the link in the email also works, opens /signin
+                   in another window).
+              */}
+          {!isSignup && !recoveryMode && !signinCodeMode && (
             <button
               type="button"
               className="btn btn--secondary btn--lg auth__social"
@@ -614,9 +641,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                   // Anti-enumeration: server returns 202 either way,
                   // so even network errors get the same generic toast.
                 }
+                setSigninCodeMode(true);
+                setSigninCode("");
+                setAuthError(null);
                 toast.success(
-                  `If an account uses ${trimmed}, a sign-in link is ` +
-                  `on the way. Check your inbox.`,
+                  `If an account uses ${trimmed}, a link + 6-digit ` +
+                  `code are on the way. Check your inbox.`,
                   { duration: 7000 },
                 );
               }}
@@ -659,12 +689,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             )}
           </div>
 
-          {/* §C6c — when the user has entered the top-level recovery-
-              code mode, the password field is irrelevant: the
-              recovery-codes/login endpoint takes only email + code.
-              Hiding it (rather than disabling) keeps the focus where
-              the user expects after clicking "Use a recovery code". */}
-          {!recoveryMode && (
+          {/* §C6c/§H#7b — when the user has entered the top-level
+              recovery-code mode OR the magic-link-code mode, the
+              password field is irrelevant: those endpoints take
+              only email + code. Hiding it (rather than disabling)
+              keeps focus on the new input. */}
+          {!recoveryMode && !signinCodeMode && (
           <div className="field field--pwd">
             <label className={"field__label-floating" + (pwd || pwdFocused ? " field__label-floating--up" : "")}>Password</label>
             <input
@@ -850,6 +880,57 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             </div>
           )}
 
+          {/* §H#7b — code-entry branch. Shown after the user clicks
+              "Email me a sign-in link". Submitting POSTs email + 6
+              digits to /auth/email-link/consume-code, which is the
+              parallel path to clicking the link in the inbox. */}
+          {!isSignup && signinCodeMode && (
+            <div className="field" style={{ marginTop: 4 }}>
+              <label
+                className="field__label-floating field__label-floating--up"
+                style={{ color: "var(--ink-2)" }}
+              >
+                6-digit code from your email
+              </label>
+              <input
+                autoFocus
+                type="text"
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                placeholder=" "
+                className="input input--lg input--floating"
+                value={signinCode}
+                onChange={(e) => setSigninCode(e.target.value.replace(/\D/g, ""))}
+                autoComplete="one-time-code"
+                style={{
+                  fontFamily: "monospace", letterSpacing: "0.25em",
+                  textAlign: "center", fontSize: 17,
+                }}
+              />
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 11, color: "var(--ink-3)", marginTop: 6,
+              }}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setSigninCodeMode(false);
+                    setSigninCode("");
+                    setAuthError(null);
+                  }}
+                >
+                  Back to password
+                </a>
+                <span>
+                  Or click the link in your email
+                </span>
+              </div>
+            </div>
+          )}
+
           {isSignup && (
             <div className="auth__next-step">
               <Icon name="shield" size={14}/>
@@ -866,11 +947,13 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             className="btn btn--primary btn--lg auth__cta"
             disabled={
               submitting ||
-              (recoveryMode
-                ? recoveryCode.trim().length < 6
-                : totpNeeded
-                  ? totpCode.length !== 6
-                  : !canSubmit)
+              (signinCodeMode
+                ? signinCode.length !== 6 || !emailValid
+                : recoveryMode
+                  ? recoveryCode.trim().length < 6
+                  : totpNeeded
+                    ? totpCode.length !== 6
+                    : !canSubmit)
             }
             onClick={handleSubmit}
           >
@@ -878,9 +961,11 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
               ? "Working…"
               : (isSignup
                   ? "Continue"
-                  : (recoveryMode
-                      ? "Use recovery code"
-                      : (totpNeeded ? "Verify code" : "Sign in")))}
+                  : (signinCodeMode
+                      ? "Sign in with code"
+                      : (recoveryMode
+                          ? "Use recovery code"
+                          : (totpNeeded ? "Verify code" : "Sign in"))))}
             <Icon name="arrowRight" size={14}/>
           </button>
 

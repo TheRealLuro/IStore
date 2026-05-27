@@ -182,6 +182,36 @@ export async function consumeSigninLink(token: string): Promise<User> {
   }
 }
 
+/**
+ * Sign in via the 6-digit code paired with the magic link in the
+ * email. Same outcome as `consumeSigninLink` — server response is
+ * identical, including the 2FA-aware 401 branch.
+ *
+ * Accepts the code in any of "123456" / "123 456" / "123-456" — the
+ * server strips spaces and dashes before comparing.
+ */
+export async function consumeSigninCode(
+  email: string,
+  code: string,
+): Promise<User> {
+  try {
+    const r = await api.post<{ access_token: string; token_type: string }>(
+      "/auth/email-link/consume-code",
+      { email, code },
+    );
+    tokens.set(r.access_token);
+    return await me();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      const detail = (e.detail as { totp_required?: boolean; email?: string } | null) || null;
+      if (detail?.totp_required) {
+        throw new TotpRequiredError(detail.email || "");
+      }
+    }
+    throw e;
+  }
+}
+
 /** Consume a verify JWT (from the email link). Returns the user. */
 export async function verifyEmail(token: string): Promise<User> {
   return api.post<User>("/auth/verify", { token });

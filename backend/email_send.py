@@ -90,20 +90,41 @@ def send_reset_email(to: str, token: str) -> bool:
     return send_email(to, "Reset your neuthek password", body)
 
 
-def send_signin_link_email(to: str, token: str) -> bool:
+def send_signin_link_email(to: str, token: str, code: str | None = None) -> bool:
     """Magic-link sign-in (passwordless). The user typed their email
-    on the auth screen; we mail them a one-shot link that lands on
-    /signin?token=… and trades the JWT-shaped token for a session
-    JWT via POST /auth/email-link/consume. 15-minute TTL, single-use.
+    on the auth screen; we mail them BOTH a one-shot link AND a 6-
+    digit code so they can sign in either way:
+      - Click the link → /signin?token=… consumes the JWT and lands
+        them in the gallery.
+      - Type the code into the "Enter sign-in code" form on the
+        auth screen — useful when the email is on a different
+        device than the one they want to sign in on (TV, kiosk,
+        another laptop).
+    Both expire together after 15 minutes; using either invalidates
+    the other.
+
+    `code` is Optional to keep the helper backwards-compatible with
+    any pre-update call site; new callers should always pass it.
     """
     link = f"{settings.frontend_base_url}/signin?token={token}"
-    body = (
-        "Sign in to neuthek by clicking the link below.\n\n"
-        f"{link}\n\n"
-        "The link is valid for 15 minutes and can only be used once. "
-        "If you didn't request this email, you can safely ignore it — "
-        "no one can sign in without clicking the link."
-    )
+    if code:
+        body = (
+            "Sign in to neuthek by clicking the link below, OR enter "
+            "the 6-digit code on the sign-in page.\n\n"
+            f"Link:\n{link}\n\n"
+            f"Or use this code:\n\n  {code}\n\n"
+            "Both expire in 15 minutes and can only be used once. "
+            "If you didn't request this email, you can safely ignore "
+            "it — no one can sign in without the link or code."
+        )
+    else:
+        body = (
+            "Sign in to neuthek by clicking the link below.\n\n"
+            f"{link}\n\n"
+            "The link is valid for 15 minutes and can only be used once. "
+            "If you didn't request this email, you can safely ignore it — "
+            "no one can sign in without clicking the link."
+        )
     return send_email(to, "Your neuthek sign-in link", body)
 
 

@@ -549,10 +549,13 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
         "/auth/verify",
         # Magic-link sign-in. /request would be mailbox-spam fuel
         # without rate limiting; /consume is the path an attacker
-        # would hammer with a leaked-token list, so both join the
-        # set.
+        # would hammer with a leaked-token list. /consume-code is
+        # the brute-force surface for the 6-digit code (1M space,
+        # 15-min TTL) — locked down here so an attacker can't run
+        # through the space faster than the TTL expires.
         "/auth/email-link/request",
         "/auth/email-link/consume",
+        "/auth/email-link/consume-code",
         "/account/recovery-codes/login",
         # todo §1.1 / G1 — share-claim is the same threat shape as
         # recovery-codes-login (POST + secret token + identity binding),

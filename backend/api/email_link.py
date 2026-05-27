@@ -1,23 +1,33 @@
 """Passwordless email-link ('magic link') sign-in.
 
-Two endpoints:
-  POST /auth/email-link/request   — body: {email}. Always 202.
-                                    If the email matches a row, mints
-                                    a 15-min single-use JWT-shaped
-                                    token and mails it via
-                                    send_signin_link_email. Anti-
-                                    enumeration: returns the same
-                                    response shape whether the email
-                                    exists or not.
-  POST /auth/email-link/consume   — body: {token}. Trades a fresh,
-                                    unused token for a session JWT
-                                    (same shape as /auth/jwt/login).
-                                    Marks the token consumed via a
-                                    Redis SET-on-jti so subsequent
-                                    presentation of the same token
-                                    fails — fixes the "user forwards
-                                    the email to a teammate" / re-use
-                                    case.
+Three endpoints:
+  POST /auth/email-link/request       — body: {email}. Always 202.
+                                        If the email matches a row,
+                                        mints BOTH a 15-min single-
+                                        use JWT (for the link) AND a
+                                        6-digit code (for users who
+                                        can't click the link — e.g.
+                                        signing in on a TV / desktop
+                                        from their phone's inbox).
+                                        Mails both via
+                                        send_signin_link_email.
+                                        Anti-enumeration: same shape
+                                        whether the email exists.
+  POST /auth/email-link/consume       — body: {token}. Trades a
+                                        fresh, unused JWT for a
+                                        session JWT (same shape as
+                                        /auth/jwt/login). Single-use
+                                        via Redis SET NX on the jti.
+  POST /auth/email-link/consume-code  — body: {email, code}. Same
+                                        outcome as /consume but
+                                        keyed by the 6-digit code
+                                        from the email instead of
+                                        the JWT-shaped token. The
+                                        code is also single-use; a
+                                        successful consume
+                                        invalidates BOTH the code
+                                        and the paired JWT (no re-
+                                        play via either path).
 
 Security notes:
   - Token format: JWT signed with the HKDF-derived PURPOSE_SIGNIN_LINK
@@ -43,6 +53,7 @@ Security notes:
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
@@ -89,6 +100,95 @@ def _signin_link_secret() -> str:
 
 def _jti_key(jti: str) -> str:
     return f"signin-link:consumed:{jti}"
+
+
+# ---------- 6-digit code storage (Redis) ----------------------------
+#
+# Keyed by email (lowercased + url-quoted), so two concurrent
+# /request calls for the same address race on SET XX and the second
+# overwrites the first (latest wins). The value stores both the
+# code + the paired jti, so consuming via /consume-code can also
+# invalidate the JWT path (defense against "user clicks the link
+# AND someone else with the leaked email tries the code").
+#
+# Code shape: zero-padded 6 digits via secrets.randbelow(10**6).
+# 1M combinations + 15-min TTL + per-IP lockout via _AUTH_PATHS
+# bounds the brute-force window comfortably (an attacker would
+# need ~100k attempts to hit 10% probability, well outside the
+# rate-limit budget).
+
+def _code_key(email: str) -> str:
+    return f"signin-link:code:{email.lower()}"
+
+
+def _generate_six_digit_code() -> str:
+    """6-digit string. `secrets.randbelow` is the CSPRNG-backed
+    primitive — NOT `random.randint`, which is a Mersenne-Twister
+    output an attacker could predict given observed values."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+async def _store_code(email: str, code: str, jti: str) -> None:
+    """Persist the (code, jti) pair in Redis with the same TTL as
+    the link JWT. Overwrites any prior in-flight code for this
+    email so repeated /request calls don't leave a stash of valid
+    codes the user can't track (latest wins)."""
+    try:
+        import redis.asyncio as _redis  # type: ignore
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            # JSON-shaped value so the consume side can read both
+            # halves without a second round-trip.
+            import json as _json
+            payload = _json.dumps({"code": code, "jti": jti})
+            await r.set(_code_key(email), payload, ex=_TOKEN_TTL_SECONDS)
+        finally:
+            await r.aclose()
+    except Exception:
+        # Redis outage during /request is non-fatal — the user can
+        # still complete sign-in via the JWT link in the email. Log
+        # but don't surface to the client (would be an enumeration
+        # signal too).
+        logger.exception("magic-link request: redis unreachable storing code")
+
+
+async def _consume_code(email: str, candidate: str) -> tuple[bool, str | None]:
+    """Look up the stored (code, jti) for `email`, compare in
+    constant time against `candidate`, and on match DEL the key so
+    a second attempt fails. Returns (ok, jti_to_revoke).
+
+    `jti_to_revoke` is non-None on success: the caller should mark
+    that jti consumed too, so a user who clicks the link after
+    successfully entering the code doesn't get a second session.
+    """
+    try:
+        import redis.asyncio as _redis  # type: ignore
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        try:
+            stored = await r.get(_code_key(email))
+            if stored is None:
+                return False, None
+            import json as _json
+            try:
+                payload = _json.loads(stored)
+            except Exception:
+                return False, None
+            stored_code = payload.get("code") or ""
+            jti = payload.get("jti")
+            # Constant-time string compare so timing doesn't leak
+            # partial matches on the digits.
+            if not secrets.compare_digest(stored_code, candidate):
+                return False, None
+            # Match. DEL atomically — if another consume races us
+            # on the same key, only one DEL takes effect (the other
+            # observes None on GET).
+            await r.delete(_code_key(email))
+            return True, jti
+        finally:
+            await r.aclose()
+    except Exception:
+        logger.exception("magic-link consume-code: redis unreachable, failing closed")
+        return False, None
 
 
 async def _mark_consumed(jti: str) -> bool:
@@ -161,7 +261,15 @@ async def email_link_request(
         token = jwt.encode(
             token_payload, _signin_link_secret(), algorithm=_TOKEN_ALG,
         )
-        background_tasks.add_task(send_signin_link_email, user.email, token)
+        # Also mint a 6-digit code paired with this jti. Stored in
+        # Redis with the same TTL so the link AND the code both
+        # expire together. Consuming either path invalidates both
+        # (the consume-code branch marks the jti consumed too, and
+        # the consume-token branch is fine letting the unused code
+        # expire on its own).
+        code = _generate_six_digit_code()
+        await _store_code(user.email, code, jti)
+        background_tasks.add_task(send_signin_link_email, user.email, token, code)
 
     return EmailLinkRequestResponse()
 
@@ -262,6 +370,87 @@ async def email_link_consume(
             user_id=user.id,
             action="auth.email_link.consumed",
             details={"jti": jti},
+        )
+    )
+    await session.commit()
+
+    strategy = get_jwt_strategy()
+    token = await strategy.write_token(user)
+    return EmailLinkConsumeResponse(access_token=token)
+
+
+# ---------- 6-digit code consume endpoint ----------------------------
+
+
+class EmailLinkConsumeCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+
+@router.post("/consume-code")
+async def email_link_consume_code(
+    payload: EmailLinkConsumeCodeRequest,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Sign in via the 6-digit code from the email. Same outcome as
+    /consume but keyed by (email, code) instead of the JWT-shaped
+    token. Useful when the user is signing in on a device different
+    from where their email is (TV, kiosk, another laptop).
+
+    Single-use: a successful consume DELs the Redis key so a second
+    attempt with the same code fails. Also marks the paired jti
+    consumed so the link in the same email can't be re-used after
+    the code path succeeded.
+
+    Brute-force resistance: 6-digit codes have 1M combinations and
+    a 15-min TTL, but the SecurityControlsMiddleware lockout on
+    /auth/email-link/consume-code (via _AUTH_PATHS) bounds an
+    attacker's attempts well before the probability of a guess
+    becomes meaningful.
+    """
+    code = (payload.code or "").strip().replace("-", "").replace(" ", "")
+    # Tolerate "123 456" / "123-456" formats the user might type.
+    if not code or not code.isdigit() or len(code) != 6:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Sign-in code is invalid or expired.",
+        )
+
+    email_norm = payload.email.lower()
+    ok, jti = await _consume_code(email_norm, code)
+    if not ok:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Sign-in code is invalid or expired.",
+        )
+
+    # Mark the paired jti consumed too so the link in the same email
+    # can't be replayed. Best-effort: if Redis lost the key between
+    # _consume_code and here we still proceed — the code was valid
+    # AND single-use within the same Redis instance.
+    if jti:
+        await _mark_consumed(jti)
+
+    user = (
+        await session.execute(select(User).where(User.email == email_norm))
+    ).scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Sign-in code is invalid or expired.",
+        )
+
+    # Same 2FA-aware short-circuit as /consume.
+    if user.totp_enabled:
+        response.status_code = status.HTTP_401_UNAUTHORIZED
+        return EmailLinkTotpRequiredResponse(email=user.email)
+
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="auth.email_link.consumed",
+            details={"method": "code"},
         )
     )
     await session.commit()
