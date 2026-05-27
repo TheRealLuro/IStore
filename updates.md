@@ -7,16 +7,169 @@ is ready to publish, copy it into `marketing/src/data/updates.ts`
 the block from this file.
 
 Last published: **W22 (2026-05-26) — Per-user fair queue + real Best
-Of + dev capacity calculator**. Next entry target:
-- **W23, publish 2026-06-06** — multi-axis filtering, search rewrite,
-  C5.1 setup script, themed video/audio/CSV/ICS/VCF viewers.
+Of + dev capacity calculator**. Two drafts queued below (W23 newest at
+top, W24 below):
+
+- **W23, publish 2026-06-02** — Account essentials: real names on
+  signup, "Forgot password?" actually works, three product bugs
+  squashed (email-verified chip clarity, location filter wiring,
+  video-summary quality bump).
+- **W24, publish 2026-06-09** — Multi-axis gallery filtering, search
+  rewrite, C5.1 setup script, themed video/audio/CSV/ICS/VCF
+  viewers, and the long "looks-broken" bug list.
 
 ---
 
-## 2026-w23 — Multi-axis filtering, smarter search, fewer "looks broken" bugs
+## 2026-w23 — Account essentials + product polish
 
-**Slug:** `2026-w23-multi-axis-filtering-and-bug-bundle`
-**Week label:** `Week of June 6, 2026`
+**Slug:** `2026-w23-account-essentials-and-product-polish`
+**Week label:** `Week of June 2, 2026`
+**Tags:** `["account","signup","password-reset","filter","video","privacy","bug-fixes"]`
+
+### Summary
+
+This week was about closing the "this app feels half-finished on
+signup" gap. New accounts now ask for a real name (and use it
+everywhere instead of an email-localpart fallback), "Forgot
+password?" finally does what it says — sends a 15-minute reset
+link with a proper landing page — and three reported product bugs
+got squashed: the Email-verified chip stops claiming you clicked
+a verify link when you signed in with Google, the location filter
+actually filters (the FE state was missing entirely), and video
+summaries got a meaningful quality bump.
+
+### Found
+
+- **Signup never asked for your name.** The form had a name field
+  but it was only used as a consent-signature fallback — never
+  sent to `/auth/register`. Every new user landed with a NULL
+  `display_name` and the gallery / settings / share UIs fell back
+  to email-localparts. Felt sloppy.
+- **"Forgot password?" was a dead link.** The auth screen had the
+  affordance (`<a href="#">Forgot password?</a>`) but no handler;
+  click and nothing happened. The backend was actually 95% wired
+  (reset token mint + email helper + rate-limit middleware all
+  shipped during the security audit) — the FE just didn't have
+  the modal or the landing page.
+- **"It says my email is verified but I never did."** Real user
+  feedback: signing in with Google flipped `is_verified=true` on
+  the row (because Google's id_token attests the address) but the
+  UI then showed a generic "Email verified ✓" chip that read as
+  "you clicked our verify link" — which the user hadn't done.
+- **Location-radius filter was wired backend-side but not FE.**
+  `?near=lat,lng,radius_km` worked at the API; the FE never
+  declared a state hook for it, so any near-filter chip or URL
+  parameter was a silent no-op. The other filter chips were fine,
+  but this one had been advertised in the multi-axis filter pitch
+  and never actually shipped end-to-end.
+- **Video summaries were thin on short clips.** A 15-second phone
+  clip got 4 frames sampled at 10-90% (one every 5 seconds),
+  missing the dense middle. Florence occasionally returned filler
+  captions ("photograph") or hallucination-prefixed openers
+  ("a picture of a man") on dark/noisy frames; those polluted the
+  Qwen rollup. And there were no per-video debug signals — we
+  couldn't audit summary quality after the fact.
+
+### Fixed
+
+- **`display_name` is now a required field on `/auth/register`.**
+  1-80 chars after trimming, no ASCII control characters; Unicode
+  + emoji + non-Latin scripts all pass. Legacy rows with NULL
+  display_names keep working — the constraint applies only at the
+  registration boundary. Settings → Account still lets a legacy
+  user fill theirs whenever.
+- **"Forgot password?" opens a real modal** that asks for the
+  email, fires the existing reset-token endpoint, and shows a
+  generic "if an account uses that email, we just sent a reset
+  link" toast (anti-enumeration: the backend returns the same
+  202 whether or not the address is on file). Pre-fills with
+  whatever's in the sign-in field so the common case doesn't make
+  you re-type.
+- **New `/reset?token=…` landing page** ships at the URL the email
+  link points to. Two password inputs with the same strength gates
+  as signup (≥10 chars + upper + digit + symbol + match). Token
+  is stripped from the address bar on mount so a refresh doesn't
+  replay the flow. Success → "Password updated" toast and a
+  one-time success banner on the sign-in screen.
+- **Account chip distinguishes verification source.** Verified +
+  Google-linked + no password = "Verified via Google". Verified
+  + has a password = "Email verified" (unambiguous — you typed it
+  and clicked our link). Hybrid (verified email first, Google
+  linked later) falls back to plain "Email verified" because
+  either label would be technically correct.
+- **Location filter wired end-to-end on the FE.**
+  `?near=lat,lng,radius_km` now reads from the URL on app load,
+  has its own `useState` hook, plumbs through the React Query
+  cache key, and clears alongside the other filter chips. A
+  manual `?near=37.7,-122.4,5` URL parameter now works on the
+  gallery; the map view will drive this programmatically once
+  it grows a "draw a radius" affordance.
+- **Video summary Batch 1.** Frame sample rate bumped 1/5 s → 1/3 s
+  (50% more Florence calls but materially better scene coverage
+  on the 10-60 s clips that dominate the dataset). New
+  caption-quality filter rejects captions <5 words and short
+  hallucination-prefixed openers; Qwen sees cleaner input.
+  Per-video `summary_signals` now record frame count, caption
+  count, dropped-low-quality count, transcript length, and
+  whether Qwen succeeded — so quality regressions are debuggable
+  post-hoc.
+
+### New features
+
+- **`/reset?token=…` page** — first-class landing for the
+  password-reset email link.
+- **Verification-source labels** on the Account chip + the
+  Account-info table row ("Yes — via Google" vs "Yes" vs "No").
+- **`summary_signals` JSONB column** now records video-side
+  telemetry for every summarize pass (frame count, caption
+  count, low-quality drop count, transcript bytes, Qwen success
+  flag). Same column shape the image pipeline already used.
+
+### Why
+
+A signup flow that doesn't ask for your name and a "Forgot
+password?" link that does nothing both read as "this product
+isn't finished" the moment a real user encounters them. The
+audit cycle put the security floor in place; this week was about
+the surface above it being trustworthy. The three reported bugs
+each had a "wait, that's broken?" quality — the kind of thing a
+new user hits in their first 10 minutes and decides not to come
+back. Fixing them now, while the engine pieces are still hot in
+working memory, is much cheaper than re-loading the context after
+a feature interrupt.
+
+### What this means for you
+
+- **Sign up gets a "Name" field**, and that name shows up in the
+  greeting + the AI summary's "Me" → real-name binding + every
+  share-recipient surface. (Existing accounts with no display
+  name set can fill theirs at Settings → Account → Display
+  name.)
+- **Click "Forgot password?"** on the sign-in screen, enter your
+  email, get a reset link in your inbox within a few seconds.
+  Link is good for 15 minutes; clicking it opens a clean page
+  where you pick a new password. Once you submit, you're back on
+  the sign-in screen with a green confirmation banner.
+- **Your account chip says how your email was verified.** Signed
+  in with Google? "Verified via Google". Created a password +
+  clicked our verify link? "Email verified". Either way the
+  email-on-file is confirmed — the new wording just stops
+  claiming you did something you didn't.
+- **Try a `?near=…` URL on the gallery.** Format is
+  `?near=lat,lng,radius_km` (e.g. `?near=37.7749,-122.4194,5`
+  for everything within 5 km of San Francisco). Requires the
+  GPS-retention consent scope.
+- **Video summaries** of shorter clips have more substance now.
+  Re-summarize any video from Settings → AI features → Library
+  maintenance → Re-summarize entire library if you want the
+  Batch 1 improvements applied to existing rows.
+
+---
+
+## 2026-w24 — Multi-axis filtering, smarter search, fewer "looks broken" bugs
+
+**Slug:** `2026-w24-multi-axis-filtering-and-bug-bundle`
+**Week label:** `Week of June 9, 2026`
 **Tags:** `["filtering","search","map","tags","setup","preview","cleanup"]`
 
 ### Summary
