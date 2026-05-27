@@ -120,7 +120,7 @@ def _verify_state(state: str) -> UUID:
 
 logger = logging.getLogger(__name__)
 
-CloudProvider = Literal["google_drive", "dropbox"]
+CloudProvider = Literal["google_drive", "dropbox", "box", "pcloud"]
 
 
 PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
@@ -151,6 +151,20 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
         "files.metadata.read",
         "account_info.read",
     ],
+    # §C4.6 — Box. `root_readonly` is the read-only equivalent —
+    # listing + downloading files but no writes/deletes. Box's app
+    # config also has to check the corresponding "Read all files
+    # and folders" checkbox; the scope here is a hint that goes
+    # into the auth URL but the app-side config is what Box
+    # actually enforces.
+    "box": [
+        "root_readonly",
+    ],
+    # §C4.6 — pCloud. No scopes parameter — pCloud apps get their
+    # permissions configured app-wide in the developer console; the
+    # OAuth URL doesn't accept a `scope` field. Keep the list empty
+    # so `connect_provider` knows not to attach `scope=` to the URL.
+    "pcloud": [],
 }
 
 
@@ -182,6 +196,14 @@ def _provider_status(provider: str) -> str:
         return "available"
     if provider == "dropbox":
         if not settings.dropbox_oauth_client_id or not settings.dropbox_oauth_client_secret:
+            return "needs_setup"
+        return "available"
+    if provider == "box":
+        if not settings.box_oauth_client_id or not settings.box_oauth_client_secret:
+            return "needs_setup"
+        return "available"
+    if provider == "pcloud":
+        if not settings.pcloud_oauth_client_id or not settings.pcloud_oauth_client_secret:
             return "needs_setup"
         return "available"
     return "coming_soon"
@@ -218,7 +240,11 @@ def list_providers() -> list[dict]:
             "name": "iCloud Drive",
             "kind": "app_password",
             "status": "coming_soon",
-            "blurb": "iCloud lacks a standard OAuth API. Coming via app-specific password support.",
+            "blurb": (
+                "Apple doesn't expose a 3rd-party API for iCloud Drive. "
+                "CloudKit Web Services is for app-developer use only. We "
+                "can't add this without Apple's cooperation."
+            ),
             "docs": None,
         },
         {
@@ -226,24 +252,29 @@ def list_providers() -> list[dict]:
             "name": "MEGA",
             "kind": "credentials",
             "status": "coming_soon",
-            "blurb": "End-to-end encrypted source. Decryption only in the viewer.",
+            "blurb": (
+                "MEGA uses password-based auth (no OAuth) and is "
+                "end-to-end encrypted by design. Mirroring would require "
+                "your password and defeat the E2E protection — "
+                "incompatible with our zero-knowledge posture."
+            ),
             "docs": None,
         },
         {
             "id": "box",
             "name": "Box",
             "kind": "oauth2",
-            "status": "coming_soon",
-            "blurb": "Box.com mirror. OAuth shape ready; sync engine queued.",
-            "docs": None,
+            "status": _provider_status("box"),
+            "blurb": "Mirror your Box. Read-only access; your files stay on Box too.",
+            "docs": "https://app.box.com/developers/console",
         },
         {
             "id": "pcloud",
             "name": "pCloud",
             "kind": "oauth2",
-            "status": "coming_soon",
-            "blurb": "pCloud mirror. OAuth shape ready; sync engine queued.",
-            "docs": None,
+            "status": _provider_status("pcloud"),
+            "blurb": "Mirror your pCloud. Read-only access; your files stay on pCloud too.",
+            "docs": "https://docs.pcloud.com/",
         },
     ]
 
@@ -553,6 +584,548 @@ async def _dropbox_folder_stats(refresh_token: str) -> dict:
     }
 
 
+# ---------- §C4.6 — Box ----------------------------------------------------
+#
+# Box OAuth 2.0:
+#   AUTH:    https://account.box.com/api/oauth2/authorize
+#   TOKEN:   https://api.box.com/oauth2/token
+#   API:     https://api.box.com/2.0
+#
+# Box's refresh tokens are 60-day sliding (extended each refresh) and
+# access tokens last ~1 hour. Box rotates refresh tokens on each
+# refresh (same as Microsoft) — we discard the rotated one because
+# the new one is still valid until the previous TTL elapses, so the
+# subsequent refresh call will re-issue. We never need to persist
+# the rotated token to keep the link alive.
+#
+# File listing is per-folder, not recursive. We BFS from the root
+# folder ID (`0` — Box's reserved root) and visit every subfolder.
+
+_BOX_AUTH_ENDPOINT = "https://account.box.com/api/oauth2/authorize"
+_BOX_TOKEN_ENDPOINT = "https://api.box.com/oauth2/token"
+_BOX_API_BASE = "https://api.box.com/2.0"
+
+
+def _box_auth_url(state: str) -> str:
+    """Build the Box consent URL.
+
+    Box supports PKCE but lists it as optional; we leave it off to
+    keep the shape parallel to Google Sign-In (where PKCE complicates
+    the verifier round-trip). The HMAC-signed state plus an exact
+    redirect-URI match in the developer console handles OAuth CSRF.
+    """
+    from urllib.parse import urlencode
+
+    params = {
+        "client_id": settings.box_oauth_client_id,
+        "response_type": "code",
+        "redirect_uri": settings.box_oauth_redirect_uri,
+        "state": state,
+        "scope": " ".join(PROVIDER_SCOPES["box"]),
+    }
+    return f"{_BOX_AUTH_ENDPOINT}?{urlencode(params)}"
+
+
+async def _box_exchange_code(code: str) -> dict:
+    """POST to Box's token endpoint. Box accepts client_id/secret as
+    body fields (NOT HTTP Basic, unlike Dropbox). Returns a dict with
+    access_token, refresh_token, expires_in, token_type."""
+    import httpx
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": settings.box_oauth_client_id,
+        "client_secret": settings.box_oauth_client_secret,
+        "redirect_uri": settings.box_oauth_redirect_uri,
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(_BOX_TOKEN_ENDPOINT, data=data)
+    if r.status_code >= 400:
+        logger.warning(
+            "box token exchange failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "Box token exchange failed. Try connecting again, "
+            "or check that the app's redirect URI matches "
+            "BOX_OAUTH_REDIRECT_URI exactly."
+        )
+    return r.json()
+
+
+async def _box_refresh_access_token(refresh_token: str) -> str:
+    """Trade a refresh_token for a fresh short-lived access_token.
+
+    Box returns 1-hour access tokens and rotates the refresh_token
+    on every call. We deliberately discard the rotated one — the
+    OLD refresh_token remains valid until the rotation window
+    closes, and the next refresh will rotate again. Persisting
+    every rotation across processes would need either a lock
+    around the refresh call or an OCC retry on the cloud_links
+    row, neither of which is worth the complexity given the
+    rotation window is permissive.
+    """
+    import httpx
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": settings.box_oauth_client_id,
+        "client_secret": settings.box_oauth_client_secret,
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(_BOX_TOKEN_ENDPOINT, data=data)
+    if r.status_code >= 400:
+        logger.warning(
+            "box refresh failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "Box refresh token rejected. The user may need to "
+            "reconnect from Settings → Cloud sync."
+        )
+    payload = r.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise CloudSyncNotConfigured("Box refresh returned no access_token.")
+    return access_token
+
+
+async def _box_collect_entries(refresh_token: str) -> list[dict]:
+    """Walk every file in the user's Box and return entry dicts.
+
+    Box's /folders/{id}/items isn't recursive — we BFS from the root
+    (folder id `0`) and recurse into each folder entry. Each page
+    holds up to 1000 items; large folders are paginated by `offset`.
+    """
+    access_token = await _box_refresh_access_token(refresh_token)
+    import httpx
+
+    out: list[dict] = []
+
+    async def _get_items(
+        client: httpx.AsyncClient, folder_id: str, offset: int,
+    ) -> dict:
+        nonlocal access_token
+        url = f"{_BOX_API_BASE}/folders/{folder_id}/items"
+        params = {
+            "fields": "id,name,size,modified_at,sha1,type,parent",
+            "limit": 1000,
+            "offset": offset,
+        }
+        for attempt in (0, 1):
+            r = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+            if r.status_code == 401 and attempt == 0:
+                access_token = await _box_refresh_access_token(refresh_token)
+                continue
+            if r.status_code >= 400:
+                logger.warning(
+                    "box list failed: %s %s",
+                    r.status_code, r.text[:200],
+                )
+                if r.status_code in (401, 403):
+                    msg = (
+                        "Box denied access. Reconnect from "
+                        "Settings → Cloud sync."
+                    )
+                else:
+                    msg = (
+                        "Box listing failed. Try again later, or "
+                        "reconnect from Settings → Cloud sync."
+                    )
+                raise CloudSyncNotConfigured(msg)
+            return r.json()
+        raise CloudSyncNotConfigured("Box listing retry exhausted.")
+
+    # BFS queue holds (folder_id, accumulated_parent_path) pairs. The
+    # root folder maps to parent_path="" so file entries directly
+    # under root render at the gallery root.
+    queue: list[tuple[str, str]] = [("0", "")]
+    while queue:
+        folder_id, parent_path = queue.pop(0)
+        offset = 0
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            while True:
+                payload = await _get_items(client, folder_id, offset)
+                entries = payload.get("entries", []) or []
+                for entry in entries:
+                    etype = entry.get("type")
+                    if etype == "folder":
+                        # Recurse into this subfolder. The child's
+                        # parent path is the current parent_path plus
+                        # the folder's name.
+                        child_path = (
+                            f"{parent_path}/{entry['name']}"
+                            if parent_path else entry["name"]
+                        )
+                        queue.append((str(entry["id"]), child_path))
+                        continue
+                    if etype != "file":
+                        # Box also returns "web_link" entries. Skip.
+                        continue
+                    # Box returns SHA-1 (40 hex chars); pad to 32 bytes
+                    # of zero-extended digest so it fits the sha256
+                    # column. It's just a change-detector; the column
+                    # stores arbitrary bytes.
+                    sha1_hex = (entry.get("sha1") or "")
+                    sha = (
+                        bytes.fromhex(sha1_hex.ljust(64, "0"))[:32]
+                        if sha1_hex else None
+                    )
+                    out.append({
+                        "remote_id": str(entry["id"]),
+                        "name": entry["name"],
+                        # Box doesn't return MIME; neuthek's MIME
+                        # sniffing in the upload-validation path
+                        # derives one from bytes + extension.
+                        "mime_type": None,
+                        "modified_at": _parse_iso_time(
+                            entry.get("modified_at")
+                        ),
+                        "remote_path": entry["name"],
+                        "remote_parent_path": parent_path,
+                        "sha256": sha,
+                        "size_bytes": int(entry.get("size") or 0),
+                    })
+                total = int(payload.get("total_count") or 0)
+                offset += len(entries)
+                if not entries or offset >= total:
+                    break
+
+    return out
+
+
+async def _box_download(refresh_token: str, entry: dict) -> bytes:
+    """GET /2.0/files/{id}/content. Box 302-redirects to a pre-signed
+    download URL; httpx follows redirects by default."""
+    access_token = await _box_refresh_access_token(refresh_token)
+    import httpx
+    url = f"{_BOX_API_BASE}/files/{entry['remote_id']}/content"
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        r = await client.get(
+            url, headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if r.status_code >= 400:
+            logger.warning(
+                "box download failed: id=%s %s %s",
+                entry["remote_id"], r.status_code, r.text[:200],
+            )
+            raise CloudSyncNotConfigured(
+                f"Box download failed for {entry['name']!r}."
+            )
+        return r.content
+
+
+async def _box_folder_stats(refresh_token: str) -> dict:
+    """Walk all files and sum sizes for the storage-panel linked-
+    services row."""
+    entries = await _box_collect_entries(refresh_token)
+    return {
+        "file_count": len(entries),
+        "total_bytes": sum(e["size_bytes"] for e in entries),
+    }
+
+
+# ---------- §C4.6 — pCloud -------------------------------------------------
+#
+# pCloud OAuth 2.0:
+#   AUTH:    https://my.pcloud.com/oauth2/authorize
+#   TOKEN:   https://api.pcloud.com/oauth2_token   (GET, query string!)
+#   API:     region-dependent — api.pcloud.com (US) or eapi.pcloud.com (EU)
+#
+# Two pCloud-specific wrinkles drive the implementation:
+#
+# 1) Region. After OAuth, the token response carries a `hostname`
+#    field telling us which region the user lives in. The existing
+#    CloudLink table has no per-link region column, so we encode
+#    the hostname into the encrypted-refresh-token blob as a JSON
+#    wrapper: encrypt({"access_token": "...", "hostname": "..."}).
+#    The helpers below pack/unpack this transparently.
+#
+# 2) No refresh tokens. pCloud access tokens don't expire — they
+#    last until the user revokes the app from their pCloud account
+#    settings. So we never call a refresh endpoint; we store the
+#    access_token where the schema would normally hold a refresh
+#    token, and that's the durable credential.
+#
+# 3) Error encoding. pCloud always returns HTTP 200; errors live in
+#    the body as `result != 0`. Every parser checks `result == 0`
+#    explicitly before reading the payload.
+
+_PCLOUD_AUTH_ENDPOINT = "https://my.pcloud.com/oauth2/authorize"
+_PCLOUD_TOKEN_ENDPOINT = "https://api.pcloud.com/oauth2_token"
+_PCLOUD_DEFAULT_HOST = "api.pcloud.com"
+
+
+def _pcloud_auth_url(state: str) -> str:
+    """Build the pCloud consent URL. No scope parameter — pCloud apps
+    are configured app-wide and the consent screen displays the
+    permissions the developer set up at registration time."""
+    from urllib.parse import urlencode
+
+    params = {
+        "client_id": settings.pcloud_oauth_client_id,
+        "response_type": "code",
+        "redirect_uri": settings.pcloud_oauth_redirect_uri,
+        "state": state,
+    }
+    return f"{_PCLOUD_AUTH_ENDPOINT}?{urlencode(params)}"
+
+
+def _pcloud_pack_token(access_token: str, hostname: str) -> str:
+    """Encode an access_token + hostname into a JSON blob we can
+    persist into the existing `encrypted_refresh_token` column."""
+    import json as _json
+    return _json.dumps({
+        "access_token": access_token,
+        "hostname": hostname or _PCLOUD_DEFAULT_HOST,
+    })
+
+
+def _pcloud_unpack_token(token_blob: str) -> tuple[str, str]:
+    """Decode an access_token + hostname out of the persisted blob.
+
+    For forward-compat we also accept a bare access token (no JSON
+    wrapper) and fall back to the US region in that case — handy if
+    an operator ever needs to seed a token by hand.
+    """
+    import json as _json
+    try:
+        payload = _json.loads(token_blob)
+    except (ValueError, TypeError):
+        return token_blob, _PCLOUD_DEFAULT_HOST
+    if not isinstance(payload, dict):
+        return token_blob, _PCLOUD_DEFAULT_HOST
+    access_token = payload.get("access_token") or token_blob
+    hostname = payload.get("hostname") or _PCLOUD_DEFAULT_HOST
+    return access_token, hostname
+
+
+async def _pcloud_exchange_code(code: str) -> dict:
+    """GET to the pCloud token endpoint. Yes, GET — pCloud's OAuth
+    layer is a thin wrapper around its standard JSON API which takes
+    arguments as query string parameters. Returns the parsed JSON
+    body verified to have result == 0."""
+    import httpx
+    params = {
+        "client_id": settings.pcloud_oauth_client_id,
+        "client_secret": settings.pcloud_oauth_client_secret,
+        "code": code,
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(_PCLOUD_TOKEN_ENDPOINT, params=params)
+    if r.status_code >= 400:
+        logger.warning(
+            "pcloud token exchange failed (http %s): %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "pCloud token exchange failed. Try connecting again, "
+            "or check that the app's redirect URI matches "
+            "PCLOUD_OAUTH_REDIRECT_URI exactly."
+        )
+    payload = r.json()
+    if payload.get("result") != 0:
+        # pCloud encodes app-config errors in the body. Surface a
+        # short hint with the upstream's `error` field so operators
+        # can spot bad client_id / disabled app problems.
+        logger.warning(
+            "pcloud token exchange returned result=%s error=%s",
+            payload.get("result"), payload.get("error"),
+        )
+        raise CloudSyncNotConfigured(
+            "pCloud rejected the token exchange. Check that the "
+            "client id/secret in PCLOUD_OAUTH_CLIENT_ID / "
+            "PCLOUD_OAUTH_CLIENT_SECRET match the values in your "
+            "pCloud developer console."
+        )
+    return payload
+
+
+async def _pcloud_collect_entries(token_blob: str) -> list[dict]:
+    """Walk every file in the user's pCloud and return entry dicts.
+
+    pCloud's /listfolder with recursive=1 returns the full tree in
+    one call as a nested `metadata.contents` structure. We walk
+    in-process to flatten it into the same shape the other engines
+    emit.
+    """
+    access_token, hostname = _pcloud_unpack_token(token_blob)
+    import httpx
+
+    api_base = f"https://{hostname}"
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.get(
+            f"{api_base}/listfolder",
+            params={
+                "folderid": 0,
+                "recursive": 1,
+                "access_token": access_token,
+            },
+        )
+    if r.status_code >= 400:
+        logger.warning(
+            "pcloud list failed (http %s): %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "pCloud listing failed. Try again later, or reconnect "
+            "from Settings → Cloud sync."
+        )
+    payload = r.json()
+    if payload.get("result") != 0:
+        logger.warning(
+            "pcloud list returned result=%s error=%s",
+            payload.get("result"), payload.get("error"),
+        )
+        # result=2000 is the canonical pCloud "log in failed" value
+        # — the access token was revoked from the user's account
+        # settings.
+        if payload.get("result") == 2000:
+            msg = (
+                "pCloud denied access. Reconnect from "
+                "Settings → Cloud sync."
+            )
+        else:
+            msg = (
+                "pCloud listing failed. Try again later, or "
+                "reconnect from Settings → Cloud sync."
+            )
+        raise CloudSyncNotConfigured(msg)
+
+    out: list[dict] = []
+    root = payload.get("metadata") or {}
+
+    def _walk(node: dict, parent_path: str) -> None:
+        for child in node.get("contents") or []:
+            if child.get("isfolder"):
+                child_path = (
+                    f"{parent_path}/{child['name']}"
+                    if parent_path else child["name"]
+                )
+                _walk(child, child_path)
+                continue
+            out.append({
+                "remote_id": str(child["fileid"]),
+                "name": child["name"],
+                # pCloud DOES return mime type — surface it.
+                "mime_type": child.get("contenttype"),
+                "modified_at": _parse_pcloud_time(child.get("modified")),
+                "remote_path": child["name"],
+                "remote_parent_path": parent_path,
+                "sha256": _pad_pcloud_hash(child.get("hash")),
+                "size_bytes": int(child.get("size") or 0),
+            })
+
+    _walk(root, "")
+    return out
+
+
+async def _pcloud_download(token_blob: str, entry: dict) -> bytes:
+    """Two-step download. First /getfilelink returns a host + path;
+    we then GET that URL for the actual bytes."""
+    access_token, hostname = _pcloud_unpack_token(token_blob)
+    import httpx
+
+    api_base = f"https://{hostname}"
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.get(
+            f"{api_base}/getfilelink",
+            params={
+                "fileid": entry["remote_id"],
+                "access_token": access_token,
+            },
+        )
+        if r.status_code >= 400:
+            logger.warning(
+                "pcloud getfilelink failed: id=%s %s %s",
+                entry["remote_id"], r.status_code, r.text[:200],
+            )
+            raise CloudSyncNotConfigured(
+                f"pCloud download (link) failed for {entry['name']!r}."
+            )
+        link_payload = r.json()
+        if link_payload.get("result") != 0:
+            logger.warning(
+                "pcloud getfilelink result=%s error=%s",
+                link_payload.get("result"), link_payload.get("error"),
+            )
+            raise CloudSyncNotConfigured(
+                f"pCloud download (link) failed for {entry['name']!r}."
+            )
+        hosts = link_payload.get("hosts") or []
+        path = link_payload.get("path") or ""
+        if not hosts or not path:
+            raise CloudSyncNotConfigured(
+                f"pCloud returned no download host for {entry['name']!r}."
+            )
+        # `path` already starts with `/`. Single-use, ~6 hour expiry —
+        # fetch immediately.
+        download_url = f"https://{hosts[0]}{path}"
+        r2 = await client.get(download_url)
+        if r2.status_code >= 400:
+            logger.warning(
+                "pcloud download bytes failed: id=%s %s %s",
+                entry["remote_id"], r2.status_code, r2.text[:200],
+            )
+            raise CloudSyncNotConfigured(
+                f"pCloud download failed for {entry['name']!r}."
+            )
+        return r2.content
+
+
+async def _pcloud_folder_stats(token_blob: str) -> dict:
+    """Walk all files and sum sizes for the storage-panel linked-
+    services row."""
+    entries = await _pcloud_collect_entries(token_blob)
+    return {
+        "file_count": len(entries),
+        "total_bytes": sum(e["size_bytes"] for e in entries),
+    }
+
+
+def _parse_pcloud_time(raw: str | None) -> datetime | None:
+    """pCloud emits RFC 1123 timestamps:
+    `"Wed, 27 May 2026 14:00:00 +0000"`. Python's email-message parser
+    handles that shape natively; we lean on it rather than
+    hand-rolling the format because pCloud's day/month abbreviations
+    follow the C locale regardless of the user's display language.
+    """
+    if not raw:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        out = parsedate_to_datetime(raw)
+        if out is not None and out.tzinfo is None:
+            # Treat naive output as UTC — pCloud always emits an
+            # offset, but parsedate_to_datetime occasionally returns
+            # naive on malformed inputs.
+            out = out.replace(tzinfo=timezone.utc)
+        return out
+    except (TypeError, ValueError):
+        return None
+
+
+def _pad_pcloud_hash(raw) -> bytes | None:
+    """pCloud's `hash` is a 64-bit non-cryptographic checksum returned
+    as a stringified int. We pack it big-endian into 8 bytes then
+    right-pad with zeros to fit the sha256 column. Like the Drive
+    md5 → sha256 path, it's purely a change detector — collisions
+    would just trigger a harmless re-download."""
+    if raw is None or raw == "":
+        return None
+    try:
+        # pCloud returns hash as a signed int in JSON; mask to 64-bit.
+        ival = int(raw) & 0xFFFFFFFFFFFFFFFF
+    except (TypeError, ValueError):
+        return None
+    raw_bytes = ival.to_bytes(8, byteorder="big", signed=False)
+    return (raw_bytes + b"\x00" * 24)[:32]
+
+
 # ---------- Google Drive --------------------------------------------------
 
 
@@ -659,7 +1232,7 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     callback can retrieve it; without this, Google rejects the token
     exchange with "invalid_grant: Missing code verifier."
     """
-    if provider not in ("google_drive", "dropbox"):
+    if provider not in ("google_drive", "dropbox", "box", "pcloud"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -669,6 +1242,30 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     _verify_encryption_ready()
 
     signed_state = _build_state(user_id)
+    if provider == "box":
+        # §C4.6 — Box OAuth. No PKCE (Box lists it as optional and
+        # the simpler shape keeps connect/complete symmetric).
+        if not settings.box_oauth_client_id:
+            raise CloudSyncNotConfigured(
+                "Box OAuth client not configured. Set "
+                "BOX_OAUTH_CLIENT_ID + BOX_OAUTH_CLIENT_SECRET in .env. "
+                "Register at app.box.com/developers/console."
+            )
+        auth_url = _box_auth_url(signed_state)
+        return OAuthHandoff(auth_url=auth_url, state=signed_state)
+    if provider == "pcloud":
+        # §C4.6 — pCloud OAuth. No PKCE support; no `scope` URL
+        # parameter (permissions configured app-wide). The token
+        # response carries the user's region hostname which we'll
+        # persist alongside the access token in complete_oauth.
+        if not settings.pcloud_oauth_client_id:
+            raise CloudSyncNotConfigured(
+                "pCloud OAuth client not configured. Set "
+                "PCLOUD_OAUTH_CLIENT_ID + PCLOUD_OAUTH_CLIENT_SECRET "
+                "in .env. Register at docs.pcloud.com."
+            )
+        auth_url = _pcloud_auth_url(signed_state)
+        return OAuthHandoff(auth_url=auth_url, state=signed_state)
     if provider == "dropbox":
         # §C4.6 — Dropbox v2 OAuth. `token_access_type=offline` is the
         # equivalent of Google's `access_type=offline` — without it
@@ -724,7 +1321,7 @@ async def complete_oauth(
     state: str,  # noqa: ARG001 — caller already verified state HMAC
 ) -> int:
     """Exchange `code` for tokens, encrypt + store, return cloud_links.id."""
-    if provider not in ("google_drive", "dropbox"):
+    if provider not in ("google_drive", "dropbox", "box", "pcloud"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -732,7 +1329,36 @@ async def complete_oauth(
     refresh_token_to_store: str | None = None
     scopes = ""
 
-    if provider == "dropbox":
+    if provider == "box":
+        # §C4.6 — Box token exchange. Box returns a (access_token,
+        # refresh_token) pair regardless — refresh-token issuance
+        # isn't gated on an offline flag the way it is with Dropbox.
+        token_payload = await _box_exchange_code(code)
+        refresh_token_to_store = token_payload.get("refresh_token")
+        if not refresh_token_to_store:
+            raise CloudSyncNotConfigured(
+                "Box did not return a refresh token. Verify the app "
+                "is configured for User Authentication (OAuth 2.0)."
+            )
+        scopes = ",".join(PROVIDER_SCOPES["box"])
+
+    elif provider == "pcloud":
+        # §C4.6 — pCloud token exchange. No refresh token concept;
+        # access tokens are long-lived. We persist the access token
+        # WITH the region hostname so subsequent API calls hit the
+        # right region (api.pcloud.com vs eapi.pcloud.com).
+        token_payload = await _pcloud_exchange_code(code)
+        access_token = token_payload.get("access_token")
+        if not access_token:
+            raise CloudSyncNotConfigured(
+                "pCloud did not return an access token."
+            )
+        hostname = token_payload.get("hostname") or _PCLOUD_DEFAULT_HOST
+        refresh_token_to_store = _pcloud_pack_token(access_token, hostname)
+        # pCloud doesn't expose a scope list; record an honest marker.
+        scopes = ""
+
+    elif provider == "dropbox":
         # §C4.6 — Dropbox token exchange.
         verifier = await _pop_pkce_verifier(state)
         token_payload = await _dropbox_exchange_code(code, verifier)
@@ -879,7 +1505,7 @@ async def sync_user_provider(
     Returns a summary dict: `{seen, pulled, skipped_unchanged,
     conflicts, provider}`.
     """
-    if provider not in ("google_drive", "dropbox"):
+    if provider not in ("google_drive", "dropbox", "box", "pcloud"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -908,6 +1534,10 @@ async def sync_user_provider(
         entries = await _drive_collect_entries(refresh_token)
     elif provider == "dropbox":
         entries = await _dropbox_collect_entries(refresh_token)
+    elif provider == "box":
+        entries = await _box_collect_entries(refresh_token)
+    elif provider == "pcloud":
+        entries = await _pcloud_collect_entries(refresh_token)
     else:  # already gated above; defensive.
         entries = []
 
@@ -1276,6 +1906,8 @@ def _provider_display_name(provider: CloudProvider) -> str:
     return {
         "google_drive": "Google Drive",
         "dropbox": "Dropbox",
+        "box": "Box",
+        "pcloud": "pCloud",
     }.get(provider, provider.title())
 
 
@@ -1462,6 +2094,10 @@ async def _provider_download(
         )
     if provider == "dropbox":
         return await _dropbox_download(refresh_token, entry)
+    if provider == "box":
+        return await _box_download(refresh_token, entry)
+    if provider == "pcloud":
+        return await _pcloud_download(refresh_token, entry)
     raise CloudSyncNotConfigured(f"Provider '{provider}' not implemented.")
 
 
@@ -1669,6 +2305,10 @@ async def provider_folder_stats(
             return await _drive_folder_stats(refresh_token)
         if provider == "dropbox":
             return await _dropbox_folder_stats(refresh_token)
+        if provider == "box":
+            return await _box_folder_stats(refresh_token)
+        if provider == "pcloud":
+            return await _pcloud_folder_stats(refresh_token)
     except Exception:
         logger.exception("provider_folder_stats: %s walk failed", provider)
     return None
