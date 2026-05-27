@@ -10,6 +10,7 @@ import {
   BillingCheckoutPage,
   BillingReturnPage,
 } from "../neuthek/src/billing.jsx";
+import { ResetPasswordPage } from "../neuthek/src/reset-password.jsx";
 import "../neuthek/styles/index.css";
 
 // Apply the saved theme BEFORE any component mounts so every entry
@@ -90,6 +91,14 @@ function bootstrap(): JSX.Element {
   }
   if (path === "/billing" || path === "/billing/") {
     return <BillingPage/>;
+  }
+  // §C6 — password-reset landing. The backend mails
+  // {frontend_base_url}/reset?token=<jwt>; this dispatch reads the
+  // path and the page itself pulls the ?token= out of the query
+  // string. Visiting /reset without a token shows a "link
+  // expired" card with a back-to-sign-in button.
+  if (path === "/reset" || path === "/reset/") {
+    return <ResetPasswordPage/>;
   }
   return <App/>;
 }
