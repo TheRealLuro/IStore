@@ -149,6 +149,66 @@ async def summarize_image_id(session: AsyncSession, image_id: UUID) -> None:
     except Exception:
         logger.exception("summarize: _mark_done failed for %s", image_id)
 
+    # Sprint I D2 — persist document chunks for jump-to-section search.
+    # Only relevant for document rows; image / video paths don't stash
+    # `doc_chunks`. Runs OUTSIDE the inference pool because it's just
+    # database I/O at this point — the embedding work happened inside
+    # the sync dispatch already.
+    doc_chunks = None
+    try:
+        doc_chunks = image.__dict__.get("doc_chunks")
+    except Exception:
+        doc_chunks = None
+    if doc_chunks:
+        try:
+            await _persist_doc_chunks(image_id, image.user_id, doc_chunks)
+        except Exception:
+            logger.exception(
+                "summarize: doc chunk persistence failed for %s", image_id
+            )
+
+
+async def _persist_doc_chunks(
+    image_id, user_id, chunks: list[dict],
+) -> None:
+    """Idempotent UPSERT of per-chunk doc embeddings.
+
+    Uses ON CONFLICT (image_id, chunk_index) DO UPDATE so re-
+    summarization (admin backfill / model swap) overwrites in place
+    instead of duplicating. Embedding can be None — the search path
+    will fall back to FTS for rows with no vector.
+
+    Runs in a fresh session — same pattern as `_mark_done` — to side-
+    step any greenlet poisoning from the sync dispatch thread.
+    """
+    if not chunks:
+        return
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from backend.db import SessionLocal
+    from backend.models import DocumentChunk
+
+    rows = [
+        {
+            "image_id": image_id,
+            "user_id": user_id,
+            "chunk_index": c["chunk_index"],
+            "text": c["text"],
+            "embedding": c.get("embedding"),
+        }
+        for c in chunks
+    ]
+    async with SessionLocal() as session:
+        stmt = pg_insert(DocumentChunk).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["image_id", "chunk_index"],
+            set_={
+                "text": stmt.excluded.text,
+                "embedding": stmt.excluded.embedding,
+            },
+        )
+        await session.execute(stmt)
+        await session.commit()
+
 
 async def _load_image_tag_labels(
     session: AsyncSession, image_id
@@ -2161,6 +2221,24 @@ def _summarize_document(
             points=[],
         )
 
+    # Sprint I D2 — stash per-chunk text + embeddings on the image
+    # object so the async wrapper can persist them to document_chunks
+    # after _mark_done. Embedding happens inside this sync thread to
+    # reuse the already-loaded CLIP runtime; we don't pay an extra
+    # model load. Best-effort — failures (CLIP missing, OOM) leave
+    # the chunks list empty and the async wrapper skips persistence.
+    try:
+        chunk_texts = split_doc_for_embedding(text)
+        if chunk_texts:
+            from backend.vision.text_embed import embed_texts
+            embeddings = embed_texts(chunk_texts)
+            image.__dict__["doc_chunks"] = [
+                {"chunk_index": i, "text": t, "embedding": e}
+                for i, (t, e) in enumerate(zip(chunk_texts, embeddings))
+            ]
+    except Exception:
+        logger.exception("doc chunks: split+embed failed for %s", fname)
+
     # We still cap at `summarize_doc_max_chars` (default 20 000) so a 200-
     # page PDF doesn't blow up generation memory, but the LLM path below
     # internally chunk-summarizes within that budget instead of skimming
@@ -2561,6 +2639,22 @@ def _llm_doc_summary(
     # Reduce: condense the partials into one summary.
     merged_input = "\n\n".join(f"- {p}" for p in partials)
     return _llm_merge_summaries(merged_input, filename, topic)
+
+
+def split_doc_for_embedding(text: str, budget_chars: int = 2000) -> list[str]:
+    """Split a document into ~500-token chunks suitable for per-chunk
+    CLIP embedding (Sprint I D2). CLIP text encoder caps at 77 tokens
+    but truncates gracefully — we keep chunks at 1500-2000 chars so
+    each one captures a coherent paragraph or two without losing the
+    leading topic sentence to truncation.
+
+    Smaller than the summary chunk budget (6 000 chars) because the
+    embedding chunks need to be retrievable as standalone jump-to
+    targets — search returns (image_id, chunk_index, snippet) where
+    the snippet is the chunk text, so we want enough context for the
+    user to recognize but not a whole page-worth.
+    """
+    return _split_for_summary(text, budget_chars)
 
 
 def _split_for_summary(text: str, budget_chars: int) -> list[str]:

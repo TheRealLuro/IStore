@@ -11,11 +11,13 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     LargeBinary,
     SmallInteger,
     String,
     Text,
     TIMESTAMP,
+    UniqueConstraint,
     desc,
     func,
     text,
@@ -1246,4 +1248,57 @@ class StripeEvent(Base):
     )
     processed_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
+    )
+
+
+class DocumentChunk(Base):
+    """Sprint I — per-chunk document embedding for jump-to-section search.
+
+    The summary pipeline already chunks document text and map-reduces
+    through Qwen2.5 to produce one combined `images.summary`. With
+    per-chunk embeddings, semantic search can ALSO rank chunks and
+    return (image_id, chunk_index, snippet) so the FE can deep-link
+    the user to the relevant page/passage instead of just the doc.
+
+    Schema mirrors `images.summary_clip_embedding`: OpenCLIP ViT-L-14
+    text-space vector, 768-dim, HNSW cosine-indexed (migration 0041).
+    `user_id` is denormalized for RLS + bulk-delete efficiency; FK
+    `image_id` cascade-deletes chunks when the parent doc dies.
+    """
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    image_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("images.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(768), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "image_id", "chunk_index",
+            name="uq_document_chunks_image_chunk",
+        ),
     )
