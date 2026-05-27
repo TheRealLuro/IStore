@@ -1,8 +1,8 @@
-"""§C4.6 — OneDrive + Dropbox sync-engine internals.
+"""§C4.6 — Dropbox sync-engine internals.
 
-We can't hit real Microsoft Graph / Dropbox APIs in unit tests
-(would need real OAuth client + a populated test account), so
-these tests verify the engine layer that surrounds the API call:
+We can't hit real Dropbox APIs in unit tests (would need real
+OAuth client + a populated test account), so these tests verify
+the engine layer that surrounds the API call:
 
   - Token refresh hits the right endpoint with the right payload
     and surfaces auth failures as CloudSyncNotConfigured.
@@ -10,8 +10,8 @@ these tests verify the engine layer that surrounds the API call:
     `remote_id`, `name`, `modified_at`, `remote_parent_path`,
     `sha256`, `size_bytes`.
   - Download dispatches to the right helper per provider.
-  - _parse_iso_time handles the timestamp shapes both providers
-    emit (with `Z`, with offset, with sub-second precision).
+  - _parse_iso_time handles the timestamp shapes the provider
+    emits (with `Z`, with offset, with sub-second precision).
 
 For the API-mocked tests we monkey-patch httpx.AsyncClient.get/post
 to return canned responses. That gives us coverage of the request-
@@ -53,9 +53,8 @@ def test_parse_iso_time_handles_offset():
 
 
 def test_parse_iso_time_handles_subsecond_precision():
-    """Dropbox emits microsecond + suffix; OneDrive emits
-    millisecond. Python's fromisoformat caps at 6-digit fractional
-    seconds. The helper trims and recovers."""
+    """Dropbox emits microsecond + suffix. Python's fromisoformat
+    caps at 6-digit fractional seconds. The helper trims and recovers."""
     from backend.cloud_sync import _parse_iso_time
     # 9 digits — beyond Python's 6-digit limit.
     out = _parse_iso_time("2026-05-27T12:34:56.123456789Z")
@@ -68,112 +67,6 @@ def test_parse_iso_time_returns_none_on_garbage():
     assert _parse_iso_time("") is None
     assert _parse_iso_time(None) is None
     assert _parse_iso_time("not a date") is None
-
-
-# ---------- OneDrive ----------
-
-
-@pytest.mark.asyncio
-async def test_onedrive_refresh_access_token_returns_token(monkeypatch):
-    from backend.config import settings
-    monkeypatch.setattr(settings, "onedrive_oauth_client_id", "fake-id")
-    monkeypatch.setattr(settings, "onedrive_oauth_client_secret", "fake-secret")
-
-    from backend import cloud_sync
-
-    # Patch the http call.
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.post = AsyncMock(return_value=_fake_response(
-        200, {"access_token": "fresh-at", "refresh_token": "rotated-rt", "expires_in": 3600},
-    ))
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        out = await cloud_sync._onedrive_refresh_access_token("stale-rt")
-    assert out == "fresh-at"
-
-
-@pytest.mark.asyncio
-async def test_onedrive_refresh_raises_on_4xx(monkeypatch):
-    from backend.config import settings
-    monkeypatch.setattr(settings, "onedrive_oauth_client_id", "fake-id")
-    monkeypatch.setattr(settings, "onedrive_oauth_client_secret", "fake-secret")
-    from backend.cloud_sync import _onedrive_refresh_access_token, CloudSyncNotConfigured
-
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.post = AsyncMock(return_value=_fake_response(
-        400, {"error": "invalid_grant", "error_description": "expired"},
-    ))
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with pytest.raises(CloudSyncNotConfigured):
-            await _onedrive_refresh_access_token("stale-rt")
-
-
-@pytest.mark.asyncio
-async def test_onedrive_collect_entries_walks_children(monkeypatch):
-    """Single root listing → one file + one folder → folder
-    listing → one nested file. Verifies recursion + the entry
-    dict shape sync_user_provider depends on."""
-    from backend.config import settings
-    monkeypatch.setattr(settings, "onedrive_oauth_client_id", "fake-id")
-    monkeypatch.setattr(settings, "onedrive_oauth_client_secret", "fake-secret")
-
-    from backend import cloud_sync
-
-    # First call: refresh access token (POST).
-    # Then GET /me/drive/items/root/children → one file + one folder.
-    # Then GET /me/drive/items/{folder_id}/children → one nested file.
-    root_resp = _fake_response(200, {
-        "value": [
-            {
-                "id": "f1", "name": "photo.jpg", "size": 12345,
-                "file": {"mimeType": "image/jpeg", "hashes": {
-                    "sha256Hash": "ab" * 32,
-                }},
-                "lastModifiedDateTime": "2026-05-27T10:00:00Z",
-            },
-            {
-                "id": "sub1", "name": "vacation",
-                "folder": {"childCount": 1},
-            },
-        ],
-    })
-    sub_resp = _fake_response(200, {
-        "value": [
-            {
-                "id": "f2", "name": "video.mp4", "size": 99999,
-                "file": {"mimeType": "video/mp4", "hashes": {}},
-                "lastModifiedDateTime": "2026-05-27T11:00:00Z",
-            },
-        ],
-    })
-
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=None)
-    mock_client.post = AsyncMock(return_value=_fake_response(
-        200, {"access_token": "at", "refresh_token": "rt"},
-    ))
-    mock_client.get = AsyncMock(side_effect=[root_resp, sub_resp])
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        entries = await cloud_sync._onedrive_collect_entries("rt")
-
-    assert len(entries) == 2
-    photo = entries[0]
-    assert photo["remote_id"] == "f1"
-    assert photo["name"] == "photo.jpg"
-    assert photo["mime_type"] == "image/jpeg"
-    assert photo["size_bytes"] == 12345
-    assert photo["remote_parent_path"] == ""
-    # 32 bytes of \xab (the sha256Hash decoded).
-    assert photo["sha256"] == b"\xab" * 32
-
-    video = entries[1]
-    assert video["remote_id"] == "f2"
-    assert video["remote_parent_path"] == "vacation"
 
 
 # ---------- Dropbox ----------
@@ -292,7 +185,7 @@ async def test_dropbox_download_uses_dropbox_api_arg_header(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sync_user_provider_accepts_onedrive_and_dropbox(monkeypatch):
+async def test_sync_user_provider_accepts_dropbox(monkeypatch):
     """Previously raised 'not implemented yet' for non-Drive providers.
     Now dispatches into the per-provider helpers; we just need it to
     reach the collect-entries call (we mock that to a no-op so we
@@ -300,18 +193,14 @@ async def test_sync_user_provider_accepts_onedrive_and_dropbox(monkeypatch):
     from backend.cloud_sync import sync_user_provider, CloudSyncNotConfigured
     import uuid
 
-    # OneDrive + Dropbox should NOT raise the "not implemented"
-    # CloudSyncNotConfigured. They'll raise a DIFFERENT one (no link
+    # Dropbox should NOT raise the "not implemented"
+    # CloudSyncNotConfigured. It'll raise a DIFFERENT one (no link
     # row) since we're not setting up the DB, but the message will
     # differ.
     fake_session = MagicMock()
     fake_session.execute = AsyncMock(return_value=MagicMock(
         scalar_one_or_none=MagicMock(return_value=None),
     ))
-
-    with pytest.raises(CloudSyncNotConfigured) as exc:
-        await sync_user_provider(fake_session, uuid.uuid4(), "onedrive")
-    assert "No active onedrive connection" in str(exc.value)
 
     with pytest.raises(CloudSyncNotConfigured) as exc:
         await sync_user_provider(fake_session, uuid.uuid4(), "dropbox")

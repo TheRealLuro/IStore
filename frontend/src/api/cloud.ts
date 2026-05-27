@@ -12,7 +12,6 @@ import { api } from "./client";
 // can't be passed to /cloud/links/{provider}.
 export type CloudProvider =
   | "google_drive"
-  | "onedrive"
   | "dropbox"
   | "icloud"
   | "mega"

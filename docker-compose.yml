@@ -147,22 +147,6 @@ services:
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
       GOOGLE_SIGNIN_REDIRECT_URI: ${GOOGLE_SIGNIN_REDIRECT_URI:-http://localhost:8000/auth/google/callback}
-      # §C4.6 — OneDrive (Microsoft Graph) OAuth client. Empty values
-      # keep the panel showing "Needs setup" instead of crashing on
-      # /cloud/links/onedrive. Register at portal.azure.com → App
-      # registrations → "Accounts in any organizational directory and
-      # personal Microsoft accounts" tenant.
-      ONEDRIVE_OAUTH_CLIENT_ID: ${ONEDRIVE_OAUTH_CLIENT_ID:-}
-      ONEDRIVE_OAUTH_CLIENT_SECRET: ${ONEDRIVE_OAUTH_CLIENT_SECRET:-}
-      ONEDRIVE_OAUTH_REDIRECT_URI: ${ONEDRIVE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/onedrive}
-      # `common` accepts any Microsoft account but requires the app
-      # to be registered with signInAudience =
-      # AzureADandPersonalMicrosoftAccount. For single-tenant apps
-      # ("My organization only" in the Authentication tab), set this
-      # to the Directory (tenant) ID from the app's Overview page
-      # to avoid the `unauthorized_client: not enabled for consumers`
-      # error from Microsoft when a user hits the consent page.
-      ONEDRIVE_OAUTH_TENANT: ${ONEDRIVE_OAUTH_TENANT:-common}
       # §C4.6 — Dropbox OAuth client. Register at
       # dropbox.com/developers/apps → "Scoped access" → grant the
       # files.content.read + files.metadata.read + account_info.read

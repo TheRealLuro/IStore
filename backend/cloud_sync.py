@@ -1,6 +1,6 @@
 """C2 cloud-sync worker — Google Drive (read-only).
 
-Drive is the only provider currently wired up. Dropbox / OneDrive
+Drive is the only provider currently wired up. Dropbox
 hooks are kept as `CloudProvider` literal entries + scope dicts so
 the same `connect_provider` / `complete_oauth` / `sync_user_provider`
 interface can light them up later, but every entrypoint short-
@@ -120,7 +120,7 @@ def _verify_state(state: str) -> UUID:
 
 logger = logging.getLogger(__name__)
 
-CloudProvider = Literal["google_drive", "dropbox", "onedrive"]
+CloudProvider = Literal["google_drive", "dropbox"]
 
 
 PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
@@ -151,17 +151,6 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
         "files.metadata.read",
         "account_info.read",
     ],
-    # §C4.6 — OneDrive / Microsoft Graph scopes. `Files.Read.All` is
-    # the equivalent of Drive's `drive.readonly` — list and read every
-    # file the user has access to. `offline_access` is what makes
-    # Microsoft return a refresh token (same role as Google's
-    # `access_type=offline`). `User.Read` lets us pull the account
-    # email + display name for the connected-account chip.
-    "onedrive": [
-        "Files.Read.All",
-        "offline_access",
-        "User.Read",
-    ],
 }
 
 
@@ -191,10 +180,6 @@ def _provider_status(provider: str) -> str:
         if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
             return "needs_setup"
         return "available"
-    if provider == "onedrive":
-        if not settings.onedrive_oauth_client_id or not settings.onedrive_oauth_client_secret:
-            return "needs_setup"
-        return "available"
     if provider == "dropbox":
         if not settings.dropbox_oauth_client_id or not settings.dropbox_oauth_client_secret:
             return "needs_setup"
@@ -219,14 +204,6 @@ def list_providers() -> list[dict]:
             "status": _provider_status("google_drive"),
             "blurb": "Mirror your Drive into neuthek. Read-only — we never write to your Drive.",
             "docs": "https://console.cloud.google.com/apis/credentials",
-        },
-        {
-            "id": "onedrive",
-            "name": "OneDrive",
-            "kind": "oauth2",
-            "status": _provider_status("onedrive"),
-            "blurb": "Mirror your OneDrive (personal or work / school). Read-only.",
-            "docs": "https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
         },
         {
             "id": "dropbox",
@@ -293,321 +270,6 @@ class OAuthHandoff:
     state: str
 
 
-# ---------- §C4.6 — OneDrive (Microsoft Graph) ----------------------------
-#
-# Microsoft identity platform v2.0 endpoints:
-#   AUTH:  https://login.microsoftonline.com/common/oauth2/v2.0/authorize
-#   TOKEN: https://login.microsoftonline.com/common/oauth2/v2.0/token
-#
-# Tenant `common` accepts BOTH personal Microsoft accounts (Outlook,
-# Live, Hotmail) AND work/school accounts. Use `consumers` to limit
-# to personal accounts, or a tenant GUID to limit to one org. The
-# rendered app at portal.azure.com must be registered with
-# "Accounts in any organizational directory and personal Microsoft
-# accounts" for `common` to work.
-#
-# Token shape (response from /token):
-#   {access_token, refresh_token, expires_in, scope, token_type, ext_expires_in}
-# Refresh tokens are long-lived (~90d sliding) but get rotated on
-# refresh — every refresh response includes a new refresh_token that
-# replaces the old one. The Google Drive flow doesn't rotate; OneDrive
-# does.
-
-_ONEDRIVE_AUTH_ENDPOINT_FMT = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
-_ONEDRIVE_TOKEN_ENDPOINT_FMT = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-
-
-def _onedrive_tenant() -> str:
-    """Tenant path segment for the Microsoft OAuth endpoint.
-
-    `common` (default) accepts any Microsoft account, but the app
-    registration's `signInAudience` must be set to
-    `AzureADandPersonalMicrosoftAccount` for the consumer routing
-    branch to work. Many users register the app as "My organization
-    only" first and hit `unauthorized_client: not enabled for
-    consumers` here. Setting ONEDRIVE_OAUTH_TENANT to the specific
-    Directory (tenant) GUID from the app's Overview page swaps the
-    URL to /{tenant_guid}/oauth2/v2.0/authorize, which works with
-    "My organization only" without further Azure-side changes.
-    """
-    t = (settings.onedrive_oauth_tenant or "").strip()
-    return t or "common"
-
-
-def _onedrive_auth_url(state: str) -> tuple[str, str | None]:
-    """Build the Microsoft consent URL + return (url, code_verifier).
-
-    PKCE: we generate a code_verifier + S256 challenge so even if our
-    redirect URI ever leaks via a referrer log, an attacker without
-    the verifier can't exchange the intercepted code.
-    """
-    import base64
-    import hashlib
-    import secrets as _secrets
-    from urllib.parse import urlencode
-
-    verifier = _secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode("ascii")).digest()
-    ).rstrip(b"=").decode("ascii")
-
-    params = {
-        "client_id": settings.onedrive_oauth_client_id,
-        "response_type": "code",
-        "redirect_uri": settings.onedrive_oauth_redirect_uri,
-        "response_mode": "query",
-        "scope": " ".join(PROVIDER_SCOPES["onedrive"]),
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        # `prompt=select_account` lets the user pick which Microsoft
-        # account to connect (useful when they have both a personal
-        # and a work account signed in).
-        "prompt": "select_account",
-    }
-    endpoint = _ONEDRIVE_AUTH_ENDPOINT_FMT.format(tenant=_onedrive_tenant())
-    return f"{endpoint}?{urlencode(params)}", verifier
-
-
-async def _onedrive_exchange_code(code: str, verifier: str | None) -> dict:
-    """POST to the token endpoint to swap `code` for tokens. Returns
-    the parsed JSON response or raises on any non-2xx."""
-    import httpx
-    data = {
-        "client_id": settings.onedrive_oauth_client_id,
-        "client_secret": settings.onedrive_oauth_client_secret,
-        "code": code,
-        "redirect_uri": settings.onedrive_oauth_redirect_uri,
-        "grant_type": "authorization_code",
-        "scope": " ".join(PROVIDER_SCOPES["onedrive"]),
-    }
-    if verifier:
-        data["code_verifier"] = verifier
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(
-            _ONEDRIVE_TOKEN_ENDPOINT_FMT.format(tenant=_onedrive_tenant()),
-            data=data,
-        )
-    if r.status_code >= 400:
-        # Don't echo the body — it may contain the OAuth error
-        # description with internal endpoint info. Log + raise a
-        # generic CloudSyncNotConfigured so the FE shows a clean
-        # "could not connect" message.
-        logger.warning(
-            "onedrive token exchange failed: %s %s",
-            r.status_code, r.text[:200],
-        )
-        raise CloudSyncNotConfigured(
-            "OneDrive token exchange failed. Try connecting again, "
-            "or check that the app's redirect URI matches "
-            "ONEDRIVE_OAUTH_REDIRECT_URI exactly."
-        )
-    return r.json()
-
-
-async def _onedrive_refresh_access_token(refresh_token: str) -> str:
-    """Trade a refresh_token for a fresh access_token.
-
-    Microsoft rotates refresh tokens on every refresh — the response
-    carries a NEW refresh_token that replaces the one we just used.
-    The Google flow doesn't rotate; OneDrive does. We currently
-    discard the rotated token (don't write it back to cloud_links)
-    because the old one stays valid for a short grace period and
-    the next sync will refresh again anyway. A future improvement
-    would persist the rotation so we always have the freshest
-    refresh token on hand.
-
-    Raises CloudSyncNotConfigured on any non-2xx so the API layer
-    surfaces it as 503 "not_configured" to the FE.
-    """
-    import httpx
-    data = {
-        "client_id": settings.onedrive_oauth_client_id,
-        "client_secret": settings.onedrive_oauth_client_secret,
-        "refresh_token": refresh_token,
-        "grant_type": "refresh_token",
-        "scope": " ".join(PROVIDER_SCOPES["onedrive"]),
-    }
-    endpoint = _ONEDRIVE_TOKEN_ENDPOINT_FMT.format(tenant=_onedrive_tenant())
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(endpoint, data=data)
-    if r.status_code >= 400:
-        logger.warning(
-            "onedrive refresh failed: %s %s",
-            r.status_code, r.text[:200],
-        )
-        raise CloudSyncNotConfigured(
-            "OneDrive refresh token rejected. The user may need to "
-            "reconnect from Settings → Cloud sync."
-        )
-    payload = r.json()
-    access_token = payload.get("access_token")
-    if not access_token:
-        raise CloudSyncNotConfigured("OneDrive refresh returned no access_token.")
-    return access_token
-
-
-_MS_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-
-
-async def _onedrive_collect_entries(refresh_token: str) -> list[dict]:
-    """Walk every non-folder DriveItem in the user's OneDrive and
-    return entry dicts in the same shape `sync_user_provider`
-    expects from `_drive_collect_entries`.
-
-    Strategy: BFS over `/me/drive/root/children` → recurse into
-    each folder via `/me/drive/items/{id}/children`. Each page
-    carries `@odata.nextLink` for pagination. We DON'T use Graph's
-    `/me/drive/root/search(q='')` because the search index lags
-    fresh uploads by minutes; recursive children listing returns
-    consistent results immediately.
-
-    Skips:
-      - OneNote sections / notebooks (mime starts with
-        application/vnd.ms-onenote) — they're container objects,
-        not single files.
-      - Files marked `package` (Microsoft's wrapper for
-        multi-file documents). Mirroring those would corrupt
-        them; the user can re-export to a single file if needed.
-    """
-    access_token = await _onedrive_refresh_access_token(refresh_token)
-    headers = {"Authorization": f"Bearer {access_token}"}
-
-    import httpx
-    out: list[dict] = []
-
-    async def _walk_folder(folder_id: str, parent_path: str) -> None:
-        next_url = f"{_MS_GRAPH_BASE}/me/drive/items/{folder_id}/children"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            while next_url:
-                # Trim @odata.nextLink response bytes: only ask Graph
-                # for the fields we'll actually read. `select` cuts
-                # the response ~3x on accounts with rich metadata.
-                params = {
-                    "$select": (
-                        "id,name,size,file,folder,package,parentReference,"
-                        "lastModifiedDateTime"
-                    ),
-                    "$top": 200,
-                } if "$select" not in next_url else None
-                r = await client.get(next_url, headers=headers, params=params)
-                if r.status_code == 401:
-                    # Access token expired mid-walk (rare; we refresh
-                    # at the start, but the token has a 1h lifetime
-                    # and a deep walk could exceed it). Refresh and
-                    # try this page again exactly once before giving
-                    # up — repeating refresh would mask a real auth
-                    # break.
-                    new_token = await _onedrive_refresh_access_token(refresh_token)
-                    headers["Authorization"] = f"Bearer {new_token}"
-                    r = await client.get(next_url, headers=headers, params=params)
-                if r.status_code >= 400:
-                    logger.warning(
-                        "onedrive list failed: %s %s",
-                        r.status_code, r.text[:200],
-                    )
-                    # Surface Microsoft's most common per-account
-                    # failure modes in plain English. Without these
-                    # the FE just shows a generic "failed" toast and
-                    # the user has no idea whether to reconnect, pay
-                    # for a license, or escalate to IT.
-                    body_lc = r.text.lower()
-                    if "spo license" in body_lc or "no onedrive" in body_lc:
-                        msg = (
-                            "Your Microsoft account doesn't have a "
-                            "OneDrive license attached. Personal accounts "
-                            "(Outlook.com / Hotmail / Live) include OneDrive; "
-                            "work/school accounts need a Microsoft 365 "
-                            "subscription with OneDrive for Business "
-                            "enabled by your IT admin."
-                        )
-                    elif r.status_code in (401, 403):
-                        msg = (
-                            "OneDrive denied access. Reconnect from "
-                            "Settings → Cloud sync and re-grant the "
-                            "Files.Read.All permission."
-                        )
-                    else:
-                        msg = (
-                            "OneDrive listing failed. Try again later, "
-                            "or reconnect from Settings → Cloud sync."
-                        )
-                    raise CloudSyncNotConfigured(msg)
-                payload = r.json()
-                for item in payload.get("value", []):
-                    if item.get("package"):
-                        continue  # multi-file wrapper, skip
-                    if "folder" in item:
-                        sub_path = (
-                            f"{parent_path}/{item['name']}"
-                            if parent_path else item["name"]
-                        )
-                        # Recurse into the sub-folder. Append to a
-                        # work-queue in real code; for clarity we
-                        # nest directly here. OneDrive folder
-                        # depth is capped by the service so the
-                        # recursion bottoms out.
-                        await _walk_folder(item["id"], sub_path)
-                        continue
-                    if "file" not in item:
-                        continue  # neither file nor folder — shortcut, etc.
-                    mime = item["file"].get("mimeType") or ""
-                    if mime.startswith("application/vnd.ms-onenote"):
-                        continue
-                    hashes = item["file"].get("hashes") or {}
-                    sha256_hex = hashes.get("sha256Hash") or ""
-                    sha = bytes.fromhex(sha256_hex)[:32] if sha256_hex else None
-                    out.append({
-                        "remote_id": item["id"],
-                        "name": item["name"],
-                        "mime_type": mime,
-                        "modified_at": _parse_iso_time(item.get("lastModifiedDateTime")),
-                        "remote_path": item["name"],
-                        "remote_parent_path": parent_path,
-                        "sha256": sha,
-                        "size_bytes": int(item.get("size") or 0),
-                    })
-                next_url = payload.get("@odata.nextLink")
-
-    # `root` is the magic id for the user's drive root. Same
-    # walk seed every time.
-    await _walk_folder("root", "")
-    return out
-
-
-async def _onedrive_download(refresh_token: str, entry: dict) -> bytes:
-    """Stream the bytes of a single DriveItem.
-
-    Uses `/me/drive/items/{id}/content` which 302-redirects to a
-    pre-signed download URL on Microsoft's storage CDN. httpx
-    follows redirects by default; we just consume the bytes.
-    """
-    access_token = await _onedrive_refresh_access_token(refresh_token)
-    import httpx
-    url = f"{_MS_GRAPH_BASE}/me/drive/items/{entry['remote_id']}/content"
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
-        if r.status_code >= 400:
-            logger.warning(
-                "onedrive download failed: id=%s %s %s",
-                entry["remote_id"], r.status_code, r.text[:200],
-            )
-            raise CloudSyncNotConfigured(
-                f"OneDrive download failed for {entry['name']!r}."
-            )
-        return r.content
-
-
-async def _onedrive_folder_stats(refresh_token: str) -> dict:
-    """Walk every file and sum sizes. Used by the storage panel's
-    `linked_services` row to surface the user's OneDrive total."""
-    entries = await _onedrive_collect_entries(refresh_token)
-    return {
-        "file_count": len(entries),
-        "total_bytes": sum(e["size_bytes"] for e in entries),
-    }
-
-
 # ---------- §C4.6 — Dropbox -------------------------------------------------
 #
 # Dropbox v2 OAuth endpoints:
@@ -619,7 +281,7 @@ async def _onedrive_folder_stats(refresh_token: str) -> dict:
 # to (short_lived_access_token, refresh_token) pair. The refresh
 # token is what we encrypt + store. Dropbox uses HTTP Basic for
 # client auth on the token endpoint, NOT a body field, which is the
-# main shape difference from Google + Microsoft.
+# main shape difference from Google.
 
 _DROPBOX_AUTH_ENDPOINT = "https://www.dropbox.com/oauth2/authorize"
 _DROPBOX_TOKEN_ENDPOINT = "https://api.dropboxapi.com/oauth2/token"
@@ -628,8 +290,9 @@ _DROPBOX_TOKEN_ENDPOINT = "https://api.dropboxapi.com/oauth2/token"
 def _dropbox_auth_url(state: str) -> tuple[str, str | None]:
     """Build the Dropbox consent URL + return (url, code_verifier).
 
-    Dropbox supports PKCE; we use it for the same defense-in-depth
-    reason as the OneDrive flow.
+    Dropbox supports PKCE; we use it for defense-in-depth — even if
+    our redirect URI ever leaks via a referrer log, an attacker
+    without the verifier can't exchange the intercepted code.
     """
     import base64
     import hashlib
@@ -660,7 +323,7 @@ def _dropbox_auth_url(state: str) -> tuple[str, str | None]:
 async def _dropbox_exchange_code(code: str, verifier: str | None) -> dict:
     """POST to the Dropbox token endpoint. Uses HTTP Basic auth for
     the client_id / client_secret per Dropbox's docs (NOT body
-    fields, which Google + Microsoft accept)."""
+    fields, which Google accepts)."""
     import httpx
     data = {
         "code": code,
@@ -731,8 +394,7 @@ async def _dropbox_collect_entries(refresh_token: str) -> list[dict]:
     """Walk every file in the user's Dropbox and return entry dicts.
 
     Dropbox's `/2/files/list_folder` with `recursive=true` returns
-    the whole tree in pages of up to 2000 items each — much simpler
-    than OneDrive's per-folder recursion. We page with
+    the whole tree in pages of up to 2000 items each. We page with
     `/2/files/list_folder/continue` until `has_more=false`.
 
     Entries with `.tag == "deleted"` are skipped (Dropbox marks
@@ -997,7 +659,7 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     callback can retrieve it; without this, Google rejects the token
     exchange with "invalid_grant: Missing code verifier."
     """
-    if provider not in ("google_drive", "onedrive", "dropbox"):
+    if provider not in ("google_drive", "dropbox"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -1007,24 +669,6 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     _verify_encryption_ready()
 
     signed_state = _build_state(user_id)
-    if provider == "onedrive":
-        # §C4.6 — Microsoft identity platform v2.0. PKCE is required
-        # for the "Single-page application" / public-client tenants
-        # but optional for confidential clients with a secret. We use
-        # the confidential flow (server holds the secret) so PKCE
-        # isn't strictly needed; including it anyway is harmless and
-        # matches the Google flow's defense-in-depth posture.
-        if not settings.onedrive_oauth_client_id:
-            raise CloudSyncNotConfigured(
-                "OneDrive OAuth client not configured. Set "
-                "ONEDRIVE_OAUTH_CLIENT_ID + ONEDRIVE_OAUTH_CLIENT_SECRET "
-                "in .env. Register the app at portal.azure.com."
-            )
-        auth_url, verifier = _onedrive_auth_url(signed_state)
-        if verifier:
-            await _stash_pkce_verifier(signed_state, verifier)
-        state = signed_state
-        return OAuthHandoff(auth_url=auth_url, state=state)
     if provider == "dropbox":
         # §C4.6 — Dropbox v2 OAuth. `token_access_type=offline` is the
         # equivalent of Google's `access_type=offline` — without it
@@ -1080,7 +724,7 @@ async def complete_oauth(
     state: str,  # noqa: ARG001 — caller already verified state HMAC
 ) -> int:
     """Exchange `code` for tokens, encrypt + store, return cloud_links.id."""
-    if provider not in ("google_drive", "onedrive", "dropbox"):
+    if provider not in ("google_drive", "dropbox"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -1088,22 +732,7 @@ async def complete_oauth(
     refresh_token_to_store: str | None = None
     scopes = ""
 
-    if provider == "onedrive":
-        # §C4.6 — Microsoft Graph token exchange. The verifier was
-        # stashed under sha256(state) in connect_provider; pull it
-        # back so the PKCE check on the token endpoint passes.
-        verifier = await _pop_pkce_verifier(state)
-        token_payload = await _onedrive_exchange_code(code, verifier)
-        refresh_token_to_store = token_payload.get("refresh_token")
-        if not refresh_token_to_store:
-            raise CloudSyncNotConfigured(
-                "OneDrive did not return a refresh token. Make sure "
-                "the app is registered with `offline_access` in its "
-                "API permissions and try connecting again."
-            )
-        scopes = token_payload.get("scope", "")
-
-    elif provider == "dropbox":
+    if provider == "dropbox":
         # §C4.6 — Dropbox token exchange.
         verifier = await _pop_pkce_verifier(state)
         token_payload = await _dropbox_exchange_code(code, verifier)
@@ -1250,7 +879,7 @@ async def sync_user_provider(
     Returns a summary dict: `{seen, pulled, skipped_unchanged,
     conflicts, provider}`.
     """
-    if provider not in ("google_drive", "onedrive", "dropbox"):
+    if provider not in ("google_drive", "dropbox"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -1277,8 +906,6 @@ async def sync_user_provider(
 
     if provider == "google_drive":
         entries = await _drive_collect_entries(refresh_token)
-    elif provider == "onedrive":
-        entries = await _onedrive_collect_entries(refresh_token)
     elif provider == "dropbox":
         entries = await _dropbox_collect_entries(refresh_token)
     else:  # already gated above; defensive.
@@ -1649,7 +1276,6 @@ def _provider_display_name(provider: CloudProvider) -> str:
     return {
         "google_drive": "Google Drive",
         "dropbox": "Dropbox",
-        "onedrive": "OneDrive",
     }.get(provider, provider.title())
 
 
@@ -1827,15 +1453,13 @@ async def _provider_download(
 ) -> bytes:
     """Provider-agnostic download. Each provider builds its own client
     + uses its own download helper; we run blocking work in a thread
-    so the asyncio loop stays free. OneDrive + Dropbox helpers are
-    already httpx-native (async) so they're awaited directly."""
+    so the asyncio loop stays free. The Dropbox helper is already
+    httpx-native (async) so it's awaited directly."""
     import asyncio
     if provider == "google_drive":
         return await asyncio.to_thread(
             lambda: _drive_download(_drive_client(refresh_token), entry["remote_id"]),
         )
-    if provider == "onedrive":
-        return await _onedrive_download(refresh_token, entry)
     if provider == "dropbox":
         return await _dropbox_download(refresh_token, entry)
     raise CloudSyncNotConfigured(f"Provider '{provider}' not implemented.")
@@ -2043,8 +1667,6 @@ async def provider_folder_stats(
     try:
         if provider == "google_drive":
             return await _drive_folder_stats(refresh_token)
-        if provider == "onedrive":
-            return await _onedrive_folder_stats(refresh_token)
         if provider == "dropbox":
             return await _dropbox_folder_stats(refresh_token)
     except Exception:
@@ -2225,12 +1847,11 @@ def _parse_drive_time(raw: str | None) -> datetime | None:
 
 
 def _parse_iso_time(raw: str | None) -> datetime | None:
-    """ISO-8601 parser used by OneDrive (`lastModifiedDateTime`) and
-    Dropbox (`server_modified`). Both providers return the same
-    RFC 3339 / ISO-8601 shape Google does, but I kept a separate
-    helper so future per-provider quirks (Dropbox's millisecond
-    precision; OneDrive's optional timezone offset) can land here
-    without changing Drive's path."""
+    """ISO-8601 parser used by Dropbox (`server_modified`). Returns
+    the same RFC 3339 / ISO-8601 shape Google does, but kept as a
+    separate helper so future per-provider quirks (Dropbox's
+    millisecond precision, optional timezone offsets) can land
+    here without changing Drive's path."""
     if not raw:
         return None
     raw = raw.replace("Z", "+00:00")
