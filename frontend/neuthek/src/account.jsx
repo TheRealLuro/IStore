@@ -221,6 +221,101 @@ function UserStatusBadges({ user }) {
 // 2FA status row — bridges the Account tab to the Security tab where
 // the real Enable / Disable flow lives. Reads `user.totp_enabled` so
 // the row reflects reality without an extra round trip.
+// §C6b/C7 — verified-email status row for Settings → Account → Sign-
+// in & security, also surfaced inside the Privacy tab. The chip in
+// UserStatusBadges already shows the bare verified/unverified state,
+// but that's a tiny inline tag with no affordance to do anything
+// about it. This row matches the visual weight + interaction shape
+// of the surrounding rows (TwoFactor / GoogleLink) so users can see
+// the status AND take action (resend the email) without leaving
+// Settings.
+//
+// Verification can land via three paths: clicking the email link
+// (POST /auth/verify), having signed up with Google (the SSO
+// callback flips is_verified=true via the id_token's
+// email_verified=true claim), or a future admin override. The row
+// distinguishes the Google path with sub-copy because users who
+// signed up via SSO never receive a "verify your email" mail and
+// would otherwise be confused by a "Resend" button they'd never
+// asked for.
+function EmailVerifyRow({ user }) {
+  const verified = !!user?.is_verified;
+  const verifiedViaGoogle =
+    verified && user?.google_linked && user?.password_set === false;
+  const [resending, setResending] = useStateAcc(false);
+
+  const onResend = async () => {
+    if (!user?.email || resending) return;
+    setResending(true);
+    try {
+      // Lazy-import keeps the auth client out of the critical
+      // path for users who land in Settings without ever needing
+      // to resend (the common case once verified).
+      const { requestVerify } = await import("@/api/auth");
+      await requestVerify(user.email);
+      toast.success(
+        `A fresh verification link is on the way to ${user.email}.`,
+      );
+    } catch {
+      // Anti-enumeration: the server returns 202 either way, so a
+      // network blip is the only path that lands here.
+      toast.success(
+        `If your account is active, a fresh verification link is on its way.`,
+      );
+    } finally {
+      setResending(false);
+    }
+  };
+
+  const desc = verifiedViaGoogle
+    ? "Verified via Google. No email link needed."
+    : verified
+      ? `Verified. ${user?.email || ""}`.trim()
+      : "Some sensitive actions stay locked until you confirm.";
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 14px",
+        borderTop: "1px solid var(--line-soft, var(--line))",
+      }}
+    >
+      <div style={{
+        width: 28, height: 28, borderRadius: 8,
+        display: "grid", placeItems: "center",
+        background: verified
+          ? "color-mix(in oklab, var(--success) 14%, transparent)"
+          : "color-mix(in oklab, var(--warning, #f59e0b) 14%, transparent)",
+        color: verified ? "var(--success)" : "var(--warning, #f59e0b)",
+        flexShrink: 0,
+      }}>
+        <Icon name={verified ? "check" : "alert"} size={14}/>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500 }}>
+          Email address
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+          {desc}
+        </div>
+      </div>
+      {!verified && (
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={onResend}
+          disabled={resending}
+        >
+          {resending ? "Sending…" : "Resend"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function UserTwoFactorRow({ user, onOpenTwoFA }) {
   const enabled = !!user?.totp_enabled;
   return (
@@ -909,8 +1004,9 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   )}
                 </div>
 
-                <Collapsible label="Sign-in & security" defaultOpen count={3} id="acct-signin">
+                <Collapsible label="Sign-in & security" defaultOpen count={4} id="acct-signin">
                   <div className="applist">
+                    <EmailVerifyRow user={user}/>
                     <Expandable id="pwd" icon="lock" tone="red"
                                 title="Password" desc="Last changed 4 months ago"
                                 tailExtra={<span style={{ color: "var(--ink-3)", marginRight: 8 }}>•••••••••</span>}
@@ -940,6 +1036,22 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                 </div>
 
                 <PrivacyStanceCard/>
+
+                {/*
+                  §C7 — verification + sign-in status, surfaced inside
+                  the Privacy tab because a user concerned about who
+                  can act on their account wants to see "is my email
+                  confirmed?" / "is 2FA on?" without hunting through
+                  Account. The rows are read-only summaries; tapping
+                  "Manage" sends them to the canonical Account or
+                  Security tab so we don't duplicate the editing UI.
+                */}
+                <Collapsible label="Account verification" defaultOpen count={2} id="priv-verify">
+                  <div className="applist">
+                    <EmailVerifyRow user={user}/>
+                    <UserTwoFactorRow user={user} onOpenTwoFA={() => setTab("security")}/>
+                  </div>
+                </Collapsible>
 
                 <Collapsible label="AI on your library" defaultOpen count={3} id="priv-ai">
                   <div className="applist">
