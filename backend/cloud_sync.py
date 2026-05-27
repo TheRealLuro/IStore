@@ -405,6 +405,186 @@ async def _onedrive_exchange_code(code: str, verifier: str | None) -> dict:
     return r.json()
 
 
+async def _onedrive_refresh_access_token(refresh_token: str) -> str:
+    """Trade a refresh_token for a fresh access_token.
+
+    Microsoft rotates refresh tokens on every refresh — the response
+    carries a NEW refresh_token that replaces the one we just used.
+    The Google flow doesn't rotate; OneDrive does. We currently
+    discard the rotated token (don't write it back to cloud_links)
+    because the old one stays valid for a short grace period and
+    the next sync will refresh again anyway. A future improvement
+    would persist the rotation so we always have the freshest
+    refresh token on hand.
+
+    Raises CloudSyncNotConfigured on any non-2xx so the API layer
+    surfaces it as 503 "not_configured" to the FE.
+    """
+    import httpx
+    data = {
+        "client_id": settings.onedrive_oauth_client_id,
+        "client_secret": settings.onedrive_oauth_client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+        "scope": " ".join(PROVIDER_SCOPES["onedrive"]),
+    }
+    endpoint = _ONEDRIVE_TOKEN_ENDPOINT_FMT.format(tenant=_onedrive_tenant())
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(endpoint, data=data)
+    if r.status_code >= 400:
+        logger.warning(
+            "onedrive refresh failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "OneDrive refresh token rejected. The user may need to "
+            "reconnect from Settings → Cloud sync."
+        )
+    payload = r.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise CloudSyncNotConfigured("OneDrive refresh returned no access_token.")
+    return access_token
+
+
+_MS_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+
+async def _onedrive_collect_entries(refresh_token: str) -> list[dict]:
+    """Walk every non-folder DriveItem in the user's OneDrive and
+    return entry dicts in the same shape `sync_user_provider`
+    expects from `_drive_collect_entries`.
+
+    Strategy: BFS over `/me/drive/root/children` → recurse into
+    each folder via `/me/drive/items/{id}/children`. Each page
+    carries `@odata.nextLink` for pagination. We DON'T use Graph's
+    `/me/drive/root/search(q='')` because the search index lags
+    fresh uploads by minutes; recursive children listing returns
+    consistent results immediately.
+
+    Skips:
+      - OneNote sections / notebooks (mime starts with
+        application/vnd.ms-onenote) — they're container objects,
+        not single files.
+      - Files marked `package` (Microsoft's wrapper for
+        multi-file documents). Mirroring those would corrupt
+        them; the user can re-export to a single file if needed.
+    """
+    access_token = await _onedrive_refresh_access_token(refresh_token)
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    import httpx
+    out: list[dict] = []
+
+    async def _walk_folder(folder_id: str, parent_path: str) -> None:
+        next_url = f"{_MS_GRAPH_BASE}/me/drive/items/{folder_id}/children"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            while next_url:
+                # Trim @odata.nextLink response bytes: only ask Graph
+                # for the fields we'll actually read. `select` cuts
+                # the response ~3x on accounts with rich metadata.
+                params = {
+                    "$select": (
+                        "id,name,size,file,folder,package,parentReference,"
+                        "lastModifiedDateTime"
+                    ),
+                    "$top": 200,
+                } if "$select" not in next_url else None
+                r = await client.get(next_url, headers=headers, params=params)
+                if r.status_code == 401:
+                    # Access token expired mid-walk (rare; we refresh
+                    # at the start, but the token has a 1h lifetime
+                    # and a deep walk could exceed it). Refresh and
+                    # try this page again exactly once before giving
+                    # up — repeating refresh would mask a real auth
+                    # break.
+                    new_token = await _onedrive_refresh_access_token(refresh_token)
+                    headers["Authorization"] = f"Bearer {new_token}"
+                    r = await client.get(next_url, headers=headers, params=params)
+                if r.status_code >= 400:
+                    logger.warning(
+                        "onedrive list failed: %s %s",
+                        r.status_code, r.text[:200],
+                    )
+                    raise CloudSyncNotConfigured(
+                        "OneDrive listing failed. Try again later, or "
+                        "reconnect from Settings → Cloud sync."
+                    )
+                payload = r.json()
+                for item in payload.get("value", []):
+                    if item.get("package"):
+                        continue  # multi-file wrapper, skip
+                    if "folder" in item:
+                        sub_path = (
+                            f"{parent_path}/{item['name']}"
+                            if parent_path else item["name"]
+                        )
+                        # Recurse into the sub-folder. Append to a
+                        # work-queue in real code; for clarity we
+                        # nest directly here. OneDrive folder
+                        # depth is capped by the service so the
+                        # recursion bottoms out.
+                        await _walk_folder(item["id"], sub_path)
+                        continue
+                    if "file" not in item:
+                        continue  # neither file nor folder — shortcut, etc.
+                    mime = item["file"].get("mimeType") or ""
+                    if mime.startswith("application/vnd.ms-onenote"):
+                        continue
+                    hashes = item["file"].get("hashes") or {}
+                    sha256_hex = hashes.get("sha256Hash") or ""
+                    sha = bytes.fromhex(sha256_hex)[:32] if sha256_hex else None
+                    out.append({
+                        "remote_id": item["id"],
+                        "name": item["name"],
+                        "mime_type": mime,
+                        "modified_at": _parse_iso_time(item.get("lastModifiedDateTime")),
+                        "remote_path": item["name"],
+                        "remote_parent_path": parent_path,
+                        "sha256": sha,
+                        "size_bytes": int(item.get("size") or 0),
+                    })
+                next_url = payload.get("@odata.nextLink")
+
+    # `root` is the magic id for the user's drive root. Same
+    # walk seed every time.
+    await _walk_folder("root", "")
+    return out
+
+
+async def _onedrive_download(refresh_token: str, entry: dict) -> bytes:
+    """Stream the bytes of a single DriveItem.
+
+    Uses `/me/drive/items/{id}/content` which 302-redirects to a
+    pre-signed download URL on Microsoft's storage CDN. httpx
+    follows redirects by default; we just consume the bytes.
+    """
+    access_token = await _onedrive_refresh_access_token(refresh_token)
+    import httpx
+    url = f"{_MS_GRAPH_BASE}/me/drive/items/{entry['remote_id']}/content"
+    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        if r.status_code >= 400:
+            logger.warning(
+                "onedrive download failed: id=%s %s %s",
+                entry["remote_id"], r.status_code, r.text[:200],
+            )
+            raise CloudSyncNotConfigured(
+                f"OneDrive download failed for {entry['name']!r}."
+            )
+        return r.content
+
+
+async def _onedrive_folder_stats(refresh_token: str) -> dict:
+    """Walk every file and sum sizes. Used by the storage panel's
+    `linked_services` row to surface the user's OneDrive total."""
+    entries = await _onedrive_collect_entries(refresh_token)
+    return {
+        "file_count": len(entries),
+        "total_bytes": sum(e["size_bytes"] for e in entries),
+    }
+
+
 # ---------- §C4.6 — Dropbox -------------------------------------------------
 #
 # Dropbox v2 OAuth endpoints:
@@ -483,6 +663,180 @@ async def _dropbox_exchange_code(code: str, verifier: str | None) -> dict:
             "DROPBOX_OAUTH_REDIRECT_URI exactly."
         )
     return r.json()
+
+
+async def _dropbox_refresh_access_token(refresh_token: str) -> str:
+    """Trade a refresh_token for a fresh short-lived access_token.
+
+    Dropbox returns 4-hour access tokens. Each call to this helper
+    gets us a fresh one without re-prompting consent. Auth is HTTP
+    Basic with (client_id, client_secret) — same shape as the code
+    exchange.
+    """
+    import httpx
+    data = {
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+    auth = (
+        settings.dropbox_oauth_client_id,
+        settings.dropbox_oauth_client_secret,
+    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(_DROPBOX_TOKEN_ENDPOINT, data=data, auth=auth)
+    if r.status_code >= 400:
+        logger.warning(
+            "dropbox refresh failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "Dropbox refresh token rejected. The user may need to "
+            "reconnect from Settings → Cloud sync."
+        )
+    payload = r.json()
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise CloudSyncNotConfigured("Dropbox refresh returned no access_token.")
+    return access_token
+
+
+_DROPBOX_API_BASE = "https://api.dropboxapi.com/2"
+_DROPBOX_CONTENT_BASE = "https://content.dropboxapi.com/2"
+
+
+async def _dropbox_collect_entries(refresh_token: str) -> list[dict]:
+    """Walk every file in the user's Dropbox and return entry dicts.
+
+    Dropbox's `/2/files/list_folder` with `recursive=true` returns
+    the whole tree in pages of up to 2000 items each — much simpler
+    than OneDrive's per-folder recursion. We page with
+    `/2/files/list_folder/continue` until `has_more=false`.
+
+    Entries with `.tag == "deleted"` are skipped (Dropbox marks
+    deletions in the listing for delta-sync clients; we're doing
+    a snapshot pull so we just ignore them).
+    """
+    access_token = await _dropbox_refresh_access_token(refresh_token)
+    import httpx
+
+    out: list[dict] = []
+
+    async def _post_listing(client: httpx.AsyncClient, url: str, body: dict) -> dict:
+        nonlocal access_token
+        for attempt in (0, 1):
+            r = await client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            if r.status_code == 401 and attempt == 0:
+                access_token = await _dropbox_refresh_access_token(refresh_token)
+                continue
+            if r.status_code >= 400:
+                logger.warning(
+                    "dropbox list failed: %s %s",
+                    r.status_code, r.text[:200],
+                )
+                raise CloudSyncNotConfigured(
+                    "Dropbox listing failed. Try again later, or "
+                    "reconnect from Settings → Cloud sync."
+                )
+            return r.json()
+        raise CloudSyncNotConfigured("Dropbox listing retry exhausted.")
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        payload = await _post_listing(
+            client,
+            f"{_DROPBOX_API_BASE}/files/list_folder",
+            {"path": "", "recursive": True, "limit": 2000},
+        )
+        while True:
+            for item in payload.get("entries", []):
+                if item.get(".tag") != "file":
+                    continue  # skip "folder" + "deleted" entries
+                # Dropbox doesn't return mime — we derive it from
+                # the extension later in the upload-validation path.
+                # `path_display` is the human-readable path; we
+                # split it into the filename + parent path so the
+                # folder-mirror code can recreate the tree.
+                full_path = item.get("path_display") or ""
+                parent_path = full_path.rsplit("/", 1)[0].lstrip("/") if "/" in full_path else ""
+                # Dropbox returns `content_hash` (its own custom
+                # hash, NOT sha256) — see
+                # https://www.dropbox.com/developers/reference/content-hash
+                # for the spec. We store it in the sha256 column
+                # because that's the change-detector — false-positive
+                # collisions just re-download.
+                content_hash = item.get("content_hash") or ""
+                sha = bytes.fromhex(content_hash)[:32] if content_hash else None
+                out.append({
+                    "remote_id": item["id"],
+                    "name": item["name"],
+                    # Dropbox doesn't surface mime, but the upload-
+                    # validation pipeline sniffs from bytes + extension
+                    # anyway, so leave it None and let neuthek's MIME
+                    # detection do the work.
+                    "mime_type": None,
+                    "modified_at": _parse_iso_time(item.get("server_modified")),
+                    "remote_path": item["name"],
+                    "remote_parent_path": parent_path,
+                    "sha256": sha,
+                    "size_bytes": int(item.get("size") or 0),
+                })
+            if not payload.get("has_more"):
+                break
+            payload = await _post_listing(
+                client,
+                f"{_DROPBOX_API_BASE}/files/list_folder/continue",
+                {"cursor": payload["cursor"]},
+            )
+
+    return out
+
+
+async def _dropbox_download(refresh_token: str, entry: dict) -> bytes:
+    """POST /2/files/download. The file path goes in a special
+    `Dropbox-API-Arg` JSON header (not the body — the body is the
+    response). We use the file's stable ID (`id:...`) so renames
+    on Dropbox's side don't break sync mid-pull.
+    """
+    access_token = await _dropbox_refresh_access_token(refresh_token)
+    import httpx
+    import json as _json
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        # Dropbox-API-Arg is the spec'd way to pass arguments on
+        # /content endpoints — the body is reserved for the file
+        # bytes (or NULL on download).
+        "Dropbox-API-Arg": _json.dumps({"path": entry["remote_id"]}),
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(
+            f"{_DROPBOX_CONTENT_BASE}/files/download",
+            headers=headers,
+        )
+        if r.status_code >= 400:
+            logger.warning(
+                "dropbox download failed: id=%s %s %s",
+                entry["remote_id"], r.status_code, r.text[:200],
+            )
+            raise CloudSyncNotConfigured(
+                f"Dropbox download failed for {entry['name']!r}."
+            )
+        return r.content
+
+
+async def _dropbox_folder_stats(refresh_token: str) -> dict:
+    """Walk all files and sum sizes for the storage-panel linked-
+    services row."""
+    entries = await _dropbox_collect_entries(refresh_token)
+    return {
+        "file_count": len(entries),
+        "total_bytes": sum(e["size_bytes"] for e in entries),
+    }
 
 
 # ---------- Google Drive --------------------------------------------------
@@ -844,7 +1198,7 @@ async def sync_user_provider(
     Returns a summary dict: `{seen, pulled, skipped_unchanged,
     conflicts, provider}`.
     """
-    if provider != "google_drive":
+    if provider not in ("google_drive", "onedrive", "dropbox"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -871,6 +1225,10 @@ async def sync_user_provider(
 
     if provider == "google_drive":
         entries = await _drive_collect_entries(refresh_token)
+    elif provider == "onedrive":
+        entries = await _onedrive_collect_entries(refresh_token)
+    elif provider == "dropbox":
+        entries = await _dropbox_collect_entries(refresh_token)
     else:  # already gated above; defensive.
         entries = []
 
@@ -1416,13 +1774,18 @@ async def _provider_download(
     provider: CloudProvider, refresh_token: str, entry: dict,
 ) -> bytes:
     """Provider-agnostic download. Each provider builds its own client
-    + uses its own download helper; we run the sync work in a thread
-    so the asyncio loop stays free for other requests."""
+    + uses its own download helper; we run blocking work in a thread
+    so the asyncio loop stays free. OneDrive + Dropbox helpers are
+    already httpx-native (async) so they're awaited directly."""
     import asyncio
     if provider == "google_drive":
         return await asyncio.to_thread(
             lambda: _drive_download(_drive_client(refresh_token), entry["remote_id"]),
         )
+    if provider == "onedrive":
+        return await _onedrive_download(refresh_token, entry)
+    if provider == "dropbox":
+        return await _dropbox_download(refresh_token, entry)
     raise CloudSyncNotConfigured(f"Provider '{provider}' not implemented.")
 
 
@@ -1628,6 +1991,10 @@ async def provider_folder_stats(
     try:
         if provider == "google_drive":
             return await _drive_folder_stats(refresh_token)
+        if provider == "onedrive":
+            return await _onedrive_folder_stats(refresh_token)
+        if provider == "dropbox":
+            return await _dropbox_folder_stats(refresh_token)
     except Exception:
         logger.exception("provider_folder_stats: %s walk failed", provider)
     return None
@@ -1803,6 +2170,34 @@ def _parse_drive_time(raw: str | None) -> datetime | None:
         return datetime.fromisoformat(raw)
     except ValueError:
         return None
+
+
+def _parse_iso_time(raw: str | None) -> datetime | None:
+    """ISO-8601 parser used by OneDrive (`lastModifiedDateTime`) and
+    Dropbox (`server_modified`). Both providers return the same
+    RFC 3339 / ISO-8601 shape Google does, but I kept a separate
+    helper so future per-provider quirks (Dropbox's millisecond
+    precision; OneDrive's optional timezone offset) can land here
+    without changing Drive's path."""
+    if not raw:
+        return None
+    raw = raw.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        # Some providers occasionally emit fractional seconds with
+        # more than 6 digits (Python's max). Strip past the dot if
+        # we can recover.
+        try:
+            head, frac = raw.split(".", 1)
+            tz_idx = max(frac.find("+"), frac.find("-"))
+            if tz_idx > 0:
+                frac, tz = frac[:tz_idx], frac[tz_idx:]
+            else:
+                tz = ""
+            return datetime.fromisoformat(f"{head}.{frac[:6]}{tz}")
+        except Exception:
+            return None
 
 
 # ---------- preflight check ----------------------------------------------
