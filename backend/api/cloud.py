@@ -879,7 +879,83 @@ async def _icloud_trigger_hsa2_push(svc, mode: str | None) -> str | None:
         return None
 
 
-def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
+def _icloud_extract_trusted_phone(svc) -> dict | None:
+    """Pull the trusted phone number Apple is willing to SMS, for the
+    SMS-fallback path. pyicloud's `_auth_data` looks like:
+
+        {
+          "phoneNumberVerification": {
+            "trustedPhoneNumber": {"id": 1, "nonFTEU": true,
+              "numberWithDialCode": "+1 (•••) •••-••96", ...},
+            "trustedPhoneNumbers": [...same...]
+          },
+          "trustedPhoneNumber": {... same shape ...}
+        }
+
+    Top-level key preferred, nested ones as fallback.
+    """
+    ad = getattr(svc, "_auth_data", None) or {}
+    phone = ad.get("trustedPhoneNumber")
+    if not phone:
+        pnv = ad.get("phoneNumberVerification") or {}
+        phone = pnv.get("trustedPhoneNumber")
+        if not phone:
+            phones = pnv.get("trustedPhoneNumbers") or []
+            if phones:
+                phone = phones[0]
+    return phone if isinstance(phone, dict) else None
+
+
+async def _icloud_trigger_sms(svc) -> str | None:
+    """Ask Apple to SMS a verification code to the trusted phone. Used
+    as the fallback when trusted-device verification is account-
+    locked (Apple returns 423 + securityCodeLocked: true). Returns a
+    human label for the FE toast, or None on failure.
+    """
+    auth_endpoint = getattr(svc, "_auth_endpoint", None)
+    phone = _icloud_extract_trusted_phone(svc)
+    if not auth_endpoint or not phone:
+        logger.warning(
+            "icloud_trigger_sms: missing auth_endpoint=%r or phone=%r",
+            bool(auth_endpoint), bool(phone),
+        )
+        return None
+
+    def _call() -> str | None:
+        try:
+            headers = svc._get_auth_headers(  # noqa: SLF001
+                {"Accept": "application/json"}
+            )
+        except Exception:
+            headers = {"Accept": "application/json"}
+        body = {
+            "phoneNumber": {
+                "id": phone.get("id"),
+                "nonFTEU": phone.get("nonFTEU"),
+            },
+            "mode": phone.get("pushMode") or "sms",
+        }
+        resp = svc.session.put(
+            f"{auth_endpoint}/verify/phone", json=body, headers=headers,
+        )
+        resp.raise_for_status()
+        num = (
+            phone.get("numberWithDialCode")
+            or phone.get("obfuscatedNumber")
+            or phone.get("number")
+        )
+        return str(num) if num else "your trusted phone"
+
+    try:
+        return await asyncio.to_thread(_call)
+    except Exception:
+        logger.exception("icloud_trigger_sms: PUT /verify/phone failed")
+        return None
+
+
+def _icloud_validate_hsa2(
+    svc, code: str, mode: str | None = None,
+) -> tuple[bool, str | None, bool]:
     """HSA-2 code verification with full response capture.
 
     pyicloud's `validate_2fa_code` swallows the PyiCloudAPIResponse
@@ -888,9 +964,13 @@ def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
     so the FE can show "code expired" vs. "code reused" vs. a session
     issue, and the backend logs have enough to debug.
 
-    Returns (ok, apple_detail). When ok is False, apple_detail is a
-    short human string ("code is incorrect", "code expired", etc.)
-    or None if Apple gave nothing.
+    `mode` overrides Apple's auth_data.mode. Pass "sms" once the
+    session has been switched to SMS fallback after a trusted-device
+    lockout.
+
+    Returns (ok, apple_detail, trusted_device_locked). locked=True
+    only when Apple returned `securityCodeLocked: true` on the
+    trusted-device endpoint — caller should fall back to SMS.
     """
     from pyicloud.exceptions import (  # type: ignore
         PyiCloudAPIResponseException,
@@ -898,13 +978,10 @@ def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
 
     auth_endpoint = getattr(svc, "_auth_endpoint", None)
     if not auth_endpoint:
-        return False, "internal: no auth endpoint"
+        return False, "internal: no auth endpoint", False
 
-    # Mirror pyicloud's validate_2fa_code SMS branch when the auth
-    # session is in SMS mode — the user's code came over SMS, the
-    # validator endpoint differs.
     auth_data = getattr(svc, "_auth_data", None) or {}
-    mode = (auth_data.get("mode") or "").lower()
+    effective_mode = (mode or auth_data.get("mode") or "").lower()
 
     try:
         headers = svc._get_auth_headers(  # noqa: SLF001
@@ -913,8 +990,8 @@ def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
     except Exception:
         headers = {"Accept": "application/json"}
 
-    if mode == "sms":
-        phone = auth_data.get("trustedPhoneNumber") or {}
+    if effective_mode == "sms":
+        phone = _icloud_extract_trusted_phone(svc) or {}
         url = f"{auth_endpoint}/verify/phone/securitycode"
         body = {
             "phoneNumber": {
@@ -928,25 +1005,41 @@ def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
         url = f"{auth_endpoint}/verify/trusteddevice/securitycode"
         body = {"securityCode": {"code": code}}
 
+    status_code: int = 0
+    text: str = ""
+    body_json: dict = {}
     try:
         resp = svc.session.post(url, json=body, headers=headers)
+        status_code = getattr(resp, "status_code", 0)
+        try:
+            text = (resp.text or "")[:1500]
+        except Exception:
+            text = ""
+        try:
+            body_json = resp.json() or {}
+        except Exception:
+            body_json = {}
     except PyiCloudAPIResponseException as e:
-        body_text = getattr(e, "reason", None) or str(e)
+        # pyicloud raises on 4xx; the response body is embedded in
+        # the exception's `reason` as " (NNN): {json...}". Parse it
+        # back out so the locked-detection still works.
+        status_code = int(getattr(e, "code", 0) or 0)
+        text = (getattr(e, "reason", None) or str(e))[:1500]
+        try:
+            jstart = text.find("{")
+            if jstart >= 0:
+                import json as _json_mod
+                body_json = _json_mod.loads(text[jstart:]) or {}
+        except Exception:
+            body_json = {}
         logger.warning(
             "icloud_validate_hsa2: APIResponseException code=%r reason=%r",
-            getattr(e, "code", None), body_text,
+            status_code, text,
         )
-        return False, str(body_text)[:200]
     except Exception as e:
         logger.exception("icloud_validate_hsa2: request raised")
-        return False, str(e)[:200]
+        return False, str(e)[:200], False
 
-    status_code = getattr(resp, "status_code", 0)
-    text = ""
-    try:
-        text = (resp.text or "")[:500]
-    except Exception:
-        pass
     logger.warning(
         "icloud_validate_hsa2: url=%s status=%s body=%s",
         url, status_code, text,
@@ -957,25 +1050,38 @@ def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
             svc.trust_session()
         except Exception:
             logger.exception("icloud_validate_hsa2: trust_session failed")
-        return True, None
+        return True, None, False
 
-    # Try to parse Apple's error envelope. It's typically:
-    #   {"service_errors": [{"code": "-21669", "message": "..."}], ...}
+    # Apple's 423 response on a trusted-device lockout:
+    #   {"securityCode": {"securityCodeLocked": true, ...},
+    #    "phoneNumberVerification": {"trustedPhoneNumber": {...}}}
+    # Set when the account has accumulated too many failed
+    # trusted-device verifications — caller switches to SMS.
+    sec = body_json.get("securityCode") or {}
+    trusted_locked = bool(sec.get("securityCodeLocked"))
+
+    # service_errors[] is Apple's standard error envelope for most
+    # other failures (wrong code, expired, etc).
     detail: str | None = None
-    try:
-        j = resp.json()
-        errs = j.get("service_errors") or j.get("serviceErrors") or []
-        if errs:
-            msgs = [
-                str(e.get("message") or e.get("code") or "")
-                for e in errs if isinstance(e, dict)
-            ]
-            detail = "; ".join(m for m in msgs if m) or None
-    except Exception:
-        pass
-    if not detail and text:
-        detail = text[:150]
-    return False, detail
+    errs = (
+        body_json.get("service_errors")
+        or body_json.get("serviceErrors") or []
+    )
+    if errs:
+        msgs = [
+            str(e.get("message") or e.get("code") or "")
+            for e in errs if isinstance(e, dict)
+        ]
+        detail = "; ".join(m for m in msgs if m) or None
+    if not detail and trusted_locked:
+        detail = (
+            "Apple has temporarily locked trusted-device verification "
+            "for this account after too many failed attempts."
+        )
+    if not detail:
+        first_line = text.splitlines()[0] if text else ""
+        detail = first_line[:200] or None
+    return False, detail, trusted_locked
 
 
 def _icloud_sweep_pending() -> None:
@@ -1383,6 +1489,7 @@ async def icloud_verify(
     dev = pending.get("code_sent_device")
     ok = False
     apple_detail: str | None = None
+    trusted_locked = False
     try:
         if is_2sa and dev is not None:
             ok = await asyncio.to_thread(
@@ -1392,10 +1499,13 @@ async def icloud_verify(
             # HSA-2: bypass pyicloud's validate_2fa_code so we can
             # capture Apple's actual response body when validation
             # fails. pyicloud just returns False on PyiCloudAPI
-            # ResponseException, which hides the real reason (and
-            # has been masking why fresh codes get rejected).
-            ok, apple_detail = await asyncio.to_thread(
-                _icloud_validate_hsa2, svc, code,
+            # ResponseException, which hides the real reason. Pass
+            # `mode` from pending so that, after we auto-switch to
+            # SMS on a trusted-device lockout, the next verify call
+            # POSTs to /verify/phone/securitycode instead.
+            pending_mode = pending.get("mode")
+            ok, apple_detail, trusted_locked = await asyncio.to_thread(
+                _icloud_validate_hsa2, svc, code, pending_mode,
             )
     except Exception as e:
         logger.exception("icloud_verify: validation raised")
@@ -1406,6 +1516,41 @@ async def icloud_verify(
             f"Request a fresh code (close + reopen the connect dialog) "
             f"and try again.",
         )
+
+    if not ok and trusted_locked:
+        # Apple locked trusted-device verification on this account
+        # (too many failed attempts during our iteration). Auto-fall-
+        # back to SMS: trigger Apple to text the trusted phone, mark
+        # the session as SMS-mode so the next /verify call routes to
+        # /verify/phone/securitycode, and ask the user to enter the
+        # NEW code Apple just sent.
+        phone_label = await _icloud_trigger_sms(svc)
+        if phone_label:
+            pending["mode"] = "sms"
+            logger.warning(
+                "icloud_verify: trusted-device locked; switched to "
+                "SMS to %r", phone_label,
+            )
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Apple has temporarily locked trusted-device "
+                "verification on this account after earlier failed "
+                f"attempts. We've sent a fresh code via SMS to "
+                f"{phone_label}. Enter that SMS code below and try "
+                f"again.",
+            )
+        # SMS trigger failed — surface a clear path back. The user
+        # can clear the lockout by signing in to https://www.icloud
+        # .com from a browser successfully, which resets Apple's
+        # rate-limit state for the account.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Apple locked trusted-device verification on this account "
+            "and we couldn't fall back to SMS. Sign in to "
+            "https://www.icloud.com from a browser to clear the lock, "
+            "then try connecting again here.",
+        )
+
     if not ok:
         logger.warning(
             "icloud_verify: code rejected (is_2sa=%s, code_len=%d, "
@@ -1418,12 +1563,21 @@ async def icloud_verify(
             "That code didn't match. Apple may have rejected it "
             "(expired or already used). "
         )
+        # Different fallback hint depending on whether we're in
+        # SMS-fallback mode or the original trusted-device mode.
+        if pending.get("mode") == "sms":
+            tail = (
+                "Request a fresh SMS code by closing + reopening the "
+                "connect dialog."
+            )
+        else:
+            tail = (
+                "Get a fresh code from Settings → Apple ID → Sign-In "
+                "& Security → Get Verification Code on a signed-in "
+                "iDevice, then try again."
+            )
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail
-            + "Get a fresh code from Settings → Apple ID → Sign-In "
-              "& Security → Get Verification Code on a signed-in "
-              "iDevice, then try again.",
+            status.HTTP_400_BAD_REQUEST, detail + tail,
         )
     # Trust this session so the cookie_directory carries the long-
     # lived trust token. Without this, every sync would re-prompt.
