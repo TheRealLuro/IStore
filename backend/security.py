@@ -748,6 +748,18 @@ class CsrfOriginMiddleware(BaseHTTPMiddleware):
         "/auth/verify",
         "/auth/register",
         "/auth/google/",
+        # §H#7 — magic-link passwordless sign-in. Same "moment the
+        # cookie is being set" exemption as /auth/cookie/login: the
+        # consume endpoints are public POSTs that bootstrap the
+        # session, so the incoming request can't carry the cookie
+        # yet (the user hasn't logged in). Without this, a SECOND
+        # POST to /consume after the first one set a cookie (e.g.
+        # the user accidentally double-clicks) hits CSRF instead
+        # of the proper "already used" 400.
+        "/auth/email-link/",
+        # §C6c — recovery-code login. Same shape: public POST that
+        # mints a session for users who can't log in normally.
+        "/account/recovery-codes/login",
         "/health",
         "/shares/preview/",  # public share endpoints
         "/shares/claim",

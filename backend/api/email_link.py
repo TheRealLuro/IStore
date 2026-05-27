@@ -64,7 +64,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth.users import User, get_jwt_strategy
+from backend.auth.users import COOKIE_NAME, User, get_jwt_strategy
 from backend.config import settings
 from backend.db import get_session
 from backend.email_send import send_signin_link_email
@@ -72,6 +72,30 @@ from backend.key_derivation import PURPOSE_SIGNIN_LINK, derive_subkey_str
 from backend.models import AuditLog
 
 logger = logging.getLogger(__name__)
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    """Set the cookie-auth session cookie alongside the bearer-token
+    response body. Without this, the FE (which uses HttpOnly-cookie
+    auth via the `neuthek_session` cookie set by /auth/cookie/login)
+    gets a JWT in the response but has no cookie to ship on the next
+    request — /users/me 401s, the user is bounced back to the sign-
+    in screen, and the magic-link UX looks broken.
+
+    Mirrors the cookie attrs from CookieTransport in
+    backend.auth.users so this cookie behaves identically to one set
+    by the regular /auth/cookie/login path: same name, max-age,
+    Secure (in prod), HttpOnly, SameSite=Lax, root path.
+    """
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=settings.jwt_lifetime_seconds,
+        path="/",
+        secure=settings.is_production,
+        httponly=True,
+        samesite="lax",
+    )
 
 
 _TOKEN_AUDIENCE = "neuthek:signin-link"
@@ -376,6 +400,7 @@ async def email_link_consume(
 
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
+    _set_session_cookie(response, token)
     return EmailLinkConsumeResponse(access_token=token)
 
 
@@ -457,4 +482,5 @@ async def email_link_consume_code(
 
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
+    _set_session_cookie(response, token)
     return EmailLinkConsumeResponse(access_token=token)

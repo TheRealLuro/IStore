@@ -38,7 +38,7 @@ from sqlalchemy import delete as sa_delete, func as sa_func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.audit import add_audit
-from backend.auth.users import current_active_user, get_jwt_strategy
+from backend.auth.users import COOKIE_NAME, current_active_user, get_jwt_strategy
 from backend.config import settings
 from backend.db import get_session
 from backend.deletion import hard_delete_images
@@ -1070,6 +1070,7 @@ class RecoveryLoginResponse(BaseModel):
 )
 async def recovery_login(
     payload: RecoveryLoginPayload,
+    response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> RecoveryLoginResponse:
     """Trade a recovery code for a JWT.
@@ -1152,9 +1153,25 @@ async def recovery_login(
     )
     await session.commit()
 
-    # Issue a JWT via the same strategy /auth/jwt/login uses.
+    # Issue a JWT via the same strategy /auth/jwt/login uses, then
+    # ALSO set the cookie-auth session cookie. The FE has been on
+    # cookie-mode since 2026-05; returning only a bearer token in
+    # the body would leave the next /users/me request without a
+    # cookie to ship, and the sign-in would silently fail with 401.
+    # Same fix lives in backend/api/email_link.py for the magic-link
+    # paths; the helper is duplicated here to keep account.py from
+    # importing email_link's internals.
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=settings.jwt_lifetime_seconds,
+        path="/",
+        secure=settings.is_production,
+        httponly=True,
+        samesite="lax",
+    )
     return RecoveryLoginResponse(access_token=token)
 
 
