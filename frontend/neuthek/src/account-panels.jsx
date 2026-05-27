@@ -1251,6 +1251,30 @@ function StoragePage() {
 
   const [busyOriginals, setBusyOriginals] = useStateSP(false);
   const [busyVariants, setBusyVariants] = useStateSP(false);
+  // §C4.5 — empty-trash button colocated with the trash bytes row
+  // in this same panel. Previously the user had to bounce to the
+  // separate "Trash → Empty trash" collapsible to act on the bytes
+  // they just saw here. Same action, closer to the affordance.
+  const [busyTrash, setBusyTrash] = useStateSP(false);
+  const onEmptyTrash = async () => {
+    if (busyTrash) return;
+    if (!window.confirm(
+      `Permanently delete every item in Trash (${fmtBytes(trash)}). ` +
+      "This frees the bytes immediately and cannot be undone. Continue?"
+    )) return;
+    setBusyTrash(true);
+    try {
+      const r = await emptyAccountTrash();
+      toast.success(`Emptied trash. ${r.deleted} item${r.deleted === 1 ? "" : "s"} gone.`);
+      qc.invalidateQueries({ queryKey: ["storage"] });
+      qc.invalidateQueries({ queryKey: ["account-trash"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+    } catch (e) {
+      toast.error(e?.detail || "Could not empty trash");
+    } finally {
+      setBusyTrash(false);
+    }
+  };
   const onFreeOriginals = async () => {
     if (busyOriginals) return;
     if (!window.confirm(
@@ -1289,9 +1313,40 @@ function StoragePage() {
     }
   };
 
+  // §C4.5 — quota percentage + color-coded status. The previous
+  // header just showed "X of Y" with no urgency; users with a
+  // nearly-full plan had no visual cue until upload errors started.
+  // Three bands: ok (<70%), warn (70-89%), crit (90%+).
+  const quotaPct = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
+  const quotaBand =
+    quotaPct >= 90 ? "crit" :
+    quotaPct >= 70 ? "warn" :
+    "ok";
+  const quotaColor =
+    quotaBand === "crit" ? "var(--danger)" :
+    quotaBand === "warn" ? "var(--warning, #f59e0b)" :
+    "var(--ink-3)";
+
   return (
     <>
-      <DetSection title="Storage used" right={<span style={{ fontSize: 12, color: "var(--ink-3)" }}>{fmtBytes(used)} of {fmtBytes(quota)}</span>}>
+      <DetSection
+        title="Storage used"
+        right={
+          <span style={{
+            fontSize: 12,
+            color: quotaColor,
+            fontVariantNumeric: "tabular-nums",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+          }}>
+            {quotaBand !== "ok" && <Icon name="alert" size={11}/>}
+            <span style={{ fontWeight: quotaBand !== "ok" ? 600 : 400 }}>
+              {fmtBytes(used)} of {fmtBytes(quota)} &middot; {quotaPct.toFixed(0)}%
+            </span>
+          </span>
+        }
+      >
         <div className="det-card">
           <div className="storage-bar-v3">
             {cats.map(c => <div key={c.key} className="storage-bar-v3__seg" style={{ width: c.pct + "%", background: c.color }}/>)}
@@ -1357,6 +1412,11 @@ function StoragePage() {
               title="Trash"
               desc="Soft-deleted files. Recoverable from Trash; auto-purged after 30 days."
               bytes={trash} pct={used > 0 ? (trash / used) * 100 : 0}
+              action={
+                <button className="btn btn--secondary btn--sm" onClick={onEmptyTrash} disabled={busyTrash}>
+                  {busyTrash ? "Emptying…" : `Empty (${fmtBytes(trash)})`}
+                </button>
+              }
             />
           )}
         </div>
