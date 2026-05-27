@@ -1243,10 +1243,33 @@ if (fs.existsSync(distDir)) {
     // etc. have no matching static file). Disabling the auto-index makes
     // the catch-all below the single source of truth for HTML responses.
     index: false,
+    // dotfiles: 'allow' — Express's `serve-static` defaults to
+    // 'ignore' which 404s on any path with a leading-dot segment.
+    // That blocks the /.well-known/ tree, which is the IETF-
+    // standardized (RFC 8615) location for site-level metadata
+    // files browsers + protocols look up at fixed paths:
+    //   - /.well-known/microsoft-identity-association.json (Azure
+    //     publisher-domain verification — proves to Microsoft that
+    //     the neuthek.com domain owns the OneDrive OAuth app)
+    //   - /.well-known/apple-app-site-association (universal links)
+    //   - /.well-known/security.txt (vulnerability-disclosure
+    //     contact, RFC 9116)
+    // None of these contain secrets — they're explicitly designed
+    // for unauthenticated public reads — so 'allow' is the right
+    // setting. Without it Microsoft's verifier can't fetch our
+    // file and refuses to mark the app as verified-publisher.
+    dotfiles: "allow",
     setHeaders(res, file) {
       // index.html should never be long-cached so a redeploy is visible.
       if (file.endsWith("index.html")) {
         res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      }
+      // The .well-known files are tiny but verifiers occasionally
+      // re-fetch (e.g. Microsoft re-checks publisher-domain on
+      // app updates). Override the 1-year immutable header on
+      // these so we can fix a typo without waiting out a cache.
+      if (file.includes(`${path.sep}.well-known${path.sep}`)) {
+        res.setHeader("Cache-Control", "public, max-age=300");
       }
     },
   }));
