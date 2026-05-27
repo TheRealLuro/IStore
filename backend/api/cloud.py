@@ -949,67 +949,36 @@ async def icloud_start(
             message="Session already trusted — no 2FA needed.",
         )
 
-    # §C4.6 — Apple's two 2FA flavors need OPPOSITE handling. Mixing
-    # them was the root of the previous wave of bugs:
+    # §C4.6 — Code delivery vs. code validation use DIFFERENT Apple
+    # endpoints and DIFFERENT pyicloud methods, and Apple's two 2FA
+    # flavors split on the validation side only. The previous bug
+    # cycle came from conflating them — PR #74 disabled delivery
+    # entirely on HSA-2 thinking Apple auto-pushed, which left users
+    # with no code at all. It doesn't auto-push from SRP signin.
     #
-    #   HSA-2 (modern, the default since 2017):
-    #     - pyicloud reports `requires_2fa=True`.
-    #     - Apple auto-pushes a 6-digit code via APN to trusted
-    #       devices the moment the user authenticates with email +
-    #       password. We do NOT need to (and CANNOT) trigger
-    #       delivery — calling send_verification_code() or
-    #       trusted_devices on an HSA-2 account 421s with "Missing
-    #       X-APPLE-WEBAUTH-HSA-LOGIN cookie" (those endpoints
-    #       belong to the older 2SA stack).
-    #     - Validation uses validate_2fa_code(code) ONLY. There is
-    #       no device parameter; pyicloud already has the session
-    #       state needed.
-    #     - Fallback for "no push arrived" is the user's own
-    #       Settings → Apple ID → Get Verification Code on a
-    #       signed-in iDevice. We can't trigger this remotely.
+    # Delivery (works for BOTH HSA-1 and HSA-2):
+    #   - `svc.trusted_devices` → /setup/listDevices, returns the
+    #     phone numbers / devices Apple is willing to push to.
+    #   - `svc.send_verification_code(device)` → /setup/sendVerification
+    #     Code, asks Apple to push a 6-digit code to that device.
+    #   These are the legacy 2SA setup endpoints, but Apple still
+    #   honors them on HSA-2 accounts — they're how iCloud's web UI
+    #   triggers delivery to a specific device.
     #
-    #   HSA-1 / 2SA (legacy, accounts that opted in pre-2017 and
-    #     never migrated):
-    #     - pyicloud reports `requires_2sa=True`.
-    #     - Apple does NOT auto-push. We have to explicitly call
-    #       send_verification_code(device) to deliver an SMS / push
-    #       to a specific trusted device.
-    #     - Validation uses validate_verification_code(device, code)
-    #       — must reuse the SAME device dict we sent to.
-    #     - "Try a different device" makes sense here.
+    # Validation (DIFFERS by flavor):
+    #   HSA-2 (requires_2fa=True, hsaVersion=2):
+    #     `svc.validate_2fa_code(code)` → /auth/verify/trusteddevice/
+    #     securitycode. The code Apple just pushed lives in the
+    #     modern auth session.
+    #   HSA-1 / 2SA (requires_2sa=True only, hsaVersion=1):
+    #     `svc.validate_verification_code(device, code)` → /setup/
+    #     validateVerificationCode. Same legacy endpoint family as
+    #     delivery, takes the same device dict.
     #
-    # Branching by flavor:
-
-    if requires_2fa:
-        # HSA-2. Just stash + wait. Apple already pushed.
-        _ICLOUD_PENDING[session_id] = {
-            "service": svc,
-            "user_id": user.id,
-            "apple_id": payload.apple_id,
-            "password": payload.password,
-            "tmp_dir": tmp_dir,
-            "is_2sa": False,
-            "code_sent_device": None,
-            "all_devices": [],
-            "created_at": datetime.now(timezone.utc),
-        }
-        return ICloudStartResponse(
-            requires_2fa=True,
-            session_id=session_id,
-            # No trusted_devices list for HSA-2 — pyicloud's
-            # `trusted_devices` API only works for 2SA, so we'd 421
-            # if we queried it. The FE hides the "Try a different
-            # device" dropdown when this list is empty and instead
-            # shows the "Get Verification Code in Settings" hint.
-            trusted_devices=[],
-            code_sent_to=(
-                "your trusted Apple devices (check the system "
-                "dialog that just appeared)"
-            ),
-        )
-
-    if requires_2sa:
-        # HSA-1 / 2SA. Explicit send + device tracking, as before.
+    # So: always do the delivery dance, stash is_2sa for /verify to
+    # pick the right validator.
+    if requires_2fa or requires_2sa:
+        is_2sa = requires_2sa and not requires_2fa
         device_list: list[ICloudTrustedDevice] = []
         code_sent_to: str | None = None
         raw_devices: list[dict] = []
@@ -1040,16 +1009,29 @@ async def icloud_start(
                     )
         except Exception:
             logger.exception(
-                "icloud_start: trusted_devices probe failed; "
-                "user will need to fall back to Settings → Apple ID"
+                "icloud_start: trusted_devices probe failed; user "
+                "will need to fall back to Settings → Apple ID"
             )
+        # Diagnostic: log the auth mode so we can debug accounts
+        # where the legacy setup endpoint refuses to push (very
+        # rare on HSA-2, but worth seeing).
+        try:
+            mode = (svc._auth_data or {}).get("mode")  # noqa: SLF001
+            logger.info(
+                "icloud_start: requires_2fa=%s requires_2sa=%s mode=%r "
+                "devices=%d code_sent_to=%r",
+                requires_2fa, requires_2sa, mode,
+                len(raw_devices), code_sent_to,
+            )
+        except Exception:
+            pass
         _ICLOUD_PENDING[session_id] = {
             "service": svc,
             "user_id": user.id,
             "apple_id": payload.apple_id,
             "password": payload.password,
             "tmp_dir": tmp_dir,
-            "is_2sa": True,
+            "is_2sa": is_2sa,
             "code_sent_device": raw_devices[0] if raw_devices else None,
             "all_devices": raw_devices,
             "created_at": datetime.now(timezone.utc),
@@ -1106,27 +1088,26 @@ async def icloud_resend_code(
             status.HTTP_400_BAD_REQUEST,
             "Sign-in session not found or expired. Start over.",
         )
-    # §C4.6 — resend is HSA-1 (2SA) only. On HSA-2 accounts the
-    # underlying `trusted_devices` + `send_verification_code` APIs
-    # 421 with "Missing X-APPLE-WEBAUTH-HSA-LOGIN cookie" because
-    # they belong to the older auth stack. For HSA-2 accounts the
-    # user's only fallback is the iDevice's Settings → Apple ID →
-    # Sign-In & Security → Get Verification Code menu, which we
-    # can't trigger remotely. Refuse the request explicitly so the
-    # FE shows a useful message instead of a generic 500.
-    if not pending.get("is_2sa"):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "This account uses Apple's modern 2FA — we can't trigger "
-            "a fresh code from here. On any signed-in iPhone / iPad "
-            "/ Mac: Settings → Apple ID → Sign-In & Security → Get "
-            "Verification Code.",
-        )
+    # §C4.6 — resend works for BOTH HSA-1 and HSA-2 because the
+    # legacy /setup/sendVerificationCode endpoint Apple uses for
+    # delivery still honors HSA-2 accounts (it's just the validator
+    # that differs). One catch: the HSA-LOGIN cookie that pyicloud
+    # got from the initial /signin/complete is consumed by the first
+    # /listDevices call, so a fresh resend on the same session
+    # sometimes 421s. We surface that as a "session expired" hint
+    # rather than a generic 500.
     svc = pending["service"]
     try:
         raw_devices = list(svc.trusted_devices or [])
-    except Exception:
+    except Exception as e:
         logger.exception("icloud_resend: trusted_devices raised")
+        msg = str(e)
+        if "421" in msg or "HSA-LOGIN" in msg:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "iCloud session expired. Close and reopen the connect "
+                "dialog to start over.",
+            )
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "Couldn't reach iCloud's device list. Try again.",
