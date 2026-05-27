@@ -61,13 +61,18 @@ export interface RegisterConsent {
 export async function register(
   email: string,
   password: string,
+  displayName: string,
   ageConfirmed = true,
   consents?: RegisterConsent[],
   consentSignature?: string,
 ): Promise<User> {
+  // §C4.1 — display_name is required at signup. Trimmed client-side;
+  // the server re-trims + rejects whitespace-only or control-char
+  // inputs (see backend.schemas.UserCreate._validate_display_name).
   return api.post<User>("/auth/register", {
     email,
     password,
+    display_name: displayName.trim(),
     age_confirmed: ageConfirmed,
     // §B2 — collect the consent ledger BEFORE the user row is
     // externally visible. The backend's UserManager.create() override

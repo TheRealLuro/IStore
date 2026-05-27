@@ -49,10 +49,26 @@ async def test_name_cluster_substitutes_me_with_display_name(db_client):
 
 
 async def test_name_cluster_returns_422_when_no_display_name(db_client):
+    # §C4.1 — display_name is required on signup, so a fresh
+    # register always lands a user with one set. The "Me"-
+    # substitution endpoint still has to handle legacy rows from
+    # before C4.1 shipped (NULL display_name). Simulate that by
+    # registering normally and then NULL-ing the column directly
+    # in the DB — this exercises the same 422 path the legacy row
+    # would hit in production.
     email = "c42-no-name@example.com"
     _, headers = await register_and_login(db_client, email=email)
     await grant_consent(db_client, headers)
     user_id = await fetch_user_id(email)
+
+    from sqlalchemy import update
+    from backend.db import SessionLocal
+    from backend.models import User
+    async with SessionLocal() as s:
+        await s.execute(
+            update(User).where(User.id == user_id).values(display_name=None)
+        )
+        await s.commit()
 
     f = await insert_face(user_id, person_name=None, cluster_id=7)
 

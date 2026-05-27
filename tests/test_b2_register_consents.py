@@ -30,10 +30,22 @@ from tests.conftest import fetch_user_id
 PASSWORD = "Aa1!aaaaaa"
 
 
-async def _register(client, email: str, *, consents=None, signature: str | None = None):
+async def _register(
+    client,
+    email: str,
+    *,
+    consents=None,
+    signature: str | None = None,
+    display_name: str = "Test User",
+):
+    # §C4.1 — display_name is required on /auth/register. The helper
+    # supplies "Test User" by default so existing B2 test bodies
+    # keep working; callers that care about the name pass it
+    # explicitly.
     body = {
         "email": email,
         "password": PASSWORD,
+        "display_name": display_name,
         "age_confirmed": True,
     }
     if consents is not None:

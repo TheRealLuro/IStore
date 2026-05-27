@@ -184,13 +184,28 @@ async def db_client(_test_db, monkeypatch) -> AsyncClient:
 
 
 async def register_and_login(
-    ac: AsyncClient, email: str | None = None, password: str = "Aa1!aaaaaa"
+    ac: AsyncClient,
+    email: str | None = None,
+    password: str = "Aa1!aaaaaa",
+    display_name: str | None = None,
 ) -> tuple[str, dict]:
-    """Register a user, log in, return (jwt, auth_headers)."""
+    """Register a user, log in, return (jwt, auth_headers).
+
+    §C4.1 — display_name is now required on /auth/register. The
+    helper synthesizes a stable per-test name when the caller
+    doesn't pass one explicitly so existing test bodies keep
+    working without touching every one.
+    """
     email = email or f"u{uuid.uuid4().hex[:10]}@example.com"
+    display_name = display_name or f"Test User {uuid.uuid4().hex[:6]}"
     r = await ac.post(
         "/auth/register",
-        json={"email": email, "password": password, "age_confirmed": True},
+        json={
+            "email": email,
+            "password": password,
+            "display_name": display_name,
+            "age_confirmed": True,
+        },
     )
     assert r.status_code in (200, 201), r.text
     r = await ac.post(

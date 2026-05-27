@@ -40,10 +40,20 @@ def _no_background_jobs(monkeypatch):
 
 
 async def test_registration_requires_age_gate(client):
-    body = {"email": "age@example.com", "password": "Aa1!aaaaaa"}
+    # Pass a valid display_name (§C4.1 made it required) so the 422
+    # comes from the age-gate validator specifically, not from a
+    # missing-display_name field-required error.
+    body = {
+        "email": "age@example.com",
+        "password": "Aa1!aaaaaa",
+        "display_name": "Age Gate Test",
+    }
+    # No `age_confirmed` at all — the field is required, so this 422s.
     r = await client.post("/auth/register", json=body)
     assert r.status_code == 422
 
+    # Explicit `age_confirmed: false` — the _require_age_gate
+    # model_validator rejects this with a clearer error message.
     r = await client.post("/auth/register", json={**body, "age_confirmed": False})
     assert r.status_code == 422
 
