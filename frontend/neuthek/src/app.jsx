@@ -214,7 +214,7 @@ function VerifyEmailBanner({ user, signedIn }) {
       }}
     >
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <Icon name="alertCircle" size={13}/>
+        <Icon name="alert" size={13}/>
         <strong>Confirm your email.</strong>
       </span>
       <span>

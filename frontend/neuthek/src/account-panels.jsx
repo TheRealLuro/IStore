@@ -334,6 +334,12 @@ function TotpDisableForm({ onDone }) {
 
 function TwoFactorPage() {
   const qc = useQueryClient();
+  // §C6c — the download / print actions on the issued-codes display
+  // stamp the user's email onto the .txt + print payload so a file
+  // sitting in Downloads later is unambiguously attributable to the
+  // right account (vs blind alphanumerics that could be from any
+  // service).
+  const userEmail = useAuthStore((s) => s.user?.email);
   const { data: totp } = useQuery({
     queryKey: ["2fa-status"],
     queryFn: getTwoFactorStatus,
@@ -453,8 +459,31 @@ function TwoFactorPage() {
         </div>
         {issued && (
           <div className="det-card" style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 8 }}>
-              Save these. They'll only be shown this once.
+            {/* §C6c — this is the only moment the plaintext codes
+                exist on the FE; the server stored argon2 hashes and
+                discarded the plaintext. Three offline-save paths so
+                users can pick whichever they trust:
+                  - Copy: into a password manager or notes app
+                  - Download: a .txt with email + generated date,
+                    so it's labelled when filed away later
+                  - Print: hard copy for the truly paranoid */}
+            <div style={{
+              padding: "8px 10px",
+              background: "color-mix(in oklab, var(--warning, #f59e0b) 12%, transparent)",
+              border: "1px solid color-mix(in oklab, var(--warning, #f59e0b) 28%, transparent)",
+              borderRadius: 6,
+              fontSize: 12,
+              color: "var(--ink)",
+              marginBottom: 10,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}>
+              <Icon name="alert" size={14}/>
+              <strong>Save these now.</strong>
+              <span style={{ color: "var(--ink-2, var(--ink-3))" }}>
+                They&rsquo;ll only be shown this once. We store hashes only.
+              </span>
             </div>
             <div style={{
               display: "grid",
@@ -465,11 +494,80 @@ function TwoFactorPage() {
             }}>
               {issued.map((c) => <code key={c} style={{ padding: "8px 10px", background: "var(--surface-2)", borderRadius: 6 }}>{c}</code>)}
             </div>
-            <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-              <button className="btn btn--ghost" onClick={() => { navigator.clipboard.writeText(issued.join("\n")); toast.success("Copied"); }}>
+            <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btn btn--ghost" onClick={() => {
+                navigator.clipboard.writeText(issued.join("\n"));
+                toast.success("Copied to clipboard");
+              }}>
                 <Icon name="copy" size={12}/> Copy all
               </button>
-              <button className="btn btn--ghost" onClick={() => setIssued(null)}>I've saved them</button>
+              <button className="btn btn--ghost" onClick={() => {
+                // Build a labelled .txt so a future-you opening the
+                // file in Downloads knows which account it belongs
+                // to. ISO date so it sorts predictably alongside
+                // earlier sets.
+                const stamp = new Date().toISOString().slice(0, 10);
+                const ownerLine = userEmail ? `Account: ${userEmail}\n` : "";
+                const body = (
+                  `neuthek recovery codes\n` +
+                  `Generated: ${stamp}\n` +
+                  ownerLine +
+                  `\n` +
+                  issued.join("\n") + "\n" +
+                  `\n` +
+                  `Each code can be used once if you lose access to\n` +
+                  `your authenticator. Keep this file somewhere safe.\n`
+                );
+                const blob = new Blob([body], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `neuthek-recovery-codes-${stamp}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              }}>
+                <Icon name="download" size={12}/> Download .txt
+              </button>
+              <button className="btn btn--ghost" onClick={() => {
+                // Open a print-friendly window with just the codes,
+                // big and centered. The pop-up loads the codes via
+                // postMessage rather than document.write so the
+                // print stylesheet doesn't try to inline-execute
+                // anything CSP-unfriendly.
+                const stamp = new Date().toISOString().slice(0, 10);
+                const ownerLine = userEmail
+                  ? `<div style="font-size:13px;color:#666;margin-bottom:6px">Account: ${userEmail}</div>`
+                  : "";
+                const codeRows = issued
+                  .map((c) => `<div style="padding:10px 14px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:16px;text-align:center">${c}</div>`)
+                  .join("");
+                const w = window.open("", "_blank", "noopener,noreferrer,width=520,height=720");
+                if (!w) {
+                  toast.error("Pop-up blocked — allow pop-ups to print");
+                  return;
+                }
+                w.document.write(
+                  `<!doctype html><html><head><title>neuthek recovery codes</title></head>` +
+                  `<body style="font-family:system-ui;padding:32px;max-width:480px;margin:0 auto">` +
+                  `<h1 style="font-size:18px;margin:0 0 4px">neuthek recovery codes</h1>` +
+                  `<div style="font-size:13px;color:#666;margin-bottom:6px">Generated: ${stamp}</div>` +
+                  ownerLine +
+                  `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px">${codeRows}</div>` +
+                  `<p style="font-size:12px;color:#666;margin-top:24px;line-height:1.5">Each code can be used once if you lose access to your authenticator. Keep this paper somewhere safe — not next to the device you log in from.</p>` +
+                  `</body></html>`
+                );
+                w.document.close();
+                w.focus();
+                w.print();
+              }}>
+                <Icon name="file" size={12}/> Print
+              </button>
+              <span style={{ flex: 1 }}/>
+              <button className="btn btn--primary btn--sm" onClick={() => setIssued(null)}>
+                I&rsquo;ve saved them
+              </button>
             </div>
           </div>
         )}
