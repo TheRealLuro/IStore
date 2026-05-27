@@ -148,6 +148,19 @@ services:
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
       GOOGLE_SIGNIN_REDIRECT_URI: ${GOOGLE_SIGNIN_REDIRECT_URI:-http://localhost:8000/auth/google/callback}
       FRONTEND_BASE_URL: http://localhost:5173
+      # SMTP wiring. Without these, backend.email_send.send_email
+      # falls back to printing to container stderr (the [email-stub]
+      # path), so verify-email + reset-password links never actually
+      # leave the host — which made the C6a/C6b flows look broken
+      # when tested locally. Empty values keep stub mode; populated
+      # values (from the host .env) flip to real STARTTLS delivery
+      # via the configured provider (Gmail App Password, Mailgun,
+      # Postmark, etc.).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@neuthek.local}
       REQUIRE_SIGNED_DOWNLOADS: "false"
       # HF cache lives on the model_cache volume so a rebuild doesn't
       # re-pull multi-GB weights. `transformers` reads both HF_HOME and
