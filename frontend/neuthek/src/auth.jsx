@@ -169,6 +169,18 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   const [showForgot, setShowForgot] = useStateA(false);
   const [forgotEmail, setForgotEmail] = useStateA("");
   const [forgotSubmitting, setForgotSubmitting] = useStateA(false);
+  // §C6/UX — Forgot-password modal can land in two stages:
+  //   'confirm' (default when an email is pre-filled from the
+  //     sign-in form): show "We'll send a reset link to <email>"
+  //     with no editable input. One click submit. This is the
+  //     common path — the user types email + tries password +
+  //     realizes they don't remember it.
+  //   'edit' shows the editable input. Reachable via "Use a
+  //     different email" link inside the confirm card, OR auto-
+  //     selected when the modal opens without a pre-filled email.
+  // The previous always-editable input made users re-type the
+  // address they'd just typed two seconds earlier.
+  const [forgotStage, setForgotStage] = useStateA("confirm");
   // §C6 — after a successful password reset on /reset, the reset
   // page redirects to "/?reset=ok#auth=signin". Read the query
   // flag at mount and surface a one-time banner above the form.
@@ -208,6 +220,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     setForgotSubmitting(false);
     setShowForgot(false);
     setForgotEmail("");
+    setForgotStage("confirm");
     toast.success(
       "If an account uses that email, we just sent a reset link. " +
       "Check your inbox (and spam folder).",
@@ -662,12 +675,19 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                   type="button"
                   className="auth__forgot"
                   onClick={() => {
-                    // Pre-fill the modal with whatever's in the
-                    // sign-in email field so the common case
-                    // (user typed their email, then realized they
-                    // don't remember the password) doesn't make
-                    // them type it again.
-                    setForgotEmail(email);
+                    // Pre-fill from the sign-in email field. If
+                    // there's a valid-looking address there, jump
+                    // straight to the confirm stage; otherwise
+                    // start in edit. Saves the common-case user a
+                    // round-trip of re-typing the address they
+                    // just typed two seconds earlier.
+                    const trimmed = email.trim();
+                    setForgotEmail(trimmed);
+                    setForgotStage(
+                      trimmed && /^\S+@\S+\.\S+$/.test(trimmed)
+                        ? "confirm"
+                        : "edit"
+                    );
                     setShowForgot(true);
                   }}
                 >
@@ -873,23 +893,76 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             <h2 id="forgot-modal-title">Reset your password</h2>
           </div>
           <div className="modal__body" style={{ padding: 20 }}>
-            <p className="auth__sub" style={{ marginTop: 0 }}>
-              Enter the email address on your neuthek account. We&rsquo;ll
-              send a link that lets you set a new password. The link
-              expires in 15 minutes.
-            </p>
-            <label className="auth__label">
-              Email
-              <input
-                type="email"
-                value={forgotEmail}
-                onChange={(e) => setForgotEmail(e.target.value)}
-                autoComplete="email"
-                autoFocus
-                required
-                className="auth__input"
-              />
-            </label>
+            {forgotStage === "confirm" ? (
+              <>
+                <p className="auth__sub" style={{ marginTop: 0 }}>
+                  We&rsquo;ll send a reset link to:
+                </p>
+                {/* Read-only confirmation card. Email rendered as
+                    a styled chip so it visually reads "this is
+                    where we'll send it" — not as a text input
+                    the user might think they need to retype. */}
+                <div style={{
+                  marginTop: 10,
+                  padding: "12px 14px",
+                  background: "var(--surface-2)",
+                  border: "1px solid var(--line)",
+                  borderRadius: 10,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}>
+                  <Icon name="user" size={14} style={{ color: "var(--ink-3)", flexShrink: 0 }}/>
+                  <span style={{
+                    flex: 1,
+                    fontSize: 14,
+                    fontFamily: "Geist Mono, monospace",
+                    wordBreak: "break-all",
+                  }}>
+                    {forgotEmail}
+                  </span>
+                </div>
+                <p style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: "var(--ink-3)",
+                  lineHeight: 1.5,
+                }}>
+                  The link expires in 15 minutes. If you don&rsquo;t
+                  see it, check spam. We&rsquo;ll send the link whether
+                  or not this email has a neuthek account &mdash; that
+                  way nobody can probe to find out who&rsquo;s signed up.
+                </p>
+                <button
+                  type="button"
+                  className="auth__forgot"
+                  onClick={() => setForgotStage("edit")}
+                  style={{ marginTop: 10, fontSize: 12 }}
+                >
+                  Use a different email
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="auth__sub" style={{ marginTop: 0 }}>
+                  Enter the email address on your neuthek account.
+                  We&rsquo;ll send a link that lets you set a new
+                  password. The link expires in 15 minutes.
+                </p>
+                <label className="auth__label">
+                  Email
+                  <input
+                    type="email"
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value)}
+                    autoComplete="email"
+                    autoFocus
+                    required
+                    className="auth__input"
+                  />
+                </label>
+              </>
+            )}
           </div>
           <div className="modal__foot">
             <div className="modal__foot-actions">
