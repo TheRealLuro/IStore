@@ -221,6 +221,49 @@ def create_app() -> FastAPI:
         expose_headers=["X-Original-Expired"],
     )
 
+    # CORS-on-500: FastAPI's default 500 handler is invoked from
+    # inside Starlette's exception-handling middleware, which sits
+    # INSIDE our CORS layer in the middleware stack. When a route
+    # raises an unhandled exception, the 500 response does NOT get
+    # the Access-Control-Allow-Origin header attached. Browsers then
+    # report the error as "blocked by CORS policy: No
+    # 'Access-Control-Allow-Origin' header is present on the
+    # requested resource" — which is technically true but
+    # completely obscures the real bug. The fix is to override the
+    # Exception handler so it sets the CORS headers itself before
+    # returning the 500 JSON. Now the browser shows {"detail":
+    # "internal_server_error"} and the FE can render a useful toast
+    # instead of pretending the server is unreachable.
+    @app.exception_handler(Exception)
+    async def _cors_aware_500(request, exc):  # noqa: ANN001
+        import logging
+        from fastapi.responses import JSONResponse
+        logging.getLogger("backend").exception(
+            "unhandled exception on %s %s: %s",
+            request.method, request.url.path, exc,
+        )
+        origin = request.headers.get("origin", "")
+        headers: dict[str, str] = {}
+        # Only echo the Origin back if it's in the allowlist —
+        # don't reflect arbitrary origins on error responses.
+        if origin and origin in allowed_origins:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Vary"] = "Origin"
+        # Surface the exception class so we can grep logs, but
+        # the user-visible body stays generic — we don't want to
+        # leak stack-trace fragments to the browser.
+        detail = (
+            f"server_error: {type(exc).__name__}"
+            if settings.app_env.lower() in ("dev", "test", "local")
+            else "internal_server_error"
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": detail},
+            headers=headers,
+        )
+
     @app.middleware("http")
     async def user_context_boundary(request, call_next):  # noqa: ANN001
         token = set_current_user_id(None)

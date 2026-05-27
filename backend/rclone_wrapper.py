@@ -87,11 +87,24 @@ def _config_dir() -> Path:
 
 
 def config_path_for_link(link_id: int | str) -> Path:
-    """Return ``{config_root}/{link_id}.conf``. The link_id is a
-    sanitized integer so there's no path-traversal surface; we still
-    coerce + reject anything that doesn't stringify to digits."""
+    """Return ``{config_root}/{link_id}.conf``. The link_id is either
+    a numeric CloudLink.id from the DB or a tmp-prefixed token used
+    during the Proton 2FA dance. Strip out the safe punctuation
+    (``-`` and ``_``) and require everything else to be
+    alphanumeric — path traversal would need a ``/`` or ``..`` and
+    those would fail the isalnum() check.
+
+    `secrets.token_urlsafe()` (used for the tmp ids) emits base64url
+    output that mixes ``-`` and ``_``; an earlier version of this
+    helper only allowed ``-`` and 500'd on the first underscore,
+    surfacing in the browser as a "blocked by CORS policy" error
+    (FastAPI 500s bypass the CORS middleware so the response has
+    no Access-Control-Allow-Origin header — Chrome reports the
+    absence as a CORS violation even though the real failure was
+    a server-side ValueError).
+    """
     sid = str(link_id)
-    if not sid.replace("-", "").isalnum():
+    if not sid.replace("-", "").replace("_", "").isalnum():
         raise ValueError(f"Invalid rclone config link id: {link_id!r}")
     return _config_dir() / f"{sid}.conf"
 
