@@ -222,7 +222,7 @@ class Settings(BaseSettings):
     # appends `/verify?token=...` directly.
     frontend_base_url: str = Field(default="http://localhost:5173")
 
-    # ---- Phase 13 (C2) cloud sync — Drive (Dropbox / OneDrive hooked, not implemented) ----
+    # ---- Phase 13 (C2) cloud sync — Drive (Dropbox hooked, not implemented) ----
     # Symmetric Fernet key used by backend.secret_box to encrypt OAuth
     # refresh tokens at rest. Generate with:
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -250,30 +250,6 @@ class Settings(BaseSettings):
     google_signin_redirect_uri: str = Field(
         default="http://localhost:8000/auth/google/callback"
     )
-
-    # §C4.6 — Microsoft OneDrive / Microsoft Graph OAuth client. Empty
-    # values keep the OneDrive endpoints in the "not_configured" state
-    # so the FE shows a "Needs setup" chip instead of crashing on
-    # /cloud/links/onedrive. Register at https://portal.azure.com →
-    # App registrations → "Personal Microsoft accounts" tenant.
-    onedrive_oauth_client_id: str = Field(default="")
-    onedrive_oauth_client_secret: str = Field(default="")
-    onedrive_oauth_redirect_uri: str = Field(
-        default="http://localhost:8000/cloud/callback/onedrive"
-    )
-    # Microsoft tenant the app is registered in. `common` (default)
-    # accepts BOTH organizational accounts AND personal Microsoft
-    # accounts (Hotmail/Outlook/Xbox) — but ONLY if the app
-    # registration's "Supported account types" is set to the full
-    # multitenant+personal option (`signInAudience` =
-    # AzureADandPersonalMicrosoftAccount). For apps registered as
-    # single-tenant ("My organization only"), put the specific
-    # Directory (tenant) ID here from Azure portal → App
-    # registrations → Overview. That switches the OAuth URL to
-    # /{tenant_id}/oauth2/v2.0/authorize which accepts the single-
-    # tenant config without further Azure changes.
-    onedrive_oauth_tenant: str = Field(default="common")
-
 
     # §C4.6 — Dropbox OAuth client. Empty values keep the endpoint in
     # "not_configured" state. Register at https://www.dropbox.com/

@@ -27,7 +27,6 @@ import {
 
 const PROVIDER_META = {
   google_drive: { label: "Google Drive", note: "Read-only · drive.readonly scope" },
-  onedrive:     { label: "OneDrive",     note: "Read-only · Files.Read.All scope" },
   dropbox:      { label: "Dropbox",      note: "Read-only · files.content.read scope" },
   icloud:       { label: "iCloud Drive", note: "Coming soon" },
   mega:         { label: "MEGA",         note: "Coming soon" },
