@@ -556,8 +556,11 @@ function TwoFactorPage() {
                   - Print: hard copy for the truly paranoid */}
             <div style={{
               padding: "8px 10px",
-              background: "color-mix(in oklab, var(--warning, #f59e0b) 12%, transparent)",
-              border: "1px solid color-mix(in oklab, var(--warning, #f59e0b) 28%, transparent)",
+              // §C7 — opaque-tint amber so the warning reads in
+              // light mode. The previous color-mix(...transparent)
+              // produced an almost-invisible pale tint over white.
+              background: "var(--warning-soft)",
+              border: "1px solid color-mix(in oklab, var(--warning) 28%, transparent)",
               borderRadius: 6,
               fontSize: 12,
               color: "var(--ink)",
