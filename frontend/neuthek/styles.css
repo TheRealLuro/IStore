@@ -9,8 +9,16 @@
   --ink-2:       #525252;
   --ink-3:       #8a8a8a;
   --ink-4:       #b5b5b5;
-  --line:        #ececec;
-  --line-2:      #f3f3f3;
+  /* §C7 — bumped from #ececec → #dadada. Against the white +
+     near-white surfaces (#ffffff / #f7f7f7), the previous line
+     was nearly invisible — cards and chips looked like they
+     floated without a defined boundary. The dark theme keeps
+     good contrast (#232323 over #161616), so this only fires
+     in light. `--line-soft` is the OLD pale value for nested
+     dividers inside a card where we don't want a strong border. */
+  --line:        #dadada;
+  --line-2:      #ececec;
+  --line-soft:   #ececec;
   --surface:     #ffffff;
   --surface-2:   #f7f7f7;
   --surface-3:   #f0f0f0;
@@ -18,7 +26,18 @@
   --danger:      #b91c1c;
   --danger-soft: #fdecec;
   --success:     #15803d;
-  --warning:     #a16207;
+  /* §C7 — `--success-soft` / `--warning-soft` palette additions.
+     Previously the codebase reached for
+       color-mix(in oklab, var(--success) 14%, transparent)
+     which renders fine in dark but produces a near-invisible
+     pale tint over white in light. Replace with an explicit
+     opaque-tint variable so the chip reads "filled with a tint
+     of X" instead of "barely there over X". The matching
+     `--danger-soft` already existed; bringing the others in
+     line. */
+  --success-soft: #e6f4ec;
+  --warning:      #a16207;
+  --warning-soft: #fdf2dd;
 
   --shadow-1: 0 1px 2px rgba(0,0,0,0.04);
   --shadow-2: 0 1px 2px rgba(0,0,0,0.04), 0 8px 28px rgba(0,0,0,0.08);
@@ -42,6 +61,7 @@ html[data-theme="dark"] {
   --ink-4:       #5a5a5a;
   --line:        #232323;
   --line-2:      #1c1c1c;
+  --line-soft:   #1c1c1c;
   --surface:     #161616;
   --surface-2:   #0e0e0e;
   --surface-3:   #1f1f1f;
@@ -49,7 +69,9 @@ html[data-theme="dark"] {
   --danger:      #f87171;
   --danger-soft: #2a1414;
   --success:     #4ade80;
+  --success-soft: #14271b;
   --warning:     #facc15;
+  --warning-soft: #2a2310;
 
   --shadow-1: 0 1px 2px rgba(0,0,0,0.4);
   --shadow-2: 0 1px 2px rgba(0,0,0,0.4), 0 8px 28px rgba(0,0,0,0.5);

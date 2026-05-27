@@ -199,9 +199,13 @@ function UserStatusBadges({ user }) {
             fontSize: 11,
             fontWeight: 500,
             color: c.tone === "good" ? "var(--success)" : "var(--warning)",
+            // §C7 — use the new opaque-tint palette so the chip
+            // reads cleanly in light mode. The previous
+            // color-mix(...transparent) pattern produced a near-
+            // invisible pale tint over white surfaces.
             background: c.tone === "good"
-              ? "color-mix(in oklab, var(--success) 12%, transparent)"
-              : "color-mix(in oklab, var(--warning) 12%, transparent)",
+              ? "var(--success-soft)"
+              : "var(--warning-soft)",
             border: c.tone === "good"
               ? "1px solid color-mix(in oklab, var(--success) 28%, transparent)"
               : "1px solid color-mix(in oklab, var(--warning) 28%, transparent)",
@@ -286,10 +290,11 @@ function EmailVerifyRow({ user }) {
       <div style={{
         width: 28, height: 28, borderRadius: 8,
         display: "grid", placeItems: "center",
-        background: verified
-          ? "color-mix(in oklab, var(--success) 14%, transparent)"
-          : "color-mix(in oklab, var(--warning, #f59e0b) 14%, transparent)",
-        color: verified ? "var(--success)" : "var(--warning, #f59e0b)",
+        // §C7 — opaque-tint palette so the icon background reads
+        // in light mode. The previous color-mix(...transparent)
+        // came out nearly invisible over white surfaces.
+        background: verified ? "var(--success-soft)" : "var(--warning-soft)",
+        color: verified ? "var(--success)" : "var(--warning)",
         flexShrink: 0,
       }}>
         <Icon name={verified ? "check" : "alert"} size={14}/>
@@ -331,9 +336,9 @@ function UserTwoFactorRow({ user, onOpenTwoFA }) {
       <div style={{
         width: 28, height: 28, borderRadius: 8,
         display: "grid", placeItems: "center",
-        background: enabled
-          ? "color-mix(in oklab, var(--success) 14%, transparent)"
-          : "var(--surface-2)",
+        // §C7 — opaque-tint palette in light mode (was a near-
+        // invisible color-mix transparent green).
+        background: enabled ? "var(--success-soft)" : "var(--surface-2)",
         color: enabled ? "var(--success)" : "var(--ink-3)",
         flexShrink: 0,
       }}>
