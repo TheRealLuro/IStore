@@ -26,15 +26,17 @@ import {
   getSyncStatus,
   icloudStart,
   icloudVerify,
+  protonStart,
+  protonVerify,
+  megaStart,
 } from "@/api/cloud";
 
 const PROVIDER_META = {
-  google_drive: { label: "Google Drive", note: "Read-only · drive.readonly scope" },
-  dropbox:      { label: "Dropbox",      note: "Read-only · files.content.read scope" },
-  icloud:       { label: "iCloud Drive", note: "Read-only · Apple ID + 2FA" },
-  mega:         { label: "MEGA",         note: "Coming soon" },
-  box:          { label: "Box",          note: "Coming soon" },
-  pcloud:       { label: "pCloud",       note: "Coming soon" },
+  google_drive: { label: "Google Drive",  note: "Read-only · drive.readonly scope" },
+  dropbox:      { label: "Dropbox",       note: "Read-only · files.content.read scope" },
+  icloud:       { label: "iCloud Drive",  note: "Read-only · Apple ID + 2FA" },
+  proton_drive: { label: "Proton Drive",  note: "Read-only · Proton email + 2FA · via rclone" },
+  mega:         { label: "MEGA",          note: "Read-only · email + password · via rclone" },
 };
 
 function fmtRel(iso) {
@@ -61,9 +63,12 @@ export function CloudSyncPanel() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(null); // link id currently syncing
   const [conflictsByLink, setConflictsByLink] = useState({});
-  // §C4.6 — iCloud Drive uses a different (non-OAuth) connect dance
-  // so it opens a modal instead of redirecting. `null` = closed.
+  // §C4.6 — iCloud / Proton Drive / MEGA each use a different
+  // (non-OAuth) connect dance, so they open modals instead of
+  // redirecting. `null` = closed.
   const [icloudOpen, setIcloudOpen] = useState(false);
+  const [protonOpen, setProtonOpen] = useState(false);
+  const [megaOpen, setMegaOpen] = useState(false);
   const { data: links = EMPTY_LINKS, isLoading, error } = useQuery({
     queryKey: ["cloud-links"],
     queryFn: listCloudLinks,
@@ -104,10 +109,20 @@ export function CloudSyncPanel() {
   }, [conflictLinkIds]);
 
   const onConnect = async (provider) => {
-    // §C4.6 — iCloud is the one non-OAuth provider; route it to the
-    // modal flow instead of the redirect path.
+    // §C4.6 — route based on the provider's auth shape: OAuth
+    // providers redirect to a browser consent page; the
+    // password-based ones (iCloud / Proton Drive / MEGA) open a
+    // modal that POSTs credentials directly.
     if (provider === "icloud") {
       setIcloudOpen(true);
+      return;
+    }
+    if (provider === "proton_drive") {
+      setProtonOpen(true);
+      return;
+    }
+    if (provider === "mega") {
+      setMegaOpen(true);
       return;
     }
     try {
@@ -418,6 +433,30 @@ export function CloudSyncPanel() {
           qc.invalidateQueries({ queryKey: ["cloud-links"] });
         }}
       />
+
+      {/* §C4.6 — Proton Drive connect modal. Same two-step shape as
+          iCloud (credentials → optional 2FA), but the underlying
+          /cloud/proton-drive/* endpoints drive rclone instead of
+          pyicloud. */}
+      <ProtonConnectModal
+        open={protonOpen}
+        onClose={() => setProtonOpen(false)}
+        onConnected={() => {
+          setProtonOpen(false);
+          qc.invalidateQueries({ queryKey: ["cloud-links"] });
+        }}
+      />
+
+      {/* §C4.6 — MEGA connect modal. Single-step (no 2FA hook in
+          rclone's MEGA backend) — credentials in, link out. */}
+      <MegaConnectModal
+        open={megaOpen}
+        onClose={() => setMegaOpen(false)}
+        onConnected={() => {
+          setMegaOpen(false);
+          qc.invalidateQueries({ queryKey: ["cloud-links"] });
+        }}
+      />
     </div>
   );
 }
@@ -615,6 +654,299 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
         {step === "done" && (
           <div style={{ fontSize: 13, color: "var(--ink-2)", padding: "6px 0" }}>
             iCloud connected — sync will start shortly.
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+// §C4.6 — Proton Drive sign-in modal. Same two-step shape as iCloud:
+//   credentials → Proton email + password
+//   code        → 6-digit 2FA code (only if the account has 2FA on)
+//   done        → brief success state before auto-close
+//
+// Backed by /cloud/proton-drive/{start,verify}, which write a per-
+// link rclone config file and probe Proton's auth with `rclone about
+// proton-drive:`. Errors at each step surface as toasts; on transient
+// failures the user can retry without losing context.
+function ProtonConnectModal({ open, onClose, onConnected }) {
+  const [step, setStep] = useState("credentials");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [sessionId, setSessionId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setStep("credentials");
+      setEmail("");
+      setPassword("");
+      setCode("");
+      setSessionId(null);
+      setBusy(false);
+    }
+  }, [open]);
+
+  const onSubmitCredentials = async (e) => {
+    e?.preventDefault?.();
+    if (busy) return;
+    if (!email || !password) {
+      toast.error("Enter your Proton email and password.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await protonStart(email, password);
+      if (r.requires_2fa) {
+        setSessionId(r.session_id || null);
+        setStep("code");
+      } else {
+        setStep("done");
+        toast.success(r.message || "Proton Drive connected.");
+        setTimeout(() => onConnected && onConnected(), 800);
+      }
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Could not sign in to Proton.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSubmitCode = async (e) => {
+    e?.preventDefault?.();
+    if (busy) return;
+    const clean = (code || "").trim();
+    if (!clean) {
+      toast.error("Enter the 6-digit code from your authenticator.");
+      return;
+    }
+    if (!sessionId) {
+      toast.error("Session expired. Sign in again.");
+      setStep("credentials");
+      return;
+    }
+    setBusy(true);
+    try {
+      await protonVerify(sessionId, clean);
+      setStep("done");
+      toast.success("Proton Drive connected — sync starting…");
+      setTimeout(() => onConnected && onConnected(), 800);
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Code didn't match. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={busy ? undefined : onClose} size="md" labelledBy="proton-modal-title">
+      <ModalClose onClose={busy ? undefined : onClose}/>
+      <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+        <h2 id="proton-modal-title" style={{ margin: 0, fontSize: 18 }}>
+          Connect Proton Drive
+        </h2>
+
+        {step === "credentials" && (
+          <form onSubmit={onSubmitCredentials} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
+              Proton Drive is end-to-end encrypted. We drive the sync
+              with rclone, which decrypts your files locally so neuthek
+              can re-encrypt them with your account key. Your password
+              is stored encrypted at rest in a per-link rclone config.
+            </div>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Proton email
+              <input
+                type="email"
+                autoComplete="username"
+                className="input input--lg"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@proton.me"
+                disabled={busy}
+                autoFocus
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Password
+              <input
+                type="password"
+                autoComplete="current-password"
+                className="input input--lg"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Proton account password"
+                disabled={busy}
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn--primary" disabled={busy}>
+                {busy ? "Signing in…" : "Continue"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {step === "code" && (
+          <form onSubmit={onSubmitCode} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 13, color: "var(--ink-2)" }}>
+              Your Proton account has 2FA enabled. Enter the 6-digit
+              code from your authenticator app below.
+            </div>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Verification code
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                className="input input--lg"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="123456"
+                disabled={busy}
+                autoFocus
+                maxLength={10}
+                style={{ width: "100%", marginTop: 4, letterSpacing: 4, fontFamily: "monospace" }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => {
+                  setStep("credentials");
+                  setCode("");
+                  setSessionId(null);
+                }}
+                disabled={busy}
+              >
+                Use a different account
+              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn--primary" disabled={busy}>
+                  {busy ? "Verifying…" : "Verify"}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+
+        {step === "done" && (
+          <div style={{ fontSize: 13, color: "var(--ink-2)", padding: "6px 0" }}>
+            Proton Drive connected — sync will start shortly.
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+
+// §C4.6 — MEGA sign-in modal. Single-step: rclone's MEGA backend
+// doesn't surface a 2FA hook, so the password either works on first
+// try or doesn't. (MEGA's web 2FA layer kicks in for the browser
+// sign-in, not for the SDK rclone uses under the hood.)
+function MegaConnectModal({ open, onClose, onConnected }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setEmail("");
+      setPassword("");
+      setBusy(false);
+      setDone(false);
+    }
+  }, [open]);
+
+  const onSubmit = async (e) => {
+    e?.preventDefault?.();
+    if (busy) return;
+    if (!email || !password) {
+      toast.error("Enter your MEGA email and password.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await megaStart(email, password);
+      setDone(true);
+      toast.success("MEGA connected — sync starting…");
+      setTimeout(() => onConnected && onConnected(), 800);
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Could not sign in to MEGA.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={busy ? undefined : onClose} size="md" labelledBy="mega-modal-title">
+      <ModalClose onClose={busy ? undefined : onClose}/>
+      <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+        <h2 id="mega-modal-title" style={{ margin: 0, fontSize: 18 }}>
+          Connect MEGA
+        </h2>
+        {!done && (
+          <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
+              MEGA is end-to-end encrypted. We drive the sync with
+              rclone, which decrypts files locally so neuthek can
+              re-encrypt them with your account key. Your credentials
+              are stored encrypted at rest in a per-link rclone config.
+            </div>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              MEGA email
+              <input
+                type="email"
+                autoComplete="username"
+                className="input input--lg"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                disabled={busy}
+                autoFocus
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Password
+              <input
+                type="password"
+                autoComplete="current-password"
+                className="input input--lg"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="MEGA account password"
+                disabled={busy}
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn--primary" disabled={busy}>
+                {busy ? "Signing in…" : "Connect"}
+              </button>
+            </div>
+          </form>
+        )}
+        {done && (
+          <div style={{ fontSize: 13, color: "var(--ink-2)", padding: "6px 0" }}>
+            MEGA connected — sync will start shortly.
           </div>
         )}
       </div>

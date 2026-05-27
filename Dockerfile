@@ -87,10 +87,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #                    NVIDIA passthrough enabled per docker-compose.yml.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         libpq5 curl \
+         libpq5 curl ca-certificates unzip \
          libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
          ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# §C4.6 — Install rclone for Proton Drive + MEGA sync. Both services
+# are end-to-end encrypted with fragile Python clients (mega.py
+# breaks every few months, proton-python-client lags upstream); the
+# Go-implemented rclone is the most stable bridge. Pinned to a known-
+# good version so an rclone upgrade doesn't silently break a working
+# sync — bump deliberately when validating the new release.
+RUN curl -fsSL https://downloads.rclone.org/v1.69.0/rclone-v1.69.0-linux-amd64.zip -o /tmp/rclone.zip \
+    && unzip /tmp/rclone.zip -d /tmp/ \
+    && mv /tmp/rclone-v1.69.0-linux-amd64/rclone /usr/local/bin/rclone \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip /tmp/rclone-v1.69.0-linux-amd64
 
 # Non-root user.
 #   - UID 1000 matches the common host-user UID on Linux dev boxes,
