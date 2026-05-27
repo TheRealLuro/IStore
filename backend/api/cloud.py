@@ -166,6 +166,10 @@ class CloudProviderInfo(BaseModel):
     name: str
     kind: str
     status: str  # "available" | "needs_setup" | "coming_soon"
+    # §C4.6 — drives the FE's connect affordance. "oauth" → browser
+    # redirect; "apple_id" → iCloud password+2FA modal; "password" →
+    # Proton / MEGA credentials modal.
+    auth_shape: str = "oauth"
     blurb: str
     docs: str | None = None
 
@@ -1049,4 +1053,382 @@ async def _icloud_persist_link(
         )
         _ic_shutil.copytree(str(tmp_dir), str(perm), dirs_exist_ok=True)
         _ic_shutil.rmtree(tmp_dir, ignore_errors=True)
+    return link.id
+
+
+# ---------- §C4.6 — Proton Drive sign-in (via rclone) ----------------------
+#
+# Proton Drive is end-to-end encrypted; we drive the sync with rclone
+# which decrypts files locally so the rest of the pipeline can re-
+# encrypt them with the user's neuthek key. Two-step flow (mirrors
+# iCloud's):
+#
+#   /cloud/proton-drive/start  →  email + password
+#       If Proton replies "2FA required" (rclone's stderr carries
+#       a recognizable phrase), stash a pending session + return
+#       requires_2fa=True with a session_id. Otherwise persist the
+#       link immediately.
+#
+#   /cloud/proton-drive/verify →  session_id + 6-digit code
+#       Rewrite the rclone config with the 2fa field set, probe
+#       again, persist on success.
+#
+# Pending session storage shape mirrors _ICLOUD_PENDING — same TTL
+# (5 min), same sweep on every /start, same in-process dict.
+#
+# Entry shape: {email, password, user_id, tmp_link_id, created_at}.
+
+_PROTON_PENDING: dict[str, dict] = {}
+_PROTON_PENDING_TTL = timedelta(minutes=5)
+
+
+def _proton_sweep_pending() -> None:
+    """GC stale pending Proton sign-in sessions. Called at the top of
+    every /start so abandoned entries don't accumulate. The cleanup
+    also removes the tmp rclone config file (the real config will be
+    rewritten under the final link_id on success)."""
+    from backend import rclone_wrapper
+
+    now = datetime.now(timezone.utc)
+    stale = [
+        k for k, v in _PROTON_PENDING.items()
+        if now - v["created_at"] > _PROTON_PENDING_TTL
+    ]
+    for k in stale:
+        entry = _PROTON_PENDING.pop(k, None)
+        if entry and entry.get("tmp_link_id"):
+            try:
+                tmp_path = rclone_wrapper.config_path_for_link(
+                    entry["tmp_link_id"],
+                )
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                logger.exception(
+                    "proton_sweep_pending: tmp config cleanup failed",
+                )
+
+
+class ProtonStartRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ProtonStartResponse(BaseModel):
+    requires_2fa: bool = False
+    session_id: str | None = None
+    link_id: int | None = None
+    message: str | None = None
+
+
+def _proton_tmp_link_id() -> str:
+    """Per-pending-session id for the rclone config file. Prefixed
+    with `tmp-` so it never collides with real CloudLink integer ids.
+    The probe writes a tmp config keyed on this; if the credentials
+    are accepted, we copy them under the real link id (or simply
+    re-materialize from the persisted blob on first sync)."""
+    return f"tmp-{_ic_secrets.token_urlsafe(12)}"
+
+
+@router.post("/proton-drive/start", response_model=ProtonStartResponse)
+async def proton_drive_start(
+    payload: ProtonStartRequest,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProtonStartResponse:
+    """Step 1 of the Proton Drive connect handshake. Writes a temp
+    rclone config with the email + password and probes
+    `rclone about proton-drive:`. If Proton says "2FA required"
+    (rclone's stderr carries a recognizable phrase), stash the
+    pending entry and return requires_2fa=True. Otherwise persist
+    the link in one shot.
+    """
+    from backend import rclone_wrapper
+    from backend.cloud_sync import _proton_drive_pack_credentials
+
+    _proton_sweep_pending()
+
+    # Probe with a temp config; we won't know the real link_id until
+    # the link row is persisted (or never — if the credentials don't
+    # work we never write a row).
+    tmp_link_id = _proton_tmp_link_id()
+    try:
+        config_path = rclone_wrapper.write_proton_config(
+            tmp_link_id, payload.email, payload.password, totp="",
+        )
+    except rclone_wrapper.RcloneError as exc:
+        logger.warning("proton_drive_start: write_proton_config failed: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"rclone not available: {exc}",
+        )
+
+    ok, msg = await rclone_wrapper.rclone_remote_test(
+        rclone_wrapper.PROTON_REMOTE_NAME, config_path,
+    )
+    if ok:
+        # No 2FA — persist directly.
+        link_id = await _proton_persist_link(
+            session, user.id,
+            payload.email, payload.password, totp="",
+        )
+        # Delete the tmp config; the persistence step writes a fresh
+        # one under the real link_id (and re-materializes on demand
+        # via _ensure_rclone_config if it's ever wiped).
+        try:
+            config_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return ProtonStartResponse(
+            requires_2fa=False, link_id=link_id,
+            message="Proton Drive connected.",
+        )
+
+    if rclone_wrapper.is_2fa_required_error(msg):
+        session_id = _ic_secrets.token_urlsafe(24)
+        _PROTON_PENDING[session_id] = {
+            "user_id": user.id,
+            "email": payload.email,
+            "password": payload.password,
+            "tmp_link_id": tmp_link_id,
+            "created_at": datetime.now(timezone.utc),
+        }
+        return ProtonStartResponse(
+            requires_2fa=True, session_id=session_id,
+        )
+
+    # Credentials rejected outright. Clean up the tmp config and
+    # surface Proton's message verbatim — the user needs actionable
+    # feedback ("wrong password" vs "account locked" etc).
+    try:
+        config_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    logger.warning(
+        "proton_drive_start: probe failed (no 2fa indicator) msg=%s",
+        msg[:300],
+    )
+    raise HTTPException(
+        status.HTTP_400_BAD_REQUEST,
+        f"Proton sign-in failed: {msg[:300] or 'unknown error'}",
+    )
+
+
+class ProtonVerifyRequest(BaseModel):
+    session_id: str
+    code: str
+
+
+class ProtonVerifyResponse(BaseModel):
+    link_id: int
+
+
+@router.post("/proton-drive/verify", response_model=ProtonVerifyResponse)
+async def proton_drive_verify(
+    payload: ProtonVerifyRequest,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProtonVerifyResponse:
+    """Step 2 of the Proton Drive connect handshake. Rewrites the
+    rclone config with the 2fa field set to the user-supplied code,
+    probes again, persists the link on success."""
+    from backend import rclone_wrapper
+    from backend.cloud_sync import _proton_drive_pack_credentials
+
+    _proton_sweep_pending()
+    pending = _PROTON_PENDING.get(payload.session_id)
+    if pending is None or pending["user_id"] != user.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Sign-in session not found or expired. Start over.",
+        )
+
+    code = payload.code.strip().replace(" ", "").replace("-", "")
+    tmp_link_id = pending["tmp_link_id"]
+    config_path = rclone_wrapper.write_proton_config(
+        tmp_link_id,
+        pending["email"], pending["password"], totp=code,
+    )
+    ok, msg = await rclone_wrapper.rclone_remote_test(
+        rclone_wrapper.PROTON_REMOTE_NAME, config_path,
+    )
+    if not ok:
+        logger.warning(
+            "proton_drive_verify: probe rejected the 2FA code msg=%s",
+            msg[:300],
+        )
+        # Don't drop the pending entry — the user might want to retry
+        # with a fresh code from the authenticator.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"That code didn't work: {msg[:200] or 'try a fresh code'}",
+        )
+
+    link_id = await _proton_persist_link(
+        session, user.id,
+        pending["email"], pending["password"], totp=code,
+    )
+    try:
+        config_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    _PROTON_PENDING.pop(payload.session_id, None)
+    return ProtonVerifyResponse(link_id=link_id)
+
+
+async def _proton_persist_link(
+    session: AsyncSession,
+    user_id: UUID,
+    email: str,
+    password: str,
+    totp: str,
+) -> int:
+    """Encrypt the Proton credentials, upsert the CloudLink row,
+    materialize the rclone config under the final link id."""
+    from backend import rclone_wrapper
+    from backend.cloud_sync import _proton_drive_pack_credentials
+
+    encrypted_blob = _proton_drive_pack_credentials(email, password, totp)
+
+    existing = (
+        await session.execute(
+            select(CloudLink).where(
+                CloudLink.user_id == user_id,
+                CloudLink.provider == "proton_drive",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        link = CloudLink(
+            user_id=user_id,
+            provider="proton_drive",
+            encrypted_refresh_token=encrypted_blob,
+            scopes="",
+            status="active",
+        )
+        session.add(link)
+    else:
+        existing.encrypted_refresh_token = encrypted_blob
+        existing.scopes = ""
+        existing.status = "active"
+        link = existing
+    await session.commit()
+    await session.refresh(link)
+
+    # Write the per-link rclone config under the final id so the next
+    # sync run finds it without re-materializing from the encrypted
+    # blob.
+    rclone_wrapper.write_proton_config(link.id, email, password, totp)
+    return link.id
+
+
+# ---------- §C4.6 — MEGA sign-in (via rclone) ------------------------------
+#
+# MEGA's rclone backend doesn't surface a 2FA hook (MEGA's web 2FA
+# protects the browser sign-in only; the SDK rclone uses under the
+# hood accepts the bare password). Single-step flow:
+#
+#   /cloud/mega/start  →  email + password
+#       Probe `rclone about mega:`. On success, persist + return
+#       link_id. On failure, 400.
+
+class MegaStartRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class MegaStartResponse(BaseModel):
+    link_id: int
+    message: str | None = None
+
+
+@router.post("/mega/start", response_model=MegaStartResponse)
+async def mega_start(
+    payload: MegaStartRequest,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> MegaStartResponse:
+    """Single-step MEGA connect. Writes a temp rclone config, probes
+    with `rclone about`, persists on success."""
+    from backend import rclone_wrapper
+    from backend.cloud_sync import _mega_pack_credentials
+
+    tmp_link_id = f"tmp-{_ic_secrets.token_urlsafe(12)}"
+    try:
+        config_path = rclone_wrapper.write_mega_config(
+            tmp_link_id, payload.email, payload.password,
+        )
+    except rclone_wrapper.RcloneError as exc:
+        logger.warning("mega_start: write_mega_config failed: %s", exc)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"rclone not available: {exc}",
+        )
+
+    ok, msg = await rclone_wrapper.rclone_remote_test(
+        rclone_wrapper.MEGA_REMOTE_NAME, config_path,
+    )
+    if not ok:
+        try:
+            config_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        logger.warning(
+            "mega_start: probe failed msg=%s", msg[:300],
+        )
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"MEGA sign-in failed: {msg[:300] or 'unknown error'}",
+        )
+
+    link_id = await _mega_persist_link(
+        session, user.id, payload.email, payload.password,
+    )
+    try:
+        config_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return MegaStartResponse(
+        link_id=link_id, message="MEGA connected.",
+    )
+
+
+async def _mega_persist_link(
+    session: AsyncSession,
+    user_id: UUID,
+    email: str,
+    password: str,
+) -> int:
+    """Encrypt the MEGA credentials, upsert the CloudLink row,
+    materialize the per-link rclone config under the final id."""
+    from backend import rclone_wrapper
+    from backend.cloud_sync import _mega_pack_credentials
+
+    encrypted_blob = _mega_pack_credentials(email, password)
+
+    existing = (
+        await session.execute(
+            select(CloudLink).where(
+                CloudLink.user_id == user_id,
+                CloudLink.provider == "mega",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        link = CloudLink(
+            user_id=user_id,
+            provider="mega",
+            encrypted_refresh_token=encrypted_blob,
+            scopes="",
+            status="active",
+        )
+        session.add(link)
+    else:
+        existing.encrypted_refresh_token = encrypted_blob
+        existing.scopes = ""
+        existing.status = "active"
+        link = existing
+    await session.commit()
+    await session.refresh(link)
+
+    rclone_wrapper.write_mega_config(link.id, email, password)
     return link.id

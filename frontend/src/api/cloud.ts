@@ -7,22 +7,27 @@
 import { api } from "./client";
 
 // §C4.6 — provider IDs from backend.cloud_sync.list_providers. The
-// "available + needs_setup" set is real providers; "coming_soon"
-// IDs (icloud / mega / box / pcloud) are placeholder slots and
-// can't be passed to /cloud/links/{provider}.
+// "available + needs_setup" set is real providers; placeholder slots
+// with status "coming_soon" can't be passed to /cloud/links/{provider}.
+// Google Drive + Dropbox use OAuth; iCloud uses Apple-ID + 2FA;
+// Proton Drive + MEGA use email + password (driven by rclone under
+// the hood).
 export type CloudProvider =
   | "google_drive"
   | "dropbox"
   | "icloud"
-  | "mega"
-  | "box"
-  | "pcloud";
+  | "proton_drive"
+  | "mega";
 
 export interface CloudProviderInfo {
   id: CloudProvider;
   name: string;
   kind: "oauth2" | "app_password" | "credentials";
   status: "available" | "needs_setup" | "coming_soon";
+  /** Drives the FE's connect affordance: "oauth" → browser redirect;
+   *  "apple_id" → iCloud password+2FA modal; "password" → Proton /
+   *  MEGA credentials modal. */
+  auth_shape: "oauth" | "apple_id" | "password";
   blurb: string;
   docs: string | null;
 }
@@ -152,5 +157,47 @@ export async function icloudVerify(
 ): Promise<{ link_id: number }> {
   return api.post<{ link_id: number }>(
     "/cloud/icloud/verify", { session_id, code },
+  );
+}
+
+// §C4.6 — Proton Drive sign-in. Proton has 2FA, so the shape mirrors
+// iCloud's: /start returns `requires_2fa=true` + session_id if 2FA
+// is enabled on the account, otherwise persists the link in one
+// shot. /verify completes the dance with the 6-digit code.
+export interface ProtonStartResponse {
+  requires_2fa: boolean;
+  /** Set when requires_2fa is true. Pass back to /proton-drive/verify
+   *  with the 2FA code. */
+  session_id?: string;
+  /** Set when requires_2fa is false (2FA-disabled account) — the
+   *  link was persisted immediately. */
+  link_id?: number;
+  message?: string;
+}
+
+export async function protonStart(
+  email: string, password: string,
+): Promise<ProtonStartResponse> {
+  return api.post<ProtonStartResponse>(
+    "/cloud/proton-drive/start", { email, password },
+  );
+}
+
+export async function protonVerify(
+  session_id: string, code: string,
+): Promise<{ link_id: number }> {
+  return api.post<{ link_id: number }>(
+    "/cloud/proton-drive/verify", { session_id, code },
+  );
+}
+
+// §C4.6 — MEGA sign-in. MEGA's rclone backend has no 2FA hook, so the
+// flow is single-step: /start either persists the link (credentials
+// were good) or 400s (credentials were bad). No /verify needed.
+export async function megaStart(
+  email: string, password: string,
+): Promise<{ link_id: number }> {
+  return api.post<{ link_id: number }>(
+    "/cloud/mega/start", { email, password },
   );
 }

@@ -154,21 +154,6 @@ services:
       DROPBOX_OAUTH_CLIENT_ID: ${DROPBOX_OAUTH_CLIENT_ID:-}
       DROPBOX_OAUTH_CLIENT_SECRET: ${DROPBOX_OAUTH_CLIENT_SECRET:-}
       DROPBOX_OAUTH_REDIRECT_URI: ${DROPBOX_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/dropbox}
-      # §C4.6 — Box OAuth client. Register at
-      # app.box.com/developers/console → Custom App → User
-      # Authentication (OAuth 2.0). Tick the "Read all files and
-      # folders" scope on the Configuration tab.
-      BOX_OAUTH_CLIENT_ID: ${BOX_OAUTH_CLIENT_ID:-}
-      BOX_OAUTH_CLIENT_SECRET: ${BOX_OAUTH_CLIENT_SECRET:-}
-      BOX_OAUTH_REDIRECT_URI: ${BOX_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/box}
-      # §C4.6 — pCloud OAuth client. Register at docs.pcloud.com → My
-      # Applications. pCloud has no per-request scopes — the app's
-      # configured permissions apply to every token. The token
-      # response carries a `hostname` field so we know which region
-      # (US api.pcloud.com / EU eapi.pcloud.com) to talk to per user.
-      PCLOUD_OAUTH_CLIENT_ID: ${PCLOUD_OAUTH_CLIENT_ID:-}
-      PCLOUD_OAUTH_CLIENT_SECRET: ${PCLOUD_OAUTH_CLIENT_SECRET:-}
-      PCLOUD_OAUTH_REDIRECT_URI: ${PCLOUD_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/pcloud}
       # §C4.6 — iCloud Drive. pyicloud persists per-link trust state
       # (cookies + keyring) under this root; the named `pyicloud_cookies`
       # volume below survives container restarts so the trust token
@@ -176,6 +161,13 @@ services:
       # Without persistence the user would be prompted for 2FA on
       # every backend redeploy.
       PYICLOUD_COOKIE_ROOT: /var/neuthek/pyicloud
+      # §C4.6 — Proton Drive + MEGA. Both ride on the rclone binary
+      # (the Python clients for these E2E services are fragile —
+      # rclone's Go implementation is much more stable). We persist
+      # one rclone config file per CloudLink under this root so
+      # credentials survive container restarts; the named
+      # `rclone_configs` volume below provides that durability.
+      RCLONE_CONFIG_ROOT: ${RCLONE_CONFIG_ROOT:-/var/neuthek/rclone}
       FRONTEND_BASE_URL: http://localhost:5173
       # SMTP wiring. Without these, backend.email_send.send_email
       # falls back to printing to container stderr (the [email-stub]
@@ -221,6 +213,12 @@ services:
       # iCloud trust token (good for ~30 days) isn't invalidated by
       # a redeploy.
       - pyicloud_cookies:/var/neuthek/pyicloud
+      # §C4.6 — rclone config files for Proton Drive + MEGA. One file
+      # per CloudLink, holding the rclone-obscured credentials. Named
+      # volume so the credentials persist across container restarts —
+      # losing them would force every user to re-enter their Proton
+      # / MEGA password.
+      - rclone_configs:/var/neuthek/rclone
       # Reuse the host's HuggingFace cache when it exists — avoids the
       # ~25-minute first-run download of Florence-2 (2.9 GB) + Qwen
       # 2.5 (2.9 GB) + OpenCLIP. Falls back to the `model_cache` named
@@ -290,6 +288,10 @@ services:
       # the hourly sweeper rebuilds pyicloud sessions from the trust
       # state the API container wrote during the connect handshake.
       PYICLOUD_COOKIE_ROOT: /var/neuthek/pyicloud
+      # §C4.6 — Proton Drive + MEGA. Same rclone config root as the
+      # API container; the worker reads the per-link config files
+      # during the hourly sync sweep.
+      RCLONE_CONFIG_ROOT: ${RCLONE_CONFIG_ROOT:-/var/neuthek/rclone}
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
       WORKER_LOG_LEVEL: INFO
@@ -337,6 +339,9 @@ services:
       # §C4.6 — same pyicloud cookie volume the API container uses, so
       # the worker's hourly sweep resumes the same trust state.
       - pyicloud_cookies:/var/neuthek/pyicloud
+      # §C4.6 — same rclone config volume so the worker can resume
+      # Proton Drive / MEGA syncs without re-prompting the user.
+      - rclone_configs:/var/neuthek/rclone
     command: ["python", "-m", "backend.worker.main"]
 
   # Frontend dev server — Vite with HMR, source bind-mounted so file
@@ -412,3 +417,8 @@ volumes:
   # backend (writes during connect handshake) and the ml-worker (reads
   # during hourly sync sweep).
   pyicloud_cookies:
+  # §C4.6 — rclone config files for Proton Drive + MEGA. One file per
+  # CloudLink under here. Same lifecycle + sharing pattern as
+  # pyicloud_cookies — backend writes during /cloud/{provider}/start,
+  # worker reads during the hourly sweep.
+  rclone_configs:
