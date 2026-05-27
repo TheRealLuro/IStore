@@ -11,7 +11,15 @@ import { Icon } from "./icons.jsx";
 import NeuthekMark from "./NeuthekMark.jsx";
 import { TermsModal as TermsModalA, PrivacyModal as PrivacyModalA } from "./policies.jsx";
 import { ConsentsModal } from "./consents.jsx";
-import { login, loginWithTotp, me, register, TotpRequiredError } from "@/api/auth";
+import { Modal as PrimitiveModal } from "./primitives.jsx";
+import {
+  forgotPassword,
+  login,
+  loginWithTotp,
+  me,
+  register,
+  TotpRequiredError,
+} from "@/api/auth";
 import { useAuthStore } from "@/stores/authStore";
 import { ApiError, API_BASE_URL, tokens } from "@/api/client";
 // §B2 — grantScope no longer needed at signup: the register call
@@ -143,6 +151,59 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   // state so the retry uses the same credentials.
   const [totpNeeded, setTotpNeeded] = useStateA(false);
   const [totpCode, setTotpCode] = useStateA("");
+  // §C6 — "Forgot password?" modal state. The link below the
+  // sign-in password field opens the modal; submit fires the
+  // forgot-password endpoint (which always responds the same way
+  // whether the email exists or not — see backend comment) so we
+  // toast a generic "if that account exists, check your inbox"
+  // either way to avoid enumeration leakage.
+  const [showForgot, setShowForgot] = useStateA(false);
+  const [forgotEmail, setForgotEmail] = useStateA("");
+  const [forgotSubmitting, setForgotSubmitting] = useStateA(false);
+  // §C6 — after a successful password reset on /reset, the reset
+  // page redirects to "/?reset=ok#auth=signin". Read the query
+  // flag at mount and surface a one-time banner above the form.
+  const [resetSuccessBanner, setResetSuccessBanner] = useStateA(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("reset") === "ok";
+    } catch {
+      return false;
+    }
+  });
+  useEffectA(() => {
+    if (!resetSuccessBanner) return;
+    // Strip the flag from the URL so a refresh doesn't keep
+    // showing the banner.
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("reset");
+      window.history.replaceState({}, "", u.pathname + u.search + u.hash);
+    } catch {}
+  }, [resetSuccessBanner]);
+
+  const handleForgotSubmit = async (e) => {
+    e?.preventDefault?.();
+    const trimmed = forgotEmail.trim();
+    if (!trimmed || forgotSubmitting) return;
+    setForgotSubmitting(true);
+    try {
+      await forgotPassword(trimmed);
+    } catch {
+      // Backend always responds 202 even if the email isn't on
+      // file (anti-enumeration). A genuine error here would be
+      // network-level; surface a generic message so we still
+      // don't leak account existence.
+    }
+    setForgotSubmitting(false);
+    setShowForgot(false);
+    setForgotEmail("");
+    toast.success(
+      "If an account uses that email, we just sent a reset link. " +
+      "Check your inbox (and spam folder).",
+    );
+  };
 
   // listen to "open xxx" events fired from inside the consents modal
   useEffectA(() => {
@@ -426,6 +487,46 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
               : "Sign in to your private library."}
           </p>
 
+          {/* §C6 — after a successful /reset, the reset page sends
+              us back to "/?reset=ok#auth=signin". One-time
+              confirmation banner so the user knows the change
+              landed. Auto-dismisses on the next user action that
+              causes a re-render of this branch (sign-in attempt). */}
+          {resetSuccessBanner && !isSignup && (
+            <div
+              role="status"
+              className="auth__banner auth__banner--ok"
+              style={{
+                background: "rgba(34, 197, 94, 0.10)",
+                border: "1px solid rgba(34, 197, 94, 0.30)",
+                color: "var(--ink, #111)",
+                padding: "10px 12px",
+                borderRadius: 10,
+                fontSize: 13,
+                marginBottom: 12,
+              }}
+            >
+              <strong>Password updated.</strong> Sign in with your new
+              password.
+              <button
+                type="button"
+                onClick={() => setResetSuccessBanner(false)}
+                aria-label="Dismiss"
+                style={{
+                  float: "right",
+                  background: "transparent",
+                  border: 0,
+                  cursor: "pointer",
+                  color: "inherit",
+                  fontSize: 16,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          )}
+
           {/* social — primary on sign-in, secondary on sign-up */}
           <button
             type="button"
@@ -504,7 +605,21 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             </button>
             {!isSignup && (
               <div style={{ marginTop: 8, textAlign: "right" }}>
-                <a href="#" className="auth__forgot">Forgot password?</a>
+                <button
+                  type="button"
+                  className="auth__forgot"
+                  onClick={() => {
+                    // Pre-fill the modal with whatever's in the
+                    // sign-in email field so the common case
+                    // (user typed their email, then realized they
+                    // don't remember the password) doesn't make
+                    // them type it again.
+                    setForgotEmail(email);
+                    setShowForgot(true);
+                  }}
+                >
+                  Forgot password?
+                </button>
               </div>
             )}
             {isSignup && (
@@ -606,6 +721,68 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
         requireFace={tweaks.requireFace}
         allowEarlyAI={tweaks.allowEarlyAI !== false}
       />
+
+      {/* §C6 — Forgot-password modal. Anti-enumeration: submit
+          always shows the same generic toast whether or not the
+          email is on file. Backend returns 202 either way; we
+          don't surface the response body. Uses the shared
+          PrimitiveModal so we get the same `.scrim` + `.modal`
+          shell every other surface uses (proper centered card
+          with backdrop blur + escape-key dismiss + the same
+          z-index / animation tokens). */}
+      <PrimitiveModal
+        open={showForgot}
+        onClose={() => !forgotSubmitting && setShowForgot(false)}
+        labelledBy="forgot-modal-title"
+      >
+        <form onSubmit={handleForgotSubmit}>
+          <div className="modal__head">
+            <h2 id="forgot-modal-title">Reset your password</h2>
+          </div>
+          <div className="modal__body" style={{ padding: 20 }}>
+            <p className="auth__sub" style={{ marginTop: 0 }}>
+              Enter the email address on your neuthek account. We&rsquo;ll
+              send a link that lets you set a new password. The link
+              expires in 15 minutes.
+            </p>
+            <label className="auth__label">
+              Email
+              <input
+                type="email"
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                autoComplete="email"
+                autoFocus
+                required
+                className="auth__input"
+              />
+            </label>
+          </div>
+          <div className="modal__foot">
+            <div className="modal__foot-actions">
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => setShowForgot(false)}
+                disabled={forgotSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn btn--primary"
+                disabled={
+                  forgotSubmitting ||
+                  !forgotEmail.trim() ||
+                  !/^\S+@\S+\.\S+$/.test(forgotEmail.trim())
+                }
+              >
+                {forgotSubmitting ? "Sending…" : "Send reset link"}
+              </button>
+            </div>
+          </div>
+        </form>
+      </PrimitiveModal>
     </div>
   );
 }
