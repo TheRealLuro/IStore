@@ -711,32 +711,19 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
               <Icon name={showPwd ? "eyeOff" : "eye"} size={16}/>
             </button>
             {!isSignup && (
-              <div style={{
-                marginTop: 8,
-                display: "flex",
-                justifyContent: "space-between",
-                gap: 12,
-              }}>
-                {/* §C6c — recovery-code direct entry. The TOTP-screen
-                    branch already exposes "Use a recovery code"
-                    AFTER the password step, but users who lost their
-                    password (vs. their authenticator) couldn't reach
-                    it. This top-level link skips the password input
-                    entirely and goes straight to the email + code
-                    form, since /account/recovery-codes/login takes
-                    email + code with no password dependency. */}
-                <button
-                  type="button"
-                  className="auth__forgot"
-                  onClick={() => {
-                    setRecoveryMode(true);
-                    setRecoveryCode("");
-                    setPwd("");
-                    setAuthError(null);
-                  }}
-                >
-                  Use a recovery code
-                </button>
+              // §C6c/UX — single right-aligned "Forgot password?"
+              // link. The screen previously also surfaced "Use a
+              // recovery code" here, but recovery codes are an
+              // edge-case escape hatch for the "lost password +
+              // lost authenticator" user, which the TOTP-step
+              // fallback already covers (sign in normally → TOTP
+              // prompt → "Use a recovery code instead"). Surfacing
+              // it on the main screen alongside Forgot password?
+              // gave visual weight to a path most users will never
+              // take, and crowded the field group. The "Email me a
+              // sign-in link" button above is now the primary
+              // password-free path.
+              <div style={{ marginTop: 8, textAlign: "right" }}>
                 <button
                   type="button"
                   className="auth__forgot"
@@ -883,52 +870,102 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
           {/* §H#7b — code-entry branch. Shown after the user clicks
               "Email me a sign-in link". Submitting POSTs email + 6
               digits to /auth/email-link/consume-code, which is the
-              parallel path to clicking the link in the inbox. */}
+              parallel path to clicking the link in the inbox.
+
+              The callout card above the input is the user-facing
+              answer to "where did my email go?" — for unregistered
+              addresses we return 202 silently (anti-enumeration),
+              so the user needs to KNOW that's the design or they
+              think the app is broken. Copy says it plainly. */}
           {!isSignup && signinCodeMode && (
-            <div className="field" style={{ marginTop: 4 }}>
-              <label
-                className="field__label-floating field__label-floating--up"
-                style={{ color: "var(--ink-2)" }}
-              >
-                6-digit code from your email
-              </label>
-              <input
-                autoFocus
-                type="text"
-                inputMode="numeric"
-                pattern="\d{6}"
-                maxLength={6}
-                placeholder=" "
-                className="input input--lg input--floating"
-                value={signinCode}
-                onChange={(e) => setSigninCode(e.target.value.replace(/\D/g, ""))}
-                autoComplete="one-time-code"
-                style={{
-                  fontFamily: "monospace", letterSpacing: "0.25em",
-                  textAlign: "center", fontSize: 17,
-                }}
-              />
+            <>
               <div style={{
+                marginTop: 4,
+                padding: "12px 14px",
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                borderRadius: 10,
                 display: "flex",
-                justifyContent: "space-between",
-                fontSize: 11, color: "var(--ink-3)", marginTop: 6,
+                gap: 10,
+                alignItems: "flex-start",
               }}>
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setSigninCodeMode(false);
-                    setSigninCode("");
-                    setAuthError(null);
-                  }}
-                >
-                  Back to password
-                </a>
-                <span>
-                  Or click the link in your email
-                </span>
+                <Icon name="info" size={14} style={{
+                  color: "var(--ink-3)",
+                  marginTop: 2,
+                  flexShrink: 0,
+                }}/>
+                <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-2)" }}>
+                  We sent a sign-in code to{" "}
+                  <strong style={{ color: "var(--ink)" }}>{email || "your email"}</strong>.
+                  Enter the 6-digit code below, or click the button
+                  in the email. Both expire in 15 minutes.
+                  <div style={{ marginTop: 6, color: "var(--ink-3)", fontSize: 11.5 }}>
+                    No email? Check spam, or{" "}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSigninCodeMode(false);
+                        setSigninCode("");
+                      }}
+                      style={{
+                        background: "none", border: 0, padding: 0,
+                        color: "var(--ink-2)", textDecoration: "underline",
+                        cursor: "pointer", font: "inherit",
+                      }}
+                    >
+                      try a different address
+                    </button>
+                    {"."}
+                  </div>
+                </div>
               </div>
-            </div>
+              <div className="field" style={{ marginTop: 10 }}>
+                <label
+                  className="field__label-floating field__label-floating--up"
+                  style={{ color: "var(--ink-2)" }}
+                >
+                  6-digit code
+                </label>
+                <input
+                  autoFocus
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\d{6}"
+                  maxLength={6}
+                  placeholder=" "
+                  className="input input--lg input--floating"
+                  value={signinCode}
+                  onChange={(e) => setSigninCode(e.target.value.replace(/\D/g, ""))}
+                  autoComplete="one-time-code"
+                  style={{
+                    fontFamily: "monospace", letterSpacing: "0.30em",
+                    textAlign: "center", fontSize: 20, fontWeight: 600,
+                  }}
+                />
+                <div style={{
+                  marginTop: 6,
+                  textAlign: "left",
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSigninCodeMode(false);
+                      setSigninCode("");
+                      setAuthError(null);
+                    }}
+                    style={{
+                      background: "none", border: 0, padding: 0,
+                      color: "var(--ink-3)", textDecoration: "underline",
+                      cursor: "pointer", font: "inherit", fontSize: 11,
+                    }}
+                  >
+                    Use password instead
+                  </button>
+                </div>
+              </div>
+            </>
           )}
 
           {isSignup && (
