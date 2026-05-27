@@ -99,3 +99,15 @@ html[data-theme="dark"] .password-bars__bar[data-on="true"] { background: var(--
 .auth__input:focus {
   border-color: var(--ink-2, var(--ink-3));
 }
+/* The global `input:focus-visible` rule in styles.css paints a 2px
+   outline with 2px offset for accessibility. That looks great on
+   the borderless inputs in the main AuthScreen (which use the
+   `.input--floating` style with a wrapper that absorbs the focus
+   visually) but DOUBLE-borders the standalone `.auth__input` on
+   the landing pages — user sees the existing 1px border + a 2px
+   outline 2px outside it, which reads as a layered/broken outline.
+   Suppress the global outline here; the border-color shift above
+   is the focus affordance for this input variant. */
+.auth__input:focus-visible {
+  outline: none;
+}
