@@ -610,6 +610,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             )}
           </div>
 
+          {/* §C6c — when the user has entered the top-level recovery-
+              code mode, the password field is irrelevant: the
+              recovery-codes/login endpoint takes only email + code.
+              Hiding it (rather than disabling) keeps the focus where
+              the user expects after clicking "Use a recovery code". */}
+          {!recoveryMode && (
           <div className="field field--pwd">
             <label className={"field__label-floating" + (pwd || pwdFocused ? " field__label-floating--up" : "")}>Password</label>
             <input
@@ -626,7 +632,32 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
               <Icon name={showPwd ? "eyeOff" : "eye"} size={16}/>
             </button>
             {!isSignup && (
-              <div style={{ marginTop: 8, textAlign: "right" }}>
+              <div style={{
+                marginTop: 8,
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+              }}>
+                {/* §C6c — recovery-code direct entry. The TOTP-screen
+                    branch already exposes "Use a recovery code"
+                    AFTER the password step, but users who lost their
+                    password (vs. their authenticator) couldn't reach
+                    it. This top-level link skips the password input
+                    entirely and goes straight to the email + code
+                    form, since /account/recovery-codes/login takes
+                    email + code with no password dependency. */}
+                <button
+                  type="button"
+                  className="auth__forgot"
+                  onClick={() => {
+                    setRecoveryMode(true);
+                    setRecoveryCode("");
+                    setPwd("");
+                    setAuthError(null);
+                  }}
+                >
+                  Use a recovery code
+                </button>
                 <button
                   type="button"
                   className="auth__forgot"
@@ -654,6 +685,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
             )}
             {isSignup && pwd && <PasswordReqs value={pwd}/>}
           </div>
+          )}
 
           {/* §1.2.2 — TOTP second-step. When the initial /auth/jwt/login
               call comes back with `totp_required` we flip into this
