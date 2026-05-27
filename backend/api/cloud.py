@@ -475,10 +475,20 @@ async def trigger_sync(
             SessionLocal, user.id, link.provider, link.id,
         )
     )
+    # SyncResponse requires `seen` + `pulled` (the diff-counter
+    # shape from sync_user_provider). The previous arg names
+    # (`scanned/created/updated/deleted/skipped/errors`) were
+    # leftover from an earlier draft of the model and Pydantic
+    # rejected the response — surfacing in the FE as a generic
+    # "Failed to fetch" since the 500 body had no useful detail.
+    # The bug was masked while only Google Drive was wired (that
+    # path didn't reach this return because the existing-link
+    # short-circuit above fires); OneDrive + Dropbox both hit
+    # it on first sync. Same zero-counts intent ("sync just
+    # started, poll for updates") with the correct field names.
     return SyncResponse(
         provider=link.provider,
-        scanned=0, created=0, updated=0, deleted=0, skipped=0,
-        errors=0,
+        seen=0, pulled=0, skipped_unchanged=0, conflicts=0,
     )
 
 
