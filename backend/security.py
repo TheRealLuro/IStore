@@ -547,6 +547,12 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
         # list, so it needs the same per-IP burst + per-identity
         # lockout as /auth/reset-password.
         "/auth/verify",
+        # Magic-link sign-in. /request would be mailbox-spam fuel
+        # without rate limiting; /consume is the path an attacker
+        # would hammer with a leaked-token list, so both join the
+        # set.
+        "/auth/email-link/request",
+        "/auth/email-link/consume",
         "/account/recovery-codes/login",
         # todo §1.1 / G1 — share-claim is the same threat shape as
         # recovery-codes-login (POST + secret token + identity binding),

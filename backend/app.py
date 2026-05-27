@@ -21,6 +21,7 @@ from backend.api.storage import router as storage_router
 from backend.api.tags import folder_attach_router as tag_folder_attach_router
 from backend.api.tags import image_attach_router as tag_image_attach_router
 from backend.api.tags import router as tags_router
+from backend.api.email_link import router as email_link_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
 from backend.auth.google_sso import router as google_sso_router
@@ -290,6 +291,10 @@ def create_app() -> FastAPI:
     app.include_router(account_router)
     app.include_router(two_factor_router)
     app.include_router(two_factor_auth_router)
+    # Passwordless email-link sign-in: /auth/email-link/request +
+    # /auth/email-link/consume. Same anti-enumeration posture as
+    # /auth/forgot-password; 2FA-aware on consume.
+    app.include_router(email_link_router)
     app.include_router(admin_router)
     app.include_router(admin_dashboard_router)
     app.include_router(cloud_router)

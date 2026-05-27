@@ -591,6 +591,42 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
 
           <div className="auth__divider"><span>or with email</span></div>
 
+          {/* §H#7 — passwordless sign-in via emailed link. Mounted
+              above the email/password fields so it's visible BEFORE
+              the user starts typing a password they may not remember.
+              Sign-up doesn't get this option (it would create
+              a half-bootstrapped account with no password); sign-in
+              only. */}
+          {!isSignup && !recoveryMode && (
+            <button
+              type="button"
+              className="btn btn--secondary btn--lg auth__social"
+              onClick={async () => {
+                const trimmed = email.trim();
+                if (!trimmed || !emailValid) {
+                  setAuthError("Enter your email above first.");
+                  return;
+                }
+                try {
+                  const { requestSigninLink } = await import("@/api/auth");
+                  await requestSigninLink(trimmed);
+                } catch {
+                  // Anti-enumeration: server returns 202 either way,
+                  // so even network errors get the same generic toast.
+                }
+                toast.success(
+                  `If an account uses ${trimmed}, a sign-in link is ` +
+                  `on the way. Check your inbox.`,
+                  { duration: 7000 },
+                );
+              }}
+              disabled={submitting}
+            >
+              <Icon name="document" size={14}/>
+              Email me a sign-in link
+            </button>
+          )}
+
           {isSignup && (
             <div className="field">
               <label className={"field__label-floating" + (name || nameFocused ? " field__label-floating--up" : "")}>Your name</label>

@@ -90,6 +90,23 @@ def send_reset_email(to: str, token: str) -> bool:
     return send_email(to, "Reset your neuthek password", body)
 
 
+def send_signin_link_email(to: str, token: str) -> bool:
+    """Magic-link sign-in (passwordless). The user typed their email
+    on the auth screen; we mail them a one-shot link that lands on
+    /signin?token=… and trades the JWT-shaped token for a session
+    JWT via POST /auth/email-link/consume. 15-minute TTL, single-use.
+    """
+    link = f"{settings.frontend_base_url}/signin?token={token}"
+    body = (
+        "Sign in to neuthek by clicking the link below.\n\n"
+        f"{link}\n\n"
+        "The link is valid for 15 minutes and can only be used once. "
+        "If you didn't request this email, you can safely ignore it — "
+        "no one can sign in without clicking the link."
+    )
+    return send_email(to, "Your neuthek sign-in link", body)
+
+
 def send_recovery_codes_email(to: str, codes: list[str]) -> bool:
     """Sent once when codes are (re)generated. Codes themselves are
     only ever shown once; we don't keep plaintext in the DB."""

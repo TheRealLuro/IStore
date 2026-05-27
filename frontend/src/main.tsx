@@ -12,6 +12,7 @@ import {
 } from "../neuthek/src/billing.jsx";
 import { ResetPasswordPage } from "../neuthek/src/reset-password.jsx";
 import { VerifyEmailPage } from "../neuthek/src/verify-email.jsx";
+import { SigninLinkPage } from "../neuthek/src/signin-link.jsx";
 import "../neuthek/styles/index.css";
 
 // Apply the saved theme BEFORE any component mounts so every entry
@@ -110,6 +111,14 @@ function bootstrap(): JSX.Element {
   // a "request a fresh link" form.
   if (path === "/verify" || path === "/verify/") {
     return <VerifyEmailPage/>;
+  }
+  // §H#7 — magic-link passwordless sign-in landing. The backend mails
+  // {frontend_base_url}/signin?token=<jwt>; the page consumes the
+  // token via POST /auth/email-link/consume and lands the user in the
+  // gallery. Visiting /signin without a token shows a "request a fresh
+  // link" form.
+  if (path === "/signin" || path === "/signin/") {
+    return <SigninLinkPage/>;
   }
   return <App/>;
 }

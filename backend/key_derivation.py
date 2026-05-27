@@ -114,6 +114,13 @@ def derive_subkey_str(purpose: bytes) -> str:
 
 PURPOSE_RESET_PASSWORD = b"reset-password-token-v1"
 PURPOSE_VERIFY_EMAIL = b"verify-email-token-v1"
+# Magic-link / passwordless sign-in token. Distinct from reset
+# because a reset token MUTATES the password row; a sign-in link
+# only mints a session JWT and never touches the row. Sharing a
+# subkey would let a leaked reset-link blob (e.g. from an email
+# archive) double as a sign-in primitive — explicitly NOT what we
+# want when the reset link was for a different identity moment.
+PURPOSE_SIGNIN_LINK = b"signin-link-token-v1"
 
 PURPOSE_SIGNED_DOWNLOAD = b"signed-url-download-v1"
 PURPOSE_SIGNED_SHARE = b"signed-url-share-v1"
