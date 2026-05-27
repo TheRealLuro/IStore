@@ -808,6 +808,77 @@ _ICLOUD_PENDING: dict[str, dict] = {}
 _ICLOUD_PENDING_TTL = timedelta(minutes=5)
 
 
+async def _icloud_trigger_hsa2_push(svc, mode: str | None) -> str | None:
+    """Ask Apple to push an HSA-2 verification code to the user's
+    trusted devices (or to send an SMS if `mode == "sms"`).
+
+    pyicloud has no helper for this — its `send_verification_code()`
+    hits the legacy /setup/* endpoint family, which delivers codes
+    that the modern /auth/verify/.../securitycode validator rejects
+    because they live in a different session context. Apple's web UI
+    uses these /auth-side endpoints directly:
+
+      - mode "sms"          → PUT /auth/verify/phone with the
+        trustedPhoneNumber dict from _auth_data. Apple sends SMS.
+      - any other mode      → GET /auth/verify/trusteddevice (no
+        body). Apple pushes a 6-digit code to every trusted device
+        ("Apple ID Sign In Requested" prompt).
+
+    Returns a human-readable destination label for the FE toast, or
+    None if we couldn't tell.
+    """
+    auth_endpoint = getattr(svc, "_auth_endpoint", None)
+    if not auth_endpoint:
+        logger.warning("icloud_hsa2: no _auth_endpoint on service")
+        return None
+
+    def _call() -> str | None:
+        try:
+            headers = svc._get_auth_headers(  # noqa: SLF001
+                {"Accept": "application/json"}
+            )
+        except Exception:
+            headers = {"Accept": "application/json"}
+
+        if (mode or "").lower() == "sms":
+            # SMS path — Apple wants the phone number id back.
+            phone = (svc._auth_data or {}).get("trustedPhoneNumber")  # noqa: SLF001
+            if not phone:
+                logger.warning("icloud_hsa2: mode=sms but no trustedPhoneNumber")
+                return None
+            body = {
+                "phoneNumber": {
+                    "id": phone.get("id"),
+                    "nonFTEU": phone.get("nonFTEU"),
+                },
+                "mode": "sms",
+            }
+            resp = svc.session.put(
+                f"{auth_endpoint}/verify/phone",
+                json=body,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            num = phone.get("numberWithDialCode") or phone.get("number")
+            return str(num) if num else "your trusted phone number"
+
+        # Trusted-device push (default for HSA-2).
+        resp = svc.session.get(
+            f"{auth_endpoint}/verify/trusteddevice",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return "your trusted Apple devices"
+
+    try:
+        return await asyncio.to_thread(_call)
+    except Exception:
+        logger.exception(
+            "icloud_hsa2: trusted-device push failed (mode=%r)", mode,
+        )
+        return None
+
+
 def _icloud_sweep_pending() -> None:
     """Best-effort GC for abandoned sign-in attempts. Runs at the top
     of every /icloud/start request so stale entries don't accumulate
@@ -949,82 +1020,76 @@ async def icloud_start(
             message="Session already trusted — no 2FA needed.",
         )
 
-    # §C4.6 — Code delivery vs. code validation use DIFFERENT Apple
-    # endpoints and DIFFERENT pyicloud methods, and Apple's two 2FA
-    # flavors split on the validation side only. The previous bug
-    # cycle came from conflating them — PR #74 disabled delivery
-    # entirely on HSA-2 thinking Apple auto-pushed, which left users
-    # with no code at all. It doesn't auto-push from SRP signin.
+    # §C4.6 — Code delivery and validation MUST hit the same Apple
+    # session context. Mixing the /setup/* (legacy 2SA) and /auth/* (
+    # modern HSA-2) endpoint families is what broke previous attempts:
+    # /setup delivered a code Apple bound to the setup session, then
+    # /auth/verify/.../securitycode rejected it as "wrong" because
+    # that endpoint validates against the auth-session code.
     #
-    # Delivery (works for BOTH HSA-1 and HSA-2):
-    #   - `svc.trusted_devices` → /setup/listDevices, returns the
-    #     phone numbers / devices Apple is willing to push to.
-    #   - `svc.send_verification_code(device)` → /setup/sendVerification
-    #     Code, asks Apple to push a 6-digit code to that device.
-    #   These are the legacy 2SA setup endpoints, but Apple still
-    #   honors them on HSA-2 accounts — they're how iCloud's web UI
-    #   triggers delivery to a specific device.
-    #
-    # Validation (DIFFERS by flavor):
-    #   HSA-2 (requires_2fa=True, hsaVersion=2):
-    #     `svc.validate_2fa_code(code)` → /auth/verify/trusteddevice/
-    #     securitycode. The code Apple just pushed lives in the
-    #     modern auth session.
-    #   HSA-1 / 2SA (requires_2sa=True only, hsaVersion=1):
-    #     `svc.validate_verification_code(device, code)` → /setup/
-    #     validateVerificationCode. Same legacy endpoint family as
-    #     delivery, takes the same device dict.
-    #
-    # So: always do the delivery dance, stash is_2sa for /verify to
-    # pick the right validator.
+    # Branching:
+    #   HSA-2 (requires_2fa=True): trigger Apple's push via the /auth
+    #     session, validate via validate_2fa_code (also /auth).
+    #     pyicloud doesn't expose the trigger endpoint — Apple's web
+    #     UI calls GET /auth/verify/trusteddevice — so we issue it
+    #     directly through pyicloud's session.
+    #   HSA-1 / 2SA (requires_2sa=True ONLY): pair /setup delivery
+    #     with /setup validation. send_verification_code(device) +
+    #     validate_verification_code(device, code).
     if requires_2fa or requires_2sa:
         is_2sa = requires_2sa and not requires_2fa
         device_list: list[ICloudTrustedDevice] = []
         code_sent_to: str | None = None
         raw_devices: list[dict] = []
         try:
-            raw_devices = list(svc.trusted_devices or [])
-            for dev in raw_devices:
-                label = (
-                    dev.get("deviceName")
-                    or dev.get("phoneNumber")
-                    or dev.get("name")
-                    or "Trusted device"
-                )
-                device_list.append(ICloudTrustedDevice(
-                    id=_json.dumps(dev, sort_keys=True),
-                    label=str(label),
-                ))
-            if raw_devices:
-                try:
-                    await asyncio.to_thread(
-                        svc.send_verification_code, raw_devices[0]
-                    )
-                    code_sent_to = device_list[0].label
-                except Exception:
-                    logger.exception(
-                        "icloud_start: send_verification_code "
-                        "failed on device %r",
-                        device_list[0].label,
-                    )
-        except Exception:
-            logger.exception(
-                "icloud_start: trusted_devices probe failed; user "
-                "will need to fall back to Settings → Apple ID"
-            )
-        # Diagnostic: log the auth mode so we can debug accounts
-        # where the legacy setup endpoint refuses to push (very
-        # rare on HSA-2, but worth seeing).
-        try:
             mode = (svc._auth_data or {}).get("mode")  # noqa: SLF001
-            logger.info(
-                "icloud_start: requires_2fa=%s requires_2sa=%s mode=%r "
-                "devices=%d code_sent_to=%r",
-                requires_2fa, requires_2sa, mode,
-                len(raw_devices), code_sent_to,
-            )
         except Exception:
-            pass
+            mode = None
+
+        if is_2sa:
+            # HSA-1 / 2SA path.
+            try:
+                raw_devices = list(svc.trusted_devices or [])
+                for dev in raw_devices:
+                    label = (
+                        dev.get("deviceName")
+                        or dev.get("phoneNumber")
+                        or dev.get("name")
+                        or "Trusted device"
+                    )
+                    device_list.append(ICloudTrustedDevice(
+                        id=_json.dumps(dev, sort_keys=True),
+                        label=str(label),
+                    ))
+                if raw_devices:
+                    try:
+                        await asyncio.to_thread(
+                            svc.send_verification_code, raw_devices[0]
+                        )
+                        code_sent_to = device_list[0].label
+                    except Exception:
+                        logger.exception(
+                            "icloud_start: send_verification_code "
+                            "failed on device %r",
+                            device_list[0].label,
+                        )
+            except Exception:
+                logger.exception(
+                    "icloud_start: trusted_devices probe failed; "
+                    "user will need to fall back to Settings → "
+                    "Apple ID",
+                )
+        else:
+            # HSA-2 path. Push lives in the auth session; pyicloud
+            # has no helper, so we call the endpoint directly.
+            code_sent_to = await _icloud_trigger_hsa2_push(svc, mode)
+
+        logger.warning(
+            "icloud_start: requires_2fa=%s requires_2sa=%s mode=%r "
+            "devices=%d code_sent_to=%r is_2sa=%s",
+            requires_2fa, requires_2sa, mode,
+            len(raw_devices), code_sent_to, is_2sa,
+        )
         _ICLOUD_PENDING[session_id] = {
             "service": svc,
             "user_id": user.id,
@@ -1034,6 +1099,7 @@ async def icloud_start(
             "is_2sa": is_2sa,
             "code_sent_device": raw_devices[0] if raw_devices else None,
             "all_devices": raw_devices,
+            "mode": mode,
             "created_at": datetime.now(timezone.utc),
         }
         return ICloudStartResponse(
@@ -1088,15 +1154,28 @@ async def icloud_resend_code(
             status.HTTP_400_BAD_REQUEST,
             "Sign-in session not found or expired. Start over.",
         )
-    # §C4.6 — resend works for BOTH HSA-1 and HSA-2 because the
-    # legacy /setup/sendVerificationCode endpoint Apple uses for
-    # delivery still honors HSA-2 accounts (it's just the validator
-    # that differs). One catch: the HSA-LOGIN cookie that pyicloud
-    # got from the initial /signin/complete is consumed by the first
-    # /listDevices call, so a fresh resend on the same session
-    # sometimes 421s. We surface that as a "session expired" hint
-    # rather than a generic 500.
+    # §C4.6 — resend dispatches by flavor, same split as /start.
+    # HSA-2 calls the auth-session push endpoint directly; HSA-1
+    # re-issues via /setup/sendVerificationCode against a specific
+    # device.
     svc = pending["service"]
+    is_2sa = bool(pending.get("is_2sa"))
+
+    if not is_2sa:
+        # HSA-2 — re-trigger the auth-side push. No device picker;
+        # Apple decides which trusted devices receive the prompt.
+        mode = pending.get("mode")
+        label = await _icloud_trigger_hsa2_push(svc, mode)
+        if label is None:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "Apple wouldn't push a fresh code. Use Settings → "
+                "Apple ID → Sign-In & Security → Get Verification "
+                "Code on a signed-in iDevice instead.",
+            )
+        return ICloudResendResponse(code_sent_to=label)
+
+    # HSA-1 / 2SA — legacy /setup flow.
     try:
         raw_devices = list(svc.trusted_devices or [])
     except Exception as e:
