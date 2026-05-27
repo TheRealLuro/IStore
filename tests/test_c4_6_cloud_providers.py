@@ -158,10 +158,14 @@ async def test_pcloud_connect_returns_pcloud_auth_url(monkeypatch):
     assert "scope" not in qs
 
 
-@pytest.mark.parametrize("provider", ["icloud", "mega"])
+@pytest.mark.parametrize("provider", ["mega"])
 async def test_coming_soon_providers_raise_not_configured(provider, monkeypatch):
-    """The two truly-unimplementable placeholder providers (iCloud +
-    MEGA — see the catalog blurbs for why) can't be connected."""
+    """MEGA is the only provider left without a sync engine. iCloud
+    used to be in this list but now ships via pyicloud through a
+    different (non-OAuth) connect path — see the icloud-specific
+    tests in test_c4_6_icloud.py. MEGA's blurb in the catalog
+    explains why it stays absent (zero-knowledge / E2E posture
+    conflict)."""
     from backend.config import settings
     monkeypatch.setattr(
         settings, "cloud_encryption_key",
@@ -171,3 +175,19 @@ async def test_coming_soon_providers_raise_not_configured(provider, monkeypatch)
     import uuid
     with pytest.raises(CloudSyncNotConfigured):
         await connect_provider(uuid.uuid4(), provider)  # type: ignore[arg-type]
+
+
+async def test_icloud_in_catalog(db_client):
+    """iCloud Drive appears in /cloud/providers as `available` (because
+    pyicloud is importable in the test environment) with a blurb that
+    references the Apple-ID / 2FA auth shape so the user knows it's
+    different from the OAuth providers."""
+    _, headers = await register_and_login(db_client)
+    r = await db_client.get("/cloud/providers", headers=headers)
+    assert r.status_code == 200, r.text
+    providers = r.json()
+    icloud = next((p for p in providers if p["id"] == "icloud"), None)
+    assert icloud is not None
+    assert icloud["status"] == "available", icloud
+    blurb = (icloud.get("blurb") or "").lower()
+    assert "apple id" in blurb or "pyicloud" in blurb, blurb

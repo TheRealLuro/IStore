@@ -169,6 +169,13 @@ services:
       PCLOUD_OAUTH_CLIENT_ID: ${PCLOUD_OAUTH_CLIENT_ID:-}
       PCLOUD_OAUTH_CLIENT_SECRET: ${PCLOUD_OAUTH_CLIENT_SECRET:-}
       PCLOUD_OAUTH_REDIRECT_URI: ${PCLOUD_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/pcloud}
+      # §C4.6 — iCloud Drive. pyicloud persists per-link trust state
+      # (cookies + keyring) under this root; the named `pyicloud_cookies`
+      # volume below survives container restarts so the trust token
+      # Apple issues post-2FA stays valid for its ~30-day lifetime.
+      # Without persistence the user would be prompted for 2FA on
+      # every backend redeploy.
+      PYICLOUD_COOKIE_ROOT: /var/neuthek/pyicloud
       FRONTEND_BASE_URL: http://localhost:5173
       # SMTP wiring. Without these, backend.email_send.send_email
       # falls back to printing to container stderr (the [email-stub]
@@ -209,6 +216,11 @@ services:
       # `/app/policies` — without this mount the consent grant endpoints
       # 500 with "No such file or directory".
       - ./policies:/app/policies:ro
+      # §C4.6 — pyicloud trust state. Named volume so the cookies +
+      # keyring files survive `docker compose down/up` and the user's
+      # iCloud trust token (good for ~30 days) isn't invalidated by
+      # a redeploy.
+      - pyicloud_cookies:/var/neuthek/pyicloud
       # Reuse the host's HuggingFace cache when it exists — avoids the
       # ~25-minute first-run download of Florence-2 (2.9 GB) + Qwen
       # 2.5 (2.9 GB) + OpenCLIP. Falls back to the `model_cache` named
@@ -274,6 +286,10 @@ services:
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/google_drive}
+      # §C4.6 — iCloud Drive. Same cookie root as the API container —
+      # the hourly sweeper rebuilds pyicloud sessions from the trust
+      # state the API container wrote during the connect handshake.
+      PYICLOUD_COOKIE_ROOT: /var/neuthek/pyicloud
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
       WORKER_LOG_LEVEL: INFO
@@ -318,6 +334,9 @@ services:
       # Reuse the host HuggingFace cache so the worker doesn't
       # re-download Florence-2 + Qwen on first start.
       - ${HF_CACHE_DIR:-${USERPROFILE:-${HOME}}/.cache/huggingface}:/models
+      # §C4.6 — same pyicloud cookie volume the API container uses, so
+      # the worker's hourly sweep resumes the same trust state.
+      - pyicloud_cookies:/var/neuthek/pyicloud
     command: ["python", "-m", "backend.worker.main"]
 
   # Frontend dev server — Vite with HMR, source bind-mounted so file
@@ -387,3 +406,9 @@ volumes:
   # mounted (the host's potentially-different platform install — e.g.
   # Windows binaries — would conflict with Alpine's musl-linked ones).
   frontend_node_modules:
+  # §C4.6 — pyicloud trust state. Default named volume (Docker-managed
+  # location, NOT a host bind) so it survives `docker compose down/up`
+  # while staying private to the daemon. Mounted RW by both the
+  # backend (writes during connect handshake) and the ml-worker (reads
+  # during hourly sync sweep).
+  pyicloud_cookies:

@@ -137,6 +137,12 @@ cloud = [
     "google-auth-oauthlib>=1.2",
     "google-auth-httplib2>=0.2",
     "google-api-python-client>=2.140",
+    # §C4.6 — iCloud Drive sync via pyicloud. Pinned to 2.4.1 because
+    # >=2.5 pulls a pydantic version that conflicts with our pinned
+    # pydantic==2.9.2. pyicloud is the only non-OAuth provider — Apple
+    # doesn't expose an OAuth flow for iCloud Drive, so the connect
+    # path is Apple ID + password + 2FA code rather than a redirect.
+    "pyicloud==2.4.1",
 ]
 archives = [
     # §C1.5+ — optional 7z + RAR support for the archive uploader.

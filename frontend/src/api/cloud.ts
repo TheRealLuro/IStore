@@ -120,3 +120,37 @@ export async function getProviderFolderStats(
 ): Promise<ProviderFolderStats | null> {
   return api.get<ProviderFolderStats | null>(`/cloud/folder-stats/${provider}`);
 }
+
+// §C4.6 — iCloud Drive sign-in. Apple doesn't have OAuth, so the
+// flow is: user enters Apple ID + password into a neuthek form,
+// backend constructs a pyicloud session, returns `requires_2fa=true`
+// + a session_id, FE prompts for the 6-digit code, backend validates
+// + persists the link. No browser redirect involved — the whole
+// dance lives inside a modal.
+
+export interface ICloudStartResponse {
+  requires_2fa: boolean;
+  /** Set when requires_2fa is true. Pass it back to /icloud/verify
+   *  along with the user's 6-digit code. */
+  session_id?: string;
+  /** Set when requires_2fa is false (rare: trusted device or 2FA-
+   *  disabled account) — the link was persisted immediately. */
+  link_id?: number;
+  message?: string;
+}
+
+export async function icloudStart(
+  apple_id: string, password: string,
+): Promise<ICloudStartResponse> {
+  return api.post<ICloudStartResponse>(
+    "/cloud/icloud/start", { apple_id, password },
+  );
+}
+
+export async function icloudVerify(
+  session_id: string, code: string,
+): Promise<{ link_id: number }> {
+  return api.post<{ link_id: number }>(
+    "/cloud/icloud/verify", { session_id, code },
+  );
+}

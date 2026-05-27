@@ -120,7 +120,7 @@ def _verify_state(state: str) -> UUID:
 
 logger = logging.getLogger(__name__)
 
-CloudProvider = Literal["google_drive", "dropbox", "box", "pcloud"]
+CloudProvider = Literal["google_drive", "dropbox", "box", "pcloud", "icloud"]
 
 
 PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
@@ -165,6 +165,13 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
     # OAuth URL doesn't accept a `scope` field. Keep the list empty
     # so `connect_provider` knows not to attach `scope=` to the URL.
     "pcloud": [],
+    # §C4.6 — iCloud. Apple doesn't expose OAuth scopes (or OAuth at
+    # all for iCloud Drive). Empty list is a marker so the catalog's
+    # status helper + the membership check in connect_provider know
+    # this provider exists; the actual auth runs through a separate
+    # /cloud/icloud/start + /cloud/icloud/verify pair, not the OAuth
+    # connect/callback pair the other providers share.
+    "icloud": [],
 }
 
 
@@ -189,6 +196,18 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
 # env vars promotes a provider from "needs_setup" → "available"
 # without a code change.
 
+def _icloud_status() -> str:
+    """iCloud's "is it wired" check is binary: pyicloud importable
+    means we can drive the Apple ID + 2FA dance. No env-var
+    configuration to wait on (no OAuth client) and no needs_setup
+    state — it's either there or it isn't."""
+    try:
+        import pyicloud  # noqa: F401
+    except ImportError:
+        return "coming_soon"
+    return "available"
+
+
 def _provider_status(provider: str) -> str:
     if provider == "google_drive":
         if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
@@ -206,6 +225,8 @@ def _provider_status(provider: str) -> str:
         if not settings.pcloud_oauth_client_id or not settings.pcloud_oauth_client_secret:
             return "needs_setup"
         return "available"
+    if provider == "icloud":
+        return _icloud_status()
     return "coming_soon"
 
 
@@ -239,11 +260,12 @@ def list_providers() -> list[dict]:
             "id": "icloud",
             "name": "iCloud Drive",
             "kind": "app_password",
-            "status": "coming_soon",
+            "status": _provider_status("icloud"),
             "blurb": (
-                "Apple doesn't expose a 3rd-party API for iCloud Drive. "
-                "CloudKit Web Services is for app-developer use only. We "
-                "can't add this without Apple's cooperation."
+                "Direct iCloud Drive sync via pyicloud. Requires your "
+                "Apple ID, password, and a 2FA code from one of your "
+                "iDevices. Trust token expires every ~30 days; you'll "
+                "be prompted to re-authenticate when that happens."
             ),
             "docs": None,
         },
@@ -1126,6 +1148,229 @@ def _pad_pcloud_hash(raw) -> bytes | None:
     return (raw_bytes + b"\x00" * 24)[:32]
 
 
+# ---------- §C4.6 — iCloud Drive ------------------------------------------
+#
+# Apple doesn't expose OAuth for iCloud Drive — they don't have an
+# equivalent at all. pyicloud drives the same Apple-ID + password +
+# 2FA dance a Mac does at sign-in, then persists a trust token to a
+# cookie directory so subsequent sessions resume without re-prompting.
+#
+# Three shape differences from every other provider here:
+#
+#   1) `encrypted_refresh_token` holds an encrypted JSON blob of
+#      `{apple_id, password}`, not a single token string. pyicloud
+#      needs both to re-construct a session when the trust token
+#      eventually expires.
+#
+#   2) pyicloud is synchronous (requests-based, not httpx). Every
+#      call into it MUST run inside `asyncio.to_thread` or it will
+#      block the FastAPI event loop for the duration of the network
+#      round-trip.
+#
+#   3) State persistence lives on disk, not in our database. pyicloud
+#      writes `cookies.json` + `keyring.json` under `cookie_directory`;
+#      production deployments mount `settings.pyicloud_cookie_root` as
+#      a persistent volume so those files survive container restarts
+#      and the trust token isn't invalidated on every redeploy.
+
+import asyncio as _asyncio_icloud
+import json as _json_icloud
+import shutil as _shutil_icloud
+from pathlib import Path as _Path_icloud
+
+
+def _icloud_cookie_dir(link_id: int) -> _Path_icloud:
+    """Per-CloudLink trust-state directory. Created on first access
+    with 0o700 so the cookie + keyring files (which contain the
+    session tokens Apple issued post-2FA) are not world-readable on
+    multi-tenant hosts."""
+    base = _Path_icloud(settings.pyicloud_cookie_root) / str(link_id)
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.chmod(0o700)
+    except (OSError, NotImplementedError):
+        # Windows + some FUSE mounts don't support chmod; the perms
+        # there are governed by the filesystem ACL anyway, so this is
+        # best-effort.
+        pass
+    return base
+
+
+def _icloud_pack_credentials(apple_id: str, password: str) -> str:
+    """Bundle the credentials into a JSON blob + encrypt for storage
+    in `cloud_links.encrypted_refresh_token`. Apple's trust token
+    persists in the cookie_directory, but we keep the raw password
+    around in case the trust expires (every ~30 days) and we need to
+    rebuild a session from scratch — without it the only recovery
+    path would be to disconnect + reconnect from scratch."""
+    return encrypt_token(_json_icloud.dumps({
+        "apple_id": apple_id, "password": password,
+    })).decode("ascii")
+
+
+def _icloud_unpack_credentials(encrypted_blob: str) -> tuple[str, str]:
+    """Inverse of _icloud_pack_credentials. Returns (apple_id, password)."""
+    raw = decrypt_token(encrypted_blob.encode("ascii"))
+    payload = _json_icloud.loads(raw)
+    return payload["apple_id"], payload["password"]
+
+
+def _icloud_service_sync(link: "CloudLink") -> "PyiCloudService":
+    """Build a pyicloud session from a persisted CloudLink. Runs
+    synchronously — callers wrap in asyncio.to_thread.
+
+    If the cookie_directory still holds a valid trust token (Apple
+    grants ~30 days), pyicloud resumes the session without an HTTP
+    round-trip past the validation step. If the trust expired, this
+    re-issues the password authentication; the caller will see
+    `service.requires_2fa=True` and surface "your iCloud session
+    expired, please reconnect" to the user.
+    """
+    from pyicloud import PyiCloudService  # type: ignore
+    apple_id, password = _icloud_unpack_credentials(
+        link.encrypted_refresh_token,
+    )
+    cookie_dir = _icloud_cookie_dir(link.id)
+    return PyiCloudService(
+        apple_id=apple_id,
+        password=password,
+        cookie_directory=str(cookie_dir),
+    )
+
+
+async def _icloud_collect_entries(link: "CloudLink") -> list[dict]:
+    """BFS the user's iCloud Drive. Returns the same entry dict shape
+    every other provider emits.
+
+    pyicloud doesn't surface a stable file-ID for Drive nodes (the
+    underlying CloudKit `docwsid` isn't reliably exposed), so we use
+    the full remote path as `remote_id`. Renames on the iCloud side
+    look like a delete + add to our diff logic — fine for v1, the
+    follow-on sync just re-downloads.
+
+    Hash / etag is also unavailable through pyicloud's public API, so
+    `sha256=None`; the (size, modified_at) pair drives change
+    detection via the existing logic in `sync_user_provider`.
+    """
+    def _walk_sync() -> list[dict]:
+        service = _icloud_service_sync(link)
+        out: list[dict] = []
+        # BFS queue holds (node, accumulated_parent_path) pairs. The
+        # root maps to parent_path="" so files directly under root
+        # land at the gallery root.
+        queue: list[tuple[object, str]] = [(service.drive, "")]
+        # Defensive depth cap — if pyicloud ever returns a cyclic
+        # structure (it shouldn't, but iCloud's underlying CloudKit
+        # has hit this in the wild), 50 levels is well past any
+        # plausible real-world directory tree.
+        visited_count = 0
+        MAX_NODES = 100_000
+        while queue:
+            node, parent_path = queue.pop(0)
+            visited_count += 1
+            if visited_count > MAX_NODES:
+                logger.warning(
+                    "icloud: walk capped at %d nodes for link=%s",
+                    MAX_NODES, link.id,
+                )
+                break
+            try:
+                children = node.get_children() or []
+            except Exception:
+                logger.exception(
+                    "icloud: get_children failed at path=%r", parent_path,
+                )
+                continue
+            for child in children:
+                try:
+                    ctype = getattr(child, "type", None)
+                    cname = getattr(child, "name", None)
+                    if not cname:
+                        continue
+                    if ctype == "folder":
+                        child_path = (
+                            f"{parent_path}/{cname}" if parent_path else cname
+                        )
+                        queue.append((child, child_path))
+                        continue
+                    if ctype != "file":
+                        # pyicloud occasionally surfaces app-package
+                        # nodes ("app_library") — skip.
+                        continue
+                    size = int(getattr(child, "size", 0) or 0)
+                    modified = getattr(child, "date_modified", None)
+                    # Path-as-id: parent_path + name, no leading slash.
+                    full_path = (
+                        f"{parent_path}/{cname}" if parent_path else cname
+                    )
+                    out.append({
+                        "remote_id": full_path,
+                        "name": cname,
+                        "mime_type": None,
+                        "modified_at": modified,
+                        "remote_path": cname,
+                        "remote_parent_path": parent_path,
+                        # iCloud doesn't expose a usable content hash via
+                        # pyicloud — let the (size, modified_at) pair
+                        # drive change detection.
+                        "sha256": None,
+                        "size_bytes": size,
+                    })
+                except Exception:
+                    logger.exception(
+                        "icloud: error processing child under %r", parent_path,
+                    )
+                    continue
+        return out
+
+    return await _asyncio_icloud.to_thread(_walk_sync)
+
+
+async def _icloud_download(link: "CloudLink", entry: dict) -> bytes:
+    """Fetch the bytes of a single iCloud Drive file. `entry` is the
+    dict produced by `_icloud_collect_entries` — we use its `remote_id`
+    (the full path) to navigate from `service.drive` to the leaf."""
+    def _dl_sync() -> bytes:
+        service = _icloud_service_sync(link)
+        node = service.drive
+        # `remote_id` is the full path split by `/`. Navigate one
+        # component at a time. pyicloud's `node.get(name)` returns the
+        # matching child or raises KeyError.
+        path = entry.get("remote_id") or ""
+        parts = [p for p in path.split("/") if p]
+        for part in parts:
+            node = node.get(part)
+        # `node.open()` returns a streaming Response-like object;
+        # `.raw.read()` slurps the whole body. For very large files
+        # the existing pipeline already buffers in memory (see the
+        # CR-4 quota gate), so we don't optimize this further here.
+        resp = node.open()
+        try:
+            data = resp.raw.read()
+            if not isinstance(data, (bytes, bytearray)):
+                # pyicloud returns a urllib3 raw response; coerce
+                # defensively.
+                data = bytes(data)
+            return bytes(data)
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+    return await _asyncio_icloud.to_thread(_dl_sync)
+
+
+async def _icloud_folder_stats(link: "CloudLink") -> dict:
+    """File count + total bytes for the storage-panel linked-services
+    row. Same shape as the other `_*_folder_stats` helpers."""
+    entries = await _icloud_collect_entries(link)
+    return {
+        "file_count": len(entries),
+        "total_bytes": sum(int(e.get("size_bytes") or 0) for e in entries),
+    }
+
+
 # ---------- Google Drive --------------------------------------------------
 
 
@@ -1505,7 +1750,7 @@ async def sync_user_provider(
     Returns a summary dict: `{seen, pulled, skipped_unchanged,
     conflicts, provider}`.
     """
-    if provider not in ("google_drive", "dropbox", "box", "pcloud"):
+    if provider not in ("google_drive", "dropbox", "box", "pcloud", "icloud"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -1522,7 +1767,16 @@ async def sync_user_provider(
             f"No active {provider} connection. Connect one in Settings."
         )
 
-    refresh_token = decrypt_token(link.encrypted_refresh_token.encode("ascii"))
+    # iCloud doesn't carry a refresh token; the "credential" persisted
+    # in `encrypted_refresh_token` is an encrypted JSON blob of the
+    # Apple ID + password (so the saved pyicloud session can be
+    # resumed against the cookie directory). The download/listing
+    # helpers re-construct a PyiCloudService from `link` directly so we
+    # only need the decrypted bytes for the OAuth-shaped providers.
+    refresh_token = (
+        decrypt_token(link.encrypted_refresh_token.encode("ascii"))
+        if provider != "icloud" else ""
+    )
 
     user = (
         await session.execute(select(User).where(User.id == user_id))
@@ -1538,6 +1792,8 @@ async def sync_user_provider(
         entries = await _box_collect_entries(refresh_token)
     elif provider == "pcloud":
         entries = await _pcloud_collect_entries(refresh_token)
+    elif provider == "icloud":
+        entries = await _icloud_collect_entries(link)
     else:  # already gated above; defensive.
         entries = []
 
@@ -1714,7 +1970,10 @@ async def sync_user_provider(
             continue
 
         try:
-            blob = await _provider_download(provider, refresh_token, entry)
+            if provider == "icloud":
+                blob = await _icloud_download(link, entry)
+            else:
+                blob = await _provider_download(provider, refresh_token, entry)
         except Exception:
             logger.exception(
                 "%s download failed for %s", provider, entry["remote_id"]
@@ -1908,6 +2167,7 @@ def _provider_display_name(provider: CloudProvider) -> str:
         "dropbox": "Dropbox",
         "box": "Box",
         "pcloud": "pCloud",
+        "icloud": "iCloud Drive",
     }.get(provider, provider.title())
 
 
@@ -2285,15 +2545,29 @@ async def _drive_folder_stats(refresh_token: str) -> dict:
 
 
 async def provider_folder_stats(
-    provider: str, refresh_token_enc: bytes,
+    provider: str, refresh_token_enc: bytes, link: "CloudLink | None" = None,
 ) -> dict | None:
     """Dispatch to the per-provider stats walker. Returns None on any
     failure (revoked token / network down / Google API hiccup) so the
     storage panel can degrade gracefully — the rest of the page
     renders fine, the linked-services row just hides the "X total
     in Drive" line. Decryption errors are caught here so a misconfigured
-    Fernet key doesn't kill the whole `/storage/usage` call."""
+    Fernet key doesn't kill the whole `/storage/usage` call.
+
+    iCloud takes the optional `link` kwarg because its stats walker
+    needs the CloudLink row (for the cookie_directory path) rather
+    than a decrypted token string. Other providers ignore it.
+    """
     from backend.secret_box import decrypt
+
+    if provider == "icloud":
+        if link is None:
+            return None
+        try:
+            return await _icloud_folder_stats(link)
+        except Exception:
+            logger.exception("provider_folder_stats: icloud walk failed")
+            return None
 
     try:
         refresh_token = decrypt(refresh_token_enc)

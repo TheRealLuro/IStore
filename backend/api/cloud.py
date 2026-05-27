@@ -15,12 +15,16 @@ can toast.
 from __future__ import annotations
 
 import logging
+import secrets as _ic_secrets
+import shutil as _ic_shutil
+from datetime import datetime, timedelta, timezone
+from pathlib import Path as _ic_Path
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -140,7 +144,9 @@ async def folder_stats(
         return None
     from backend.cloud_sync import provider_folder_stats
     stats = await provider_folder_stats(
-        provider, link.encrypted_refresh_token.encode("utf-8") if isinstance(link.encrypted_refresh_token, str) else link.encrypted_refresh_token,
+        provider,
+        link.encrypted_refresh_token.encode("utf-8") if isinstance(link.encrypted_refresh_token, str) else link.encrypted_refresh_token,
+        link=link,
     )
     if stats is None:
         return None
@@ -350,7 +356,6 @@ class SyncResponse(BaseModel):
 # error}. In-memory because a single backend process drives all
 # syncs today; scale-out would move this to Redis.
 import asyncio
-from datetime import datetime, timezone
 
 _SYNC_PROGRESS: dict[tuple, dict] = {}
 
@@ -771,3 +776,277 @@ async def list_conflicts(
                 "at": r.created_at.isoformat() if r.created_at else None,
             })
     return {"provider": link.provider, "conflicts": items}
+
+
+# ---------- §C4.6 — iCloud Drive sign-in dance -----------------------------
+#
+# iCloud is the only provider in the catalog that doesn't use OAuth —
+# Apple doesn't expose a third-party OAuth flow for iCloud Drive at
+# all. The user enters their Apple ID + password directly into a
+# neuthek form; we construct a pyicloud session; if 2FA is required
+# (it almost always is in 2024+) we stash the in-progress session in
+# memory, return a session_id, prompt the user for the 6-digit code
+# from their iDevice, then validate the code and persist the link.
+#
+# In-memory stash is fine: the only state we need to remember between
+# the two requests is a live PyiCloudService object (not serializable
+# to Redis cleanly) and it only needs to live ~minutes (the typical
+# time between "show me a code" and "here's the code"). Scale-out
+# would either pin the connect flow to a single backend instance via
+# a sticky session OR rebuild the session from scratch on /verify
+# (which forces a second password challenge and is ugly UX).
+#
+# Entry shape:
+#   {service, user_id, apple_id, password, tmp_dir, created_at}
+
+_ICLOUD_PENDING: dict[str, dict] = {}
+_ICLOUD_PENDING_TTL = timedelta(minutes=5)
+
+
+def _icloud_sweep_pending() -> None:
+    """Best-effort GC for abandoned sign-in attempts. Runs at the top
+    of every /icloud/start request so stale entries don't accumulate
+    in long-running processes. 5 min TTL is generous: the typical
+    2FA prompt → code path is well under 30 seconds, so anything
+    older than 5 min is either a user who closed the tab or a
+    network-partition victim."""
+    now = datetime.now(timezone.utc)
+    stale = [
+        k for k, v in _ICLOUD_PENDING.items()
+        if now - v["created_at"] > _ICLOUD_PENDING_TTL
+    ]
+    for k in stale:
+        entry = _ICLOUD_PENDING.pop(k, None)
+        if entry:
+            tmp_dir = entry.get("tmp_dir")
+            if tmp_dir:
+                _ic_shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+class ICloudStartRequest(BaseModel):
+    apple_id: EmailStr
+    password: str
+
+
+class ICloudStartResponse(BaseModel):
+    requires_2fa: bool = False
+    session_id: str | None = None
+    link_id: int | None = None
+    message: str | None = None
+
+
+@router.post("/icloud/start", response_model=ICloudStartResponse)
+async def icloud_start(
+    payload: ICloudStartRequest,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ICloudStartResponse:
+    """Step 1 of the iCloud connect handshake. Constructs a pyicloud
+    session against Apple's auth endpoints. If the response says
+    2FA-required (almost always — Apple enforces it on most accounts),
+    we stash the live session object in `_ICLOUD_PENDING` keyed by a
+    server-generated session_id and return it to the FE so the user
+    can submit the 2FA code on a second request. If 2FA is NOT
+    required (already-trusted device, or rare accounts without 2FA),
+    we promote the temp cookie directory immediately + persist the
+    link in one shot."""
+    _icloud_sweep_pending()
+
+    session_id = _ic_secrets.token_urlsafe(24)
+    # Temp cookie dir for the 2FA dance. We use the session_id as the
+    # directory name (NOT the user's id) so two parallel sign-in
+    # attempts by the same user — e.g. a user who opened a second
+    # tab — don't trample each other. On verify success we move this
+    # dir to the permanent /<link_id>/ location; on failure / TTL
+    # expiry we delete it.
+    tmp_dir = _ic_Path(settings.pyicloud_cookie_root) / "_tmp" / session_id
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from pyicloud import PyiCloudService  # type: ignore
+        from pyicloud.exceptions import PyiCloudFailedLoginException  # type: ignore
+    except ImportError:
+        _ic_shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "pyicloud is not installed on this deployment.",
+        )
+
+    try:
+        svc = await asyncio.to_thread(
+            PyiCloudService,
+            payload.apple_id,
+            payload.password,
+            str(tmp_dir),  # cookie_directory positional
+        )
+    except PyiCloudFailedLoginException as exc:
+        _ic_shutil.rmtree(tmp_dir, ignore_errors=True)
+        # Apple's error messages are user-readable ("Incorrect Apple
+        # ID or password"); pass them through verbatim so the user
+        # gets actionable feedback. Keep the prefix so the FE can
+        # distinguish "Apple said no" from "our backend exploded".
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Apple sign-in failed: {exc}",
+        )
+    except Exception:
+        _ic_shutil.rmtree(tmp_dir, ignore_errors=True)
+        logger.exception("icloud_start: unexpected failure")
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Could not reach iCloud. Try again in a moment.",
+        )
+
+    if getattr(svc, "requires_2fa", False) or getattr(svc, "requires_2sa", False):
+        _ICLOUD_PENDING[session_id] = {
+            "service": svc,
+            "user_id": user.id,
+            "apple_id": payload.apple_id,
+            "password": payload.password,
+            "tmp_dir": tmp_dir,
+            "created_at": datetime.now(timezone.utc),
+        }
+        return ICloudStartResponse(
+            requires_2fa=True, session_id=session_id,
+        )
+
+    # No 2FA needed (trusted device or 2FA-disabled account). Persist
+    # the CloudLink directly so the FE can start syncing without
+    # bouncing through /verify.
+    link_id = await _icloud_persist_link(
+        session, user.id, payload.apple_id, payload.password, tmp_dir,
+    )
+    return ICloudStartResponse(
+        requires_2fa=False,
+        link_id=link_id,
+        message="Trusted device — no 2FA needed.",
+    )
+
+
+class ICloudVerifyRequest(BaseModel):
+    session_id: str
+    code: str
+
+
+class ICloudVerifyResponse(BaseModel):
+    link_id: int
+
+
+@router.post("/icloud/verify", response_model=ICloudVerifyResponse)
+async def icloud_verify(
+    payload: ICloudVerifyRequest,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ICloudVerifyResponse:
+    """Step 2 of the iCloud connect handshake. Validates the user's
+    6-digit code against the stashed pyicloud session, trusts the
+    session so future syncs don't re-prompt, then persists the link.
+    """
+    _icloud_sweep_pending()
+    pending = _ICLOUD_PENDING.get(payload.session_id)
+    if pending is None or pending["user_id"] != user.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Sign-in session not found or expired. Start over.",
+        )
+    svc = pending["service"]
+    # Apple's codes are 6 digits; the user may paste with spaces /
+    # dashes (some authenticator UIs render "123-456"). Strip both
+    # before sending.
+    code = payload.code.strip().replace(" ", "").replace("-", "")
+    try:
+        ok = await asyncio.to_thread(svc.validate_2fa_code, code)
+    except Exception:
+        logger.exception("icloud_verify: validate_2fa_code raised")
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Could not verify the code. Try again in a moment.",
+        )
+    if not ok:
+        # Don't drop the pending entry — the user might have typoed
+        # and want to retry. The 5-min TTL still applies.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That code didn't match. Check your iDevice and try again.",
+        )
+    # Trust this session so the cookie_directory carries the long-
+    # lived trust token. Without this, every sync would re-prompt.
+    try:
+        await asyncio.to_thread(svc.trust_session)
+    except Exception:
+        # Trust failure isn't fatal — the user is already authed; the
+        # next sync will just have to re-prompt for 2FA. Log so an
+        # operator can investigate.
+        logger.exception(
+            "icloud_verify: trust_session failed; sync will re-prompt 2FA",
+        )
+    link_id = await _icloud_persist_link(
+        session, user.id,
+        pending["apple_id"], pending["password"], pending["tmp_dir"],
+    )
+    _ICLOUD_PENDING.pop(payload.session_id, None)
+    return ICloudVerifyResponse(link_id=link_id)
+
+
+async def _icloud_persist_link(
+    session: AsyncSession,
+    user_id: UUID,
+    apple_id: str,
+    password: str,
+    tmp_dir: _ic_Path,
+) -> int:
+    """Encrypt the credentials, write the CloudLink row, and move the
+    pyicloud cookie directory from the temp location to its permanent
+    `<pyicloud_cookie_root>/<link_id>/` home so subsequent syncs
+    resume the trust state."""
+    from backend.cloud_sync import _icloud_pack_credentials
+
+    encrypted_blob = _icloud_pack_credentials(apple_id, password)
+
+    # Upsert: a user re-connecting iCloud after disconnecting (or
+    # after a trust-token expiry that forced a re-auth) reuses their
+    # existing link row.
+    existing = (
+        await session.execute(
+            select(CloudLink).where(
+                CloudLink.user_id == user_id,
+                CloudLink.provider == "icloud",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        link = CloudLink(
+            user_id=user_id,
+            provider="icloud",
+            encrypted_refresh_token=encrypted_blob,
+            scopes="",
+            status="active",
+        )
+        session.add(link)
+    else:
+        existing.encrypted_refresh_token = encrypted_blob
+        existing.scopes = ""
+        existing.status = "active"
+        link = existing
+    await session.commit()
+    await session.refresh(link)
+
+    perm = _ic_Path(settings.pyicloud_cookie_root) / str(link.id)
+    perm.parent.mkdir(parents=True, exist_ok=True)
+    if perm.exists():
+        # If a previous link with the same id ever existed (only
+        # possible on a re-connect that hit the same row), the old
+        # cookies are no longer valid for the freshly-authenticated
+        # session — drop them so move() succeeds.
+        _ic_shutil.rmtree(perm, ignore_errors=True)
+    try:
+        _ic_shutil.move(str(tmp_dir), str(perm))
+    except Exception:
+        # On Windows, shutil.move across drives can fail under
+        # specific permissions; copytree + rmtree is the fallback.
+        logger.exception(
+            "icloud: shutil.move failed for link=%s; using copy fallback",
+            link.id,
+        )
+        _ic_shutil.copytree(str(tmp_dir), str(perm), dirs_exist_ok=True)
+        _ic_shutil.rmtree(tmp_dir, ignore_errors=True)
+    return link.id

@@ -14,6 +14,7 @@ import React, { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
+import { Modal, ModalClose } from "./primitives.jsx";
 import {
   connectCloud,
   disconnectCloud,
@@ -23,12 +24,14 @@ import {
   setCloudAiOptIn,
   syncCloudLink,
   getSyncStatus,
+  icloudStart,
+  icloudVerify,
 } from "@/api/cloud";
 
 const PROVIDER_META = {
   google_drive: { label: "Google Drive", note: "Read-only · drive.readonly scope" },
   dropbox:      { label: "Dropbox",      note: "Read-only · files.content.read scope" },
-  icloud:       { label: "iCloud Drive", note: "Coming soon" },
+  icloud:       { label: "iCloud Drive", note: "Read-only · Apple ID + 2FA" },
   mega:         { label: "MEGA",         note: "Coming soon" },
   box:          { label: "Box",          note: "Coming soon" },
   pcloud:       { label: "pCloud",       note: "Coming soon" },
@@ -58,6 +61,9 @@ export function CloudSyncPanel() {
   const qc = useQueryClient();
   const [busy, setBusy] = useState(null); // link id currently syncing
   const [conflictsByLink, setConflictsByLink] = useState({});
+  // §C4.6 — iCloud Drive uses a different (non-OAuth) connect dance
+  // so it opens a modal instead of redirecting. `null` = closed.
+  const [icloudOpen, setIcloudOpen] = useState(false);
   const { data: links = EMPTY_LINKS, isLoading, error } = useQuery({
     queryKey: ["cloud-links"],
     queryFn: listCloudLinks,
@@ -98,6 +104,12 @@ export function CloudSyncPanel() {
   }, [conflictLinkIds]);
 
   const onConnect = async (provider) => {
+    // §C4.6 — iCloud is the one non-OAuth provider; route it to the
+    // modal flow instead of the redirect path.
+    if (provider === "icloud") {
+      setIcloudOpen(true);
+      return;
+    }
     try {
       const r = await connectCloud(provider);
       // Hard redirect to the provider's OAuth page; on success we
@@ -394,7 +406,219 @@ export function CloudSyncPanel() {
         <div style={{ fontSize: 13, fontWeight: 600 }}>Connect a source</div>
         <ProviderCatalog connected={connected} onConnect={onConnect}/>
       </div>
+
+      {/* §C4.6 — iCloud Drive connect modal. Lives here (not as a
+          sibling to the panel) so it shares the QueryClient
+          invalidation closure for the cloud-links list. */}
+      <ICloudConnectModal
+        open={icloudOpen}
+        onClose={() => setIcloudOpen(false)}
+        onConnected={() => {
+          setIcloudOpen(false);
+          qc.invalidateQueries({ queryKey: ["cloud-links"] });
+        }}
+      />
     </div>
+  );
+}
+
+
+// §C4.6 — iCloud Drive sign-in modal. Three steps:
+//   credentials → Apple ID + password
+//   code        → 6-digit 2FA code from the user's iDevice
+//   done        → brief success state before auto-close
+//
+// Errors at each step surface as toasts; on transient failures the
+// user can retry without losing context (the step stays the same).
+// Apple's session state lives on the backend keyed by `sessionId`
+// for ~5 minutes; if the user dawdles past that, the next /verify
+// returns a "session expired" 400 and we bounce back to step 1.
+function ICloudConnectModal({ open, onClose, onConnected }) {
+  const [step, setStep] = useState("credentials");
+  const [appleId, setAppleId] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [sessionId, setSessionId] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  // Reset whenever the modal re-opens so a previous failed attempt
+  // doesn't leak its state into the next try.
+  useEffect(() => {
+    if (open) {
+      setStep("credentials");
+      setAppleId("");
+      setPassword("");
+      setCode("");
+      setSessionId(null);
+      setBusy(false);
+    }
+  }, [open]);
+
+  const onSubmitCredentials = async (e) => {
+    e?.preventDefault?.();
+    if (busy) return;
+    if (!appleId || !password) {
+      toast.error("Enter your Apple ID and password.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await icloudStart(appleId, password);
+      if (r.requires_2fa) {
+        setSessionId(r.session_id || null);
+        setStep("code");
+      } else {
+        // Trusted device — link was persisted immediately.
+        setStep("done");
+        toast.success(r.message || "iCloud connected.");
+        setTimeout(() => {
+          onConnected && onConnected();
+        }, 800);
+      }
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Could not sign in to iCloud.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSubmitCode = async (e) => {
+    e?.preventDefault?.();
+    if (busy) return;
+    const clean = (code || "").trim();
+    if (!clean) {
+      toast.error("Enter the 6-digit code from your iDevice.");
+      return;
+    }
+    if (!sessionId) {
+      toast.error("Session expired. Sign in again.");
+      setStep("credentials");
+      return;
+    }
+    setBusy(true);
+    try {
+      await icloudVerify(sessionId, clean);
+      setStep("done");
+      toast.success("iCloud connected — sync starting…");
+      setTimeout(() => {
+        onConnected && onConnected();
+      }, 800);
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Code didn't match. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={busy ? undefined : onClose} size="md" labelledBy="icloud-modal-title">
+      <ModalClose onClose={busy ? undefined : onClose}/>
+      <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+        <h2 id="icloud-modal-title" style={{ margin: 0, fontSize: 18 }}>
+          Connect iCloud Drive
+        </h2>
+
+        {step === "credentials" && (
+          <form onSubmit={onSubmitCredentials} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 12.5, color: "var(--ink-3)", lineHeight: 1.5 }}>
+              Apple doesn't offer OAuth for iCloud Drive, so we connect
+              directly with your Apple ID. Your credentials are
+              encrypted at rest; the trust token from your iDevice is
+              what keeps the session alive (~30 days) without
+              re-prompting.
+            </div>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Apple ID
+              <input
+                type="email"
+                autoComplete="username"
+                className="input input--lg"
+                value={appleId}
+                onChange={(e) => setAppleId(e.target.value)}
+                placeholder="you@icloud.com"
+                disabled={busy}
+                autoFocus
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Password
+              <input
+                type="password"
+                autoComplete="current-password"
+                className="input input--lg"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Apple ID password"
+                disabled={busy}
+                style={{ width: "100%", marginTop: 4 }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn--primary" disabled={busy}>
+                {busy ? "Signing in…" : "Continue"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {step === "code" && (
+          <form onSubmit={onSubmitCode} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 13, color: "var(--ink-2)" }}>
+              Check your iDevice for a 6-digit code, then enter it
+              below.
+            </div>
+            <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
+              Verification code
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                className="input input--lg"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="123456"
+                disabled={busy}
+                autoFocus
+                maxLength={10}
+                style={{ width: "100%", marginTop: 4, letterSpacing: 4, fontFamily: "monospace" }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => {
+                  setStep("credentials");
+                  setCode("");
+                  setSessionId(null);
+                }}
+                disabled={busy}
+              >
+                Use a different account
+              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn--primary" disabled={busy}>
+                  {busy ? "Verifying…" : "Verify"}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+
+        {step === "done" && (
+          <div style={{ fontSize: 13, color: "var(--ink-2)", padding: "6px 0" }}>
+            iCloud connected — sync will start shortly.
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
