@@ -879,6 +879,105 @@ async def _icloud_trigger_hsa2_push(svc, mode: str | None) -> str | None:
         return None
 
 
+def _icloud_validate_hsa2(svc, code: str) -> tuple[bool, str | None]:
+    """HSA-2 code verification with full response capture.
+
+    pyicloud's `validate_2fa_code` swallows the PyiCloudAPIResponse
+    Exception and returns False — masking Apple's actual rejection
+    reason. We re-implement the same POST but capture status + body
+    so the FE can show "code expired" vs. "code reused" vs. a session
+    issue, and the backend logs have enough to debug.
+
+    Returns (ok, apple_detail). When ok is False, apple_detail is a
+    short human string ("code is incorrect", "code expired", etc.)
+    or None if Apple gave nothing.
+    """
+    from pyicloud.exceptions import (  # type: ignore
+        PyiCloudAPIResponseException,
+    )
+
+    auth_endpoint = getattr(svc, "_auth_endpoint", None)
+    if not auth_endpoint:
+        return False, "internal: no auth endpoint"
+
+    # Mirror pyicloud's validate_2fa_code SMS branch when the auth
+    # session is in SMS mode — the user's code came over SMS, the
+    # validator endpoint differs.
+    auth_data = getattr(svc, "_auth_data", None) or {}
+    mode = (auth_data.get("mode") or "").lower()
+
+    try:
+        headers = svc._get_auth_headers(  # noqa: SLF001
+            {"Accept": "application/json"}
+        )
+    except Exception:
+        headers = {"Accept": "application/json"}
+
+    if mode == "sms":
+        phone = auth_data.get("trustedPhoneNumber") or {}
+        url = f"{auth_endpoint}/verify/phone/securitycode"
+        body = {
+            "phoneNumber": {
+                "id": phone.get("id"),
+                "nonFTEU": phone.get("nonFTEU"),
+            },
+            "securityCode": {"code": code},
+            "mode": phone.get("pushMode") or "sms",
+        }
+    else:
+        url = f"{auth_endpoint}/verify/trusteddevice/securitycode"
+        body = {"securityCode": {"code": code}}
+
+    try:
+        resp = svc.session.post(url, json=body, headers=headers)
+    except PyiCloudAPIResponseException as e:
+        body_text = getattr(e, "reason", None) or str(e)
+        logger.warning(
+            "icloud_validate_hsa2: APIResponseException code=%r reason=%r",
+            getattr(e, "code", None), body_text,
+        )
+        return False, str(body_text)[:200]
+    except Exception as e:
+        logger.exception("icloud_validate_hsa2: request raised")
+        return False, str(e)[:200]
+
+    status_code = getattr(resp, "status_code", 0)
+    text = ""
+    try:
+        text = (resp.text or "")[:500]
+    except Exception:
+        pass
+    logger.warning(
+        "icloud_validate_hsa2: url=%s status=%s body=%s",
+        url, status_code, text,
+    )
+
+    if 200 <= status_code < 300:
+        try:
+            svc.trust_session()
+        except Exception:
+            logger.exception("icloud_validate_hsa2: trust_session failed")
+        return True, None
+
+    # Try to parse Apple's error envelope. It's typically:
+    #   {"service_errors": [{"code": "-21669", "message": "..."}], ...}
+    detail: str | None = None
+    try:
+        j = resp.json()
+        errs = j.get("service_errors") or j.get("serviceErrors") or []
+        if errs:
+            msgs = [
+                str(e.get("message") or e.get("code") or "")
+                for e in errs if isinstance(e, dict)
+            ]
+            detail = "; ".join(m for m in msgs if m) or None
+    except Exception:
+        pass
+    if not detail and text:
+        detail = text[:150]
+    return False, detail
+
+
 def _icloud_sweep_pending() -> None:
     """Best-effort GC for abandoned sign-in attempts. Runs at the top
     of every /icloud/start request so stale entries don't accumulate
@@ -1283,17 +1382,23 @@ async def icloud_verify(
     is_2sa = bool(pending.get("is_2sa"))
     dev = pending.get("code_sent_device")
     ok = False
+    apple_detail: str | None = None
     try:
         if is_2sa and dev is not None:
             ok = await asyncio.to_thread(
                 svc.validate_verification_code, dev, code,
             )
         else:
-            ok = await asyncio.to_thread(svc.validate_2fa_code, code)
+            # HSA-2: bypass pyicloud's validate_2fa_code so we can
+            # capture Apple's actual response body when validation
+            # fails. pyicloud just returns False on PyiCloudAPI
+            # ResponseException, which hides the real reason (and
+            # has been masking why fresh codes get rejected).
+            ok, apple_detail = await asyncio.to_thread(
+                _icloud_validate_hsa2, svc, code,
+            )
     except Exception as e:
         logger.exception("icloud_verify: validation raised")
-        # Surface the actual Apple error to the user — it's almost
-        # always either "code expired" or "code already used".
         msg = str(e)[:200]
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -1302,17 +1407,23 @@ async def icloud_verify(
             f"and try again.",
         )
     if not ok:
-        # pyicloud returned False rather than raising — usually
-        # means the code was wrong / expired but Apple didn't bother
-        # to give a specific reason. Codes expire fast (~30 s once
-        # displayed); the most common cause is "typed too slowly".
+        logger.warning(
+            "icloud_verify: code rejected (is_2sa=%s, code_len=%d, "
+            "apple_detail=%r)",
+            is_2sa, len(code), apple_detail,
+        )
+        detail = (
+            f"Apple rejected the code: {apple_detail}. "
+            if apple_detail else
+            "That code didn't match. Apple may have rejected it "
+            "(expired or already used). "
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "That code didn't match. Apple may have rejected it "
-            "(expired or already used). Get a fresh code from "
-            "Settings → Apple ID → Sign-In & Security → Get "
-            "Verification Code on a signed-in iDevice, then try "
-            "again.",
+            detail
+            + "Get a fresh code from Settings → Apple ID → Sign-In "
+              "& Security → Get Verification Code on a signed-in "
+              "iDevice, then try again.",
         )
     # Trust this session so the cookie_directory carries the long-
     # lived trust token. Without this, every sync would re-prompt.
