@@ -4,9 +4,30 @@
    practice for ADA Title III compliance in the US. We publish the
    statement, the conformance target, and a feedback channel. */
 
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
+
 const LAST_UPDATED = "May 27, 2026";
 
 export default function Accessibility() {
+  usePageSeo({
+    title: "Accessibility statement — neuthek",
+    description:
+      "neuthek targets WCAG 2.1 Level AA across the marketing site and the hosted application. Conformance target, what's in place today, known gaps, and how to report a barrier.",
+    path: "/accessibility",
+    jsonLd: [
+      webPage({
+        name: "Accessibility statement",
+        description:
+          "Accessibility statement for neuthek. WCAG 2.1 Level AA target, EAA 2025 + UK PSBAR + Section 508 alignment, current implementation, known gaps, and the feedback channel.",
+        path: "/accessibility",
+        about: "Web accessibility (WCAG 2.1 AA)",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Accessibility", path: "/accessibility" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -20,6 +41,24 @@ export default function Accessibility() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED}.
+          </p>
+        </div>
+      </section>
+
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development. The product is designed so that
+            keyboard-only users, screen-reader users, and users with
+            motor or cognitive impairments can do everything sighted
+            mouse users can — semantic search, gallery navigation,
+            upload, cloud-sync setup, account management, and the
+            (opt-in) face-recognition consent flow. The marketing
+            site you're reading now follows the same standard.
+            Self-host (open source, free) and managed hosted are
+            both planned.
           </p>
         </div>
       </section>

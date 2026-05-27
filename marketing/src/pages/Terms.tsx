@@ -8,11 +8,31 @@
    out), beta disclaimer, sanctions, force majeure, severability. */
 
 import { Link } from "react-router-dom";
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 const LAST_UPDATED = "May 27, 2026";
 const TERMS_VERSION = "2026.05.27";
 
 export default function Terms() {
+  usePageSeo({
+    title: "Terms of Service — neuthek",
+    description:
+      "Terms of Service for the neuthek marketing site, waitlist, and (when it opens) hosted application. Narrow purpose-limited content license (NO training on your content), DMCA + DSA notice-and-action, EU/UK consumer carve-outs, OFAC sanctions, beta disclaimer.",
+    path: "/terms",
+    jsonLd: [
+      webPage({
+        name: "Terms of Service",
+        description:
+          "neuthek's Terms of Service. Account responsibilities, narrow purpose-limited content license (does NOT permit training), acceptable use, DMCA + DSA copyright procedures, disclaimer of warranties, limited liability with EU/UK consumer carve-outs, US arbitration with 30-day opt-out (EU/UK opted out), sanctions compliance.",
+        path: "/terms",
+        about: "Terms of Service",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Terms", path: "/terms" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -27,6 +47,29 @@ export default function Terms() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED} · Terms version {TERMS_VERSION}
+          </p>
+        </div>
+      </section>
+
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development. Users store photos, videos, and
+            documents in their own tenant and search them by natural
+            language; AI features (semantic search, captions, video
+            summaries, opt-in face recognition) run on infrastructure
+            we operate with frozen pre-trained model weights — your
+            content never leaves to a third-party inference API and
+            is never used to train any model, ours or anyone else's.
+            Five cloud-sync providers are wired for one-way ingest
+            (Google Drive, Dropbox, iCloud, Proton Drive, MEGA). Two
+            delivery modes planned: open-source self-host (free) and
+            managed hosted (waitlist, pricing announced with launch).
+            Encryption is in transit + at rest today; end-to-end
+            encryption is on the roadmap. These Terms set out the
+            rules that apply when you use any of it.
           </p>
         </div>
       </section>

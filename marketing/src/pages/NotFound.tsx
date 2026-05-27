@@ -1,6 +1,13 @@
 import { Link } from "react-router-dom";
+import { usePageSeo } from "../seo";
 
 export default function NotFound() {
+  usePageSeo({
+    title: "Page not found — neuthek",
+    description: "The page you tried to reach doesn't exist on neuthek.",
+    path: "/404",
+    noindex: true,
+  });
   return (
     <section className="section section--loose">
       <div className="container fade-in" style={{ textAlign: "center" }}>

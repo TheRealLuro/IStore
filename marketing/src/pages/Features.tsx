@@ -18,6 +18,7 @@
 // is the source of truth.
 
 import { Link } from "react-router-dom";
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 interface Tile {
   title: string;
@@ -256,6 +257,25 @@ const CATEGORIES: CategorySection[] = [
 ];
 
 export default function Features() {
+  usePageSeo({
+    title: "Features — what neuthek actually does — neuthek",
+    description:
+      "~70 capabilities across 9 categories: semantic search (OpenCLIP + pgvector), Florence-2 captions, content-aware compression, camera RAW, five-provider cloud sync (Google Drive / Dropbox / iCloud / Proton / MEGA), BIPA-compliant face recognition, passwordless sign-in + TOTP 2FA, signed share links.",
+    path: "/features",
+    jsonLd: [
+      webPage({
+        name: "Features — what neuthek does",
+        description:
+          "Complete feature inventory of neuthek: search, preview, organize, AI, formats, cloud sync (Google Drive, Dropbox, iCloud, Proton Drive, MEGA), sharing, account + security, control. Each capability is shipped today in the development build with tests.",
+        path: "/features",
+        about: "AI-aware personal cloud storage features",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Features", path: "/features" },
+      ]),
+    ],
+  });
   return (
     <>
       {/* ===== Hero head ===== */}

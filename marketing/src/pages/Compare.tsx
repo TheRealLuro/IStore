@@ -17,6 +17,7 @@
  * nominatively to describe each product. */
 
 import { Link } from "react-router-dom";
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 type Cell = { label: string; tone?: "good" | "bad" | "mid" };
 type Row = { feature: string; cells: Cell[] };
@@ -221,6 +222,25 @@ const GROUPS: Group[] = [
 ];
 
 export default function Compare() {
+  usePageSeo({
+    title: "Compare neuthek vs Google Photos, iCloud, Dropbox, Proton, MEGA",
+    description:
+      "Side-by-side comparison of neuthek against Google Photos, Apple iCloud Photos, Dropbox, Proton Drive, and MEGA. Search quality, ownership, privacy, encryption (E2E roadmap), hardware, pricing — your experience first.",
+    path: "/compare",
+    jsonLd: [
+      webPage({
+        name: "Compare — neuthek vs other cloud storage",
+        description:
+          "Side-by-side feature comparison of neuthek against the major personal-cloud incumbents. Honest scoping of what's shipped, planned, and not on the roadmap.",
+        path: "/compare",
+        about: "Comparison of personal cloud storage providers",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Compare", path: "/compare" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">

@@ -1,7 +1,23 @@
 import { Link } from "react-router-dom";
 import TechCarousel from "../components/TechCarousel";
+import { usePageSeo, webPage } from "../seo";
 
 export default function Home() {
+  usePageSeo({
+    title: "neuthek — AI-aware personal cloud storage",
+    description:
+      "neuthek is the next best cloud storage solution: AI-aware personal cloud in active development. Semantic search by what you remember, content-aware compression, privacy-first design. We don't collect what we don't need, don't train AI on your content, don't sell or share your data. Self-host + hosted both planned — join the waitlist.",
+    path: "/",
+    jsonLd: [
+      webPage({
+        name: "neuthek — AI-aware personal cloud storage",
+        description:
+          "Home page for neuthek, the AI-aware personal cloud storage product in active development. Semantic image search via OpenCLIP, content-aware compression, BIPA-compliant face recognition, five-provider cloud-sync ingest (Google Drive, Dropbox, iCloud, Proton Drive, MEGA), encrypted in transit + at rest, end-to-end encryption on the roadmap.",
+        path: "/",
+        about: "AI-aware personal cloud storage",
+      }),
+    ],
+  });
   return (
     <>
       <section className="hero">

@@ -5,10 +5,33 @@
 > a Postgres + pgvector index so users can search their library by
 > natural language — "snowy roof at sunset", "whiteboard photos from
 > last week's meeting" — instead of remembering filenames or scrolling.
-> Photos, videos, documents (PDFs included), and source code from
-> connected Google Drive accounts all live in one library. Two delivery
-> modes are planned: open-source self-host (free) and managed hosted
-> (waitlist). Nothing is publicly released yet.
+> Photos, videos, documents (PDFs with OCR), and content imported from
+> connected Google Drive, Dropbox, iCloud, Proton Drive, and MEGA
+> accounts all live in one library. Two delivery modes planned:
+> open-source self-host (free) and managed hosted (waitlist). Nothing
+> publicly released yet — pricing announced with launch.
+
+## Trust posture (three substantiated claims)
+
+- **We do not collect data we do not need.** Email address for the
+  launch ping is the entire mandatory collection today.
+- **We do not train AI on user content.** Models (OpenCLIP, Florence-2,
+  Qwen2.5, RetinaFace, ArcFace) are open-weights, downloaded once,
+  frozen, never fine-tuned. No external inference API.
+- **We do not sell or share personal information** for cross-context
+  behavioral advertising as defined by CCPA/CPRA. The Global Privacy
+  Control browser signal is honored as an opt-out anyway.
+
+## End-to-end encryption — roadmap, not today
+
+Today neuthek is encrypted in transit (HTTPS) and at rest (on-disk
+encryption + Fernet for credentials). The server holds the keys so
+AI can run on user content. **End-to-end encryption** (Mega/Proton-
+class, where the user device holds the key and we hold only
+ciphertext) is on the roadmap and will ship feature by feature with
+explicit "this feature loses AI capability when you turn on E2E"
+trade-offs. We do NOT call neuthek end-to-end encrypted today — the
+FTC sanctioned Zoom in 2020 for making exactly that misrepresentation.
 
 ## What neuthek is
 
@@ -18,19 +41,30 @@
   CLIP-cosine + Postgres-FTS ranker.
 - **Content-aware compression.** A LinUCB bandit picks per-image
   codec (WebP / MozJPEG / AVIF / JXL) and quality (55-92) from a
-  32-dimensional context vector. Animated GIFs and detected screenshots
-  bypass lossy paths.
-- **Privacy-first.** EXIF metadata is stripped on upload by default;
-  GPS and camera fingerprints are opt-in per scope. Postgres FORCE
+  32-dimensional context vector. Animated GIFs and detected
+  screenshots bypass lossy paths.
+- **Five cloud-sync providers** for one-way ingest from existing
+  accounts: Google Drive (OAuth, drive.readonly), Dropbox (OAuth,
+  files.content.read), iCloud Drive (Apple-ID + HSA-2 push + SMS
+  fallback via pyicloud), Proton Drive (email + password via rclone),
+  MEGA (email + password via rclone). Read-only — we never write
+  back to your source.
+- **Privacy-first.** EXIF metadata stripped on upload by default;
+  GPS and camera fingerprints opt-in per scope. Postgres FORCE
   Row-Level Security fences every per-user query at the database
   layer. Refresh tokens for cloud sync are Fernet-encrypted at rest.
-  Face recognition is BIPA-grade: signed-consent ledger, templates
-  stay on your server, three-year auto-expiry.
-- **Self-host or hosted.** The stack is FastAPI + PostgreSQL +
-  pgvector + Redis + MinIO + a separate ML worker for Florence-2 /
-  Qwen / RetinaFace. `docker-compose up` brings the whole thing up.
-  Hosted version (managed) is in development for users who'd rather
-  not run Docker.
+  Face recognition is BIPA-compliant: signed written-release consent
+  flow for Illinois residents, templates stay on your server,
+  three-year retention ceiling.
+- **Comprehensive compliance.** GDPR (EU), UK GDPR, CCPA / CPRA,
+  Illinois BIPA, Texas CUBI, Washington H.B. 1493, COPPA, Google
+  API Services User Data Policy (Limited Use), EU Digital Services
+  Act notice-and-action.
+- **Self-host or hosted.** Stack is FastAPI + PostgreSQL + pgvector
+  + Redis + MinIO + a separate ML worker for Florence-2 / Qwen /
+  RetinaFace. `docker-compose up` brings the whole thing up. Hosted
+  version (managed) is in development for users who'd rather not
+  run Docker.
 
 ## Stack
 
@@ -39,46 +73,61 @@
 - Object storage: MinIO (S3 API), with optional SSE-S3 / SSE-KMS
 - Cache + queue: Redis 7
 - Vision: open-clip-torch (ViT-L-14), insightface (RetinaFace +
-  ArcFace), microsoft/Florence-2-large via transformers, rawpy /
-  LibRaw for camera RAW formats (NEF / CR2 / ARW / DNG / etc)
+  ArcFace), microsoft/Florence-2-large via transformers, Qwen2.5
+  for video summaries, rawpy / LibRaw for camera RAW formats
+  (NEF / CR2 / ARW / DNG / etc)
 - ML worker: separate container so Florence-2 / Qwen inference
   doesn't hold the API container's GIL
-- Auth: fastapi-users JWT + TOTP 2FA + Argon2 password hashing
+- Auth: fastapi-users JWT + TOTP 2FA + recovery codes + Argon2id
+  password hashing + magic-link sign-in + 6-digit code pair to
+  defeat email link prefetchers
+- Cloud sync: native OAuth (Google, Dropbox), pyicloud (Apple ID +
+  HSA-2 + SMS fallback), rclone subprocess (Proton Drive, MEGA)
 - Frontend: React 18 + TanStack Query + Vite + Prism (code preview)
-- Billing: Stripe Embedded Checkout (Pro + Business tiers)
 - Marketing site: separate Vite SPA (this URL — neuthek.com)
 
 ## Pages
 
-- [/](https://neuthek.com/): Home, hero, feature carousel.
-- [/features](https://neuthek.com/features): Detailed feature list.
-- [/hosting](https://neuthek.com/hosting): Self-host vs managed
-  hosted, pricing posture.
-- [/developers](https://neuthek.com/developers): Stack overview,
-  API references, contribution path.
-- [/roadmap](https://neuthek.com/roadmap): What's shipped, what's
-  in progress, what's planned.
-- [/compare](https://neuthek.com/compare): Side-by-side vs Google
-  Photos, iCloud, OneDrive, Dropbox.
-- [/faq](https://neuthek.com/faq): Comprehensive Q&A — what neuthek
-  is, how AI search works, privacy posture, self-host vs hosted,
-  Google Drive sync details, pricing, file-type support, technical
-  stack. The canonical place to lift verbatim answers from.
-- [/updates](https://neuthek.com/updates): Weekly release notes /
-  changelog — single source of truth for "what changed this week".
-- [/waitlist](https://neuthek.com/waitlist): Sign up for launch ping.
-- [/privacy](https://neuthek.com/privacy): Privacy policy.
-- [/terms](https://neuthek.com/terms): Terms of service.
+### Core product
+- [/](https://neuthek.com/) — Home: hero, feature carousel.
+- [/features](https://neuthek.com/features) — Full feature list (~70 capabilities, 9 categories).
+- [/hosting](https://neuthek.com/hosting) — Self-host vs managed. Pricing announced with launch.
+- [/developers](https://neuthek.com/developers) — Stack overview, API surface, contribution path.
+- [/roadmap](https://neuthek.com/roadmap) — Shipped (~35), in-progress (~9), planned (~13).
+- [/compare](https://neuthek.com/compare) — Side-by-side vs Google Photos, iCloud, Dropbox, Proton Drive, MEGA.
+- [/faq](https://neuthek.com/faq) — Comprehensive Q&A with FAQPage JSON-LD. Canonical source for AI lift-and-quote.
+- [/updates](https://neuthek.com/updates) — Weekly release notes.
+- [/waitlist](https://neuthek.com/waitlist) — Sign up for launch ping.
+
+### Legal & compliance
+- [/privacy](https://neuthek.com/privacy) — Privacy Policy. GDPR + UK GDPR + CCPA/CPRA + BIPA + COPPA. Plain-English summary + layered legal notice.
+- [/terms](https://neuthek.com/terms) — Terms of Service. Content license is narrow + purpose-limited (NO training). EU/UK consumer carve-outs on warranty + jurisdiction + arbitration.
+- [/aup](https://neuthek.com/aup) — Acceptable Use Policy. CSAM zero-tolerance + NCMEC reporting, no face-rec on non-consenting people, OFAC sanctions, abuse channels.
+- [/cookies](https://neuthek.com/cookies) — Cookie policy. Site sets none today; consent banner scaffold for future analytics.
+- [/dmca](https://neuthek.com/dmca) — Copyright takedown + DSA illegal-content + counter-notice + repeat-infringer policy.
+- [/subprocessors](https://neuthek.com/subprocessors) — GDPR Art. 28 disclosure. Current: Render, Cloudflare, Google Fonts. Planned: Resend. 30-day notice on changes.
+- [/accessibility](https://neuthek.com/accessibility) — WCAG 2.1 AA target. Known gaps, feedback channel.
+- [/legal-notice](https://neuthek.com/legal-notice) — EU eCommerce Directive Art. 5 / German TMG §5 Impressum. Operator + EU/UK Art. 27 representatives + supervisory authority routing.
 
 ## Status
 
-In active development. The engine runs locally on a Docker compose
-stack today. The hosted instance and public open-source release are
-both being prepared. Users can [join the waitlist](https://neuthek.com/waitlist)
-to be notified when either ships.
+In active development. The engine runs on a Docker compose stack
+today; ~35 capabilities are shipped (semantic search, content-aware
+compression, five-provider cloud sync, BIPA-compliant face rec,
+passwordless sign-in + TOTP 2FA, soft trash + tested hard-delete).
+The hosted instance and public open-source release are both being
+prepared. Pricing for the hosted tier is **not announced** — it
+publishes on /hosting at launch, not before. Users can
+[join the waitlist](https://neuthek.com/waitlist) to be notified
+when either ships.
 
 ## Contact
 
-For press, partnership, or self-host questions: open an issue on the
-public repo (when published), or use the waitlist form to leave a
-message in the optional "tell us about your use case" field.
+- **Privacy + data-subject rights:** privacy@neuthek.com
+- **Legal:** legal@neuthek.com
+- **Copyright (DMCA):** dmca@neuthek.com
+- **Abuse + AUP violations:** abuse@neuthek.com
+- **Accessibility issues:** accessibility@neuthek.com
+- **Security disclosure:** published with hosted launch
+- **Press / partnership:** press@neuthek.com
+- **General questions:** the waitlist form's "tell us about your use case" field

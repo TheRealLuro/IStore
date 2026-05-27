@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { unsubscribeNewsletter } from "../api";
+import { usePageSeo } from "../seo";
 
 /* Landing page reached by clicking the "Unsubscribe" link in a newsletter
    email. We GET the API endpoint with the token (server reads token →
@@ -16,6 +17,12 @@ type Status =
   | { kind: "network" };
 
 export default function Unsubscribe() {
+  usePageSeo({
+    title: "Unsubscribe — neuthek",
+    description: "Unsubscribe from the neuthek newsletter.",
+    path: "/unsubscribe",
+    noindex: true,
+  });
   const [params] = useSearchParams();
   const token = params.get("token") || "";
   const [status, setStatus] = useState<Status>({ kind: "working" });

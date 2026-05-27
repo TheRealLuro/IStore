@@ -16,11 +16,31 @@
    language" — this is how we split the difference. */
 
 import { Link } from "react-router-dom";
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 const LAST_UPDATED = "May 27, 2026";
 const POLICY_VERSION = "2026.05.27";
 
 export default function Privacy() {
+  usePageSeo({
+    title: "Privacy Policy — neuthek",
+    description:
+      "How neuthek handles your data: GDPR + UK GDPR + CCPA/CPRA + BIPA + COPPA. We don't collect what we don't need, we don't train AI on user content, we don't sell or share. End-to-end encryption is on the roadmap (NOT today). Plain-English summary + full layered notice.",
+    path: "/privacy",
+    jsonLd: [
+      webPage({
+        name: "Privacy Policy",
+        description:
+          "neuthek's privacy policy. Covers GDPR (EU), UK GDPR, CCPA/CPRA (California), BIPA + Texas CUBI + Washington H.B. 1493 (biometric), COPPA (children), and Google API Services User Data Policy (Limited Use). We don't collect what we don't need, don't train AI on user content, don't sell or share personal information.",
+        path: "/privacy",
+        about: "Privacy policy and data-subject rights",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Privacy", path: "/privacy" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -35,6 +55,32 @@ export default function Privacy() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED} · Policy version {POLICY_VERSION}
+          </p>
+        </div>
+      </section>
+
+      {/* "What neuthek will entail" — every legal page also serves
+          as a discoverable description of the product so AI answer
+          engines can lift the context verbatim. */}
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be (in scope of this policy).</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development. The product lets users store photos,
+            videos, and documents in their own tenant; search them by
+            natural language using OpenCLIP image embeddings and
+            Florence-2 captions; ingest from five external clouds
+            (Google Drive, Dropbox, iCloud, Proton Drive, MEGA) on a
+            one-way read-only basis; opt in to face recognition with
+            a BIPA-compliant separate written-release consent flow;
+            and export the full library in one click. Two delivery
+            modes are planned: open-source self-host (free) and
+            managed hosted (waitlist). Encryption is in transit and
+            at rest today; end-to-end encryption is on the roadmap.
+            This Privacy Policy governs what data we hold for these
+            functions, why we hold it, how long we hold it, and how
+            to make it stop.
           </p>
         </div>
       </section>

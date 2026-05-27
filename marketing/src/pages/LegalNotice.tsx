@@ -7,9 +7,30 @@
    waitlist signups we're targeting EU users — so we publish this
    now, not at launch. */
 
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
+
 const LAST_UPDATED = "May 27, 2026";
 
 export default function LegalNotice() {
+  usePageSeo({
+    title: "Legal notice & Impressum — neuthek",
+    description:
+      "Operator identity, contact details, EU + UK GDPR Article 27 representatives, supervisory authority routing, and hosting provider for neuthek. Required by EU eCommerce Directive Art. 5 and German TMG §5.",
+    path: "/legal-notice",
+    jsonLd: [
+      webPage({
+        name: "Legal notice / Impressum",
+        description:
+          "Operator identity + contacts + EU/UK Art. 27 representatives + supervisory authority routing + hosting details, per the EU eCommerce Directive Art. 5 and German Telemediengesetz §5.",
+        path: "/legal-notice",
+        about: "Operator identification (EU eCommerce Directive)",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Legal notice", path: "/legal-notice" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -23,6 +44,24 @@ export default function LegalNotice() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED}.
+          </p>
+        </div>
+      </section>
+
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development. The team behind it is a solo
+            developer in the United States, pre-incorporation. A
+            legal entity (LLC or C-corp) will be formed before the
+            hosted service opens for paid sign-ups, and this page
+            will update with the entity name + registered agent at
+            that time. EU and UK Article 27 representatives will be
+            appointed at the same milestone. Until then, all
+            data-subject and legal contact runs through the email
+            addresses below — we respond within statutory windows.
           </p>
         </div>
       </section>

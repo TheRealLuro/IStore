@@ -1,6 +1,26 @@
 import { Link } from "react-router-dom";
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 export default function Hosting() {
+  usePageSeo({
+    title: "Hosting — self-host or managed — neuthek",
+    description:
+      "Two ways to run neuthek: free open-source self-host via docker-compose, or managed hosted on infrastructure we operate. Plans + pricing for the managed tier are announced with launch — nothing pre-announced.",
+    path: "/hosting",
+    jsonLd: [
+      webPage({
+        name: "Hosting — self-host vs managed",
+        description:
+          "Self-host (docker-compose, free, open-source) vs managed hosted (we run it, pricing announced soon) for neuthek personal cloud storage. Hardware profile recommendations for self-host.",
+        path: "/hosting",
+        about: "Self-hosted and managed cloud storage hosting options",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Hosting", path: "/hosting" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">

@@ -4,9 +4,30 @@
    public AUP is required to claim DSA Art. 14 safe harbor + various
    payment-processor and CSAM-reporting obligations. */
 
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
+
 const LAST_UPDATED = "May 27, 2026";
 
 export default function AcceptableUse() {
+  usePageSeo({
+    title: "Acceptable Use Policy — neuthek",
+    description:
+      "What you can and can't put on neuthek. Zero-tolerance CSAM with NCMEC reporting, no non-consensual face recognition, no copyright infringement, no malware, no scraping, no OFAC-sanctioned use. Enforcement + appeal procedure.",
+    path: "/aup",
+    jsonLd: [
+      webPage({
+        name: "Acceptable Use Policy",
+        description:
+          "Rules for using the neuthek hosted service and self-host instances when shared with others. Covers CSAM zero-tolerance + NCMEC reporting, face-recognition consent requirement, OFAC sanctions, copyright, abuse reporting, and enforcement.",
+        path: "/aup",
+        about: "Acceptable Use Policy for personal cloud storage",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Acceptable Use", path: "/aup" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -21,6 +42,24 @@ export default function AcceptableUse() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED}.
+          </p>
+        </div>
+      </section>
+
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development — photos, videos, and documents stored
+            in your own tenant, searchable by natural language
+            ("snowy roof at sunset"), with content-aware compression
+            and opt-in face recognition. One-way ingest from Google
+            Drive, Dropbox, iCloud, Proton Drive, and MEGA. Self-host
+            (open-source, free) and managed hosted (waitlist) modes
+            both planned. The acceptable-use rules below apply
+            equally to whichever way you run neuthek and exist so
+            that the product is safe for everyone who uses it.
           </p>
         </div>
       </section>
