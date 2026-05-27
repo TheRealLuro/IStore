@@ -182,7 +182,10 @@ const CATEGORIES: CategorySection[] = [
       { title: "Conflict banner", body: "Edit something locally after Drive last synced? Banner shows the affected files so you can resolve." },
       { title: "Sign in with Google", body: "Authenticate with your Google account — no separate password to remember." },
       { title: "Link Google to existing account", body: "Already signed up with email + password? Link your Google account from Settings; both sign-in paths land in the same library." },
-      { title: "OneDrive, iCloud, Dropbox", body: "On the roadmap. Drive is first because it's where most users start." },
+      { title: "Dropbox sync", body: "OAuth read-only. Files, metadata, refresh tokens — same Fernet-at-rest treatment as Google Drive." },
+      { title: "iCloud Drive sync", body: "Apple-ID + 2FA via pyicloud. HSA-2 push to trusted device + SMS fallback. Read-only; we never write back to iCloud." },
+      { title: "Proton Drive sync", body: "Email + password through rclone. Provider-side E2E preserved on Proton's end; we mirror plaintext into your neuthek tenant for AI to work." },
+      { title: "MEGA sync", body: "Email + password through rclone. Same trade-off as Proton — we trade Mega's E2E for AI features inside neuthek; you can switch back any time." },
     ],
     securityNote:
       "Drive scope is `drive.readonly` only — we cannot write, move, " +
@@ -459,8 +462,11 @@ export default function Features() {
               Per-source AI toggle: Drive content is fenced out of
               AI training by default (Google Limited Use compliance).
               Flip it on per source if you want summaries and face
-              detection on synced files. OneDrive, iCloud, and
-              Dropbox are on the roadmap.
+              detection on synced files. <strong>Dropbox</strong>,
+              {" "}<strong>iCloud Drive</strong> (Apple-ID + HSA-2 2FA),
+              {" "}<strong>Proton Drive</strong> and{" "}
+              <strong>MEGA</strong> (email + password via rclone)
+              are all live. Five providers total at the time of writing.
             </p>
             <p className="security-note">
               Drive scope is <code>drive.readonly</code> only — we

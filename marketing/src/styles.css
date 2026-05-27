@@ -35,6 +35,115 @@
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 
   --container: 1120px;
+
+  /* ---------- Refinement tokens (May 2026) ----------
+     Applied as a light pass per ui-ux-pro-max-skill: 4pt grid,
+     expo-out motion easing, named durations, focus-ring tokens.
+     Existing component CSS keeps working — these just become
+     available where a component wants to reach for them. */
+
+  /* 4pt spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+  --space-9: 64px;
+  --space-10: 80px;
+  --space-11: 96px;
+  --space-12: 120px;
+
+  /* Type scale (px-anchored; layout uses clamp() in headings) */
+  --fs-caption: 11px;
+  --fs-small:   13px;
+  --fs-body:    16px;
+  --fs-lead:    18px;
+  --fs-h3:      22px;
+  --fs-h2:      32px;
+  --fs-h1:      48px;
+  --fs-hero:    72px;
+
+  /* Line-heights */
+  --lh-display: 1.05;
+  --lh-heading: 1.15;
+  --lh-body:    1.6;
+  --lh-tight:   1.4;
+
+  /* Letter-spacing */
+  --tracking-display: -0.02em;
+  --tracking-tight:   -0.011em;
+  --tracking-caps:    0.08em;
+
+  /* Motion durations */
+  --dur-instant: 100ms;
+  --dur-fast:    200ms;
+  --dur-med:     300ms;
+  --dur-slow:    400ms;
+  --dur-screen:  500ms;
+
+  /* Eases — expo-out for premium reveal, standard for UI */
+  --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);     /* expo-out */
+  --ease-in:       cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out:   cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-emphasis: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Focus rings */
+  --focus-ring-width: 3px;
+  --focus-ring-color: rgba(10, 10, 10, 0.65);
+  --focus-ring-offset: 2px;
+
+  /* Z-index scale (no ad-hoc 9999s) */
+  --z-base:    1;
+  --z-nav:     10;
+  --z-overlay: 20;
+  --z-modal:   30;
+  --z-toast:   50;
+}
+
+/* ---------- Universal focus-visible (accessibility) ----------
+   WCAG 2.1 SC 2.4.7. Every keyboard-reachable element gets a
+   visible 3px ring; never `outline: none` without a replacement. */
+
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: 4px;
+}
+
+/* Skip-to-content link — visually hidden until focused. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+  left: 16px;
+  top: 16px;
+  z-index: var(--z-toast);
+  background: var(--ink);
+  color: var(--surface);
+  padding: 10px 14px;
+  border-radius: var(--radius-1);
+  text-decoration: none;
+}
+
+/* ---------- Reduced motion ----------
+   Honor prefers-reduced-motion per WCAG 2.3.3 + the skill's
+   "never exceed 500ms" + "animation must be defeatable" rules. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 * { box-sizing: border-box; }

@@ -88,28 +88,24 @@ const SHIPPED: Item[] = [
     d: "Off by default. When you turn it on, faces cluster into Me + people you tag. Embeddings stay on your server; revoking consent deletes them immediately.",
   },
   {
-    t: "Pull from Google Drive (never write back)",
-    d: "One-click connect, hourly background sync, conflict banner when local and remote diverge. AI features off by default on Drive content; opt in per source.",
-  },
-  {
-    t: "Pull from GitHub",
-    d: "Your own repos only. Image files only. Secrets skipped. Same conflict detection as Drive.",
+    t: "Pull from Google Drive, Dropbox, iCloud, Proton Drive, and MEGA",
+    d: "Five external clouds wired up. Google Drive + Dropbox use OAuth read-only; iCloud uses Apple-ID with HSA-2 push + SMS fallback; Proton and MEGA use email + password through rclone. Hourly background sync, conflict banner when local and remote diverge. AI features off by default; opt in per source.",
   },
   {
     t: "Sign in with Google",
     d: "Use your Google account. Link an existing email account to Google later if you want.",
   },
   {
-    t: "Two-factor auth + recovery codes",
-    d: "Authenticator-app codes plus printable recovery codes if you lose the device.",
+    t: "Sign in without a password",
+    d: "Magic-link email plus a 6-digit code so Gmail's link-prefetcher can't burn the token. TOTP 2FA on top of either path; recovery codes if you lose the device.",
+  },
+  {
+    t: "Two-factor + recovery codes + regenerate",
+    d: "Authenticator-app codes, printable one-time recovery codes, and a regenerate-TOTP-secret flow for when you lose access. Email-change requires re-verification.",
   },
   {
     t: "Share specific files with specific people",
     d: "Email-pinned grants, signed links that expire, revocable at any time. Every share action is logged.",
-  },
-  {
-    t: "Pricing through Stripe",
-    d: "Free, Pro, and Business tiers when hosted launches. We never see your card number — Stripe handles checkout and invoices.",
   },
 
   // --- Operator & scale ---
@@ -232,8 +228,16 @@ const PLANNED: Item[] = [
     d: "Account recovery via email. Needs the operator to pick an email provider (Resend or SMTP) and bake it into the deployment.",
   },
   {
+    t: "End-to-end encryption (Mega/Proton-class)",
+    d: "Client-side encryption with a key derived from your master passphrase — we hold ciphertext, never plaintext, never the key. Will ship feature-by-feature with very clear \"this feature loses AI capability when you turn on E2E\" trade-offs. Until it lands, we describe neuthek as encrypted in transit + at rest, not end-to-end.",
+  },
+  {
     t: "Easy migration for teams",
-    d: "Bulk import from SMB / NAS / Drive / Dropbox / OneDrive. Per-source consent scopes so legal can sign off per dataset. Migration dry-run before you commit.",
+    d: "Bulk import from SMB / NAS plus the cloud providers we already sync (Google Drive, Dropbox, iCloud, Proton, MEGA). Per-source consent scopes so legal can sign off per dataset. Migration dry-run before you commit.",
+  },
+  {
+    t: "Pricing announced with launch",
+    d: "Nothing announced yet. When hosted opens, plans + pricing land on /hosting. Self-host build will be free + open-source forever.",
   },
   {
     t: "Public source release",

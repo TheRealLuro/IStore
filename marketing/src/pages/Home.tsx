@@ -39,19 +39,32 @@ export default function Home() {
             </span>
             <div>
               <h2 className="privacy-stance__title">
-                Your data isn't ours. We don't train on it. We don't sell it.
+                We don't collect what we don't need. We don't train on it. We don't sell it.
               </h2>
               <p className="privacy-stance__body">
-                neuthek is designed to run on a server <strong>you</strong> control.
-                Whether you self-host the open-source build (free) or use
-                the managed hosted version (your own tenant, fenced behind
-                Postgres row-level security), your photos, videos,
-                documents, face embeddings, summaries, and search history
-                are never exported to third parties, never used to train
-                AI models — ours or anyone else's — and never sold to ad
-                networks, brokers, or partners. AI features are opt-in
-                per scope. If you turn them off, the model passes don't
-                run on your library at all.
+                Three commitments, written into the product. We don't
+                collect data we don't need — an email address for the
+                launch ping is the entire mandatory collection today.
+                We don't train AI on your content — the vision models
+                are open-weights, downloaded once, frozen, never
+                fine-tuned. We don't sell or share personal information;
+                the Global Privacy Control browser signal is honored as
+                an opt-out under CCPA. AI features (search, summaries,
+                face recognition) are opt-in per scope; face
+                recognition has a separate BIPA-compliant consent step.
+              </p>
+              <p className="privacy-stance__body" style={{ marginTop: 12 }}>
+                <strong>End-to-end encryption is on the roadmap.</strong>{" "}
+                Today neuthek is encrypted in transit and at rest, with
+                the server holding the keys so AI can run on your
+                behalf. Mega/Proton-class client-side encryption will
+                ship feature by feature, with very clear "this feature
+                loses AI capability when you turn on E2E" trade-offs.
+                Until it lands we will <em>not</em> call neuthek
+                end-to-end encrypted — saying that before it's true is
+                exactly the misrepresentation the FTC sanctioned Zoom
+                for in 2020. See{" "}
+                <Link to="/privacy">Privacy</Link> for the full picture.
               </p>
             </div>
           </div>

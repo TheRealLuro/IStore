@@ -44,18 +44,20 @@ export default function Hosting() {
 
           <div className="card" style={{ borderColor: "var(--ink)" }}>
             <span className="eyebrow">Managed (planned)</span>
-            <h2 style={{ fontSize: 28, marginBottom: 8 }}>Coming with launch</h2>
+            <h2 style={{ fontSize: 28, marginBottom: 8 }}>Pricing announced soon</h2>
             <p>
               The hosted plan will run the same backend on
               infrastructure we operate, with the privacy posture
-              intact.
+              intact. No plans, tiers, or prices announced yet — we'd
+              rather price it once we know our actual run costs than
+              guess publicly.
             </p>
             <ul style={{ marginTop: 16, paddingLeft: 18, color: "var(--ink-2)", lineHeight: 1.7 }}>
               <li>HTTPS, automated backups, off-box object storage</li>
               <li>GPU inference for CLIP embeddings on upload</li>
               <li>Same JWT + per-user isolation as the self-hosted build</li>
               <li>Per-account export and account deletion</li>
-              <li>Plans + pricing: published with the launch</li>
+              <li><strong>Plans + pricing: announced soon</strong> — waitlist gets the email the moment they go live</li>
             </ul>
             <p style={{ marginTop: 20 }}>
               <Link to="/waitlist" className="btn btn--primary">Join waitlist</Link>

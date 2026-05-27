@@ -17,6 +17,12 @@ import VerifyEmail from "./pages/VerifyEmail";
 import Unsubscribe from "./pages/Unsubscribe";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
+import Cookies from "./pages/Cookies";
+import Dmca from "./pages/Dmca";
+import AcceptableUse from "./pages/AcceptableUse";
+import Subprocessors from "./pages/Subprocessors";
+import Accessibility from "./pages/Accessibility";
+import LegalNotice from "./pages/LegalNotice";
 import Admin from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 
@@ -50,6 +56,12 @@ export default function App() {
           <Route path="/unsubscribe" element={<Unsubscribe />} />
           <Route path="/privacy"    element={<Privacy />} />
           <Route path="/terms"      element={<Terms />} />
+          <Route path="/cookies"    element={<Cookies />} />
+          <Route path="/dmca"       element={<Dmca />} />
+          <Route path="/aup"        element={<AcceptableUse />} />
+          <Route path="/subprocessors" element={<Subprocessors />} />
+          <Route path="/accessibility" element={<Accessibility />} />
+          <Route path="/legal-notice"  element={<LegalNotice />} />
           <Route path="/admin"      element={<Admin />} />
           <Route path="*"           element={<NotFound />} />
         </Routes>
