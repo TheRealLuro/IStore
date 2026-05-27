@@ -964,6 +964,7 @@ async def icloud_start(
         # resend.
         device_list: list[ICloudTrustedDevice] = []
         code_sent_to: str | None = None
+        raw_devices: list[dict] = []
         try:
             raw_devices = list(svc.trusted_devices or [])
             for dev in raw_devices:
@@ -1009,6 +1010,17 @@ async def icloud_start(
             "password": payload.password,
             "tmp_dir": tmp_dir,
             "is_2sa": requires_2sa,
+            # §C4.6 — the device dict we sent the code to. /verify
+            # needs this to call validate_verification_code(device,
+            # code) — pyicloud's method for codes that were
+            # explicitly requested via send_verification_code (as
+            # opposed to validate_2fa_code, which only accepts the
+            # auto-pushed flavor). User's code was rejected with
+            # "didn't match" because we always called the 2fa
+            # variant; /verify now tries both. The list is stored
+            # in send-order so resend can update it.
+            "code_sent_device": raw_devices[0] if raw_devices else None,
+            "all_devices": raw_devices,
             "created_at": datetime.now(timezone.utc),
         }
         return ICloudStartResponse(
@@ -1110,6 +1122,12 @@ async def icloud_resend_code(
             f"Apple refused to send a code to {label}. Try another "
             f"device or use Settings → Apple ID → Get Verification Code.",
         )
+    # Update the stashed device so /verify uses
+    # validate_verification_code(picked_device, code) — the code
+    # that just got sent. Without this, the user resends to phone B
+    # but /verify still validates against phone A's session state
+    # and Apple rejects the code as "wrong".
+    pending["code_sent_device"] = pick
     return ICloudResendResponse(code_sent_to=label)
 
 
@@ -1144,17 +1162,50 @@ async def icloud_verify(
     # dashes (some authenticator UIs render "123-456"). Strip both
     # before sending.
     code = payload.code.strip().replace(" ", "").replace("-", "")
+    # §C4.6 — pyicloud has TWO validation methods:
+    #   validate_2fa_code(code)            — for codes from
+    #     Apple's auto-push (modern 2FA flow).
+    #   validate_verification_code(dev,c)  — for codes we
+    #     explicitly requested via send_verification_code (older
+    #     2SA flow + any account where Apple's auto-push doesn't
+    #     fire and we had to explicitly trigger).
+    # User got the code (we explicitly triggered) but typing it
+    # into our form was rejected because we always called
+    # validate_2fa_code. Try BOTH — first the modern path, fall
+    # back to the device-bound path with the stashed device dict.
+    ok = False
+    last_err: Exception | None = None
     try:
         ok = await asyncio.to_thread(svc.validate_2fa_code, code)
-    except Exception:
-        logger.exception("icloud_verify: validate_2fa_code raised")
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            "Could not verify the code. Try again in a moment.",
+    except Exception as e:
+        last_err = e
+        logger.warning(
+            "icloud_verify: validate_2fa_code raised — falling "
+            "back to validate_verification_code: %s", e,
         )
     if not ok:
-        # Don't drop the pending entry — the user might have typoed
-        # and want to retry. The 5-min TTL still applies.
+        dev = pending.get("code_sent_device")
+        if dev is not None:
+            try:
+                ok = await asyncio.to_thread(
+                    svc.validate_verification_code, dev, code,
+                )
+            except Exception as e:
+                last_err = e
+                logger.exception(
+                    "icloud_verify: validate_verification_code raised"
+                )
+    if not ok:
+        # Both methods failed. Don't drop the pending entry — the
+        # user might have typoed and want to retry. The 5-min TTL
+        # still applies.
+        if last_err is not None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "That code didn't match. Apple may have rejected it "
+                "(expired or already used) — try requesting a fresh "
+                "one with 'Try a different device' above.",
+            )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "That code didn't match. Check your iDevice and try again.",
