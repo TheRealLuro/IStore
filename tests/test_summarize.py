@@ -217,6 +217,89 @@ async def test_image_branch_splices_named_person(db_client, monkeypatch):
     assert any("People: Me" in p for p in points)
 
 
+async def test_image_branch_swaps_me_for_user_display_name(db_client, monkeypatch):
+    """Sprint I — when face recognition has tagged the photo owner's
+    face cluster as "Me" AND the user has set a display_name in
+    account settings, _load_named_people swaps "Me" for the user's
+    actual display_name so the summary reads "Jason taking a selfie"
+    instead of "Me taking a selfie". The latter doesn't surface when
+    the user searches for their own name."""
+    import uuid as _uuid
+
+    from tests.conftest import (
+        fetch_user_id,
+        grant_consent,
+        insert_face,
+    )
+
+    from backend import summarize as sm
+    from backend.api import images as images_api
+    from backend.db import SessionLocal
+    from backend.models import User
+    from sqlalchemy import update as sa_update
+
+    monkeypatch.setattr(
+        sm,
+        "_caption_image",
+        lambda raw: "A young man taking a selfie in a kitchen.",
+    )
+    # Regex fallback path — no LLM dependency.
+    monkeypatch.setattr(sm, "_llm_rewrite_summary", lambda **kw: None)
+
+    async def _noop(image_id):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(images_api, "_run_summarize_one", _noop)
+    monkeypatch.setattr(
+        images_api, "_run_face_scan_then_summarize",
+        lambda *a, **k: _noop(None),
+    )
+
+    email = f"u{_uuid.uuid4().hex[:8]}@example.com"
+    token, headers = await register_and_login(db_client, email=email)
+    await grant_consent(db_client, headers)
+    user_id = await fetch_user_id(email)
+
+    # Set the user's display_name. Sprint H's C4.1 wires this at
+    # signup; we set it directly here to keep the test focused.
+    async with SessionLocal() as session:
+        await session.execute(
+            sa_update(User).where(User.id == user_id).values(display_name="Jason")
+        )
+        await session.commit()
+
+    valid_png = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+        b"\r\n-\xb4"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    files = {"file": ("me.png", valid_png, "image/png")}
+    r = await db_client.post("/images/", files=files, headers=headers)
+    assert r.status_code == 201, r.text
+    image_id = UUID(r.json()["id"])
+
+    # Face cluster labelled "Me" — the typical face-recognition UX.
+    await insert_face(user_id, person_name="Me", image_id=image_id)
+
+    from backend.summarize import summarize_image_id
+
+    async with SessionLocal() as session:
+        await summarize_image_id(session, image_id)
+
+    r = await db_client.get(f"/images/{image_id}", headers=headers)
+    body = r.json()
+    assert body["pending_summary"] is False
+    # Owner display_name swapped in for "Me"
+    assert "Jason" in body["summary"]
+    assert "Me" not in body["summary"]
+    points = body["summary_points"] or []
+    assert any("People: Jason" in p for p in points)
+
+
 def test_clean_caption_strips_filler_and_normalizes_selfie():
     from backend.summarize import _clean_caption
 
