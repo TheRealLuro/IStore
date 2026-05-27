@@ -292,7 +292,7 @@ function EmailVerifyRow({ user }) {
         color: verified ? "var(--success)" : "var(--warning, #f59e0b)",
         flexShrink: 0,
       }}>
-        <Icon name={verified ? "check" : "alertCircle"} size={14}/>
+        <Icon name={verified ? "check" : "alert"} size={14}/>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 500 }}>
