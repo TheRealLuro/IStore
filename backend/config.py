@@ -261,6 +261,42 @@ class Settings(BaseSettings):
         default="http://localhost:8000/cloud/callback/dropbox"
     )
 
+    # §C4.6 — Box OAuth client. Empty values keep the endpoint in
+    # "not_configured" state. Register at https://app.box.com/developers/console
+    # → "Create new app" → "Custom App" → "User Authentication
+    # (OAuth 2.0)". On the app's Configuration tab:
+    #   * Add `BOX_OAUTH_REDIRECT_URI` (default value below) to the
+    #     "OAuth 2.0 Redirect URIs" list.
+    #   * Under "Application Scopes", check "Read all files and
+    #     folders stored in Box" (the `root_readonly` equivalent on
+    #     Box's UI) and leave the write/admin scopes unchecked.
+    # Then copy Client ID + Client Secret here.
+    box_oauth_client_id: str = Field(default="")
+    box_oauth_client_secret: str = Field(default="")
+    box_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/cloud/callback/box"
+    )
+
+    # §C4.6 — pCloud OAuth client. Empty values keep the endpoint in
+    # "not_configured" state. Register at https://docs.pcloud.com/
+    # → "My applications" (after signing in) → "New application". On
+    # the app page:
+    #   * Add `PCLOUD_OAUTH_REDIRECT_URI` (default value below) to
+    #     the "Redirect URIs" list.
+    #   * Permissions: at least "Manage files" (read). pCloud doesn't
+    #     have a scope-per-request system; the app's overall permission
+    #     set applies to every token.
+    # Then copy Client ID + Client Secret here. pCloud serves both
+    # the US (api.pcloud.com) and EU (eapi.pcloud.com) regions; the
+    # OAuth token response carries the correct `hostname` and we
+    # persist it alongside the access token so subsequent API calls
+    # go to the right region.
+    pcloud_oauth_client_id: str = Field(default="")
+    pcloud_oauth_client_secret: str = Field(default="")
+    pcloud_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/cloud/callback/pcloud"
+    )
+
     # §C2 — hourly cloud-sync sweep. The lifespan-managed background
     # task pulls every active CloudLink at this cadence. Set to 0 (or
     # flip cloud_sync_hourly_enabled=false) to disable in test/dev runs

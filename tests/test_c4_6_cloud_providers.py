@@ -15,9 +15,9 @@ check:
   3. connect_provider for Dropbox returns an auth URL pointing at
      www.dropbox.com with the right scopes + redirect.
 
-  4. connect_provider for `icloud` / `mega` / `box` / `pcloud`
-     raises CloudSyncNotConfigured ("not implemented yet") —
-     coming-soon providers can't be bootstrapped.
+  4. connect_provider for `icloud` / `mega` raises
+     CloudSyncNotConfigured ("not implemented yet") — those two
+     placeholder providers can't be bootstrapped (no usable API).
 
 We don't exercise the full OAuth round-trip — that needs real
 client_id/secret + the providers' consent screens — but the URL
@@ -106,11 +106,62 @@ async def test_dropbox_connect_returns_dropbox_auth_url(monkeypatch):
     assert qs["code_challenge_method"] == ["S256"]
 
 
-@pytest.mark.parametrize("provider", ["icloud", "mega", "box", "pcloud"])
+async def test_box_connect_returns_box_auth_url(monkeypatch):
+    """Box's auth URL lives on account.box.com (the consent page)
+    and carries the read-only scope. No PKCE — Box treats it as
+    optional and the simpler shape parallels the Google Sign-In
+    flow."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "box_oauth_client_id", "fake-box-id")
+    monkeypatch.setattr(settings, "box_oauth_client_secret", "fake-box-secret")
+    monkeypatch.setattr(
+        settings, "cloud_encryption_key",
+        "Hg9XYqGGsNuJZIbkDdWUEoVwHJa6nfA0sCpsZX1bGuU=",
+    )
+
+    from backend.cloud_sync import connect_provider
+    import uuid
+    handoff = await connect_provider(uuid.uuid4(), "box")
+
+    parsed = urlparse(handoff.auth_url)
+    assert parsed.netloc == "account.box.com"
+    assert parsed.path == "/api/oauth2/authorize"
+    qs = parse_qs(parsed.query)
+    assert qs["client_id"] == ["fake-box-id"]
+    assert qs["response_type"] == ["code"]
+    # Read-only scope keeps us from ever writing back.
+    assert qs["scope"] == ["root_readonly"]
+
+
+async def test_pcloud_connect_returns_pcloud_auth_url(monkeypatch):
+    """pCloud's auth URL lives on my.pcloud.com and does NOT carry a
+    `scope` param — pCloud configures permissions app-wide."""
+    from backend.config import settings
+    monkeypatch.setattr(settings, "pcloud_oauth_client_id", "fake-pcloud-id")
+    monkeypatch.setattr(settings, "pcloud_oauth_client_secret", "fake-pcloud-secret")
+    monkeypatch.setattr(
+        settings, "cloud_encryption_key",
+        "Hg9XYqGGsNuJZIbkDdWUEoVwHJa6nfA0sCpsZX1bGuU=",
+    )
+
+    from backend.cloud_sync import connect_provider
+    import uuid
+    handoff = await connect_provider(uuid.uuid4(), "pcloud")
+
+    parsed = urlparse(handoff.auth_url)
+    assert parsed.netloc == "my.pcloud.com"
+    assert parsed.path == "/oauth2/authorize"
+    qs = parse_qs(parsed.query)
+    assert qs["client_id"] == ["fake-pcloud-id"]
+    assert qs["response_type"] == ["code"]
+    # pCloud doesn't accept a `scope` param at all.
+    assert "scope" not in qs
+
+
+@pytest.mark.parametrize("provider", ["icloud", "mega"])
 async def test_coming_soon_providers_raise_not_configured(provider, monkeypatch):
-    """The four placeholder providers can't be connected — the
-    type-checker only knows about google_drive/dropbox so
-    we pass through .startswith() for the test."""
+    """The two truly-unimplementable placeholder providers (iCloud +
+    MEGA — see the catalog blurbs for why) can't be connected."""
     from backend.config import settings
     monkeypatch.setattr(
         settings, "cloud_encryption_key",

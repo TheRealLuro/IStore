@@ -154,6 +154,21 @@ services:
       DROPBOX_OAUTH_CLIENT_ID: ${DROPBOX_OAUTH_CLIENT_ID:-}
       DROPBOX_OAUTH_CLIENT_SECRET: ${DROPBOX_OAUTH_CLIENT_SECRET:-}
       DROPBOX_OAUTH_REDIRECT_URI: ${DROPBOX_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/dropbox}
+      # §C4.6 — Box OAuth client. Register at
+      # app.box.com/developers/console → Custom App → User
+      # Authentication (OAuth 2.0). Tick the "Read all files and
+      # folders" scope on the Configuration tab.
+      BOX_OAUTH_CLIENT_ID: ${BOX_OAUTH_CLIENT_ID:-}
+      BOX_OAUTH_CLIENT_SECRET: ${BOX_OAUTH_CLIENT_SECRET:-}
+      BOX_OAUTH_REDIRECT_URI: ${BOX_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/box}
+      # §C4.6 — pCloud OAuth client. Register at docs.pcloud.com → My
+      # Applications. pCloud has no per-request scopes — the app's
+      # configured permissions apply to every token. The token
+      # response carries a `hostname` field so we know which region
+      # (US api.pcloud.com / EU eapi.pcloud.com) to talk to per user.
+      PCLOUD_OAUTH_CLIENT_ID: ${PCLOUD_OAUTH_CLIENT_ID:-}
+      PCLOUD_OAUTH_CLIENT_SECRET: ${PCLOUD_OAUTH_CLIENT_SECRET:-}
+      PCLOUD_OAUTH_REDIRECT_URI: ${PCLOUD_OAUTH_REDIRECT_URI:-http://localhost:8000/cloud/callback/pcloud}
       FRONTEND_BASE_URL: http://localhost:5173
       # SMTP wiring. Without these, backend.email_send.send_email
       # falls back to printing to container stderr (the [email-stub]
