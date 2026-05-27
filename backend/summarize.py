@@ -180,7 +180,28 @@ async def _load_named_people(
     persons.display_name`. Anonymous detections (face exists but no person
     named yet) are filtered out — generic captions are better than ones
     that say "and another person" with no anchor.
+
+    §D1 (Sprint I) — when a person record is labelled "Me" / "I" /
+    "myself" (the user's own face cluster, which face-recognition UX
+    encourages people to tag themselves as), substitute the user's
+    actual display_name from the users table. This is what turns
+    summaries like "Me holding a coffee" into "Jason holding a
+    coffee" — the second one indexes correctly and reads as the
+    user expects when they search for their own name.
     """
+    # Owner's display name. Loaded once up-front so the "Me" → name
+    # swap below can run inline. None / empty leaves the "Me" label
+    # intact (existing behavior; first-person pronoun polish handles
+    # downstream pronouns).
+    from backend.models import User
+
+    owner_display = (
+        await session.execute(
+            select(User.display_name).where(User.id == user_id)
+        )
+    ).scalar_one_or_none()
+    owner_display = (owner_display or "").strip() or None
+
     # Min(bbox_x) lets us order persons left-to-right even with DISTINCT —
     # plain ORDER BY bbox_x violates the SELECT-list rule on Postgres.
     rows = (
@@ -198,7 +219,17 @@ async def _load_named_people(
             .order_by("x")
         )
     ).all()
-    return [r[0] for r in rows if r[0]]
+
+    first_person_aliases = {"me", "i", "myself"}
+    out: list[str] = []
+    for r in rows:
+        name = (r[0] or "").strip()
+        if not name:
+            continue
+        if owner_display and name.lower() in first_person_aliases:
+            name = owner_display
+        out.append(name)
+    return out
 
 
 async def _mark_done(
