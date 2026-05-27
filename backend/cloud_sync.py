@@ -763,10 +763,39 @@ async def _dropbox_collect_entries(refresh_token: str) -> list[dict]:
                     "dropbox list failed: %s %s",
                     r.status_code, r.text[:200],
                 )
-                raise CloudSyncNotConfigured(
-                    "Dropbox listing failed. Try again later, or "
-                    "reconnect from Settings → Cloud sync."
-                )
+                # Dropbox surfaces app-config problems as 400s with
+                # a descriptive body. Most common per-app failure:
+                # the operator created the OAuth app but didn't tick
+                # the scope checkboxes on the Permissions tab — we
+                # can REQUEST those scopes at consent time but the
+                # APP itself has to have them enabled by the owner
+                # first. Without that, Dropbox accepts the OAuth
+                # grant happily but rejects every API call with
+                # "does not have the required scope X". Without this
+                # branch, the user just sees "listing failed" and
+                # has no idea the fix is on the developer console.
+                body_lc = r.text.lower()
+                if "does not have the required scope" in body_lc:
+                    msg = (
+                        "Your Dropbox app is missing API permissions. "
+                        "Open the app at dropbox.com/developers/apps, "
+                        "go to the Permissions tab, tick "
+                        "files.content.read + files.metadata.read + "
+                        "account_info.read, then Submit. After saving, "
+                        "disconnect + reconnect Dropbox here so a fresh "
+                        "OAuth grant picks up the new scopes."
+                    )
+                elif r.status_code in (401, 403):
+                    msg = (
+                        "Dropbox denied access. Reconnect from "
+                        "Settings → Cloud sync."
+                    )
+                else:
+                    msg = (
+                        "Dropbox listing failed. Try again later, or "
+                        "reconnect from Settings → Cloud sync."
+                    )
+                raise CloudSyncNotConfigured(msg)
             return r.json()
         raise CloudSyncNotConfigured("Dropbox listing retry exhausted.")
 
