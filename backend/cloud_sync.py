@@ -140,12 +140,135 @@ PROVIDER_SCOPES: dict[CloudProvider, list[str]] = {
         "email",
         "profile",
     ],
-    # Dropbox / OneDrive scopes are kept here so the OAuth shape is
-    # recorded if we ever turn them on; the corresponding listing +
-    # download helpers don't exist yet.
-    "dropbox": ["files.content.read"],
-    "onedrive": ["Files.Read.All", "offline_access"],
+    # §C4.6 — Dropbox scopes (API v2). `files.content.read` covers
+    # listing + reading the user's files. `account_info.read` lets us
+    # display the connected account's email + display-name in the
+    # Cloud sync panel. Dropbox issues short-lived access tokens by
+    # default; we ask for refresh via `token_access_type=offline` on
+    # the auth URL, not via scopes.
+    "dropbox": [
+        "files.content.read",
+        "files.metadata.read",
+        "account_info.read",
+    ],
+    # §C4.6 — OneDrive / Microsoft Graph scopes. `Files.Read.All` is
+    # the equivalent of Drive's `drive.readonly` — list and read every
+    # file the user has access to. `offline_access` is what makes
+    # Microsoft return a refresh token (same role as Google's
+    # `access_type=offline`). `User.Read` lets us pull the account
+    # email + display name for the connected-account chip.
+    "onedrive": [
+        "Files.Read.All",
+        "offline_access",
+        "User.Read",
+    ],
 }
+
+
+# ---------- §C4.6 — provider registry --------------------------------------
+#
+# Single source of truth for the FE's "Cloud sync" panel. Each entry
+# describes how a provider should render + whether it's actually
+# wired. The FE pulls this list via GET /cloud/providers and renders
+# a card per entry, gating the "Connect" button on
+# `status == "available"`.
+#
+# `status` values:
+#   "available"     OAuth client + sync engine are both wired; user
+#                   can connect right now.
+#   "needs_setup"   Sync engine wired but client_id/client_secret
+#                   aren't configured in env. FE shows "Needs setup"
+#                   chip + link to provider docs.
+#   "coming_soon"   Slot reserved, listing/download not shipped yet.
+#                   FE shows greyed-out card + "Notify me" button.
+#
+# Status is computed at request time from settings so flipping the
+# env vars promotes a provider from "needs_setup" → "available"
+# without a code change.
+
+def _provider_status(provider: str) -> str:
+    if provider == "google_drive":
+        if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+            return "needs_setup"
+        return "available"
+    if provider == "onedrive":
+        if not settings.onedrive_oauth_client_id or not settings.onedrive_oauth_client_secret:
+            return "needs_setup"
+        return "available"
+    if provider == "dropbox":
+        if not settings.dropbox_oauth_client_id or not settings.dropbox_oauth_client_secret:
+            return "needs_setup"
+        return "available"
+    return "coming_soon"
+
+
+def list_providers() -> list[dict]:
+    """Provider catalog for the FE Cloud sync panel.
+
+    The first three entries map to fully-wired providers (status
+    derived from settings); the rest are placeholder slots so the
+    UI shows the user "we know about these, they're on the
+    roadmap". Adding a provider means appending here + flipping its
+    status helper above.
+    """
+    return [
+        {
+            "id": "google_drive",
+            "name": "Google Drive",
+            "kind": "oauth2",
+            "status": _provider_status("google_drive"),
+            "blurb": "Mirror your Drive into neuthek. Read-only — we never write to your Drive.",
+            "docs": "https://console.cloud.google.com/apis/credentials",
+        },
+        {
+            "id": "onedrive",
+            "name": "OneDrive",
+            "kind": "oauth2",
+            "status": _provider_status("onedrive"),
+            "blurb": "Mirror your OneDrive (personal or work / school). Read-only.",
+            "docs": "https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+        },
+        {
+            "id": "dropbox",
+            "name": "Dropbox",
+            "kind": "oauth2",
+            "status": _provider_status("dropbox"),
+            "blurb": "Mirror your Dropbox. Read-only access; your files stay on Dropbox too.",
+            "docs": "https://www.dropbox.com/developers/apps",
+        },
+        {
+            "id": "icloud",
+            "name": "iCloud Drive",
+            "kind": "app_password",
+            "status": "coming_soon",
+            "blurb": "iCloud lacks a standard OAuth API. Coming via app-specific password support.",
+            "docs": None,
+        },
+        {
+            "id": "mega",
+            "name": "MEGA",
+            "kind": "credentials",
+            "status": "coming_soon",
+            "blurb": "End-to-end encrypted source. Decryption only in the viewer.",
+            "docs": None,
+        },
+        {
+            "id": "box",
+            "name": "Box",
+            "kind": "oauth2",
+            "status": "coming_soon",
+            "blurb": "Box.com mirror. OAuth shape ready; sync engine queued.",
+            "docs": None,
+        },
+        {
+            "id": "pcloud",
+            "name": "pCloud",
+            "kind": "oauth2",
+            "status": "coming_soon",
+            "blurb": "pCloud mirror. OAuth shape ready; sync engine queued.",
+            "docs": None,
+        },
+    ]
 
 
 # ---------- error type the API layer translates to 503 -------------------
@@ -168,6 +291,177 @@ class CloudSyncNotConfigured(RuntimeError):
 class OAuthHandoff:
     auth_url: str
     state: str
+
+
+# ---------- §C4.6 — OneDrive (Microsoft Graph) ----------------------------
+#
+# Microsoft identity platform v2.0 endpoints:
+#   AUTH:  https://login.microsoftonline.com/common/oauth2/v2.0/authorize
+#   TOKEN: https://login.microsoftonline.com/common/oauth2/v2.0/token
+#
+# Tenant `common` accepts BOTH personal Microsoft accounts (Outlook,
+# Live, Hotmail) AND work/school accounts. Use `consumers` to limit
+# to personal accounts, or a tenant GUID to limit to one org. The
+# rendered app at portal.azure.com must be registered with
+# "Accounts in any organizational directory and personal Microsoft
+# accounts" for `common` to work.
+#
+# Token shape (response from /token):
+#   {access_token, refresh_token, expires_in, scope, token_type, ext_expires_in}
+# Refresh tokens are long-lived (~90d sliding) but get rotated on
+# refresh — every refresh response includes a new refresh_token that
+# replaces the old one. The Google Drive flow doesn't rotate; OneDrive
+# does.
+
+_ONEDRIVE_AUTH_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+_ONEDRIVE_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+
+def _onedrive_auth_url(state: str) -> tuple[str, str | None]:
+    """Build the Microsoft consent URL + return (url, code_verifier).
+
+    PKCE: we generate a code_verifier + S256 challenge so even if our
+    redirect URI ever leaks via a referrer log, an attacker without
+    the verifier can't exchange the intercepted code.
+    """
+    import base64
+    import hashlib
+    import secrets as _secrets
+    from urllib.parse import urlencode
+
+    verifier = _secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+
+    params = {
+        "client_id": settings.onedrive_oauth_client_id,
+        "response_type": "code",
+        "redirect_uri": settings.onedrive_oauth_redirect_uri,
+        "response_mode": "query",
+        "scope": " ".join(PROVIDER_SCOPES["onedrive"]),
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        # `prompt=select_account` lets the user pick which Microsoft
+        # account to connect (useful when they have both a personal
+        # and a work account signed in).
+        "prompt": "select_account",
+    }
+    return f"{_ONEDRIVE_AUTH_ENDPOINT}?{urlencode(params)}", verifier
+
+
+async def _onedrive_exchange_code(code: str, verifier: str | None) -> dict:
+    """POST to the token endpoint to swap `code` for tokens. Returns
+    the parsed JSON response or raises on any non-2xx."""
+    import httpx
+    data = {
+        "client_id": settings.onedrive_oauth_client_id,
+        "client_secret": settings.onedrive_oauth_client_secret,
+        "code": code,
+        "redirect_uri": settings.onedrive_oauth_redirect_uri,
+        "grant_type": "authorization_code",
+        "scope": " ".join(PROVIDER_SCOPES["onedrive"]),
+    }
+    if verifier:
+        data["code_verifier"] = verifier
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(_ONEDRIVE_TOKEN_ENDPOINT, data=data)
+    if r.status_code >= 400:
+        # Don't echo the body — it may contain the OAuth error
+        # description with internal endpoint info. Log + raise a
+        # generic CloudSyncNotConfigured so the FE shows a clean
+        # "could not connect" message.
+        logger.warning(
+            "onedrive token exchange failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "OneDrive token exchange failed. Try connecting again, "
+            "or check that the app's redirect URI matches "
+            "ONEDRIVE_OAUTH_REDIRECT_URI exactly."
+        )
+    return r.json()
+
+
+# ---------- §C4.6 — Dropbox -------------------------------------------------
+#
+# Dropbox v2 OAuth endpoints:
+#   AUTH:  https://www.dropbox.com/oauth2/authorize
+#   TOKEN: https://api.dropboxapi.com/oauth2/token
+#
+# Default access tokens are 4-hour short-lived UNLESS the auth URL
+# carries `token_access_type=offline` — which switches the response
+# to (short_lived_access_token, refresh_token) pair. The refresh
+# token is what we encrypt + store. Dropbox uses HTTP Basic for
+# client auth on the token endpoint, NOT a body field, which is the
+# main shape difference from Google + Microsoft.
+
+_DROPBOX_AUTH_ENDPOINT = "https://www.dropbox.com/oauth2/authorize"
+_DROPBOX_TOKEN_ENDPOINT = "https://api.dropboxapi.com/oauth2/token"
+
+
+def _dropbox_auth_url(state: str) -> tuple[str, str | None]:
+    """Build the Dropbox consent URL + return (url, code_verifier).
+
+    Dropbox supports PKCE; we use it for the same defense-in-depth
+    reason as the OneDrive flow.
+    """
+    import base64
+    import hashlib
+    import secrets as _secrets
+    from urllib.parse import urlencode
+
+    verifier = _secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+
+    params = {
+        "client_id": settings.dropbox_oauth_client_id,
+        "response_type": "code",
+        "redirect_uri": settings.dropbox_oauth_redirect_uri,
+        "state": state,
+        # `offline` is THE flag that makes Dropbox return a refresh
+        # token. Without this we get a short-lived access token only
+        # and the sync stops working the next day.
+        "token_access_type": "offline",
+        "scope": " ".join(PROVIDER_SCOPES["dropbox"]),
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"{_DROPBOX_AUTH_ENDPOINT}?{urlencode(params)}", verifier
+
+
+async def _dropbox_exchange_code(code: str, verifier: str | None) -> dict:
+    """POST to the Dropbox token endpoint. Uses HTTP Basic auth for
+    the client_id / client_secret per Dropbox's docs (NOT body
+    fields, which Google + Microsoft accept)."""
+    import httpx
+    data = {
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": settings.dropbox_oauth_redirect_uri,
+    }
+    if verifier:
+        data["code_verifier"] = verifier
+    auth = (
+        settings.dropbox_oauth_client_id,
+        settings.dropbox_oauth_client_secret,
+    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.post(_DROPBOX_TOKEN_ENDPOINT, data=data, auth=auth)
+    if r.status_code >= 400:
+        logger.warning(
+            "dropbox token exchange failed: %s %s",
+            r.status_code, r.text[:200],
+        )
+        raise CloudSyncNotConfigured(
+            "Dropbox token exchange failed. Try connecting again, "
+            "or check that the app's redirect URI matches "
+            "DROPBOX_OAUTH_REDIRECT_URI exactly."
+        )
+    return r.json()
 
 
 # ---------- Google Drive --------------------------------------------------
@@ -276,7 +570,7 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     callback can retrieve it; without this, Google rejects the token
     exchange with "invalid_grant: Missing code verifier."
     """
-    if provider != "google_drive":
+    if provider not in ("google_drive", "onedrive", "dropbox"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
@@ -286,6 +580,41 @@ async def connect_provider(user_id: UUID, provider: CloudProvider) -> OAuthHando
     _verify_encryption_ready()
 
     signed_state = _build_state(user_id)
+    if provider == "onedrive":
+        # §C4.6 — Microsoft identity platform v2.0. PKCE is required
+        # for the "Single-page application" / public-client tenants
+        # but optional for confidential clients with a secret. We use
+        # the confidential flow (server holds the secret) so PKCE
+        # isn't strictly needed; including it anyway is harmless and
+        # matches the Google flow's defense-in-depth posture.
+        if not settings.onedrive_oauth_client_id:
+            raise CloudSyncNotConfigured(
+                "OneDrive OAuth client not configured. Set "
+                "ONEDRIVE_OAUTH_CLIENT_ID + ONEDRIVE_OAUTH_CLIENT_SECRET "
+                "in .env. Register the app at portal.azure.com."
+            )
+        auth_url, verifier = _onedrive_auth_url(signed_state)
+        if verifier:
+            await _stash_pkce_verifier(signed_state, verifier)
+        state = signed_state
+        return OAuthHandoff(auth_url=auth_url, state=state)
+    if provider == "dropbox":
+        # §C4.6 — Dropbox v2 OAuth. `token_access_type=offline` is the
+        # equivalent of Google's `access_type=offline` — without it
+        # Dropbox returns short-lived access tokens that expire in
+        # ~4h with no refresh, and the sync stops working the next
+        # day.
+        if not settings.dropbox_oauth_client_id:
+            raise CloudSyncNotConfigured(
+                "Dropbox OAuth client not configured. Set "
+                "DROPBOX_OAUTH_CLIENT_ID + DROPBOX_OAUTH_CLIENT_SECRET "
+                "in .env. Register at dropbox.com/developers/apps."
+            )
+        auth_url, verifier = _dropbox_auth_url(signed_state)
+        if verifier:
+            await _stash_pkce_verifier(signed_state, verifier)
+        state = signed_state
+        return OAuthHandoff(auth_url=auth_url, state=state)
     if provider == "google_drive":
         flow = _google_flow()
         # Own the verifier lifecycle ourselves rather than relying on the
@@ -324,12 +653,43 @@ async def complete_oauth(
     state: str,  # noqa: ARG001 — caller already verified state HMAC
 ) -> int:
     """Exchange `code` for tokens, encrypt + store, return cloud_links.id."""
-    if provider != "google_drive":
+    if provider not in ("google_drive", "onedrive", "dropbox"):
         raise CloudSyncNotConfigured(
             f"Provider '{provider}' is not implemented yet."
         )
 
-    if provider == "google_drive":
+    refresh_token_to_store: str | None = None
+    scopes = ""
+
+    if provider == "onedrive":
+        # §C4.6 — Microsoft Graph token exchange. The verifier was
+        # stashed under sha256(state) in connect_provider; pull it
+        # back so the PKCE check on the token endpoint passes.
+        verifier = await _pop_pkce_verifier(state)
+        token_payload = await _onedrive_exchange_code(code, verifier)
+        refresh_token_to_store = token_payload.get("refresh_token")
+        if not refresh_token_to_store:
+            raise CloudSyncNotConfigured(
+                "OneDrive did not return a refresh token. Make sure "
+                "the app is registered with `offline_access` in its "
+                "API permissions and try connecting again."
+            )
+        scopes = token_payload.get("scope", "")
+
+    elif provider == "dropbox":
+        # §C4.6 — Dropbox token exchange.
+        verifier = await _pop_pkce_verifier(state)
+        token_payload = await _dropbox_exchange_code(code, verifier)
+        refresh_token_to_store = token_payload.get("refresh_token")
+        if not refresh_token_to_store:
+            raise CloudSyncNotConfigured(
+                "Dropbox did not return a refresh token. Make sure "
+                "the app's auth URL carries `token_access_type=offline` "
+                "and try again."
+            )
+        scopes = token_payload.get("scope", "") or ",".join(PROVIDER_SCOPES["dropbox"])
+
+    elif provider == "google_drive":
         # `OAUTHLIB_RELAX_TOKEN_SCOPE` keeps Flow.fetch_token from
         # rejecting Google's scope expansion (`email` → full URI form,
         # `include_granted_scopes` adding back drive.readonly etc).

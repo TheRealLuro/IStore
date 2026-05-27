@@ -1,12 +1,36 @@
-// §C2 — cloud sync client. The hosted deployment may not have OAuth
-// configured (`google_oauth_client_id` empty in `.env`), in which
-// case every endpoint returns 503. Callers should catch + treat 503
-// as "show the 'configure cloud sync first' hint" rather than a hard
-// error.
+// §C2/C4.6 — cloud sync client. The hosted deployment may not have
+// OAuth configured (`*_oauth_client_id` empty in `.env`), in which
+// case `getCloudProviders` reports those providers as `needs_setup`
+// rather than `available`. Callers should gate the Connect button
+// on status.
 
 import { api } from "./client";
 
-export type CloudProvider = "google_drive";
+// §C4.6 — provider IDs from backend.cloud_sync.list_providers. The
+// "available + needs_setup" set is real providers; "coming_soon"
+// IDs (icloud / mega / box / pcloud) are placeholder slots and
+// can't be passed to /cloud/links/{provider}.
+export type CloudProvider =
+  | "google_drive"
+  | "onedrive"
+  | "dropbox"
+  | "icloud"
+  | "mega"
+  | "box"
+  | "pcloud";
+
+export interface CloudProviderInfo {
+  id: CloudProvider;
+  name: string;
+  kind: "oauth2" | "app_password" | "credentials";
+  status: "available" | "needs_setup" | "coming_soon";
+  blurb: string;
+  docs: string | null;
+}
+
+export async function getCloudProviders(): Promise<CloudProviderInfo[]> {
+  return api.get<CloudProviderInfo[]>("/cloud/providers");
+}
 
 export interface CloudLink {
   id: number;

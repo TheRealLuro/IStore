@@ -151,6 +151,33 @@ async def folder_stats(
     )
 
 
+# §C4.6 — provider catalog for the FE Cloud sync panel. Public read
+# (well, current_active_user-gated like /links). Static computed
+# from settings, no DB hit; updates without restart when env vars
+# change (since `_provider_status` reads settings live).
+class CloudProviderInfo(BaseModel):
+    id: str
+    name: str
+    kind: str
+    status: str  # "available" | "needs_setup" | "coming_soon"
+    blurb: str
+    docs: str | None = None
+
+
+@router.get("/providers", response_model=list[CloudProviderInfo])
+async def list_provider_catalog(
+    user: Annotated[User, Depends(current_active_user)],
+) -> list[CloudProviderInfo]:
+    """Static catalog of every cloud provider neuthek knows about,
+    with per-provider status derived from settings. The FE Cloud
+    sync panel renders this list as cards; status drives whether
+    the user sees a "Connect" button (available), a "Needs setup"
+    chip with docs link (needs_setup), or a "Coming soon" greyed-
+    out card (coming_soon)."""
+    from backend.cloud_sync import list_providers
+    return [CloudProviderInfo(**p) for p in list_providers()]
+
+
 @router.get("/links", response_model=list[CloudLinkRead])
 async def list_links(
     user: Annotated[User, Depends(current_active_user)],
