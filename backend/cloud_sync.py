@@ -506,10 +506,33 @@ async def _onedrive_collect_entries(refresh_token: str) -> list[dict]:
                         "onedrive list failed: %s %s",
                         r.status_code, r.text[:200],
                     )
-                    raise CloudSyncNotConfigured(
-                        "OneDrive listing failed. Try again later, or "
-                        "reconnect from Settings → Cloud sync."
-                    )
+                    # Surface Microsoft's most common per-account
+                    # failure modes in plain English. Without these
+                    # the FE just shows a generic "failed" toast and
+                    # the user has no idea whether to reconnect, pay
+                    # for a license, or escalate to IT.
+                    body_lc = r.text.lower()
+                    if "spo license" in body_lc or "no onedrive" in body_lc:
+                        msg = (
+                            "Your Microsoft account doesn't have a "
+                            "OneDrive license attached. Personal accounts "
+                            "(Outlook.com / Hotmail / Live) include OneDrive; "
+                            "work/school accounts need a Microsoft 365 "
+                            "subscription with OneDrive for Business "
+                            "enabled by your IT admin."
+                        )
+                    elif r.status_code in (401, 403):
+                        msg = (
+                            "OneDrive denied access. Reconnect from "
+                            "Settings → Cloud sync and re-grant the "
+                            "Files.Read.All permission."
+                        )
+                    else:
+                        msg = (
+                            "OneDrive listing failed. Try again later, "
+                            "or reconnect from Settings → Cloud sync."
+                        )
+                    raise CloudSyncNotConfigured(msg)
                 payload = r.json()
                 for item in payload.get("value", []):
                     if item.get("package"):
