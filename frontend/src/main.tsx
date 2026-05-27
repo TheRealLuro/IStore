@@ -11,6 +11,7 @@ import {
   BillingReturnPage,
 } from "../neuthek/src/billing.jsx";
 import { ResetPasswordPage } from "../neuthek/src/reset-password.jsx";
+import { VerifyEmailPage } from "../neuthek/src/verify-email.jsx";
 import "../neuthek/styles/index.css";
 
 // Apply the saved theme BEFORE any component mounts so every entry
@@ -99,6 +100,16 @@ function bootstrap(): JSX.Element {
   // expired" card with a back-to-sign-in button.
   if (path === "/reset" || path === "/reset/") {
     return <ResetPasswordPage/>;
+  }
+  // §C6b — email-verification landing. The backend mails
+  // {frontend_base_url}/verify?token=<jwt> on signup (via
+  // UserManager.on_after_register → request_verify →
+  // send_verify_email). This page consumes the token POST /auth/
+  // verify, flashes "verified", and hands the user back to the
+  // gallery. Visiting /verify without a token shows a card with
+  // a "request a fresh link" form.
+  if (path === "/verify" || path === "/verify/") {
+    return <VerifyEmailPage/>;
   }
   return <App/>;
 }

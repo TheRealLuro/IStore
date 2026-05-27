@@ -542,6 +542,11 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
         "/auth/forgot-password",
         "/auth/reset-password",
         "/auth/request-verify-token",
+        # §C6b — /auth/verify consumes the email-verification JWT.
+        # It's the path an attacker would hammer with a leaked-token
+        # list, so it needs the same per-IP burst + per-identity
+        # lockout as /auth/reset-password.
+        "/auth/verify",
         "/account/recovery-codes/login",
         # todo §1.1 / G1 — share-claim is the same threat shape as
         # recovery-codes-login (POST + secret token + identity binding),
