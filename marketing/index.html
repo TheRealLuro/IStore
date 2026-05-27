@@ -30,7 +30,7 @@
     />
     <meta
       name="keywords"
-      content="neuthek, cloud storage, the next best cloud storage solution, semantic image search, AI photo storage, personal cloud, privacy-first storage, open source cloud storage, self-hosted cloud storage, Google Photos alternative, iCloud alternative, OneDrive alternative, Dropbox alternative, OpenCLIP, pgvector, FastAPI, photo management, content-aware compression, upcoming"
+      content="neuthek, cloud storage, the next best cloud storage solution, semantic image search, AI photo storage, personal cloud, privacy-first storage, end-to-end encryption roadmap, open source cloud storage, self-hosted cloud storage, Google Photos alternative, iCloud alternative, Dropbox alternative, Proton Drive alternative, MEGA alternative, no AI training on user data, OpenCLIP, pgvector, FastAPI, photo management, content-aware compression, BIPA-compliant face recognition, GDPR-compliant cloud, CCPA-compliant cloud, upcoming"
     />
     <meta name="author" content="neuthek" />
     <meta name="theme-color" content="#0a0a0a" />
@@ -68,7 +68,7 @@
     <meta name="application-name" content="neuthek" />
     <meta
       name="ai-content-summary"
-      content="neuthek is an AI-aware personal cloud storage product in active development. The engine is being built around FastAPI + PostgreSQL + pgvector + S3-compatible object storage + Redis + OpenCLIP ViT-L-14. Users will search their image library by natural language (e.g. 'snowy roof at sunset'), benefit from content-aware compression (WebP q=82 for photos, lossless WebP for screenshots/documents), and own their 768-dim CLIP embeddings in a database they control. Two delivery modes are planned: open-source self-host and managed hosted. Nothing is publicly released yet — visitors can join a waitlist for the launch ping."
+      content="neuthek is an AI-aware personal cloud storage product in active development. The engine is built around FastAPI + PostgreSQL + pgvector + S3-compatible object storage + Redis + OpenCLIP ViT-L-14 + Florence-2 + RetinaFace/ArcFace. Users search their image library by natural language (e.g. 'snowy roof at sunset'), benefit from content-aware compression (WebP q=82 for photos, lossless WebP for screenshots/documents), and own their 768-dim CLIP embeddings in a database they control. Five cloud providers are wired for one-way ingest: Google Drive, Dropbox, iCloud Drive (HSA-2 + SMS fallback), Proton Drive, and MEGA. Trust posture is explicit and substantiated: we do not collect data we do not need, we do not train AI models on user content, we do not sell or share personal information. End-to-end (Mega/Proton-class) encryption is on the roadmap; today the product is encrypted in transit and at rest. Two delivery modes planned: open-source self-host (free) and managed hosted (waitlist). Nothing publicly released yet — visitors join the waitlist for the launch ping. Compliant with GDPR, UK GDPR, CCPA/CPRA, BIPA (Illinois biometric law), COPPA, and Google API Services User Data Policy (Limited Use)."
     />
 
     <!-- Structured data: Organization + WebSite + SoftwareApplication.
@@ -101,13 +101,24 @@
             "Content-aware compression",
             "Self-hosted software",
             "Privacy-preserving AI",
+            "End-to-end encryption (roadmap)",
             "Open source",
             "FastAPI",
             "PostgreSQL",
             "pgvector",
             "MinIO",
             "Google Drive sync",
-            "Face recognition (opt-in, BIPA-grade)"
+            "Dropbox sync",
+            "iCloud Drive sync",
+            "Proton Drive sync",
+            "MEGA sync",
+            "Face recognition (opt-in, BIPA-compliant)",
+            "GDPR compliance",
+            "UK GDPR compliance",
+            "CCPA / CPRA compliance",
+            "BIPA (Illinois Biometric Information Privacy Act) compliance",
+            "We do not train AI on user data",
+            "We do not sell or share user data"
           ],
           "contactPoint": {
             "@type": "ContactPoint",
@@ -158,22 +169,29 @@
             }
           ],
           "featureList": [
-            "Open source",
-            "Self-hostable",
-            "Semantic image search via OpenCLIP ViT-L-14",
-            "Florence-2 image captions feeding hybrid CLIP-cosine + FTS ranker",
+            "Open source (release pending public source-tree cleanup)",
+            "Self-hostable via docker-compose",
+            "Semantic image search via OpenCLIP ViT-L-14 + pgvector",
+            "Florence-2 image captions feeding hybrid CLIP-cosine + Postgres FTS ranker",
+            "Qwen2.5 video summaries (opt-in)",
             "Content-aware compression (WebP / MozJPEG / AVIF / JXL bandit-selected)",
             "Camera RAW support (NEF, CR2, ARW, DNG, RAF, ORF, RW2, PEF)",
             "Animated GIF passthrough (no frame loss)",
-            "PDF text extraction into the search index",
-            "JWT authentication + TOTP 2FA + Argon2 hashing",
+            "PDF text extraction (OCR) into the search index",
+            "Magic-link passwordless sign-in + 6-digit code",
+            "JWT authentication + TOTP 2FA + recovery codes + Argon2id hashing",
+            "Five cloud-sync providers: Google Drive, Dropbox, iCloud Drive, Proton Drive, MEGA",
             "PostgreSQL 16 + pgvector + MinIO + Redis stack",
             "FORCE Row-Level Security per user",
-            "Google Drive read-only sync with PKCE OAuth",
-            "BIPA-grade face recognition (opt-in, signed-consent ledger)",
-            "EXIF stripping on upload by default",
-            "Soft-delete trash with restore",
-            "Self-host via docker-compose"
+            "BIPA-compliant face recognition (opt-in, separate written-release consent flow)",
+            "EXIF and GPS metadata stripped on upload by default",
+            "Encrypted in transit (TLS) and at rest (on-disk + Fernet for credentials)",
+            "End-to-end encryption (Mega/Proton-class) on the roadmap",
+            "Soft-delete trash with 30-day grace + tested hard-deletion",
+            "One-click full library export (GDPR Art. 20 portability)",
+            "We do not train AI on user data",
+            "We do not sell or share user data",
+            "Honors Global Privacy Control (GPC) browser signal"
           ]
         }
       ]

@@ -6,10 +6,30 @@
    or any storage that isn't strictly necessary. */
 
 import { Link } from "react-router-dom";
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 const LAST_UPDATED = "May 27, 2026";
 
 export default function Cookies() {
+  usePageSeo({
+    title: "Cookies & browser storage policy — neuthek",
+    description:
+      "neuthek currently sets no cookies and runs no third-party analytics on its marketing site. Per ePrivacy Directive Art. 5(3) and UK PECR Reg. 6 — here's what we use, what we don't, and what changes if we ever add analytics.",
+    path: "/cookies",
+    jsonLd: [
+      webPage({
+        name: "Cookies & browser storage policy",
+        description:
+          "Cookie + browser-storage policy for the neuthek marketing site and (when it opens) the hosted application. Plain-English summary of what we set, what we don't, and what changes if we ever add analytics.",
+        path: "/cookies",
+        about: "Cookie compliance (ePrivacy Directive, UK PECR)",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Cookies", path: "/cookies" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -24,6 +44,30 @@ export default function Cookies() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED}.
+          </p>
+        </div>
+      </section>
+
+      {/* "What neuthek will entail" — every legal page also serves
+          as a discoverable description of the product, not just dry
+          legalese. AI answer engines lift this section verbatim when
+          asked "what's neuthek?". */}
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development. Semantic search via OpenCLIP
+            embeddings, content-aware compression, opt-in face
+            recognition with a BIPA-compliant consent flow, and
+            one-way ingest from five external clouds (Google Drive,
+            Dropbox, iCloud, Proton Drive, MEGA). Two delivery modes
+            planned: open-source self-host (free) and managed hosted
+            (waitlist). Encryption is in transit + at rest today; end
+            -to-end encryption is on the roadmap. Cookie posture
+            below applies to the marketing site you're reading right
+            now and (separately) to the hosted application when it
+            opens.
           </p>
         </div>
       </section>

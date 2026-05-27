@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { verifyWaitlistEmail } from "../api";
+import { usePageSeo } from "../seo";
 
 /* Landing page reached by clicking the link in the verification email.
    Reads the `token` query param, posts it to /api/waitlist/verify, and
@@ -14,6 +15,12 @@ type Status =
   | { kind: "network" };
 
 export default function VerifyEmail() {
+  usePageSeo({
+    title: "Verify email — neuthek",
+    description: "Confirm your neuthek waitlist signup.",
+    path: "/waitlist/verify",
+    noindex: true,
+  });
   const [params] = useSearchParams();
   const token = params.get("token") || "";
   const [status, setStatus] = useState<Status>({ kind: "verifying" });

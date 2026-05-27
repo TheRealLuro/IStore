@@ -4,6 +4,7 @@ import {
   resendWaitlistVerify,
   type WaitlistUseCase,
 } from "../api";
+import { usePageSeo, webPage } from "../seo";
 
 /* The form below POSTs to the marketing-site's own /api/waitlist/signup
    endpoint (served by ../server.mjs in the same Render Web Service as
@@ -18,6 +19,21 @@ import {
    unverified pending signup. */
 
 export default function Waitlist() {
+  usePageSeo({
+    title: "Join the waitlist — neuthek",
+    description:
+      "Get the launch ping when neuthek opens — hosted version + open-source self-host. We send one email at early-access open and one at general availability. Optional weekly newsletter. Email verification required. Unsubscribe any time.",
+    path: "/waitlist",
+    jsonLd: [
+      webPage({
+        name: "Waitlist signup",
+        description:
+          "Email signup for neuthek launch notifications. We send one email when early-access opens and one at general availability. Optional weekly newsletter. Email is the only mandatory field; verification required.",
+        path: "/waitlist",
+        about: "Pre-launch waitlist for AI-aware personal cloud storage",
+      }),
+    ],
+  });
   const [email, setEmail] = useState("");
   const [use, setUse] = useState<WaitlistUseCase>("personal");
   // Newsletter consent — defaults to UNCHECKED. The form remains a

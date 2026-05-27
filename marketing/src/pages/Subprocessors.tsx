@@ -5,6 +5,8 @@
    public and updates trigger a 30-day notice as committed in the
    DPA template. */
 
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
+
 const LAST_UPDATED = "May 27, 2026";
 
 interface Sub {
@@ -72,6 +74,25 @@ const PLANNED_SUBS: Sub[] = [
 ];
 
 export default function Subprocessors() {
+  usePageSeo({
+    title: "Subprocessors — neuthek",
+    description:
+      "Every third party neuthek contracts with to process your data, the data they touch, where they're based, and the transfer mechanism (SCCs / UK Addendum / DPF). Updated when subprocessors change, with 30-day notice on additions.",
+    path: "/subprocessors",
+    jsonLd: [
+      webPage({
+        name: "Subprocessors",
+        description:
+          "GDPR Article 28 disclosure: every third party processing personal data on neuthek's behalf, what they handle, transfer mechanisms (EU SCCs + UK Addendum + EU-US Data Privacy Framework), and the 30-day notice commitment on changes.",
+        path: "/subprocessors",
+        about: "Subprocessor disclosure (GDPR Article 28)",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Subprocessors", path: "/subprocessors" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -86,6 +107,23 @@ export default function Subprocessors() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED}.
+          </p>
+        </div>
+      </section>
+
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development. The vision pipeline (OpenCLIP for
+            search, Florence-2 for captions, Qwen2.5 for video,
+            RetinaFace + ArcFace for faces) runs entirely on
+            infrastructure we operate — content does NOT transit
+            OpenAI, Anthropic, Gemini, or any other third-party
+            inference API. The subprocessors below handle hosting,
+            DNS, transactional email, and web fonts. Everything else
+            stays in our tenant.
           </p>
         </div>
       </section>

@@ -6,9 +6,30 @@
    Copyright Office — that's a §512(c)(2) requirement we complete
    before public launch. */
 
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
+
 const LAST_UPDATED = "May 27, 2026";
 
 export default function Dmca() {
+  usePageSeo({
+    title: "DMCA & illegal-content notices — neuthek",
+    description:
+      "How to send a US DMCA takedown notice (17 U.S.C. §512) or an EU Digital Services Act illegal-content notice to neuthek. Counter-notification procedure + repeat-infringer policy + NCMEC CyberTipline routing for CSAM.",
+    path: "/dmca",
+    jsonLd: [
+      webPage({
+        name: "DMCA & illegal-content notice procedure",
+        description:
+          "Notice-and-takedown procedure for copyright (DMCA §512) and EU DSA illegal-content notices. What to include in a notice, where to send it, counter-notification process, and repeat-infringer termination policy.",
+        path: "/dmca",
+        about: "Copyright + illegal-content takedown procedure",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "DMCA", path: "/dmca" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
@@ -24,6 +45,27 @@ export default function Dmca() {
           </p>
           <p style={{ marginTop: 12, fontSize: 13, color: "var(--ink-3)" }}>
             Last updated: {LAST_UPDATED}.
+          </p>
+        </div>
+      </section>
+
+      <section className="section section--tight">
+        <div className="container" style={{ maxWidth: 760 }}>
+          <h2 style={{ fontSize: 22 }}>What neuthek will be.</h2>
+          <p style={{ marginTop: 12 }}>
+            neuthek is an AI-aware personal cloud storage product in
+            active development — semantic search via OpenCLIP image
+            embeddings, content-aware compression, one-way ingest
+            from Google Drive / Dropbox / iCloud / Proton Drive /
+            MEGA, opt-in face recognition with a BIPA-compliant
+            consent flow. Two delivery modes planned: open-source
+            self-host (free) and managed hosted (waitlist). When the
+            hosted service opens, users will be able to upload
+            personal files (photos, videos, documents) into a
+            single-tenant library fenced behind Postgres FORCE
+            Row-Level Security. The DMCA procedure on this page
+            governs how third parties report user-uploaded content
+            that infringes their rights.
           </p>
         </div>
       </section>

@@ -4,6 +4,8 @@
    without a glossary. The three sections collapse so the page is a
    short overview on first load; tap to expand. */
 
+import { usePageSeo, webPage, breadcrumbs } from "../seo";
+
 type Item = { t: string; d: string };
 
 // Sections collapsed by default. Numbers in brackets show item count.
@@ -294,6 +296,25 @@ const CHECKLIST: { status: "done" | "in-progress" | "owed"; title: string; body:
 ];
 
 export default function Roadmap() {
+  usePageSeo({
+    title: "Roadmap — what's shipped, what's coming — neuthek",
+    description:
+      "Plain-English roadmap: ~35 shipped capabilities (semantic search, content-aware compression, five-provider cloud sync, BIPA-compliant face recognition, passwordless sign-in, TOTP + recovery codes), ~9 in active development, ~13 planned including end-to-end encryption.",
+    path: "/roadmap",
+    jsonLd: [
+      webPage({
+        name: "Roadmap",
+        description:
+          "Shipped, in-progress, and planned features for neuthek. Pre-launch checklist with status badges. Hosted launches first; open-source self-host follows.",
+        path: "/roadmap",
+        about: "Product roadmap and pre-launch checklist",
+      }),
+      breadcrumbs([
+        { name: "Home", path: "/" },
+        { name: "Roadmap", path: "/roadmap" },
+      ]),
+    ],
+  });
   return (
     <>
       <section className="page-head">
