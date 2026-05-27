@@ -2,7 +2,15 @@ import uuid
 from datetime import datetime
 
 from fastapi_users import schemas
-from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -70,7 +78,32 @@ class ConsentBundleItem(BaseModel):
 
 
 class UserCreate(schemas.BaseUserCreate):
-    display_name: str | None = None
+    # §C4.1 — display_name is required on signup. The user's chosen
+    # name is the primary identity surface across the UI (greeting,
+    # AI summaries via §C4.2 "Me" → display-name binding, share-
+    # recipient display, audit-log rendering). Without it the FE
+    # falls back to the email-localpart which leaks email everywhere
+    # and breaks the "Hi <name>" experience.
+    #
+    # Validation (see `_validate_display_name` below):
+    #   - 1–80 chars after `.strip()` (Pydantic max_length=80 catches
+    #     deliberately-padded inputs before the strip runs)
+    #   - no leading/trailing whitespace in the persisted value
+    #   - no ASCII control characters (\x00–\x1f, \x7f)
+    #
+    # Existing rows from before this change carry NULL display_name;
+    # those keep working because the constraint applies at the
+    # registration boundary, not at the column. Settings → Account
+    # still lets a legacy user set theirs whenever.
+    display_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=80,
+        description=(
+            "Required at signup. 1–80 characters after trimming, no "
+            "control characters."
+        ),
+    )
     age_confirmed: bool = Field(..., description="Must be true; under-13 use is prohibited.")
     # §B2 — accept consent decisions at registration time so the
     # consent ledger predates the account row. The legacy flow
@@ -85,6 +118,44 @@ class UserCreate(schemas.BaseUserCreate):
     # signature; for the register-bundled path we use display_name or
     # email as the fallback when this field is empty.
     consent_signature: str | None = None
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _validate_display_name(cls, v):
+        # `mode="before"` so this runs ahead of the field-level
+        # min_length / max_length constraints. We want to be able to
+        # trim leading/trailing whitespace BEFORE the length check
+        # rejects "  alice  " for being 9 chars at the outer bound.
+        # Cases the validator handles:
+        #   - non-string input (e.g. number/null when the client
+        #     forgets to convert) → reject with a clear message
+        #   - whitespace-only input → reject (empty after strip)
+        #   - ASCII control characters in the body → reject. Anything
+        #     unicode-printable (including emoji, non-Latin scripts)
+        #     stays — the Person row column is VARCHAR(120) and the
+        #     UI renders the value verbatim.
+        if v is None:
+            # Required-field error from Pydantic core if the key is
+            # missing entirely; reach here only when the client
+            # explicitly sent `null`. Let Pydantic surface "field
+            # required" by returning None — the outer `str` annotation
+            # will reject it.
+            return v
+        if not isinstance(v, str):
+            raise ValueError("Display name must be a string.")
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError(
+                "Display name cannot be empty or only whitespace."
+            )
+        # Control characters (NUL through US, plus DEL). The strip()
+        # above already removed leading/trailing tabs and newlines,
+        # but anything embedded mid-string is still here.
+        if any(ord(c) < 0x20 or ord(c) == 0x7f for c in stripped):
+            raise ValueError(
+                "Display name contains invalid characters."
+            )
+        return stripped
 
     @model_validator(mode="after")
     def _require_age_gate(self) -> "UserCreate":

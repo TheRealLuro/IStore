@@ -319,8 +319,19 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       // The backend UserManager.create() override writes the
       // ConsentRecord rows in the same transaction.
       const consents = consentBundleFromPayload(payload);
-      const signature = name.trim() || email;
-      await register(email, pwd, payload.age13 === true, consents, signature);
+      // §C4.1 — display_name is now a first-class field on signup.
+      // The form already requires `name.length > 1` in canSubmit
+      // (validated above), so by the time we get here the trimmed
+      // value is guaranteed non-empty. The consent signature falls
+      // back to the same trimmed name OR the email when the field
+      // is somehow empty (defensive — covers a future signup-flow
+      // refactor that loosens canSubmit).
+      const trimmedName = name.trim();
+      const signature = trimmedName || email;
+      await register(
+        email, pwd, trimmedName, payload.age13 === true,
+        consents, signature,
+      );
       const u = await login(email, pwd);
       setUser(u);
       if (redirectIfNext()) return;
