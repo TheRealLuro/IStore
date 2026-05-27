@@ -1,11 +1,20 @@
 import { ApiError, api, tokens } from "./client";
 import type { User } from "@/types/file";
 
-/** Sentinel thrown when /auth/jwt/login refuses because the user has
+/** Sentinel thrown when an auth path refuses because the user has
  * TOTP enabled. The caller catches this, prompts for the 6-digit code,
- * and re-submits via `loginWithTotp`. */
+ * and re-submits via `loginWithTotp`.
+ *
+ * §H#7 — the magic-link `consumeSigninLink` path can also raise this,
+ * carrying the email so the TOTP prompt knows which account to act on.
+ * Optional because the password-login path already has the email in
+ * its calling scope and doesn't need to pass it through. */
 export class TotpRequiredError extends Error {
-  constructor() { super("totp_required"); }
+  email?: string;
+  constructor(email?: string) {
+    super("totp_required");
+    this.email = email;
+  }
 }
 
 export async function login(email: string, password: string): Promise<User> {
@@ -137,6 +146,70 @@ export async function resetPassword(
 /** Send a fresh verification email. */
 export async function requestVerify(email: string): Promise<void> {
   await api.post<void>("/auth/request-verify-token", { email });
+}
+
+/** Request a magic sign-in link by email. Anti-enumeration: always 202. */
+export async function requestSigninLink(email: string): Promise<void> {
+  await api.post<void>("/auth/email-link/request", { email });
+}
+
+/**
+ * Consume a magic-link JWT. On success the server returns
+ * {access_token} and the helper persists it via `tokens.set` —
+ * same shape the password login uses, so the rest of the auth
+ * lifecycle (me() / logout / refresh) works without changes.
+ *
+ * 2FA-aware: if the user has TOTP enabled, the server returns 401
+ * with {totp_required: true, email}. Throws TotpRequiredError so
+ * the caller can route into the existing TOTP step.
+ */
+export async function consumeSigninLink(token: string): Promise<User> {
+  try {
+    const r = await api.post<{ access_token: string; token_type: string }>(
+      "/auth/email-link/consume",
+      { token },
+    );
+    tokens.set(r.access_token);
+    return await me();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      const detail = (e.detail as { totp_required?: boolean; email?: string } | null) || null;
+      if (detail?.totp_required) {
+        throw new TotpRequiredError(detail.email || "");
+      }
+    }
+    throw e;
+  }
+}
+
+/**
+ * Sign in via the 6-digit code paired with the magic link in the
+ * email. Same outcome as `consumeSigninLink` — server response is
+ * identical, including the 2FA-aware 401 branch.
+ *
+ * Accepts the code in any of "123456" / "123 456" / "123-456" — the
+ * server strips spaces and dashes before comparing.
+ */
+export async function consumeSigninCode(
+  email: string,
+  code: string,
+): Promise<User> {
+  try {
+    const r = await api.post<{ access_token: string; token_type: string }>(
+      "/auth/email-link/consume-code",
+      { email, code },
+    );
+    tokens.set(r.access_token);
+    return await me();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      const detail = (e.detail as { totp_required?: boolean; email?: string } | null) || null;
+      if (detail?.totp_required) {
+        throw new TotpRequiredError(detail.email || "");
+      }
+    }
+    throw e;
+  }
 }
 
 /** Consume a verify JWT (from the email link). Returns the user. */
