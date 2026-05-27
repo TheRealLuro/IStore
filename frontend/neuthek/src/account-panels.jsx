@@ -179,8 +179,13 @@ function PasswordPage({ onBack }) {
 //     encrypted secret + shows a QR; verify flips totp_enabled.
 //   - Recovery codes (§C6) — 8 single-use base32 codes, kept for the
 //     locked-out case (lost phone, etc.).
-function TotpSetupCard({ onSetup, onDone, onCancel, busy }) {
-  const [bundle, setBundle] = useStateSP(null);
+function TotpSetupCard({ onSetup, onDone, onCancel, busy, initialBundle = null }) {
+  // §C6d — initialBundle lets the regenerate flow skip the "click
+  // Enable 2FA to mint a secret" step. In that flow the secret was
+  // already minted by setupTwoFactor() in the confirm stage; the
+  // user should land directly on the QR + verify form. The default
+  // (null) preserves the normal "Set up 2FA" first-time flow.
+  const [bundle, setBundle] = useStateSP(initialBundle);
   const [code, setCode] = useStateSP("");
   const qc = useQueryClient();
   const setUser = useAuthStore((s) => s.setUser);
@@ -354,6 +359,18 @@ function TwoFactorPage() {
   const [setupOpen, setSetupOpen] = useStateSP(false);
   const [busy, setBusy] = useStateSP(false);
   const [disableOpen, setDisableOpen] = useStateSP(false);
+  // §C6d — regenerate flow. Two-step: first the user proves identity
+  // (current code OR password — same shape as disable), then we
+  // disable the old secret, immediately /setup a new one, and surface
+  // the fresh QR. `regenStage` tracks where the user is in that
+  // sequence so the panel can render the right card. 'confirm' shows
+  // the code-or-password form; 'enroll' shows the QR + verify input.
+  const [regenStage, setRegenStage] = useStateSP(null);
+  // Bundle from the post-disable /setup call. Carried into the
+  // enroll stage so TotpSetupCard can render the QR immediately
+  // without firing /setup a second time (which would 409 once the
+  // user's /verify-flips totp_enabled back to true mid-loop).
+  const [regenBundle, setRegenBundle] = useStateSP(null);
 
   const handleRegenerate = async () => {
     if (busy) return;
@@ -403,13 +420,17 @@ function TwoFactorPage() {
                 <StatTile label="Last verified" value={verifiedAt} sub="local time"/>
               </div>
             </div>
-            {!disableOpen ? (
-              <div className="det-card" style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                <button className="btn btn--ghost" onClick={() => setDisableOpen(true)}>
+            {!disableOpen && !regenStage ? (
+              <div className="det-card" style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn btn--ghost" onClick={() => setRegenStage("confirm")}>
+                  Regenerate secret…
+                </button>
+                <span style={{ flex: 1 }}/>
+                <button className="btn btn--ghost" onClick={() => setDisableOpen(true)} style={{ color: "var(--danger)" }}>
                   Turn off 2FA…
                 </button>
               </div>
-            ) : (
+            ) : disableOpen ? (
               <div className="det-card" style={{ marginTop: 10 }}>
                 <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 8 }}>
                   Confirm with a current code or your password.
@@ -418,6 +439,72 @@ function TwoFactorPage() {
                 <button type="button" className="btn btn--ghost" style={{ marginTop: 8 }} onClick={() => setDisableOpen(false)}>
                   Cancel
                 </button>
+              </div>
+            ) : (
+              // §C6d — regenerate flow. Stage 'confirm' shows a tweaked
+              // TotpDisableForm whose onDone callback fires setup() to
+              // mint a new secret + flips us into the enroll stage.
+              // Stage 'enroll' reuses TotpSetupCard with onDone wiring
+              // back to a refresh of the 2fa-status cache so the row
+              // shows "Enabled" again with a fresh verified_at.
+              <div className="det-card" style={{ marginTop: 10 }}>
+                {regenStage === "confirm" && (
+                  <>
+                    <div style={{ fontSize: 12, color: "var(--ink)", marginBottom: 4, fontWeight: 500 }}>
+                      Regenerate TOTP secret
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 8 }}>
+                      Your old authenticator entry will stop working. Confirm
+                      with a current code or your password, then scan a fresh
+                      QR on the next step.
+                    </div>
+                    <TotpDisableForm onDone={async () => {
+                      // /disable just landed → 2fa-status is now off.
+                      // Immediately call /setup to roll a new secret.
+                      // If setup fails the user is in a 2FA-OFF state
+                      // (recoverable: they can re-enable via the normal
+                      // "Set up 2FA" button), so surface the error
+                      // clearly + bail of the regen flow.
+                      try {
+                        const bundle = await setupTwoFactor();
+                        setRegenBundle(bundle);
+                        setRegenStage("enroll");
+                      } catch (e) {
+                        toast.error(e?.detail || "Couldn't mint a new secret. 2FA is now off — set it up again from the button above.");
+                        setRegenStage(null);
+                      }
+                    }}/>
+                    <button type="button" className="btn btn--ghost" style={{ marginTop: 8 }} onClick={() => setRegenStage(null)}>
+                      Cancel
+                    </button>
+                  </>
+                )}
+                {regenStage === "enroll" && (
+                  <TotpSetupCard
+                    initialBundle={regenBundle}
+                    // onSetup never fires when initialBundle is non-
+                    // null (TotpSetupCard goes straight to the QR
+                    // step), but keep the prop wired in case the
+                    // bundle was lost and the user lands here cold.
+                    onSetup={setupTwoFactor}
+                    onDone={() => {
+                      setRegenStage(null);
+                      setRegenBundle(null);
+                      toast.success("New TOTP secret active. Old QR code will no longer work.");
+                    }}
+                    onCancel={() => {
+                      // User bailed mid-enroll. Their account is now in
+                      // a "secret exists but unverified" state — same
+                      // as if they'd run "Set up 2FA" and walked away.
+                      // The next setup() call overwrites the unverified
+                      // secret, so this is recoverable.
+                      setRegenStage(null);
+                      setRegenBundle(null);
+                      toast("2FA is off while the new secret is unverified. Finish setup to turn it back on.", { icon: "ℹ️" });
+                    }}
+                    busy={busy}
+                  />
+                )}
               </div>
             )}
           </>
