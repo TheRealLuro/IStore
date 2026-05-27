@@ -949,29 +949,73 @@ async def icloud_start(
             message="Session already trusted — no 2FA needed.",
         )
 
-    if requires_2sa or requires_2fa:
-        # Both branches now go through the SAME path: explicitly ask
-        # Apple to send a code via `send_verification_code`. We used
-        # to only do this for `requires_2sa` and rely on Apple's
-        # auto-push for `requires_2fa` — but the auto-push fails
-        # silently for some accounts (Apple's anti-abuse heuristics,
-        # offline trusted devices, or accounts that mix legacy + new
-        # 2FA flags). Users would see "enter the code" but no code
-        # would ever arrive. Calling send_verification_code() in
-        # both branches makes the delivery explicit; we also return
-        # the trusted-device list so the FE can show WHERE the code
-        # was sent and let the user pick a different device on
-        # resend.
+    # §C4.6 — Apple's two 2FA flavors need OPPOSITE handling. Mixing
+    # them was the root of the previous wave of bugs:
+    #
+    #   HSA-2 (modern, the default since 2017):
+    #     - pyicloud reports `requires_2fa=True`.
+    #     - Apple auto-pushes a 6-digit code via APN to trusted
+    #       devices the moment the user authenticates with email +
+    #       password. We do NOT need to (and CANNOT) trigger
+    #       delivery — calling send_verification_code() or
+    #       trusted_devices on an HSA-2 account 421s with "Missing
+    #       X-APPLE-WEBAUTH-HSA-LOGIN cookie" (those endpoints
+    #       belong to the older 2SA stack).
+    #     - Validation uses validate_2fa_code(code) ONLY. There is
+    #       no device parameter; pyicloud already has the session
+    #       state needed.
+    #     - Fallback for "no push arrived" is the user's own
+    #       Settings → Apple ID → Get Verification Code on a
+    #       signed-in iDevice. We can't trigger this remotely.
+    #
+    #   HSA-1 / 2SA (legacy, accounts that opted in pre-2017 and
+    #     never migrated):
+    #     - pyicloud reports `requires_2sa=True`.
+    #     - Apple does NOT auto-push. We have to explicitly call
+    #       send_verification_code(device) to deliver an SMS / push
+    #       to a specific trusted device.
+    #     - Validation uses validate_verification_code(device, code)
+    #       — must reuse the SAME device dict we sent to.
+    #     - "Try a different device" makes sense here.
+    #
+    # Branching by flavor:
+
+    if requires_2fa:
+        # HSA-2. Just stash + wait. Apple already pushed.
+        _ICLOUD_PENDING[session_id] = {
+            "service": svc,
+            "user_id": user.id,
+            "apple_id": payload.apple_id,
+            "password": payload.password,
+            "tmp_dir": tmp_dir,
+            "is_2sa": False,
+            "code_sent_device": None,
+            "all_devices": [],
+            "created_at": datetime.now(timezone.utc),
+        }
+        return ICloudStartResponse(
+            requires_2fa=True,
+            session_id=session_id,
+            # No trusted_devices list for HSA-2 — pyicloud's
+            # `trusted_devices` API only works for 2SA, so we'd 421
+            # if we queried it. The FE hides the "Try a different
+            # device" dropdown when this list is empty and instead
+            # shows the "Get Verification Code in Settings" hint.
+            trusted_devices=[],
+            code_sent_to=(
+                "your trusted Apple devices (check the system "
+                "dialog that just appeared)"
+            ),
+        )
+
+    if requires_2sa:
+        # HSA-1 / 2SA. Explicit send + device tracking, as before.
         device_list: list[ICloudTrustedDevice] = []
         code_sent_to: str | None = None
         raw_devices: list[dict] = []
         try:
             raw_devices = list(svc.trusted_devices or [])
             for dev in raw_devices:
-                # pyicloud's device dicts use varied key names per
-                # account flavor. Build a user-readable label out
-                # of whatever we get; fall back to a generic string
-                # if none of the expected fields exist.
                 label = (
                     dev.get("deviceName")
                     or dev.get("phoneNumber")
@@ -989,10 +1033,6 @@ async def icloud_start(
                     )
                     code_sent_to = device_list[0].label
                 except Exception:
-                    # If Apple rejects the send (rate-limited,
-                    # device offline, ...) we still want the modal
-                    # to render with the device list so the user
-                    # can retry on a different one.
                     logger.exception(
                         "icloud_start: send_verification_code "
                         "failed on device %r",
@@ -1009,16 +1049,7 @@ async def icloud_start(
             "apple_id": payload.apple_id,
             "password": payload.password,
             "tmp_dir": tmp_dir,
-            "is_2sa": requires_2sa,
-            # §C4.6 — the device dict we sent the code to. /verify
-            # needs this to call validate_verification_code(device,
-            # code) — pyicloud's method for codes that were
-            # explicitly requested via send_verification_code (as
-            # opposed to validate_2fa_code, which only accepts the
-            # auto-pushed flavor). User's code was rejected with
-            # "didn't match" because we always called the 2fa
-            # variant; /verify now tries both. The list is stored
-            # in send-order so resend can update it.
+            "is_2sa": True,
             "code_sent_device": raw_devices[0] if raw_devices else None,
             "all_devices": raw_devices,
             "created_at": datetime.now(timezone.utc),
@@ -1074,6 +1105,22 @@ async def icloud_resend_code(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Sign-in session not found or expired. Start over.",
+        )
+    # §C4.6 — resend is HSA-1 (2SA) only. On HSA-2 accounts the
+    # underlying `trusted_devices` + `send_verification_code` APIs
+    # 421 with "Missing X-APPLE-WEBAUTH-HSA-LOGIN cookie" because
+    # they belong to the older auth stack. For HSA-2 accounts the
+    # user's only fallback is the iDevice's Settings → Apple ID →
+    # Sign-In & Security → Get Verification Code menu, which we
+    # can't trigger remotely. Refuse the request explicitly so the
+    # FE shows a useful message instead of a generic 500.
+    if not pending.get("is_2sa"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This account uses Apple's modern 2FA — we can't trigger "
+            "a fresh code from here. On any signed-in iPhone / iPad "
+            "/ Mac: Settings → Apple ID → Sign-In & Security → Get "
+            "Verification Code.",
         )
     svc = pending["service"]
     try:
@@ -1162,53 +1209,50 @@ async def icloud_verify(
     # dashes (some authenticator UIs render "123-456"). Strip both
     # before sending.
     code = payload.code.strip().replace(" ", "").replace("-", "")
-    # §C4.6 — pyicloud has TWO validation methods:
-    #   validate_2fa_code(code)            — for codes from
-    #     Apple's auto-push (modern 2FA flow).
-    #   validate_verification_code(dev,c)  — for codes we
-    #     explicitly requested via send_verification_code (older
-    #     2SA flow + any account where Apple's auto-push doesn't
-    #     fire and we had to explicitly trigger).
-    # User got the code (we explicitly triggered) but typing it
-    # into our form was rejected because we always called
-    # validate_2fa_code. Try BOTH — first the modern path, fall
-    # back to the device-bound path with the stashed device dict.
+    # §C4.6 — pick the validation method by flavor (see /start for
+    # the full HSA-1 vs HSA-2 explanation).
+    #
+    #   HSA-2 (`is_2sa == False`) → validate_2fa_code(code) ONLY.
+    #     validate_verification_code 421s on HSA-2 because the
+    #     underlying endpoint belongs to the older 2SA stack.
+    #
+    #   HSA-1 (`is_2sa == True`)  → validate_verification_code(
+    #                                 stashed_device, code).
+    #     validate_2fa_code returns False on HSA-1 because the
+    #     account isn't on the modern push flow.
+    is_2sa = bool(pending.get("is_2sa"))
+    dev = pending.get("code_sent_device")
     ok = False
-    last_err: Exception | None = None
     try:
-        ok = await asyncio.to_thread(svc.validate_2fa_code, code)
-    except Exception as e:
-        last_err = e
-        logger.warning(
-            "icloud_verify: validate_2fa_code raised — falling "
-            "back to validate_verification_code: %s", e,
-        )
-    if not ok:
-        dev = pending.get("code_sent_device")
-        if dev is not None:
-            try:
-                ok = await asyncio.to_thread(
-                    svc.validate_verification_code, dev, code,
-                )
-            except Exception as e:
-                last_err = e
-                logger.exception(
-                    "icloud_verify: validate_verification_code raised"
-                )
-    if not ok:
-        # Both methods failed. Don't drop the pending entry — the
-        # user might have typoed and want to retry. The 5-min TTL
-        # still applies.
-        if last_err is not None:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "That code didn't match. Apple may have rejected it "
-                "(expired or already used) — try requesting a fresh "
-                "one with 'Try a different device' above.",
+        if is_2sa and dev is not None:
+            ok = await asyncio.to_thread(
+                svc.validate_verification_code, dev, code,
             )
+        else:
+            ok = await asyncio.to_thread(svc.validate_2fa_code, code)
+    except Exception as e:
+        logger.exception("icloud_verify: validation raised")
+        # Surface the actual Apple error to the user — it's almost
+        # always either "code expired" or "code already used".
+        msg = str(e)[:200]
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "That code didn't match. Check your iDevice and try again.",
+            f"Apple rejected the code: {msg or 'unknown reason'}. "
+            f"Request a fresh code (close + reopen the connect dialog) "
+            f"and try again.",
+        )
+    if not ok:
+        # pyicloud returned False rather than raising — usually
+        # means the code was wrong / expired but Apple didn't bother
+        # to give a specific reason. Codes expire fast (~30 s once
+        # displayed); the most common cause is "typed too slowly".
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That code didn't match. Apple may have rejected it "
+            "(expired or already used). Get a fresh code from "
+            "Settings → Apple ID → Sign-In & Security → Get "
+            "Verification Code on a signed-in iDevice, then try "
+            "again.",
         )
     # Trust this session so the cookie_directory carries the long-
     # lived trust token. Without this, every sync would re-prompt.
