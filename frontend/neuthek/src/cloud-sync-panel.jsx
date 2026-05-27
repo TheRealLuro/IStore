@@ -640,7 +640,10 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
                 fall back to "Get Verification Code" in iDevice
                 Settings. Both paths are surfaced so the user is
                 never stuck. */}
-            {trustedDevices.length > 0 && (
+            {trustedDevices.length > 0 ? (
+              // HSA-1 / 2SA path: we triggered the send + know which
+              // devices are trusted. Let the user retry on a
+              // different one.
               <details style={{
                 fontSize: 11.5,
                 color: "var(--ink-3)",
@@ -690,6 +693,32 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
                   </div>
                 </div>
               </details>
+            ) : (
+              // HSA-2 path (the default since 2017): the backend
+              // can't trigger Apple to send another code, since
+              // those APIs only work for the older 2SA stack. The
+              // user's only fallback is the iDevice's own Settings
+              // menu. Codes also expire quickly (~30 s once
+              // displayed) — typing speed matters.
+              <div style={{
+                fontSize: 11.5,
+                color: "var(--ink-3)",
+                background: "var(--surface-2)",
+                border: "1px solid var(--line)",
+                borderRadius: 8,
+                padding: "10px 12px",
+                lineHeight: 1.55,
+              }}>
+                <div style={{ color: "var(--ink-2)" }}>
+                  <strong>Code didn&rsquo;t arrive or expired?</strong>
+                </div>
+                On any iPhone / iPad / Mac signed in to this Apple
+                ID, open{" "}
+                <strong>Settings → [your name] → Sign-In &amp;
+                Security → Get Verification Code</strong>. Apple&rsquo;s
+                codes expire within ~30 seconds once shown, so type
+                fast.
+              </div>
             )}
             <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
               Verification code
