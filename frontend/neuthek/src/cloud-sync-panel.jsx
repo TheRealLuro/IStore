@@ -17,6 +17,7 @@ import { Icon } from "./icons.jsx";
 import {
   connectCloud,
   disconnectCloud,
+  getCloudProviders,
   listCloudConflicts,
   listCloudLinks,
   setCloudAiOptIn,
@@ -26,6 +27,12 @@ import {
 
 const PROVIDER_META = {
   google_drive: { label: "Google Drive", note: "Read-only · drive.readonly scope" },
+  onedrive:     { label: "OneDrive",     note: "Read-only · Files.Read.All scope" },
+  dropbox:      { label: "Dropbox",      note: "Read-only · files.content.read scope" },
+  icloud:       { label: "iCloud Drive", note: "Coming soon" },
+  mega:         { label: "MEGA",         note: "Coming soon" },
+  box:          { label: "Box",          note: "Coming soon" },
+  pcloud:       { label: "pCloud",       note: "Coming soon" },
 };
 
 function fmtRel(iso) {
@@ -386,25 +393,135 @@ export function CloudSyncPanel() {
         }}
       >
         <div style={{ fontSize: 13, fontWeight: 600 }}>Connect a source</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {(["google_drive"]).map((p) => {
-            const meta = PROVIDER_META[p];
-            const already = connected.has(p);
-            return (
-              <button
-                key={p}
-                className="btn btn--secondary btn--sm"
-                onClick={() => onConnect(p)}
-                disabled={already}
-                title={meta.note}
-              >
-                <Icon name="cloud" size={12}/>
-                {already ? `${meta.label} connected` : `Connect ${meta.label}`}
-              </button>
-            );
-          })}
-        </div>
+        <ProviderCatalog connected={connected} onConnect={onConnect}/>
       </div>
+    </div>
+  );
+}
+
+
+// §C4.6 — provider catalog. Renders one card per known cloud
+// provider with status-gated affordances:
+//   "available"    — Connect button (or "Connected" chip if active).
+//   "needs_setup"  — disabled card + small "Operator needs to set
+//                    OAuth credentials" hint + Docs link.
+//   "coming_soon"  — greyed-out card + "Notify me" placeholder.
+//
+// Catalog is pulled from /cloud/providers so the same FE code
+// shows different status mixes depending on which env vars the
+// operator set. No code change required to promote a provider
+// from needs_setup → available — just set the env var + recreate
+// the backend.
+function ProviderCatalog({ connected, onConnect }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["cloud-providers"],
+    queryFn: getCloudProviders,
+    staleTime: 60_000,
+  });
+
+  if (isLoading || !data) {
+    return (
+      <div style={{ fontSize: 12, color: "var(--ink-3)", padding: 12 }}>
+        Loading providers…
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+      gap: 10,
+      marginTop: 6,
+    }}>
+      {data.map((p) => (
+        <ProviderCard
+          key={p.id}
+          provider={p}
+          connected={connected.has(p.id)}
+          onConnect={() => onConnect(p.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ProviderCard({ provider, connected, onConnect }) {
+  const isAvailable = provider.status === "available";
+  const isNeedsSetup = provider.status === "needs_setup";
+  const isComingSoon = provider.status === "coming_soon";
+
+  // Status chip palette. Colors chosen to read clearly in both
+  // light + dark mode without further per-theme overrides.
+  const chipColor =
+    isAvailable && connected ? "var(--success)" :
+    isAvailable ? "var(--ink)" :
+    isNeedsSetup ? "var(--warning, #f59e0b)" :
+    "var(--ink-3)";
+  const chipLabel =
+    isAvailable && connected ? "Connected" :
+    isAvailable ? "Available" :
+    isNeedsSetup ? "Needs setup" :
+    "Coming soon";
+
+  const onClick = () => {
+    if (!isAvailable || connected) return;
+    onConnect();
+  };
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        padding: "12px 14px",
+        background: "var(--surface)",
+        border: "1px solid var(--line)",
+        borderRadius: 12,
+        cursor: isAvailable && !connected ? "pointer" : "default",
+        opacity: isComingSoon ? 0.55 : 1,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        transition: "border-color 120ms ease",
+      }}
+      onMouseEnter={(e) => {
+        if (isAvailable && !connected) e.currentTarget.style.borderColor = "var(--ink-2, var(--ink-3))";
+      }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--line)"; }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Icon name="cloud" size={14}/>
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>
+          {provider.name}
+        </span>
+        <span style={{
+          fontSize: 10,
+          padding: "2px 7px",
+          borderRadius: 6,
+          background: "var(--surface-2)",
+          color: chipColor,
+          fontWeight: 600,
+          letterSpacing: 0.02,
+        }}>
+          {chipLabel}
+        </span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.45 }}>
+        {provider.blurb}
+      </div>
+      {isNeedsSetup && provider.docs && (
+        <div style={{ fontSize: 11, marginTop: 4 }}>
+          <a
+            href={provider.docs}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: "var(--ink-2)", textDecoration: "underline" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            How to set up
+          </a>
+        </div>
+      )}
     </div>
   );
 }

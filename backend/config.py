@@ -251,6 +251,27 @@ class Settings(BaseSettings):
         default="http://localhost:8000/auth/google/callback"
     )
 
+    # §C4.6 — Microsoft OneDrive / Microsoft Graph OAuth client. Empty
+    # values keep the OneDrive endpoints in the "not_configured" state
+    # so the FE shows a "Needs setup" chip instead of crashing on
+    # /cloud/links/onedrive. Register at https://portal.azure.com →
+    # App registrations → "Personal Microsoft accounts" tenant.
+    onedrive_oauth_client_id: str = Field(default="")
+    onedrive_oauth_client_secret: str = Field(default="")
+    onedrive_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/cloud/callback/onedrive"
+    )
+
+    # §C4.6 — Dropbox OAuth client. Empty values keep the endpoint in
+    # "not_configured" state. Register at https://www.dropbox.com/
+    # developers/apps → "Scoped access" → "App folder" or "Full
+    # Dropbox" depending on how much you want to mirror.
+    dropbox_oauth_client_id: str = Field(default="")
+    dropbox_oauth_client_secret: str = Field(default="")
+    dropbox_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/cloud/callback/dropbox"
+    )
+
     # §C2 — hourly cloud-sync sweep. The lifespan-managed background
     # task pulls every active CloudLink at this cadence. Set to 0 (or
     # flip cloud_sync_hourly_enabled=false) to disable in test/dev runs
