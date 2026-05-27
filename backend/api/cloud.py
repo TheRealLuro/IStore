@@ -1021,16 +1021,24 @@ def _icloud_validate_hsa2(
             body_json = {}
     except PyiCloudAPIResponseException as e:
         # pyicloud raises on 4xx; the response body is embedded in
-        # the exception's `reason` as " (NNN): {json...}". Parse it
-        # back out so the locked-detection still works.
+        # the exception's `reason` as " (NNN): {json...}". Apple's
+        # locked-device envelope is ~2k chars (it carries the SMS-
+        # fallback metadata), so parse the FULL reason and only
+        # truncate for logging. Truncating the parse source was the
+        # bug that hid the securityCodeLocked flag.
         status_code = int(getattr(e, "code", 0) or 0)
-        text = (getattr(e, "reason", None) or str(e))[:1500]
+        full_reason = getattr(e, "reason", None) or str(e)
+        text = full_reason[:1500]
         try:
-            jstart = text.find("{")
+            jstart = full_reason.find("{")
             if jstart >= 0:
                 import json as _json_mod
-                body_json = _json_mod.loads(text[jstart:]) or {}
+                body_json = _json_mod.loads(full_reason[jstart:]) or {}
         except Exception:
+            logger.exception(
+                "icloud_validate_hsa2: failed to parse Apple's "
+                "error envelope — locked-device detection skipped",
+            )
             body_json = {}
         logger.warning(
             "icloud_validate_hsa2: APIResponseException code=%r reason=%r",
