@@ -17,6 +17,7 @@ import {
   login,
   loginWithTotp,
   me,
+  recoveryLogin,
   register,
   TotpRequiredError,
 } from "@/api/auth";
@@ -151,6 +152,14 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   // state so the retry uses the same credentials.
   const [totpNeeded, setTotpNeeded] = useStateA(false);
   const [totpCode, setTotpCode] = useStateA("");
+  // §C6c — fallback step when the user lost their authenticator app.
+  // After /auth/jwt/login returns totp_required, the user can click
+  // "Use a recovery code instead" to flip into this branch; the form
+  // POSTs to /account/recovery-codes/login (email + one of the eight
+  // single-use codes minted on Settings → Security → Recovery codes).
+  // Marking the code as used + returning a JWT happens server-side.
+  const [recoveryMode, setRecoveryMode] = useStateA(false);
+  const [recoveryCode, setRecoveryCode] = useStateA("");
   // §C6 — "Forgot password?" modal state. The link below the
   // sign-in password field opens the modal; submit fires the
   // forgot-password endpoint (which always responds the same way
@@ -304,9 +313,18 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     if (mode === "signin") {
       try {
         setSubmitting(true);
-        const u = totpNeeded
-          ? await loginWithTotp(email, pwd, totpCode.trim())
-          : await login(email, pwd);
+        let u;
+        if (recoveryMode) {
+          // §C6c — recovery-code path. The server marks the code as
+          // used + returns a JWT in the same shape as /jwt/login, so
+          // the rest of the post-login flow stays identical.
+          await recoveryLogin(email, recoveryCode.trim());
+          u = await me();
+        } else if (totpNeeded) {
+          u = await loginWithTotp(email, pwd, totpCode.trim());
+        } else {
+          u = await login(email, pwd);
+        }
         setUser(u);
         if (redirectIfNext()) return;
         onSignedIn?.({
@@ -322,7 +340,11 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
         }
         const msg = e instanceof ApiError
           ? (e.status === 400 || e.status === 401
-              ? (totpNeeded ? "Wrong 2FA code — check your authenticator app and try again." : "Wrong email or password.")
+              ? (recoveryMode
+                  ? "That recovery code didn't match. Each code only works once; try the next one."
+                  : totpNeeded
+                    ? "Wrong 2FA code — check your authenticator app and try again."
+                    : "Wrong email or password.")
               : e.detail)
           : "Sign-in failed. Check your connection.";
         setAuthError(msg);
@@ -636,8 +658,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
           {/* §1.2.2 — TOTP second-step. When the initial /auth/jwt/login
               call comes back with `totp_required` we flip into this
               prompt; submitting re-fires the auth flow via
-              loginWithTotp instead of the password-only endpoint. */}
-          {!isSignup && totpNeeded && (
+              loginWithTotp instead of the password-only endpoint.
+              §C6c — recovery-code branch swaps the digits input for
+              a longer alphanumeric one. Two affordances on the row
+              below: "Use a recovery code" to switch into recovery
+              mode, and "Use a different account" to bail entirely. */}
+          {!isSignup && totpNeeded && !recoveryMode && (
             <div className="field" style={{ marginTop: 4 }}>
               <label
                 className="field__label-floating field__label-floating--up"
@@ -661,13 +687,77 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                 }}
                 autoComplete="one-time-code"
               />
-              <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6, textAlign: "right" }}>
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 11, color: "var(--ink-3)", marginTop: 6,
+              }}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setRecoveryMode(true);
+                    setTotpCode("");
+                    setAuthError(null);
+                  }}
+                >
+                  Use a recovery code instead
+                </a>
                 <a
                   href="#"
                   onClick={(e) => { e.preventDefault(); setTotpNeeded(false); setTotpCode(""); }}
                 >
                   Use a different account
                 </a>
+              </div>
+            </div>
+          )}
+
+          {!isSignup && recoveryMode && (
+            <div className="field" style={{ marginTop: 4 }}>
+              <label
+                className="field__label-floating field__label-floating--up"
+                style={{ color: "var(--ink-2)" }}
+              >
+                Recovery code
+              </label>
+              <input
+                autoFocus
+                type="text"
+                placeholder=" "
+                className="input input--lg input--floating"
+                value={recoveryCode}
+                // Recovery codes are formatted as `XXXX-XXXX-XXXX` base32
+                // on the server but normalized to bare alphanumerics on
+                // the server side too, so we accept both shapes here
+                // and let the backend normalize.
+                onChange={(e) => setRecoveryCode(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                style={{
+                  fontFamily: "monospace", letterSpacing: "0.10em",
+                  textAlign: "center", fontSize: 16, textTransform: "uppercase",
+                }}
+              />
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 11, color: "var(--ink-3)", marginTop: 6,
+              }}>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setRecoveryMode(false);
+                    setRecoveryCode("");
+                    setAuthError(null);
+                  }}
+                >
+                  Back to authenticator code
+                </a>
+                <span>
+                  Each code works once
+                </span>
               </div>
             </div>
           )}
@@ -686,12 +776,23 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
           )}
           <button
             className="btn btn--primary btn--lg auth__cta"
-            disabled={(!totpNeeded && !canSubmit) || (totpNeeded && totpCode.length !== 6) || submitting}
+            disabled={
+              submitting ||
+              (recoveryMode
+                ? recoveryCode.trim().length < 6
+                : totpNeeded
+                  ? totpCode.length !== 6
+                  : !canSubmit)
+            }
             onClick={handleSubmit}
           >
             {submitting
               ? "Working…"
-              : (isSignup ? "Continue" : (totpNeeded ? "Verify code" : "Sign in"))}
+              : (isSignup
+                  ? "Continue"
+                  : (recoveryMode
+                      ? "Use recovery code"
+                      : (totpNeeded ? "Verify code" : "Sign in")))}
             <Icon name="arrowRight" size={14}/>
           </button>
 
