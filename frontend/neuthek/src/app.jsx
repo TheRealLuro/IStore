@@ -133,6 +133,134 @@ function SummarizingBanner({ signedIn, dismissed, onDismiss }) {
   );
 }
 
+// §C6b — sticky banner at the top of the gallery for any signed-
+// in user whose `is_verified` flag is still false. Shows a
+// "Confirm your email" message + a "Resend email" link that fires
+// the existing /auth/request-verify-token endpoint. Dismissable
+// per-session (sessionStorage) — the user might not have email
+// handy right now, but on next reload the banner is back so the
+// nudge persists until they actually click the verify link.
+//
+// Why not localStorage: a permanent dismiss would let users
+// silently keep an unverified account forever. Per-session means
+// the user sees it every time they open the app, but isn't
+// nagged repeatedly within the same session.
+function VerifyEmailBanner({ user, signedIn }) {
+  // sessionStorage flag keyed by user id so multiple accounts on
+  // the same browser don't bleed dismiss state into each other.
+  const dismissKey = signedIn && user?.id ? `vEmailBanner:${user.id}` : null;
+  const [dismissed, setDismissed] = useStateApp(() => {
+    if (!dismissKey) return false;
+    try {
+      return sessionStorage.getItem(dismissKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [resending, setResending] = useStateApp(false);
+
+  if (!signedIn) return null;
+  if (!user) return null;
+  if (user.is_verified) return null;
+  if (dismissed) return null;
+
+  const onResend = async () => {
+    if (!user?.email || resending) return;
+    setResending(true);
+    try {
+      // Lazy-import so the auth client doesn't pull into the
+      // app bundle's critical path when it's not needed.
+      const { requestVerify } = await import("@/api/auth");
+      await requestVerify(user.email);
+      toast.success(
+        `A fresh verification link is on the way to ${user.email}.`,
+      );
+    } catch {
+      // Anti-enumeration: server returns 202 either way, so a
+      // network blip is the only path that lands here. Show a
+      // generic message.
+      toast.success(
+        `If your account is active, a fresh verification link is on its way.`,
+      );
+    } finally {
+      setResending(false);
+    }
+  };
+
+  const onDismiss = () => {
+    setDismissed(true);
+    if (dismissKey) {
+      try {
+        sessionStorage.setItem(dismissKey, "1");
+      } catch {}
+    }
+  };
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        position: "relative",
+        minHeight: 32,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "6px 16px",
+        background: "rgba(245, 158, 11, 0.10)",
+        borderBottom: "1px solid rgba(245, 158, 11, 0.30)",
+        fontSize: 12.5,
+        color: "var(--ink)",
+      }}
+    >
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <Icon name="alertCircle" size={13}/>
+        <strong>Confirm your email.</strong>
+      </span>
+      <span>
+        We sent a verification link to{" "}
+        <code style={{ background: "transparent", padding: 0 }}>
+          {user.email}
+        </code>
+        {". "}
+        Some sensitive actions stay locked until you click it.
+      </span>
+      <span style={{ flex: 1 }}/>
+      <button
+        type="button"
+        onClick={onResend}
+        disabled={resending}
+        style={{
+          background: "transparent",
+          border: 0,
+          padding: "4px 10px",
+          color: "var(--ink)",
+          cursor: resending ? "default" : "pointer",
+          textDecoration: "underline",
+          fontWeight: 500,
+        }}
+      >
+        {resending ? "Sending…" : "Resend email"}
+      </button>
+      <button
+        type="button"
+        onClick={onDismiss}
+        title="Dismiss for this session"
+        aria-label="Dismiss"
+        style={{
+          background: "none",
+          border: 0,
+          padding: 4,
+          color: "var(--ink-3)",
+          cursor: "pointer",
+        }}
+      >
+        <Icon name="x" size={12}/>
+      </button>
+    </div>
+  );
+}
+
 // Map a real FileItem (backend shape) to neuthek's mock-shape so the existing
 // gallery / preview / cards keep working without rewrites. Anything we can't
 // derive from the FileItem (mock topic / aiContent / gps / tags / folder) is
@@ -2267,6 +2395,7 @@ export function App() {
       />
 
       <main className="main" ref={mainRef}>
+        <VerifyEmailBanner user={user} signedIn={signedIn}/>
         <SummarizingBanner
           signedIn={signedIn}
           dismissed={summaryBannerDismissed}

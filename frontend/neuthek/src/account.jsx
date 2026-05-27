@@ -773,6 +773,13 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
       setEditingProfile(false);
       return;
     }
+    // §C4.3 — when the email actually changes, fastapi-users clears
+    // is_verified server-side AND the on_after_update hook fires a
+    // fresh verification email to the new address. We track this so
+    // the post-save toast can tell the user to check their inbox
+    // instead of the generic "Profile updated", and so the existing
+    // VerifyEmailBanner (§C6b) takes over the persistent nudge.
+    const emailChanged = "email" in body;
     try {
       const updated = await updateMe(body);
       setStoreUser(updated);
@@ -780,7 +787,19 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
         name: updated.display_name || updated.email.split("@")[0],
         email: updated.email,
       });
-      toast.success("Profile updated");
+      if (emailChanged) {
+        toast.success(
+          `We sent a verification link to ${updated.email}. ` +
+          `Some sensitive actions stay locked until you confirm.`,
+          // Longer duration than the default 4s — this is the only
+          // place the user is told about the verify mail, so make
+          // sure it's not missed if they're not watching the toast
+          // stack.
+          { duration: 7000 },
+        );
+      } else {
+        toast.success("Profile updated");
+      }
       setEditingProfile(false);
     } catch (e) {
       toast.error(e?.detail || "Could not save changes");
