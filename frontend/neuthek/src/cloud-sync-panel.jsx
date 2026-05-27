@@ -610,6 +610,30 @@ function ICloudConnectModal({ open, onClose, onConnected }) {
               Check your iDevice for a 6-digit code, then enter it
               below.
             </div>
+            {/* §C4.6 — Apple sometimes sends the "new sign-in"
+                email but doesn't push the 2FA code automatically
+                (depending on which trusted devices are online, push
+                state, and Apple's anti-abuse heuristics). The user
+                got an email but no code → this hint tells them
+                where to find it manually. The "Get Verification
+                Code" path always works once the user has at least
+                one trusted device. */}
+            <div style={{
+              padding: "10px 12px",
+              background: "var(--surface-2)",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              color: "var(--ink-3)",
+            }}>
+              <strong style={{ color: "var(--ink-2)" }}>No code yet?</strong>
+              {" "}On any trusted iPhone / iPad / Mac: open{" "}
+              <strong>Settings → [your name] → Sign-In &amp; Security
+              → Get Verification Code</strong>. The push doesn&rsquo;t
+              always auto-arrive (it depends on which devices are
+              online), but this menu surfaces a code on demand.
+            </div>
             <label style={{ fontSize: 12, color: "var(--ink-2)" }}>
               Verification code
               <input

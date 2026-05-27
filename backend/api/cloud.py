@@ -1207,9 +1207,28 @@ async def proton_drive_start(
         "proton_drive_start: probe failed (no 2fa indicator) msg=%s",
         msg[:300],
     )
+    # Detect specific failure modes and surface a more helpful
+    # message than rclone's raw Go struct dump.
+    #
+    # When the account authenticates fine but Proton's `/shares`
+    # endpoint returns NO shares, rclone dumps an empty Share{}
+    # struct (`ShareID:"", LinkID:"", VolumeID:"", ...`). The cause
+    # is almost always that the user never visited drive.proton.me
+    # — Proton Drive is opt-in and the user's first visit
+    # provisions their root share + volume. Without that, rclone
+    # auth succeeds but there's literally nothing to mirror.
+    pretty = msg[:300] or "unknown error"
+    is_no_drive = "ShareID:\"\"" in msg and "VolumeID:\"\"" in msg
+    if is_no_drive:
+        pretty = (
+            "Your Proton account is authenticated, but Proton Drive "
+            "isn't initialized. Visit https://drive.proton.me once "
+            "with this account (it'll provision your root volume), "
+            "then come back and click Connect again."
+        )
     raise HTTPException(
         status.HTTP_400_BAD_REQUEST,
-        f"Proton sign-in failed: {msg[:300] or 'unknown error'}",
+        f"Proton sign-in failed: {pretty}",
     )
 
 

@@ -342,6 +342,23 @@ def test_proton_collect_entries_parses_lsjson_shape():
     assert by_name["root.jpg"]["mime_type"] == "image/jpeg"
     assert by_name["trip.mp4"]["remote_parent_path"] == "Trips"
     assert by_name["morning.heic"]["remote_parent_path"] == "Trips/Day 1"
+    # §C4.6 regression — `remote_id` MUST be the rclone-relative
+    # path, NOT the upstream `ID` field. MEGA returns IDs like
+    # "0vJ3Ab7a" which are unusable for `rclone cat`. Earlier code
+    # preferred `ID` if present, which silently broke MEGA downloads.
+    # `remote_path` mirrors the same so the gallery surface keeps
+    # the folder context (was previously the bare `Name`, dropping
+    # any directory structure).
+    assert by_name["root.jpg"]["remote_id"] == "root.jpg"
+    assert by_name["root.jpg"]["remote_path"] == "root.jpg"
+    assert by_name["trip.mp4"]["remote_id"] == "Trips/trip.mp4"
+    assert by_name["trip.mp4"]["remote_path"] == "Trips/trip.mp4"
+    assert by_name["morning.heic"]["remote_id"] == "Trips/Day 1/morning.heic"
+    # The ID column from upstream should NEVER appear in remote_id.
+    for e in out:
+        assert "id-" not in e["remote_id"], (
+            "upstream ID leaked into remote_id; rclone cat will fail"
+        )
 
 
 @pytest.mark.asyncio

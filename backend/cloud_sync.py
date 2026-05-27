@@ -968,16 +968,28 @@ def _rclone_entries_to_dicts(
         parent_path = ""
         if "/" in path:
             parent_path = path.rsplit("/", 1)[0]
-        # `ID` may be empty for some backends (proton-drive doesn't
-        # always expose it). Fall back to the relative path which is
-        # stable enough for change detection at our cadence.
-        remote_id = entry.get("ID") or path
+        # §C4.6 fix — remote_id MUST be the rclone-relative path,
+        # NOT the upstream `ID`. rclone's `cat` command takes a path
+        # argument like `mega:Pictures/foo.jpg`, never an ID. MEGA's
+        # lsjson includes `ID` (their internal file id, e.g.
+        # "0vJ3Ab7a") but it's informational only — passing it to
+        # `rclone cat` 4xx's with "directory not found". An earlier
+        # version of this function fell back to ID when present,
+        # which silently broke MEGA downloads (the user saw
+        # "pulled=0" even though lsjson returned the files). Renames
+        # in the upstream cloud will appear to us as a new file + a
+        # delete of the old one — semantically correct for a mirror-
+        # and-show workflow.
+        remote_id = path
         out.append({
             "remote_id": remote_id,
             "name": name,
             "mime_type": entry.get("MimeType") or default_mime,
             "modified_at": _parse_iso_time(entry.get("ModTime")),
-            "remote_path": name,
+            # `remote_path` carries the full relative path so a file
+            # at "Pictures/2026/foo.jpg" doesn't collapse to
+            # "foo.jpg" and lose its folder context in the gallery.
+            "remote_path": path,
             "remote_parent_path": parent_path,
             # rclone surfaces a content hash only for some backends; for
             # E2E services like Proton + MEGA the upstream doesn't
