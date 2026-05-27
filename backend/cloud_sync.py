@@ -313,8 +313,25 @@ class OAuthHandoff:
 # replaces the old one. The Google Drive flow doesn't rotate; OneDrive
 # does.
 
-_ONEDRIVE_AUTH_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-_ONEDRIVE_TOKEN_ENDPOINT = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+_ONEDRIVE_AUTH_ENDPOINT_FMT = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
+_ONEDRIVE_TOKEN_ENDPOINT_FMT = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+
+
+def _onedrive_tenant() -> str:
+    """Tenant path segment for the Microsoft OAuth endpoint.
+
+    `common` (default) accepts any Microsoft account, but the app
+    registration's `signInAudience` must be set to
+    `AzureADandPersonalMicrosoftAccount` for the consumer routing
+    branch to work. Many users register the app as "My organization
+    only" first and hit `unauthorized_client: not enabled for
+    consumers` here. Setting ONEDRIVE_OAUTH_TENANT to the specific
+    Directory (tenant) GUID from the app's Overview page swaps the
+    URL to /{tenant_guid}/oauth2/v2.0/authorize, which works with
+    "My organization only" without further Azure-side changes.
+    """
+    t = (settings.onedrive_oauth_tenant or "").strip()
+    return t or "common"
 
 
 def _onedrive_auth_url(state: str) -> tuple[str, str | None]:
@@ -348,7 +365,8 @@ def _onedrive_auth_url(state: str) -> tuple[str, str | None]:
         # and a work account signed in).
         "prompt": "select_account",
     }
-    return f"{_ONEDRIVE_AUTH_ENDPOINT}?{urlencode(params)}", verifier
+    endpoint = _ONEDRIVE_AUTH_ENDPOINT_FMT.format(tenant=_onedrive_tenant())
+    return f"{endpoint}?{urlencode(params)}", verifier
 
 
 async def _onedrive_exchange_code(code: str, verifier: str | None) -> dict:
@@ -366,7 +384,10 @@ async def _onedrive_exchange_code(code: str, verifier: str | None) -> dict:
     if verifier:
         data["code_verifier"] = verifier
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(_ONEDRIVE_TOKEN_ENDPOINT, data=data)
+        r = await client.post(
+            _ONEDRIVE_TOKEN_ENDPOINT_FMT.format(tenant=_onedrive_tenant()),
+            data=data,
+        )
     if r.status_code >= 400:
         # Don't echo the body — it may contain the OAuth error
         # description with internal endpoint info. Log + raise a
