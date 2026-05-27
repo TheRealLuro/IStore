@@ -1474,6 +1474,7 @@ export function App() {
     if (typeof window === "undefined") {
       return { scene: null, contentType: null, indoorOutdoor: null,
         hasFaces: null, hasGps: null, personId: null, tag: null,
+        near: null,
         dateRange: { start: null, end: null } };
     }
     const p = new URLSearchParams(window.location.search);
@@ -1482,6 +1483,7 @@ export function App() {
       scene: p.get("scene") || null,
       contentType: p.get("content_type") || null,
       indoorOutdoor: p.get("indoor") || null,
+      near: p.get("near") || null,
       hasFaces: p.get("has_faces") === "true" ? true : null,
       hasGps: p.get("has_gps") === "true" ? true : null,
       personId: p.get("person_id") ? num(p.get("person_id")) : null,
@@ -1506,6 +1508,15 @@ export function App() {
   // We keep it as an object in React-state (easier UI) and serialize to
   // "start,end" only when handing it to listFiles below.
   const [filterDateRange, setFilterDateRange] = useStateApp(_initialFilters.dateRange);
+  // §C9 — location-radius filter. Value is the literal `lat,lng,radius_km`
+  // string the backend expects (e.g. "37.7749,-122.4194,5"). Wired
+  // through to listFiles even without a dedicated UI chip so a manual
+  // ?near=… on the URL works end-to-end; the map view can also drive
+  // this later by calling setFilterNear directly when the user draws
+  // a radius. Previously this state was missing entirely and any
+  // ?near= URL parameter was silently dropped — the cache key didn't
+  // include it, so the chip / URL had no effect on the listing.
+  const [filterNear, setFilterNear] = useStateApp(_initialFilters.near);
   const clearAllFilters = () => {
     setFilterScene(null);
     setFilterContentType(null);
@@ -1514,6 +1525,7 @@ export function App() {
     setFilterHasGps(null);
     setFilterPersonId(null);
     setFilterTag(null);
+    setFilterNear(null);
     setFilterDateRange({ start: null, end: null });
   };
   const anyFilterActive =
@@ -1521,6 +1533,7 @@ export function App() {
     filterIndoorOutdoor != null || filterHasFaces != null ||
     filterHasGps != null ||
     filterPersonId != null || filterTag != null ||
+    filterNear != null ||
     filterDateRange.start != null || filterDateRange.end != null;
   // §C9 — write filter state back to the URL so reload + back/forward
   // + link-sharing all preserve the active chips. We never push() —
@@ -1803,12 +1816,14 @@ export function App() {
       hasGps: filterHasGps,
       personId: filterPersonId,
       tag: filterTag,
+      near: filterNear,
       takenBetween: tb,
     };
   }, [
     filesScope, filterScene, filterContentType, filterIndoorOutdoor,
     filterHasFaces, filterHasGps,
     filterPersonId, filterTag,
+    filterNear,
     filterDateRange.start, filterDateRange.end,
   ]);
   // Folder count for the current scope — used by the empty-state guard

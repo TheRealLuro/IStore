@@ -17,6 +17,14 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     # Derived in `model_validator` below from `google_sub` so the raw
     # identifier never leaves the server.
     google_linked: bool = False
+    # Surfaced so the Account UI can distinguish between an SSO-only
+    # row (no password, verified via Google's id_token attestation)
+    # and a row that was created with an email + password (verified
+    # by clicking our verify link). Derived from `hashed_password is
+    # not None`; the bcrypt-shaped string itself never leaves the
+    # server. Used in the FE to render either "Verified via Google"
+    # or "Email verified" instead of one ambiguous "verified" badge.
+    password_set: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -24,19 +32,24 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
         # `data` is either a User ORM instance (when fastapi-users
         # serializes via from_attributes) or a dict from a manual
         # construct. Normalize both to set `google_linked` from the
-        # presence of `google_sub`.
+        # presence of `google_sub`, and `password_set` from whether
+        # a hashed_password is on the row.
         if isinstance(data, dict):
             if "google_linked" not in data:
                 data["google_linked"] = bool(data.get("google_sub"))
+            if "password_set" not in data:
+                data["password_set"] = bool(data.get("hashed_password"))
             return data
         sub = getattr(data, "google_sub", None)
+        pw = getattr(data, "hashed_password", None)
         try:
             # Pydantic v2 will read the rest of the attrs via from_attributes;
-            # we just need to plant `google_linked` so the projection
-            # below picks it up. Attach on the instance for the ORM
-            # path — orm_mode/from_attributes reads attributes lazily,
-            # so adding a Python attribute is enough.
+            # we just need to plant the projected fields so they pick up.
+            # Attach on the instance for the ORM path — orm_mode/
+            # from_attributes reads attributes lazily, so adding a Python
+            # attribute is enough.
             object.__setattr__(data, "google_linked", bool(sub))
+            object.__setattr__(data, "password_set", bool(pw))
         except Exception:
             pass
         return data
