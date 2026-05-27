@@ -900,7 +900,70 @@ async def icloud_start(
             "Could not reach iCloud. Try again in a moment.",
         )
 
-    if getattr(svc, "requires_2fa", False) or getattr(svc, "requires_2sa", False):
+    # User-reported regression: pyicloud's `requires_2fa` was True
+    # even when Apple's auth server had already accepted the session
+    # (the user got the "new sign-in" email but no 2FA challenge ever
+    # arrived on their iDevices, and the "Get Verification Code" menu
+    # didn't appear in Settings → Apple ID). The cause is pyicloud's
+    # internal state machine: after a fresh PyiCloudService(...) call
+    # the library sets requires_2fa=True PREEMPTIVELY, then only
+    # clears it after probing the session. We bypassed that probe
+    # and went straight into the 2FA UI, leaving the user without a
+    # code to enter.
+    #
+    # Fix: check `is_trusted_session` first. If Apple already trusts
+    # us (cookies from a previous attempt, or the account doesn't
+    # actually have 2FA enforced on Drive), skip the 2FA UI entirely
+    # and persist the link.
+    is_trusted = bool(getattr(svc, "is_trusted_session", False))
+    requires_2fa = bool(getattr(svc, "requires_2fa", False))
+    requires_2sa = bool(getattr(svc, "requires_2sa", False))
+
+    if is_trusted:
+        # Apple already considers us authenticated. Persist + return.
+        link_id = await _icloud_persist_link(
+            session, user.id, payload.apple_id, payload.password, tmp_dir,
+        )
+        return ICloudStartResponse(
+            requires_2fa=False,
+            link_id=link_id,
+            message="Session already trusted — no 2FA needed.",
+        )
+
+    if requires_2sa:
+        # Older two-step-authentication (SMS-based). pyicloud doesn't
+        # auto-push a code in this branch — we have to explicitly
+        # request one to a trusted device. Pick the first device,
+        # which is typically the user's primary phone. The user-
+        # facing modal then asks for the SMS code.
+        try:
+            devices = svc.trusted_devices
+            if devices:
+                await asyncio.to_thread(
+                    svc.send_verification_code, devices[0]
+                )
+        except Exception:
+            logger.exception(
+                "icloud_start: send_verification_code failed; "
+                "user will need to fall back to Settings → Apple ID"
+            )
+        _ICLOUD_PENDING[session_id] = {
+            "service": svc,
+            "user_id": user.id,
+            "apple_id": payload.apple_id,
+            "password": payload.password,
+            "tmp_dir": tmp_dir,
+            "is_2sa": True,
+            "created_at": datetime.now(timezone.utc),
+        }
+        return ICloudStartResponse(
+            requires_2fa=True, session_id=session_id,
+        )
+
+    if requires_2fa:
+        # Modern 2FA — Apple should auto-push a code to trusted
+        # iDevices. If it doesn't, the user can get one from
+        # Settings → Apple ID → Sign-In & Security on any iDevice.
         _ICLOUD_PENDING[session_id] = {
             "service": svc,
             "user_id": user.id,
@@ -913,16 +976,17 @@ async def icloud_start(
             requires_2fa=True, session_id=session_id,
         )
 
-    # No 2FA needed (trusted device or 2FA-disabled account). Persist
-    # the CloudLink directly so the FE can start syncing without
-    # bouncing through /verify.
+    # Neither 2FA nor 2SA, AND not flagged as trusted — fall back to
+    # persisting the link. The account presumably has no 2FA on
+    # iCloud Drive at all. Surfaces in the toast so the user knows
+    # nothing more is needed.
     link_id = await _icloud_persist_link(
         session, user.id, payload.apple_id, payload.password, tmp_dir,
     )
     return ICloudStartResponse(
         requires_2fa=False,
         link_id=link_id,
-        message="Trusted device — no 2FA needed.",
+        message="iCloud connected (no 2FA challenge from Apple).",
     )
 
 

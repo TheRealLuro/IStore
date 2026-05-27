@@ -1007,10 +1007,14 @@ function ProviderCatalog({ connected, onConnect }) {
   }
 
   return (
+    // §C7 — tighter grid: the cards collapsed to single-line
+    // header+chip after the blurb removal, so we can fit more per
+    // row. min-width drops from 180 → 220 (wider rows + fewer
+    // visual seams when 5 cards wrap to two rows of 2+3).
     <div style={{
       display: "grid",
-      gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-      gap: 10,
+      gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+      gap: 8,
       marginTop: 6,
     }}>
       {data.map((p) => (
@@ -1025,23 +1029,48 @@ function ProviderCatalog({ connected, onConnect }) {
   );
 }
 
+// §C7 — short labels keyed by auth_shape from the backend
+// catalog. The earlier card showed a long `provider.blurb`
+// describing each integration in 2-3 sentences; users reported
+// it was visually noisy ("more clean, less text filled"). Drop
+// the blurb and surface only the auth method as a tiny subtitle
+// (one line, no period). Tooltip on the chip holds the longer
+// description for users who want details.
+const AUTH_SHAPE_LABEL = {
+  oauth: "OAuth",
+  apple_id: "Apple ID + 2FA",
+  password: "Email + password",
+};
+
 function ProviderCard({ provider, connected, onConnect }) {
   const isAvailable = provider.status === "available";
   const isNeedsSetup = provider.status === "needs_setup";
   const isComingSoon = provider.status === "coming_soon";
 
-  // Status chip palette. Colors chosen to read clearly in both
-  // light + dark mode without further per-theme overrides.
+  // Status chip palette + label. Connected state takes precedence
+  // over the catalog status so the user sees green-Connected on
+  // their actively-linked providers without having to read the
+  // sub-row first.
   const chipColor =
-    isAvailable && connected ? "var(--success)" :
-    isAvailable ? "var(--ink)" :
+    connected ? "var(--success)" :
+    isAvailable ? "var(--ink-2, var(--ink-3))" :
     isNeedsSetup ? "var(--warning, #f59e0b)" :
     "var(--ink-3)";
+  const chipBg =
+    connected ? "var(--success-soft, color-mix(in oklab, var(--success) 12%, transparent))" :
+    "var(--surface-2)";
   const chipLabel =
-    isAvailable && connected ? "Connected" :
+    connected ? "Connected" :
     isAvailable ? "Available" :
     isNeedsSetup ? "Needs setup" :
     "Coming soon";
+
+  // Subtitle: tiny one-liner identifying the auth method.
+  // No long blurb. Hover the chip if you want the wordy version.
+  const subtitle =
+    AUTH_SHAPE_LABEL[provider.auth_shape] ||
+    AUTH_SHAPE_LABEL[provider.auth_shape || "oauth"] ||
+    "Cloud sync";
 
   const onClick = () => {
     if (!isAvailable || connected) return;
@@ -1051,56 +1080,62 @@ function ProviderCard({ provider, connected, onConnect }) {
   return (
     <div
       onClick={onClick}
+      title={provider.blurb || undefined}
       style={{
-        padding: "12px 14px",
+        padding: "10px 12px",
         background: "var(--surface)",
         border: "1px solid var(--line)",
-        borderRadius: 12,
+        borderRadius: 10,
         cursor: isAvailable && !connected ? "pointer" : "default",
         opacity: isComingSoon ? 0.55 : 1,
         display: "flex",
-        flexDirection: "column",
-        gap: 6,
-        transition: "border-color 120ms ease",
+        alignItems: "center",
+        gap: 10,
+        transition: "border-color 120ms ease, background 120ms ease",
       }}
       onMouseEnter={(e) => {
-        if (isAvailable && !connected) e.currentTarget.style.borderColor = "var(--ink-2, var(--ink-3))";
+        if (isAvailable && !connected) {
+          e.currentTarget.style.borderColor = "var(--ink-2, var(--ink-3))";
+          e.currentTarget.style.background = "var(--surface-2)";
+        }
       }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--line)"; }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = "var(--line)";
+        e.currentTarget.style.background = "var(--surface)";
+      }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon name="cloud" size={14}/>
-        <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>
-          {provider.name}
-        </span>
-        <span style={{
-          fontSize: 10,
-          padding: "2px 7px",
-          borderRadius: 6,
-          background: "var(--surface-2)",
-          color: chipColor,
+      <Icon name="cloud" size={14} style={{ color: "var(--ink-3)", flexShrink: 0 }}/>
+      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>
+        <div style={{
+          fontSize: 13,
           fontWeight: 600,
-          letterSpacing: 0.02,
+          color: "var(--ink)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
         }}>
-          {chipLabel}
-        </span>
-      </div>
-      <div style={{ fontSize: 11.5, color: "var(--ink-3)", lineHeight: 1.45 }}>
-        {provider.blurb}
-      </div>
-      {isNeedsSetup && provider.docs && (
-        <div style={{ fontSize: 11, marginTop: 4 }}>
-          <a
-            href={provider.docs}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: "var(--ink-2)", textDecoration: "underline" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            How to set up
-          </a>
+          {provider.name}
         </div>
-      )}
+        <div style={{
+          fontSize: 11,
+          color: "var(--ink-3)",
+          marginTop: 1,
+        }}>
+          {subtitle}
+        </div>
+      </div>
+      <span style={{
+        fontSize: 10,
+        padding: "2px 8px",
+        borderRadius: 999,
+        background: chipBg,
+        color: chipColor,
+        fontWeight: 600,
+        letterSpacing: 0.02,
+        flexShrink: 0,
+      }}>
+        {chipLabel}
+      </span>
     </div>
   );
 }
