@@ -261,6 +261,19 @@ class Settings(BaseSettings):
     onedrive_oauth_redirect_uri: str = Field(
         default="http://localhost:8000/cloud/callback/onedrive"
     )
+    # Microsoft tenant the app is registered in. `common` (default)
+    # accepts BOTH organizational accounts AND personal Microsoft
+    # accounts (Hotmail/Outlook/Xbox) — but ONLY if the app
+    # registration's "Supported account types" is set to the full
+    # multitenant+personal option (`signInAudience` =
+    # AzureADandPersonalMicrosoftAccount). For apps registered as
+    # single-tenant ("My organization only"), put the specific
+    # Directory (tenant) ID here from Azure portal → App
+    # registrations → Overview. That switches the OAuth URL to
+    # /{tenant_id}/oauth2/v2.0/authorize which accepts the single-
+    # tenant config without further Azure changes.
+    onedrive_oauth_tenant: str = Field(default="common")
+
 
     # §C4.6 — Dropbox OAuth client. Empty values keep the endpoint in
     # "not_configured" state. Register at https://www.dropbox.com/
