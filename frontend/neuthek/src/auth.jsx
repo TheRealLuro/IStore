@@ -169,6 +169,18 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   // device they want to sign in on.
   const [signinCodeMode, setSigninCodeMode] = useStateA(false);
   const [signinCode, setSigninCode] = useStateA("");
+  // §H#7b/UX — the email the code was actually sent to. Captured
+  // at /request time so subsequent edits to the email FIELD don't
+  // desync the banner from the recipient. Previously the banner
+  // read live from `email` state, so if the user typed
+  // `wrong@example.com` first, hit "Email me a sign-in link",
+  // then realized their typo and edited the field to the right
+  // address, the banner silently updated to claim a code was sent
+  // to the new email — when in fact nothing was sent to it. Also
+  // used at /consume-code time so the lookup hits the right Redis
+  // key regardless of what the user types in the now-disabled
+  // field.
+  const [signinCodeEmail, setSigninCodeEmail] = useStateA("");
   // §C6 — "Forgot password?" modal state. The link below the
   // sign-in password field opens the modal; submit fires the
   // forgot-password endpoint (which always responds the same way
@@ -337,12 +349,16 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
         setSubmitting(true);
         let u;
         if (signinCodeMode) {
-          // §H#7b — magic-link 6-digit code path. POST email + code
-          // to /auth/email-link/consume-code. The helper persists
-          // the returned JWT via tokens.set then fetches /users/me,
-          // matching the shape of every other auth path.
+          // §H#7b — magic-link 6-digit code path. Use the captured
+          // signinCodeEmail (the email the code was actually sent
+          // to), NOT the live `email` field, so a user who typed
+          // wrong@example.com + clicked send + then edited the
+          // field doesn't try to consume against the wrong key.
           const { consumeSigninCode } = await import("@/api/auth");
-          u = await consumeSigninCode(email.trim(), signinCode.trim());
+          u = await consumeSigninCode(
+            (signinCodeEmail || email).trim(),
+            signinCode.trim(),
+          );
         } else if (recoveryMode) {
           // §C6c — recovery-code path. The server marks the code as
           // used + returns a JWT in the same shape as /jwt/login, so
@@ -641,6 +657,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                   // Anti-enumeration: server returns 202 either way,
                   // so even network errors get the same generic toast.
                 }
+                // Lock the email to what we just sent the code to.
+                // The banner reads from `signinCodeEmail`, NOT the
+                // editable `email` field, so subsequent typos in
+                // the field don't mislead the user about where
+                // their code actually went.
+                setSigninCodeEmail(trimmed);
                 setSigninCodeMode(true);
                 setSigninCode("");
                 setAuthError(null);
@@ -683,6 +705,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
               onFocus={() => setEmailFocused(true)}
               onBlur={() => setEmailFocused(false)}
               autoComplete="email"
+              // §H#7b — once a code has been requested, lock the
+              // email so it can't drift out of sync with the
+              // recipient. "try a different address" inside the
+              // banner is the supported way to swap.
+              disabled={signinCodeMode}
+              style={signinCodeMode ? { opacity: 0.65, cursor: "not-allowed" } : undefined}
             />
             {email && !emailValid && (
               <div className="field__hint field__hint--err">Enter a valid email address.</div>
@@ -896,7 +924,15 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                 }}/>
                 <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: "var(--ink-2)" }}>
                   We sent a sign-in code to{" "}
-                  <strong style={{ color: "var(--ink)" }}>{email || "your email"}</strong>.
+                  {/* Locked to the email we ACTUALLY hit /request
+                      with — independent of the (now-disabled)
+                      email field above. Previously this read live
+                      from `email` and silently changed as the user
+                      edited, which made the field appear to be
+                      the source of truth when it wasn't. */}
+                  <strong style={{ color: "var(--ink)" }}>
+                    {signinCodeEmail || email || "your email"}
+                  </strong>.
                   Enter the 6-digit code below, or click the button
                   in the email. Both expire in 15 minutes.
                   <div style={{ marginTop: 6, color: "var(--ink-3)", fontSize: 11.5 }}>
@@ -906,6 +942,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                       onClick={() => {
                         setSigninCodeMode(false);
                         setSigninCode("");
+                        setSigninCodeEmail("");
                       }}
                       style={{
                         background: "none", border: 0, padding: 0,
@@ -953,6 +990,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
                     onClick={() => {
                       setSigninCodeMode(false);
                       setSigninCode("");
+                      setSigninCodeEmail("");
                       setAuthError(null);
                     }}
                     style={{
