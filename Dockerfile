@@ -137,6 +137,20 @@ COPY --chown=neuthek:neuthek policies /app/policies
 # /models is root-owned.
 RUN mkdir -p /models && chown neuthek:neuthek /models
 
+# Pre-create the cloud-sync state directories with the right
+# ownership. Both are mounted as named volumes (pyicloud_cookies +
+# rclone_configs) per docker-compose; Docker copies the image's
+# directory permissions into the volume on first attach. Without
+# this, the volumes start root-owned and the neuthek user (uid 1000)
+# can't write to them — connect attempts surface as 500 →
+# PermissionError: '/var/neuthek/pyicloud/_tmp'. Mode 0700 because
+# both directories hold session-trust / rclone-credential blobs:
+# the encryption-at-rest layer is the encrypted DB column, but
+# defence-in-depth here keeps another process on the host out.
+RUN mkdir -p /var/neuthek/pyicloud /var/neuthek/rclone \
+    && chown -R neuthek:neuthek /var/neuthek \
+    && chmod 700 /var/neuthek/pyicloud /var/neuthek/rclone
+
 # Drop privileges. Every command from here runs as neuthek (UID 1000).
 USER neuthek
 
