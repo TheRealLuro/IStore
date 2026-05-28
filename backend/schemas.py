@@ -368,9 +368,15 @@ class StorageUsage(BaseModel):
     variants_bytes: int = 0
     originals_bytes: int = 0
     trash_bytes: int = 0
+    # End-to-end encrypted Vault file blobs (VLT-8). These share the same
+    # account quota as the Drive, so they count toward `used_bytes`. Only file
+    # items consume metered storage; tiny secure items (passwords/notes/etc.)
+    # are negligible inline ciphertext and aren't counted.
+    vault_bytes: int = 0
     # Counts for the "Free up …" buttons.
     originals_count: int = 0
     variants_count: int = 0
+    vault_count: int = 0
     # Per-provider cloud-link summary so the storage panel can
     # honestly show "we hold N MB for X files synced from your
     # Drive; the originals stay on Drive." Empty list when no

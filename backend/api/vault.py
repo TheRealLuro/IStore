@@ -86,12 +86,11 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.storage import DEFAULT_QUOTA_BYTES
+from backend.api.storage import compute_used_bytes_fast, effective_quota_bytes
 from backend.auth.users import current_active_user
 from backend.config import settings
 from backend.db import get_session
 from backend.models import (
-    Image,
     User,
     VaultFolder,
     VaultItem,
@@ -224,28 +223,6 @@ def _folder_response(f: VaultFolder) -> "VaultFolderResponse":
         created_at=f.created_at,
         updated_at=f.updated_at,
     )
-
-
-def _effective_quota(user: User) -> int:
-    qb = getattr(user, "quota_bytes", None)
-    return int(qb) if qb is not None else DEFAULT_QUOTA_BYTES
-
-
-async def _used_bytes(session: AsyncSession, user_id) -> int:
-    """Total storage the user occupies across BOTH the AI drive (image
-    originals/served) and the zero-knowledge vault — they share one quota
-    pool, so vault uploads can't be used to dodge the account limit."""
-    img = await session.scalar(
-        select(func.coalesce(func.sum(Image.byte_size_served), 0)).where(
-            Image.user_id == user_id, Image.deleted_at.is_(None)
-        )
-    )
-    vault = await session.scalar(
-        select(func.coalesce(func.sum(VaultItem.size_bytes), 0)).where(
-            VaultItem.user_id == user_id
-        )
-    )
-    return int(img or 0) + int(vault or 0)
 
 
 async def _mirror_public_key(session: AsyncSession, user_id, pub: bytes) -> None:
@@ -940,8 +917,8 @@ async def upload_vault_file(
             f"File exceeds the {settings.vault_upload_max_bytes // (1024 * 1024)} MB "
             "per-file limit.",
         )
-    used = await _used_bytes(session, user.id)
-    if used + length > _effective_quota(user):
+    used = await compute_used_bytes_fast(session, user.id)
+    if used + length > effective_quota_bytes(user):
         raise HTTPException(
             status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             "This upload would exceed your storage quota.",
