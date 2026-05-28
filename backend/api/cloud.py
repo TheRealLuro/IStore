@@ -364,6 +364,12 @@ import asyncio
 
 _SYNC_PROGRESS: dict[tuple, dict] = {}
 
+# SYNC-2 — overall backstop: the longest a single provider sync may run
+# before we declare it hung and flip the status to "error". 30 min is
+# well past a legitimate multi-thousand-file walk + downloads; beyond
+# that it's a stuck endpoint we want surfaced, not an eternal spinner.
+_SYNC_OVERALL_TIMEOUT_SECONDS = 30 * 60
+
 
 def _sync_key(user_id, provider: str) -> tuple:
     return (str(user_id), provider)
@@ -416,13 +422,41 @@ async def _run_sync_background(
                 # stamps `app.current_user_id`, so the RLS policies on
                 # `images` / `image_geo` etc. would block writes. Bypass.
                 await s.execute(sql_text("SET LOCAL app.rls_bypass='on'"))
-                result = await sync_user_provider(s, user_id, provider)
+                # SYNC-2 — overall backstop timeout. Even with the per-
+                # call timeouts now installed on the pyicloud session,
+                # wrap the whole provider walk so the status can NEVER
+                # stick on "running" forever. 30 minutes is generous for
+                # a full multi-thousand-file library walk + downloads;
+                # anything longer is a hang we want surfaced as an error
+                # the user can retry, not an eternal spinner.
+                result = await asyncio.wait_for(
+                    sync_user_provider(s, user_id, provider),
+                    timeout=_SYNC_OVERALL_TIMEOUT_SECONDS,
+                )
             _SYNC_PROGRESS[key] = {
                 "state": "done",
                 "started_at": _SYNC_PROGRESS[key]["started_at"],
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "counts": result,
                 "error": None,
+            }
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "background_sync: TIMED OUT after %ds user=%s provider=%s "
+                "link=%s — flipping status to error so the UI stops "
+                "spinning",
+                _SYNC_OVERALL_TIMEOUT_SECONDS, user_id, provider, link_id,
+            )
+            _SYNC_PROGRESS[key] = {
+                "state": "error",
+                "started_at": _SYNC_PROGRESS[key]["started_at"],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "counts": None,
+                "error": (
+                    "Sync timed out — the provider stopped responding. "
+                    "Your synced files so far are saved; click Sync to "
+                    "resume."
+                ),
             }
         except CloudSyncNotConfigured as exc:
             _SYNC_PROGRESS[key] = {
