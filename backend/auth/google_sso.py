@@ -38,11 +38,13 @@ Security notes
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
 import os
 import secrets
+import time
 import uuid
 from typing import Any
 from urllib.parse import urlencode
@@ -63,17 +65,21 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.auth.users import current_active_user
+from backend.auth.users import COOKIE_NAME, current_active_user
 from backend.config import settings
 from backend.db import SessionLocal, get_session
-from backend.key_derivation import oauth_sso_state_key
-from backend.models import User
+from backend.key_derivation import (
+    PURPOSE_SSO_TOTP_PENDING,
+    derive_subkey,
+    oauth_sso_state_key,
+)
+from backend.models import AuditLog, User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth/google", tags=["auth"])
@@ -539,6 +545,69 @@ def _fe_landing(qs: dict[str, str]) -> str:
     return f"{fe_root}/#" + urlencode(qs)
 
 
+def _set_sso_session_cookie(response: Response, token: str) -> None:
+    """Set the HttpOnly session cookie, mirroring CookieTransport /
+    email_link._set_session_cookie. Same name/attrs as /auth/cookie/login so
+    the browser ships it on the next /users/me call (same-origin prod)."""
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=settings.jwt_lifetime_seconds,
+        path="/",
+        secure=settings.is_production,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+# ---------- F1: SSO + neuthek TOTP second factor ----------
+#
+# When a TOTP-enabled user signs in with Google, the SSO leg alone is NOT
+# sufficient — the user explicitly enabled an authenticator on THIS account, so
+# we require their 6-digit code before minting a session (previously SSO
+# silently bypassed it). The callback issues this short-lived, single-purpose
+# HMAC pending token instead of a session; /auth/google/complete-totp redeems
+# it together with a valid TOTP code. The token alone is useless without the
+# live code, and it expires in 5 minutes.
+
+_SSO_TOTP_PENDING_TTL = 300  # seconds
+
+
+def _sso_totp_sig(user_id: str, exp: int) -> str:
+    mac = hmac.new(
+        derive_subkey(PURPOSE_SSO_TOTP_PENDING),
+        f"{user_id}.{exp}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
+
+
+def mint_sso_totp_pending(user_id: UUID) -> str:
+    exp = int(time.time()) + _SSO_TOTP_PENDING_TTL
+    uid = str(user_id)
+    return f"{uid}.{exp}.{_sso_totp_sig(uid, exp)}"
+
+
+def verify_sso_totp_pending(token: str) -> UUID | None:
+    """Return the bound user id if the pending token is well-formed, unexpired,
+    and the HMAC verifies; else None."""
+    if not token or token.count(".") < 2:
+        return None
+    try:
+        uid, exp_str, sig = token.rsplit(".", 2)
+        exp = int(exp_str)
+    except (ValueError, AttributeError):
+        return None
+    if exp < int(time.time()):
+        return None
+    if not hmac.compare_digest(sig, _sso_totp_sig(uid, exp)):
+        return None
+    try:
+        return UUID(uid)
+    except ValueError:
+        return None
+
+
 @router.get("/callback")
 async def google_callback(
     request: Request,
@@ -727,42 +796,35 @@ async def google_callback(
             url=f"{fe_root}/#sso_error=account_inactive", status_code=302
         )
 
-    # 2FA policy for SSO (2026-05): when the user signed in with Google,
-    # Google itself authenticated them — including any 2FA Google has on
-    # their account. Requiring our TOTP on top would mean a 2FA-enabled
-    # user clicking "Sign in with Google" gets bounced back to the
-    # password screen with no clear path forward (the previous behaviour:
-    # redirect to `#sso_error=totp_required`, which felt like a lockout).
-    # We treat the Google sign-in itself as the second factor and skip
-    # our TOTP check on this path.
-    #
-    # The TOTP gate STILL fires on the password login path
-    # (UserManager.on_after_login in backend/auth/users.py), so users
-    # who deliberately log in with their password are still required
-    # to enter their code. SSO users implicitly relied on Google's
-    # 2FA when they granted us their account; that's the contract.
-    #
-    # An audit row records the bypass so a forensic timeline can see
-    # exactly when a user accessed the account via SSO vs. TOTP.
+    # F1 — 2FA policy for SSO. A TOTP-enabled user explicitly put an
+    # authenticator on THIS neuthek account, so the Google sign-in alone is NOT
+    # sufficient: we require their 6-digit code before minting a session.
+    # (Previously SSO silently bypassed neuthek TOTP and leaned entirely on
+    # Google's own 2FA — an MFA-downgrade if the Google account had weak/no
+    # 2FA or a live session on a shared device.) Instead of a session we mint a
+    # short-lived, single-purpose pending token and bounce the SPA to a TOTP
+    # step; the session is only issued by /auth/google/complete-totp once the
+    # code verifies.
     if user.totp_enabled and user.totp_secret_enc:
-        from backend.db import SessionLocal
-        from backend.models import AuditLog
+        pending = mint_sso_totp_pending(user.id)
         try:
             async with SessionLocal() as s:
                 s.add(
                     AuditLog(
                         user_id=user.id,
-                        action="auth.sso.bypass_totp",
-                        details={
-                            "provider": "google",
-                            "email": email,
-                            "reason": "google_sso_second_factor",
-                        },
+                        action="auth.sso.totp_challenge",
+                        details={"provider": "google", "email": email},
                     )
                 )
                 await s.commit()
         except Exception:
-            logger.exception("auth.google: audit write failed for sso/totp bypass")
+            logger.exception("auth.google: audit write failed for sso totp challenge")
+        logger.info("auth.google: totp challenge issued user=%s email=%s", user.id, email)
+        qs = {
+            "sso_totp": pending,
+            "sso_new": "1" if was_created else "0",
+        }
+        return RedirectResponse(url=_fe_landing(qs), status_code=302)
 
     # Issue a JWT using the same strategy as /auth/jwt/login so every
     # downstream `current_active_user` dependency accepts it transparently.
@@ -779,4 +841,82 @@ async def google_callback(
         "sso_token": token,
         "sso_new": "1" if was_created else "0",
     }
-    return RedirectResponse(url=_fe_landing(qs), status_code=302)
+    resp = RedirectResponse(url=_fe_landing(qs), status_code=302)
+    # Also set the HttpOnly session cookie so /users/me works on same-origin
+    # prod without relying solely on the fragment token.
+    _set_sso_session_cookie(resp, token)
+    return resp
+
+
+# ---------- F1: SSO TOTP completion ----------
+
+
+class SsoTotpCompleteRequest(BaseModel):
+    pending: str
+    code: str
+
+
+class SsoTotpCompleteResponse(BaseModel):
+    sso_token: str
+    sso_new: bool = False
+
+
+@router.post("/complete-totp", response_model=SsoTotpCompleteResponse)
+async def complete_sso_totp(
+    body: SsoTotpCompleteRequest,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SsoTotpCompleteResponse:
+    """Second leg of a TOTP-gated Google sign-in.
+
+    The callback redirected the SPA with `#sso_totp=<pending>`; the SPA collects
+    the user's 6-digit code and POSTs it here. We re-verify the pending token
+    (proves the Google leg completed for THIS user, unexpired) AND the TOTP
+    code, then mint the real session. Listed in `_AUTH_PATHS` so failed code
+    guesses count toward per-IP + per-identity lockout — the pending token's
+    1M-space code can't be brute-forced.
+    """
+    # Lazy imports mirror the callback's pattern + avoid import cycles.
+    from backend.api.two_factor import _verify_code
+    from backend.auth.users import get_jwt_strategy
+    from backend.secret_box import decrypt
+
+    user_id = verify_sso_totp_pending(body.pending)
+    if user_id is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This sign-in step expired — start the Google sign-in again.",
+        )
+    user = (
+        await session.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid sign-in.")
+    if not user.totp_enabled or not user.totp_secret_enc:
+        # 2FA was disabled between the callback and now — nothing to verify;
+        # refuse rather than silently letting the pending token mint a session.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Two-factor is no longer enabled — sign in again.",
+        )
+    secret = decrypt(user.totp_secret_enc)
+    if not _verify_code(secret, body.code):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid 2FA code.")
+
+    from datetime import datetime, timezone
+
+    user.totp_verified_at = datetime.now(timezone.utc)
+    session.add(
+        AuditLog(
+            user_id=user.id,
+            action="auth.sso.totp_completed",
+            details={"provider": "google"},
+        )
+    )
+    await session.commit()
+
+    strategy = get_jwt_strategy()
+    token = await strategy.write_token(user)
+    _set_sso_session_cookie(response, token)
+    logger.info("auth.google: totp-gated sign-in completed user=%s", user.id)
+    return SsoTotpCompleteResponse(sso_token=token)

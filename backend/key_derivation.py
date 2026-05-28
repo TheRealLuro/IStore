@@ -129,6 +129,12 @@ PURPOSE_SIGNED_STREAM = b"signed-url-stream-v1"
 PURPOSE_OAUTH_STATE_SSO = b"oauth-state-google-sso-v1"
 PURPOSE_OAUTH_STATE_CLOUD_SYNC = b"oauth-state-cloud-sync-v1"
 
+# F1 — short-lived "you authed via Google SSO, now prove your second factor"
+# pending token. Distinct subkey so a leak of this HMAC can't forge any other
+# signed primitive (and vice-versa). The token alone is useless without the
+# user's live TOTP code — it just proves the SSO leg completed.
+PURPOSE_SSO_TOTP_PENDING = b"sso-totp-pending-token-v1"
+
 
 # Cached lookups for hot-path call sites. `lru_cache(maxsize=1)` per
 # purpose avoids re-running the HKDF on every HMAC; the cached value is
