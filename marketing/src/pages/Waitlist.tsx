@@ -6,6 +6,19 @@ import {
   type WaitlistUseCase,
 } from "../api";
 import { usePageSeo, webPage } from "../seo";
+import Select from "../components/Select";
+
+const USE_OPTIONS = [
+  { value: "personal", label: "Personal photos & memories" },
+  { value: "family", label: "Family / shared household library" },
+  { value: "creative", label: "Creative work or portfolio" },
+  { value: "developer", label: "Developer / engineering work" },
+  { value: "student", label: "Student notes & coursework" },
+  { value: "research", label: "Research, lab notes, or archive" },
+  { value: "educator", label: "Teaching / course material" },
+  { value: "professional", label: "Work documents, receipts, contracts" },
+  { value: "other", label: "Something else" },
+];
 
 // A satisfying confirmation card — an icon medallion + heading + body —
 // shown after submit instead of bare text. tone drives the icon color.
@@ -256,21 +269,13 @@ export default function Waitlist() {
                 <label htmlFor="use" style={{ fontSize: 13, color: "var(--ink-2)" }}>
                   What will you use it for?
                 </label>
-                <select
+                <Select
                   id="use"
+                  ariaLabel="What will you use it for?"
                   value={use}
-                  onChange={(e) => setUse(e.target.value as WaitlistUseCase)}
-                >
-                  <option value="personal">Personal photos &amp; memories</option>
-                  <option value="family">Family / shared household library</option>
-                  <option value="creative">Creative work or portfolio</option>
-                  <option value="developer">Developer / engineering work</option>
-                  <option value="student">Student notes &amp; coursework</option>
-                  <option value="research">Research, lab notes, or archive</option>
-                  <option value="educator">Teaching / course material</option>
-                  <option value="professional">Work documents, receipts, contracts</option>
-                  <option value="other">Something else</option>
-                </select>
+                  onChange={(v) => setUse(v as WaitlistUseCase)}
+                  options={USE_OPTIONS}
+                />
 
                 <label
                   className="wl-check"

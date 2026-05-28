@@ -1495,6 +1495,77 @@ p {
   outline-offset: 2px;
 }
 
+/* Custom dropdown (Select.tsx) — a styled button + a rounded popover so
+   the open options list is as clean as the closed control. */
+.wl-select { position: relative; }
+.wl-select__btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: inherit;
+  font-size: 15px;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease);
+}
+.wl-select__btn:hover { border-color: var(--ink-4); }
+.wl-select__btn[data-open="true"],
+.wl-select__btn:focus-visible {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.08);
+  outline: none;
+}
+.wl-select__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wl-select__chev { color: var(--ink-3); flex: 0 0 auto; transition: transform 200ms var(--ease-out); }
+.wl-select__btn[data-open="true"] .wl-select__chev { transform: rotate(180deg); }
+
+.wl-select__menu {
+  position: absolute;
+  z-index: var(--z-overlay, 20);
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-3);
+  max-height: 290px;
+  overflow-y: auto;
+  animation: wlSelectIn 150ms var(--ease-out);
+}
+@keyframes wlSelectIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.wl-select__opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 14.5px;
+  color: var(--ink-2);
+  border-radius: var(--radius-1);
+  cursor: pointer;
+}
+.wl-select__opt[data-active="true"] { background: var(--surface-2); color: var(--ink); }
+.wl-select__opt[data-selected="true"] { color: var(--ink); font-weight: 500; }
+.wl-select__opt svg { color: var(--ink); flex: 0 0 auto; }
+@media (prefers-reduced-motion: reduce) {
+  .wl-select__menu { animation: none; }
+  .wl-select__chev { transition: none; }
+}
+
 .fade-in { animation: fadeIn 600ms var(--ease) both; }
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(8px); }
