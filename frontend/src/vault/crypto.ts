@@ -254,3 +254,143 @@ export async function createVaultSetup(
     },
   };
 }
+
+// ---- account keypair (VLT-8: sealed-box equivalent for sharing) ----
+//
+// To SHARE a vault item, its per-file key is "sealed" to the recipient's
+// account public key — only they can open it. WebCrypto has no X25519
+// crypto_box_seal, so we build the equivalent on P-256 ECDH + HKDF +
+// AES-GCM (no WASM dependency):
+//   seal:  fresh ephemeral P-256 keypair → ECDH(ephemeral_priv,
+//          recipient_pub) → HKDF-SHA256 → AES-GCM key → encrypt.
+//          Output = ephemeralPubLen ‖ ephemeralPub ‖ nonce ‖ ciphertext.
+//   open:  ECDH(my_priv, ephemeral_pub) → same HKDF → AES-GCM decrypt.
+// The account private key never leaves the device unwrapped — it's stored
+// AES-GCM-wrapped under the master key.
+
+const ACCOUNT_CURVE = "P-256";
+const SEAL_INFO = "neuthek.vault.seal.v1";
+const ACCOUNT_KEY_AAD = "neuthek.vault.account-key.v1";
+
+export interface AccountKeyPairExport {
+  publicKey: string; // base64 raw (uncompressed EC point)
+  enc_private_key: string; // base64 of nonce(12) ‖ AES-GCM(masterKey, pkcs8)
+}
+
+/** Generate a fresh account keypair: returns the public key (raw) and the
+ *  PKCS8 private key wrapped under the master key, ready to persist on
+ *  vault_meta. */
+export async function createAccountKeyPair(
+  masterKey: CryptoKey,
+): Promise<AccountKeyPairExport> {
+  const s = subtle();
+  const kp = await s.generateKey(
+    { name: "ECDH", namedCurve: ACCOUNT_CURVE },
+    true,
+    ["deriveBits"],
+  );
+  const pubRaw = new Uint8Array(await s.exportKey("raw", kp.publicKey));
+  const pkcs8 = new Uint8Array(await s.exportKey("pkcs8", kp.privateKey));
+  const nonce = randomBytes(NONCE_BYTES);
+  const ct = new Uint8Array(
+    await s.encrypt(
+      { name: "AES-GCM", iv: nonce as BufferSource, additionalData: enc.encode(ACCOUNT_KEY_AAD) },
+      masterKey,
+      pkcs8 as BufferSource,
+    ),
+  );
+  const blob = new Uint8Array(nonce.length + ct.length);
+  blob.set(nonce, 0);
+  blob.set(ct, nonce.length);
+  return { publicKey: bytesToB64(pubRaw), enc_private_key: bytesToB64(blob) };
+}
+
+/** Unwrap the stored private key with the master key → an ECDH CryptoKey. */
+export async function unwrapAccountPrivateKey(
+  encPrivateKeyB64: string,
+  masterKey: CryptoKey,
+): Promise<CryptoKey> {
+  const s = subtle();
+  const blob = b64ToBytes(encPrivateKeyB64);
+  const nonce = blob.subarray(0, NONCE_BYTES);
+  const ct = blob.subarray(NONCE_BYTES);
+  const pkcs8 = await s.decrypt(
+    { name: "AES-GCM", iv: nonce as BufferSource, additionalData: enc.encode(ACCOUNT_KEY_AAD) },
+    masterKey,
+    ct as BufferSource,
+  );
+  return s.importKey(
+    "pkcs8", pkcs8, { name: "ECDH", namedCurve: ACCOUNT_CURVE }, false, ["deriveBits"],
+  );
+}
+
+export async function importAccountPublicKey(publicKeyB64: string): Promise<CryptoKey> {
+  return subtle().importKey(
+    "raw", b64ToBytes(publicKeyB64) as BufferSource,
+    { name: "ECDH", namedCurve: ACCOUNT_CURVE }, false, [],
+  );
+}
+
+async function deriveSealKey(
+  privateKey: CryptoKey,
+  publicKey: CryptoKey,
+): Promise<CryptoKey> {
+  const s = subtle();
+  const shared = await s.deriveBits({ name: "ECDH", public: publicKey }, privateKey, 256);
+  const hkdfBase = await s.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  return s.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0) as BufferSource, info: enc.encode(SEAL_INFO) },
+    hkdfBase,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+/** Seal bytes (e.g. a per-file key) to a recipient's account public key.
+ *  Output: base64 of ephLen(1) ‖ ephemeralPub ‖ nonce(12) ‖ ciphertext. */
+export async function sealToPublicKey(
+  recipientPublicKeyB64: string,
+  data: Uint8Array,
+): Promise<string> {
+  const s = subtle();
+  const recipientPub = await importAccountPublicKey(recipientPublicKeyB64);
+  const eph = await s.generateKey(
+    { name: "ECDH", namedCurve: ACCOUNT_CURVE }, true, ["deriveBits"],
+  );
+  const ephPubRaw = new Uint8Array(await s.exportKey("raw", eph.publicKey));
+  const key = await deriveSealKey(eph.privateKey, recipientPub);
+  const nonce = randomBytes(NONCE_BYTES);
+  const ct = new Uint8Array(
+    await s.encrypt({ name: "AES-GCM", iv: nonce as BufferSource }, key, data as BufferSource),
+  );
+  const out = new Uint8Array(1 + ephPubRaw.length + nonce.length + ct.length);
+  out[0] = ephPubRaw.length;
+  out.set(ephPubRaw, 1);
+  out.set(nonce, 1 + ephPubRaw.length);
+  out.set(ct, 1 + ephPubRaw.length + nonce.length);
+  return bytesToB64(out);
+}
+
+/** Open a sealed blob with my account private key (inverse of
+ *  sealToPublicKey). Named distinctly from the internal AES-GCM `openSealed`
+ *  helper above to avoid a duplicate-declaration collision. */
+export async function unsealFromPrivateKey(
+  myPrivateKey: CryptoKey,
+  sealedB64: string,
+): Promise<Uint8Array> {
+  const s = subtle();
+  const blob = b64ToBytes(sealedB64);
+  const ephLen = blob[0];
+  const ephPubRaw = blob.subarray(1, 1 + ephLen);
+  const nonce = blob.subarray(1 + ephLen, 1 + ephLen + NONCE_BYTES);
+  const ct = blob.subarray(1 + ephLen + NONCE_BYTES);
+  const ephPub = await s.importKey(
+    "raw", ephPubRaw as BufferSource,
+    { name: "ECDH", namedCurve: ACCOUNT_CURVE }, false, [],
+  );
+  const key = await deriveSealKey(myPrivateKey, ephPub);
+  return new Uint8Array(
+    await s.decrypt({ name: "AES-GCM", iv: nonce as BufferSource }, key, ct as BufferSource),
+  );
+}
