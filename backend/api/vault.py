@@ -61,6 +61,12 @@ _NONCE_BYTES = 12
 _MIN_SALT_BYTES = 16
 _MAX_SALT_BYTES = 64
 _MAX_VERIFIER_CT_BYTES = 256
+# VLT-8 account keypair. The public key is a P-256 raw uncompressed EC
+# point — always exactly 65 bytes (0x04 ‖ X[32] ‖ Y[32]). The private key
+# is stored AES-GCM-wrapped: nonce(12) ‖ ct(pkcs8 ≈138) ‖ tag(16) ≈ 166
+# bytes; cap generously so a hostile client can't park a large blob here.
+_ACCOUNT_PUBKEY_BYTES = 65
+_MAX_ENC_PRIVKEY_BYTES = 512
 # OWASP 2023 floor for PBKDF2-SHA256 is 600k. Enforce a floor so a
 # buggy/hostile client can't silently weaken a user's KDF, and a
 # ceiling so it can't wedge the user's browser with an absurd cost.
@@ -98,6 +104,36 @@ def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
+def _decode_account_key(public_key_b64: str, enc_private_key_b64: str) -> tuple[bytes, bytes]:
+    """Validate + decode the account keypair fields. The public key must be
+    a 65-byte P-256 raw point; the wrapped private key is length-bounded.
+    Server never inspects the bytes beyond size — both are opaque."""
+    pub = _b64_field(
+        public_key_b64, min_bytes=_ACCOUNT_PUBKEY_BYTES,
+        max_bytes=_ACCOUNT_PUBKEY_BYTES, exact=_ACCOUNT_PUBKEY_BYTES,
+        field="account_public_key",
+    )
+    enc_priv = _b64_field(
+        enc_private_key_b64, min_bytes=_NONCE_BYTES + 1,
+        max_bytes=_MAX_ENC_PRIVKEY_BYTES, field="enc_account_private_key",
+    )
+    return pub, enc_priv
+
+
+def _meta_response(meta: VaultMeta) -> "VaultMetaResponse":
+    return VaultMetaResponse(
+        kdf=meta.kdf,
+        kdf_iterations=meta.kdf_iterations,
+        kdf_salt=_b64(meta.kdf_salt),
+        verifier_nonce=_b64(meta.verifier_nonce),
+        verifier_ct=_b64(meta.verifier_ct),
+        account_public_key=_b64(meta.account_public_key) if meta.account_public_key else None,
+        enc_account_private_key=(
+            _b64(meta.enc_account_private_key) if meta.enc_account_private_key else None
+        ),
+    )
+
+
 # ---- schemas ---------------------------------------------------------------
 
 
@@ -108,6 +144,11 @@ class VaultSetupRequest(BaseModel):
     kdf_salt: str          # base64, 16–64 bytes
     verifier_nonce: str    # base64, exactly 12 bytes
     verifier_ct: str       # base64, <= 256 bytes
+    # VLT-8 — optional account keypair, supplied at first setup so sharing
+    # works out of the box. Older vaults provision it later via
+    # POST /vault/account-key. Both opaque to the server.
+    account_public_key: str | None = None   # base64, exactly 65 bytes
+    enc_account_private_key: str | None = None  # base64, <= 512 bytes
 
     @field_validator("kdf_iterations")
     @classmethod
@@ -119,12 +160,23 @@ class VaultSetupRequest(BaseModel):
         return v
 
 
+class VaultAccountKeyRequest(BaseModel):
+    """Provision the account keypair for an existing vault that predates
+    VLT-8 (or any vault whose keypair wasn't set at setup time)."""
+    account_public_key: str          # base64, exactly 65 bytes
+    enc_account_private_key: str     # base64, <= 512 bytes
+
+
 class VaultMetaResponse(BaseModel):
     kdf: str
     kdf_iterations: int
     kdf_salt: str
     verifier_nonce: str
     verifier_ct: str
+    # base64, present once the account keypair has been provisioned. The
+    # private key is master-key-wrapped — the server never sees it unwrapped.
+    account_public_key: str | None = None
+    enc_account_private_key: str | None = None
 
 
 class VaultItemUpsert(BaseModel):
@@ -162,13 +214,7 @@ async def get_vault_meta(
     meta = await session.get(VaultMeta, user.id)
     if meta is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No vault set up.")
-    return VaultMetaResponse(
-        kdf=meta.kdf,
-        kdf_iterations=meta.kdf_iterations,
-        kdf_salt=_b64(meta.kdf_salt),
-        verifier_nonce=_b64(meta.verifier_nonce),
-        verifier_ct=_b64(meta.verifier_ct),
-    )
+    return _meta_response(meta)
 
 
 @router.post("/setup", status_code=status.HTTP_201_CREATED,
@@ -202,6 +248,18 @@ async def setup_vault(
                          field="verifier_nonce")
     v_ct = _b64_field(payload.verifier_ct, min_bytes=1,
                       max_bytes=_MAX_VERIFIER_CT_BYTES, field="verifier_ct")
+    # Account keypair is optional at setup but must be supplied as a pair.
+    acct_pub: bytes | None = None
+    acct_priv: bytes | None = None
+    if payload.account_public_key is not None or payload.enc_account_private_key is not None:
+        if payload.account_public_key is None or payload.enc_account_private_key is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "account_public_key and enc_account_private_key must be supplied together.",
+            )
+        acct_pub, acct_priv = _decode_account_key(
+            payload.account_public_key, payload.enc_account_private_key,
+        )
     meta = VaultMeta(
         user_id=user.id,
         kdf=payload.kdf,
@@ -209,16 +267,50 @@ async def setup_vault(
         kdf_salt=salt,
         verifier_nonce=v_nonce,
         verifier_ct=v_ct,
+        account_public_key=acct_pub,
+        enc_account_private_key=acct_priv,
     )
     session.add(meta)
     await session.commit()
-    return VaultMetaResponse(
-        kdf=meta.kdf,
-        kdf_iterations=meta.kdf_iterations,
-        kdf_salt=_b64(meta.kdf_salt),
-        verifier_nonce=_b64(meta.verifier_nonce),
-        verifier_ct=_b64(meta.verifier_ct),
+    return _meta_response(meta)
+
+
+@router.post("/account-key", response_model=VaultMetaResponse)
+async def set_account_key(
+    payload: VaultAccountKeyRequest,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VaultMetaResponse:
+    """Provision the account keypair for an existing vault that doesn't have
+    one yet (vaults created before VLT-8). Idempotent-by-refusal: once set,
+    the keypair can't be overwritten here — rotating it would orphan every
+    file-key sealed to the old public key (and every share). The vault must
+    already exist."""
+    await enforce_rate_limit(
+        key=f"vault:account-key:{user.id}",
+        limit=5, window_seconds=3600,
+        detail="Too many account-key attempts. Try again later.",
     )
+    meta = await session.get(VaultMeta, user.id)
+    if meta is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No vault set up. Create the vault first.",
+        )
+    if meta.account_public_key is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "An account key already exists for this vault.",
+        )
+    pub, enc_priv = _decode_account_key(
+        payload.account_public_key, payload.enc_account_private_key,
+    )
+    meta.account_public_key = pub
+    meta.enc_account_private_key = enc_priv
+    meta.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(meta)
+    return _meta_response(meta)
 
 
 @router.get("/items", response_model=list[VaultItemResponse])
