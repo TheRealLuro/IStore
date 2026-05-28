@@ -301,6 +301,58 @@ export function PillowLogo({ size = 26, style }: IconProps) {
   );
 }
 
+// ====== Caddy (TLS shield + check) ======
+export function CaddyLogo({ size = 26, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
+         aria-hidden="true" role="img" fill="none" stroke="currentColor"
+         strokeWidth="1.7" strokeLinejoin="round" strokeLinecap="round">
+      <path d="M12 2.5 L20 5.3 V11 C20 16.2 16.4 19.6 12 21.5 C7.6 19.6 4 16.2 4 11 V5.3 Z" />
+      <path d="M8.6 11.8 L11 14.3 L15.6 9" />
+    </svg>
+  );
+}
+
+// ====== Hugging Face (smiley — the platform we run Florence-2 / Qwen on) ======
+export function HuggingFaceLogo({ size = 26, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
+         aria-hidden="true" role="img">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="9" cy="10.6" r="1.05" fill="currentColor" />
+      <circle cx="15" cy="10.6" r="1.05" fill="currentColor" />
+      <path d="M8 14.4 C9.2 16.4, 14.8 16.4, 16 14.4" fill="none"
+            stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// ====== insightface (face + detection brackets) ======
+export function InsightFaceLogo({ size = 26, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
+         aria-hidden="true" role="img" fill="none" stroke="currentColor"
+         strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7.5 V4 H6.5 M17.5 4 H21 V7.5 M21 16.5 V20 H17.5 M6.5 20 H3 V16.5" />
+      <circle cx="12" cy="10.3" r="2.3" />
+      <path d="M7.7 16.6 C8.8 14.2, 15.2 14.2, 16.3 16.6" />
+    </svg>
+  );
+}
+
+// ====== TanStack Query (stacked data layers) ======
+export function TanStackLogo({ size = 26, style }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" style={{ ...COMMON(size), ...style }}
+         aria-hidden="true" role="img" fill="none" stroke="currentColor"
+         strokeWidth="1.5" strokeLinejoin="round">
+      <path d="M3 7 L12 3 L21 7 L12 11 Z" />
+      <path d="M3 12 L12 16 L21 12" />
+      <path d="M3 17 L12 21 L21 17" />
+    </svg>
+  );
+}
+
 // ====== Stack registry: name + icon + URL to that project's docs ======
 //
 // URLs are the canonical docs/home for each project. Carousel items
@@ -313,16 +365,20 @@ export type TechEntry = {
 };
 
 export const TECH_STACK: TechEntry[] = [
-  { name: "FastAPI",    Icon: FastApiLogo,    href: "https://fastapi.tiangolo.com" },
-  { name: "PostgreSQL", Icon: PostgresLogo,   href: "https://www.postgresql.org/docs/" },
-  { name: "pgvector",   Icon: PgvectorLogo,   href: "https://github.com/pgvector/pgvector" },
-  { name: "MinIO",      Icon: MinioLogo,      href: "https://min.io/docs/minio/linux/index.html" },
-  { name: "Redis",      Icon: RedisLogo,      href: "https://redis.io/docs/latest/" },
-  { name: "OpenCLIP",   Icon: OpenClipLogo,   href: "https://github.com/mlfoundations/open_clip" },
-  { name: "PyTorch",    Icon: PyTorchLogo,    href: "https://pytorch.org/docs/" },
-  { name: "Pillow",     Icon: PillowLogo,     href: "https://pillow.readthedocs.io" },
-  { name: "Docker",     Icon: DockerLogo,     href: "https://docs.docker.com" },
-  { name: "Vite",       Icon: ViteLogo,       href: "https://vitejs.dev/guide/" },
-  { name: "React",      Icon: ReactLogo,      href: "https://react.dev" },
-  { name: "TypeScript", Icon: TypeScriptLogo, href: "https://www.typescriptlang.org/docs/" },
+  { name: "FastAPI",        Icon: FastApiLogo,     href: "https://fastapi.tiangolo.com" },
+  { name: "PostgreSQL",     Icon: PostgresLogo,    href: "https://www.postgresql.org/docs/" },
+  { name: "pgvector",       Icon: PgvectorLogo,    href: "https://github.com/pgvector/pgvector" },
+  { name: "MinIO",          Icon: MinioLogo,       href: "https://min.io/docs/minio/linux/index.html" },
+  { name: "Redis",          Icon: RedisLogo,       href: "https://redis.io/docs/latest/" },
+  { name: "Caddy",          Icon: CaddyLogo,       href: "https://caddyserver.com/docs/" },
+  { name: "PyTorch",        Icon: PyTorchLogo,     href: "https://pytorch.org/docs/" },
+  { name: "OpenCLIP",       Icon: OpenClipLogo,    href: "https://github.com/mlfoundations/open_clip" },
+  { name: "Hugging Face",   Icon: HuggingFaceLogo, href: "https://huggingface.co/docs" },
+  { name: "InsightFace",    Icon: InsightFaceLogo, href: "https://github.com/deepinsight/insightface" },
+  { name: "Pillow",         Icon: PillowLogo,      href: "https://pillow.readthedocs.io" },
+  { name: "Docker",         Icon: DockerLogo,      href: "https://docs.docker.com" },
+  { name: "React",          Icon: ReactLogo,       href: "https://react.dev" },
+  { name: "Vite",           Icon: ViteLogo,        href: "https://vitejs.dev/guide/" },
+  { name: "TanStack Query", Icon: TanStackLogo,    href: "https://tanstack.com/query/latest" },
+  { name: "TypeScript",     Icon: TypeScriptLogo,  href: "https://www.typescriptlang.org/docs/" },
 ];

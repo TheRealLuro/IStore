@@ -60,19 +60,28 @@ export default function AutoReveal() {
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
-          if (e.isIntersecting) {
-            e.target.classList.add(VISIBLE);
-            io.unobserve(e.target);
-          }
+          if (!e.isIntersecting) continue;
+          const el = e.target as HTMLElement;
+          el.classList.add(VISIBLE);
+          io.unobserve(el);
+          // Free the compositor layer once the entrance is done so we
+          // don't leave a will-change promotion on every block forever.
+          window.setTimeout(() => {
+            el.style.willChange = "auto";
+          }, 700);
         }
       },
-      { rootMargin: "0px 0px -8% 0px", threshold: 0.06 },
+      // Fire a touch before the element is fully in view so it reads as
+      // "already arriving" rather than popping in late.
+      { rootMargin: "0px 0px -4% 0px", threshold: 0.01 },
     );
 
     const tagOne = (el: HTMLElement, idx: number) => {
       if (skip(el)) return;
       el.classList.add(TAG);
-      el.style.setProperty("--reveal-delay", `${Math.min(idx, 6) * 55}ms`);
+      // Gentle, tight stagger (cap 4 × 40ms) — a long cascade reads as
+      // laggy; a short one reads as one smooth wave.
+      el.style.setProperty("--reveal-delay", `${Math.min(idx, 4) * 40}ms`);
       io.observe(el);
     };
 

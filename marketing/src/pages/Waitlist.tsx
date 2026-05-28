@@ -261,15 +261,15 @@ export default function Waitlist() {
                   value={use}
                   onChange={(e) => setUse(e.target.value as WaitlistUseCase)}
                 >
-                  <option value="personal">     Personal photos &amp; memories</option>
-                  <option value="family">       Family or shared household library</option>
-                  <option value="creative">     Creative work or portfolio</option>
-                  <option value="developer">    Developer or engineering work (screenshots, diagrams, lab photos)</option>
-                  <option value="student">      Student notes &amp; coursework</option>
-                  <option value="research">     Research, lab notes, or personal archive</option>
-                  <option value="educator">     Teaching, faculty, or course-material archive</option>
-                  <option value="professional"> Work documents, receipts, contracts</option>
-                  <option value="other">        Something else</option>
+                  <option value="personal">Personal photos &amp; memories</option>
+                  <option value="family">Family / shared household library</option>
+                  <option value="creative">Creative work or portfolio</option>
+                  <option value="developer">Developer / engineering work</option>
+                  <option value="student">Student notes &amp; coursework</option>
+                  <option value="research">Research, lab notes, or archive</option>
+                  <option value="educator">Teaching / course material</option>
+                  <option value="professional">Work documents, receipts, contracts</option>
+                  <option value="other">Something else</option>
                 </select>
 
                 <label
@@ -288,9 +288,9 @@ export default function Waitlist() {
                     type="checkbox"
                     checked={newsletter}
                     onChange={(e) => setNewsletter(e.target.checked)}
-                    style={{ marginTop: 3, flexShrink: 0 }}
+                    style={{ marginTop: 3, flexShrink: 0, width: "auto" }}
                   />
-                  <span>
+                  <span style={{ minWidth: 0 }}>
                     Also send me the weekly newsletter — release notes
                     each Friday with what shipped and why. Optional;
                     you can unsubscribe any time.
