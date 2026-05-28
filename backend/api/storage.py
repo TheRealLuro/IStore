@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.users import current_active_user
 from backend.db import get_session
-from backend.models import AuditLog, Image, User
+from backend.models import AuditLog, Image, User, VaultItem
 from backend.retention import sweep_expired_originals
 from backend.schemas import StorageUsage
 from backend.storage import storage
@@ -119,23 +119,37 @@ def effective_quota_bytes(user: User) -> int:
     return user.quota_bytes if user.quota_bytes is not None else DEFAULT_QUOTA_BYTES
 
 
+async def vault_used_bytes(session: AsyncSession, user_id) -> tuple[int, int]:
+    """End-to-end-encrypted Vault footprint: `(bytes, file_count)`.
+
+    Only Vault FILE items consume metered storage (their ciphertext lives in
+    MinIO and `size_bytes` records it). Small secure items (password / note /
+    seed / card) are tiny inline ciphertext with `size_bytes IS NULL`, so they
+    don't count — same as a password row in the Drive doesn't. The Vault shares
+    one quota pool with the Drive, so this sums into the same `used_bytes`."""
+    q = select(
+        func.coalesce(func.sum(VaultItem.size_bytes), 0),
+        func.count(VaultItem.id),
+    ).where(VaultItem.user_id == user_id, VaultItem.size_bytes.is_not(None))
+    b, n = (await session.execute(q)).one()
+    return int(b or 0), int(n or 0)
+
+
 async def compute_used_bytes_fast(
     session: AsyncSession, user_id,
 ) -> int:
-    """Return a SQL-only estimate of the user's current footprint.
+    """Return a SQL-only estimate of the user's current footprint across the
+    whole account — Drive (served + originals + trash) AND the E2E Vault —
+    MINUS the MinIO-stat'd variants pass — that loop costs O(N videos) network
+    round-trips and we'd be running it at every cloud-sync / vault-upload entry
+    to enforce the quota. Variants are almost always a small fraction of total
+    bytes and only apply to a subset of videos that the transcoder has
+    finished, so the under-count is bounded; callers can apply a safety buffer
+    if they care about the gap.
 
-    Same component sum as GET /storage/usage (`served + originals +
-    trash`) MINUS the MinIO-stat'd variants pass — that loop costs O(N
-    videos) network round-trips and we'd be running it at every cloud-
-    sync entry to enforce the quota. Variants are almost always a
-    small fraction of total bytes and only apply to a subset of videos
-    that the transcoder has finished, so the under-count is bounded;
-    cloud-sync callers can apply a safety buffer if they care about
-    the gap.
-
-    Used by the cloud-sync quota check (audit CR-4). Not currently
-    used by the public `/storage/usage` response — that one still
-    walks variants because the user IS owed a precise number.
+    Used by the cloud-sync quota check (audit CR-4) and the vault-upload gate
+    (VLT-8). The public `/storage/usage` response still walks variants on top
+    because the user IS owed a precise number.
     """
     served_q = select(
         func.coalesce(func.sum(Image.byte_size_served), 0),
@@ -166,7 +180,9 @@ async def compute_used_bytes_fast(
     ).where(Image.user_id == user_id, Image.deleted_at.is_not(None))
     trash = int((await session.execute(trash_q)).scalar_one() or 0)
 
-    return served + originals + trash
+    vault, _ = await vault_used_bytes(session, user_id)
+
+    return served + originals + trash + vault
 
 # Video variant labels the transcoder emits. The DEFAULT served tier
 # is what `served_blob_key` already points at — typically 1080p — and
@@ -294,6 +310,9 @@ async def storage_usage(
     # Extra video variants — MinIO stat() pass.
     variants_bytes, variants_count = await _variant_bytes_for_user(session, user)
 
+    # End-to-end encrypted Vault file blobs — same account quota pool.
+    vault_bytes, vault_count = await vault_used_bytes(session, user.id)
+
     # Linked-services summary. Surfaces "how much of your library is
     # mirrored from a cloud account" so the storage panel can
     # honestly say "we hold N MB of compressed copies for X files
@@ -341,7 +360,7 @@ async def storage_usage(
         })
 
     used_total = (
-        served_total + variants_bytes + originals_bytes + trash_bytes
+        served_total + variants_bytes + originals_bytes + trash_bytes + vault_bytes
     )
 
     return StorageUsage(
@@ -353,8 +372,10 @@ async def storage_usage(
         variants_bytes=variants_bytes,
         originals_bytes=originals_bytes,
         trash_bytes=trash_bytes,
+        vault_bytes=vault_bytes,
         originals_count=originals_count,
         variants_count=variants_count,
+        vault_count=vault_count,
         linked_services=linked,
     )
 

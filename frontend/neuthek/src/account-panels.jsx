@@ -1225,8 +1225,10 @@ function StoragePage() {
   const variants = data?.variants_bytes ?? 0;
   const originals = data?.originals_bytes ?? 0;
   const trash = data?.trash_bytes ?? 0;
+  const vault = data?.vault_bytes ?? 0;
   const variantsCount = data?.variants_count ?? 0;
   const originalsCount = data?.originals_count ?? 0;
+  const vaultCount = data?.vault_count ?? 0;
 
   const cats = ["image", "video", "document", "other"].map((k) => {
     const def = STORAGE_COLORS[k];
@@ -1244,6 +1246,21 @@ function StoragePage() {
       pct: used > 0 ? (bytes / used) * 100 : 0,
     };
   });
+
+  // The encrypted Vault shares the same quota pool, so it's a first-class
+  // segment on the bar — otherwise the stacked segments would leave a gap
+  // equal to the vault's share of `used`. Only shown when it holds bytes.
+  const segments = [...cats];
+  if (vault > 0) {
+    segments.push({
+      key: "vault",
+      name: "Vault (encrypted)",
+      color: "#8e8e93",
+      bytes: vault,
+      size: fmtBytes(vault),
+      pct: used > 0 ? (vault / used) * 100 : 0,
+    });
+  }
 
   // What the user would have paid without our re-encoding —
   // compression-savings line. Only meaningful when originals are
@@ -1352,10 +1369,10 @@ function StoragePage() {
       >
         <div className="det-card">
           <div className="storage-bar-v3">
-            {cats.map(c => <div key={c.key} className="storage-bar-v3__seg" style={{ width: c.pct + "%", background: c.color }}/>)}
+            {segments.map(c => <div key={c.key} className="storage-bar-v3__seg" style={{ width: c.pct + "%", background: c.color }}/>)}
           </div>
           <div className="storage-list">
-            {cats.map(c => (
+            {segments.map(c => (
               <div key={c.key} className="storage-list__row">
                 <span className="storage-list__dot" style={{ background: c.color }}/>
                 <span className="storage-list__name">{c.name}</span>
@@ -1368,7 +1385,8 @@ function StoragePage() {
         <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 10, lineHeight: 1.55 }}>
           The bar reflects every byte on disk for your account — the
           compressed copies the viewer renders, the extra video
-          quality variants, your retained originals, and Trash.
+          quality variants, your retained originals, Trash, and your
+          end-to-end-encrypted Vault{vaultCount > 0 ? ` (${vaultCount} file${vaultCount === 1 ? "" : "s"})` : ""}.
           {compressionRatio !== null && compressionRatio > 0 && (
             <> Our re-encoder shrinks new uploads to about {100 - compressionRatio}% of their original size; you would be using <strong>{fmtBytes(originals + variants + trash + (served / (1 - compressionRatio / 100)) - used)}</strong> without it.</>
           )}

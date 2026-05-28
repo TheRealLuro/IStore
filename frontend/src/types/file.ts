@@ -80,8 +80,13 @@ export interface StorageUsage {
   originals_bytes?: number;
   /** Soft-deleted rows still on disk. Emptying Trash zeros this. */
   trash_bytes?: number;
+  /** End-to-end-encrypted Vault file blobs (VLT-8). Shares the same
+   *  account quota pool as the Drive, so it counts toward used_bytes.
+   *  Only file items are metered; tiny secure items aren't. */
+  vault_bytes?: number;
   originals_count?: number;
   variants_count?: number;
+  vault_count?: number;
   /** Per-provider cloud-link summary. Lets the UI say "57 files
    *  mirrored from your Google Drive; originals stay on Drive."
    *  Empty when no cloud account is linked. */
