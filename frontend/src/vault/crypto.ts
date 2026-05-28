@@ -394,3 +394,149 @@ export async function unsealFromPrivateKey(
     await s.decrypt({ name: "AES-GCM", iv: nonce as BufferSource }, key, ct as BufferSource),
   );
 }
+
+// ---- file chunk crypto (VLT-8: vault-as-drive) ----
+//
+// A vault FILE is encrypted under a random per-file AES-256 key, in fixed
+// 1 MiB plaintext chunks, each its own AES-GCM ciphertext. Chunking lets us:
+//   - encrypt arbitrarily large files (videos, archives) without holding the
+//     whole plaintext (or ciphertext) in memory, and
+//   - decrypt an arbitrary byte RANGE on download (P3) by fetching only the
+//     chunks that cover it — the ciphertext layout is deterministic from the
+//     metadata, so chunk boundaries are computable without a server index.
+// Each chunk's nonce = 4-byte per-file random prefix ‖ 8-byte big-endian
+// chunk index (unique per (key, chunk) — and the key is unique per file).
+// Each chunk's AAD binds the chunk INDEX, so a tampered server can't reorder
+// chunks; the decoder also re-checks the chunk count + total size to detect
+// truncation. The per-file key is itself sealed to the owner's account
+// public key (`sealToPublicKey`) and stored as the item's wrapped_key.
+
+export const FILE_CHUNK_SIZE = 1024 * 1024; // 1 MiB plaintext per chunk
+const FILE_AAD = "neuthek.vault.file.v1";
+const FILE_KEY_BYTES = 32;
+const FILE_NONCE_PREFIX_BYTES = 4;
+const GCM_TAG_BYTES = 16;
+
+export interface FileCryptoMeta {
+  v: 1;
+  size: number; // plaintext byte length
+  chunkSize: number; // plaintext bytes per chunk
+  chunks: number; // chunk count
+  noncePrefix: string; // base64 of the 4-byte per-file random prefix
+}
+
+function fileChunkNonce(prefix: Uint8Array, index: number): Uint8Array {
+  const nonce = new Uint8Array(NONCE_BYTES);
+  nonce.set(prefix, 0);
+  const dv = new DataView(nonce.buffer, nonce.byteOffset, nonce.byteLength);
+  // 64-bit big-endian chunk index across bytes 4..11.
+  dv.setUint32(FILE_NONCE_PREFIX_BYTES, Math.floor(index / 2 ** 32));
+  dv.setUint32(FILE_NONCE_PREFIX_BYTES + 4, index >>> 0);
+  return nonce;
+}
+
+function fileChunkAad(index: number): Uint8Array {
+  const base = enc.encode(FILE_AAD);
+  const out = new Uint8Array(base.length + 8);
+  out.set(base, 0);
+  const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  dv.setUint32(base.length, Math.floor(index / 2 ** 32));
+  dv.setUint32(base.length + 4, index >>> 0);
+  return out;
+}
+
+/** Fresh random per-file key (raw bytes). Sealed to the owner with
+ *  sealToPublicKey for storage; imported per-operation for AES-GCM. */
+export function randomFileKey(): Uint8Array {
+  return randomBytes(FILE_KEY_BYTES);
+}
+
+async function importFileKey(
+  raw: Uint8Array,
+  usages: KeyUsage[],
+): Promise<CryptoKey> {
+  return subtle().importKey("raw", raw as BufferSource, "AES-GCM", false, usages);
+}
+
+/** Encrypt a File/Blob into one ciphertext Blob (concatenated AES-GCM
+ *  chunks) plus the metadata needed to decrypt it. Streams chunk-by-chunk;
+ *  never materializes the whole plaintext at once. */
+export async function encryptFile(
+  file: Blob,
+  fileKeyRaw: Uint8Array,
+): Promise<{ blob: Blob; meta: FileCryptoMeta }> {
+  const s = subtle();
+  const key = await importFileKey(fileKeyRaw, ["encrypt"]);
+  const prefix = randomBytes(FILE_NONCE_PREFIX_BYTES);
+  const size = file.size;
+  const chunkSize = FILE_CHUNK_SIZE;
+  const chunks = size === 0 ? 0 : Math.ceil(size / chunkSize);
+  const parts: BlobPart[] = [];
+  for (let i = 0; i < chunks; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(start + chunkSize, size);
+    const pt = new Uint8Array(await file.slice(start, end).arrayBuffer());
+    const ct = await s.encrypt(
+      {
+        name: "AES-GCM",
+        iv: fileChunkNonce(prefix, i) as BufferSource,
+        additionalData: fileChunkAad(i) as BufferSource,
+      },
+      key,
+      pt as BufferSource,
+    );
+    parts.push(ct);
+  }
+  return {
+    blob: new Blob(parts, { type: "application/octet-stream" }),
+    meta: { v: 1, size, chunkSize, chunks, noncePrefix: bytesToB64(prefix) },
+  };
+}
+
+/** Decrypt a full ciphertext blob back into the original bytes. Verifies the
+ *  recovered length equals the declared size (truncation detection); each
+ *  chunk's AES-GCM tag + AAD detect any tampering/reordering. */
+export async function decryptFile(
+  ciphertext: ArrayBuffer | Uint8Array,
+  fileKeyRaw: Uint8Array,
+  meta: FileCryptoMeta,
+): Promise<Uint8Array> {
+  const s = subtle();
+  const key = await importFileKey(fileKeyRaw, ["decrypt"]);
+  const prefix = b64ToBytes(meta.noncePrefix);
+  const ct =
+    ciphertext instanceof Uint8Array ? ciphertext : new Uint8Array(ciphertext);
+  const out = new Uint8Array(meta.size);
+  let inPos = 0;
+  let outPos = 0;
+  for (let i = 0; i < meta.chunks; i++) {
+    const ptLen = Math.min(meta.chunkSize, meta.size - outPos);
+    const ctLen = ptLen + GCM_TAG_BYTES;
+    const slice = ct.subarray(inPos, inPos + ctLen);
+    const pt = new Uint8Array(
+      await s.decrypt(
+        {
+          name: "AES-GCM",
+          iv: fileChunkNonce(prefix, i) as BufferSource,
+          additionalData: fileChunkAad(i) as BufferSource,
+        },
+        key,
+        slice as BufferSource,
+      ),
+    );
+    out.set(pt, outPos);
+    inPos += ctLen;
+    outPos += pt.length;
+  }
+  if (outPos !== meta.size) {
+    throw new Error("Decrypted size does not match metadata (truncated?).");
+  }
+  return out;
+}
+
+/** Byte offset (in the ciphertext blob) where chunk `index` begins. Each
+ *  encrypted chunk is plaintextChunkSize + 16 (GCM tag) bytes, so the
+ *  position is a pure function of the metadata — used by P3 Range download. */
+export function fileChunkCiphertextOffset(meta: FileCryptoMeta, index: number): number {
+  return index * (meta.chunkSize + GCM_TAG_BYTES);
+}

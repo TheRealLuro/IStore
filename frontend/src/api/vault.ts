@@ -5,9 +5,11 @@
 // KDF parameters. The plaintext is encrypted/decrypted client-side in
 // `@/vault/crypto`; this module never touches a key or a plaintext.
 
-import { api, ApiError } from "./client";
+import { api, ApiError, API_BASE_URL } from "./client";
 
-export type VaultItemKind = "password" | "note";
+// password/note/seed/card are small items encrypted wholesale; "file" items
+// are object-storage-backed (their bytes live in MinIO as ciphertext).
+export type VaultItemKind = "password" | "note" | "seed" | "card" | "file";
 
 export interface VaultMeta {
   kdf: string;
@@ -42,20 +44,49 @@ export interface VaultItem {
   id: string;
   kind: VaultItemKind;
   nonce: string; // base64
-  ciphertext: string; // base64
+  ciphertext: string; // base64 — for file items this is the encrypted metadata
+  folder_id?: string | null;
+  // File items only:
+  wrapped_key?: string | null; // base64 — per-file key sealed to the owner
+  size_bytes?: number | null; // ciphertext byte size
+  has_file?: boolean; // true → fetch /vault/files/{id} to get the bytes
   created_at: string;
   updated_at: string;
 }
 
 export interface VaultItemCreate {
-  kind: VaultItemKind;
+  kind: Exclude<VaultItemKind, "file">;
   nonce: string; // base64
   ciphertext: string; // base64
+  folder_id?: string | null;
 }
 
 export interface VaultItemUpdate {
   nonce: string; // base64
   ciphertext: string; // base64
+}
+
+// ---- folders ----
+
+export interface VaultFolder {
+  id: string;
+  parent_id: string | null;
+  name_nonce: string; // base64
+  name_ct: string; // base64
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VaultFolderCreate {
+  parent_id?: string | null;
+  name_nonce: string; // base64
+  name_ct: string; // base64
+}
+
+export interface VaultFolderUpdate {
+  parent_id?: string | null;
+  name_nonce: string; // base64
+  name_ct: string; // base64
 }
 
 // GET /vault/meta returns 404 when the user has no vault yet. We translate
@@ -107,4 +138,63 @@ export async function deleteVaultItem(id: string): Promise<void> {
 // "reset vault" / forgot-master-password path.
 export async function wipeVault(): Promise<void> {
   await api.delete("/vault");
+}
+
+// ---- folders (VLT-8) ----
+
+export async function listVaultFolders(): Promise<VaultFolder[]> {
+  return api.get<VaultFolder[]>("/vault/folders");
+}
+
+export async function createVaultFolder(
+  body: VaultFolderCreate,
+): Promise<VaultFolder> {
+  return api.post<VaultFolder>("/vault/folders", body);
+}
+
+export async function updateVaultFolder(
+  id: string,
+  body: VaultFolderUpdate,
+): Promise<VaultFolder> {
+  return api.put<VaultFolder>(`/vault/folders/${id}`, body);
+}
+
+export async function deleteVaultFolder(id: string): Promise<void> {
+  await api.delete(`/vault/folders/${id}`);
+}
+
+// ---- files (VLT-8) ----
+
+export interface VaultFileUpload {
+  nonce: string; // base64 — metadata nonce
+  ciphertext: string; // base64 — encrypted metadata JSON
+  wrapped_key: string; // base64 — per-file key sealed to the owner
+  folderId?: string | null;
+  blob: Blob; // the ciphertext (chunked AES-GCM)
+}
+
+// Upload an E2E-encrypted file. The Blob is the ciphertext; the server
+// streams it to MinIO and never sees the key or plaintext.
+export async function uploadVaultFile(
+  upload: VaultFileUpload,
+): Promise<VaultItem> {
+  const fd = new FormData();
+  fd.append("nonce", upload.nonce);
+  fd.append("ciphertext", upload.ciphertext);
+  fd.append("wrapped_key", upload.wrapped_key);
+  if (upload.folderId) fd.append("folder_id", upload.folderId);
+  fd.append("blob", upload.blob, "blob");
+  return api.post<VaultItem>("/vault/files", fd);
+}
+
+// Fetch a file item's ciphertext as a Blob (whole object). The caller
+// decrypts it with the per-file key it unsealed from `wrapped_key`.
+export async function downloadVaultFile(id: string): Promise<Blob> {
+  return api.get<Blob>(`/vault/files/${id}`, "blob");
+}
+
+// Direct URL to a file's ciphertext (for Range fetches / media elements in
+// P3). Carries the session cookie via credentials on fetch.
+export function vaultFileUrl(id: string): string {
+  return `${API_BASE_URL}/vault/files/${id}`;
 }
