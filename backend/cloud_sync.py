@@ -897,13 +897,24 @@ async def _icloud_download(link: "CloudLink", entry: dict) -> bytes:
         parts = [p for p in path.split("/") if p]
         for part in parts:
             node = node.get(part)
-        # `node.open()` returns a streaming Response-like object;
-        # `.raw.read()` slurps the whole body. For very large files
-        # the existing pipeline already buffers in memory (see the
-        # CR-4 quota gate), so we don't optimize this further here.
-        resp = node.open()
+        # SYNC-4 — the bug behind "every file downloads as 0 bytes"
+        # (189 files all skipped as dataless). pyicloud's DriveNode.open()
+        # forwards kwargs to requests' session.get(). WITHOUT stream=True,
+        # requests eagerly reads the entire body into `response.content`
+        # and DRAINS `response.raw` — so our `resp.raw.read()` returned
+        # b"" for every file, even though iCloud reported real sizes.
+        # The files were never evicted or E2E-encrypted; we were reading
+        # the response wrong. Passing stream=True is the documented
+        # pyicloud download pattern (`node.open(stream=True).raw.read()`)
+        # and leaves the body unread so .raw.read() returns the bytes.
+        resp = node.open(stream=True)
         try:
             data = resp.raw.read()
+            if not data:
+                # Belt-and-suspenders: if .raw is somehow still empty
+                # (a non-streamed response slipped through), fall back
+                # to the cached .content body.
+                data = resp.content or b""
             if not isinstance(data, (bytes, bytearray)):
                 # pyicloud returns a urllib3 raw response; coerce
                 # defensively.
