@@ -9,6 +9,7 @@ interface AuthState {
   loading: boolean;
   bootstrap: () => Promise<void>;
   setUser: (u: User | null) => void;
+  sessionExpired: () => void;
   signOut: () => Promise<void>;
 }
 
@@ -33,6 +34,16 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
   setUser: (u) => set({ user: u }),
+  sessionExpired: () => {
+    // Server rejected our session mid-flight (cookie expired / revoked /
+    // token_version bumped). Drop local auth state so the app re-renders the
+    // sign-in screen instead of leaving the user in a zombie half-authed
+    // state. We do NOT call serverLogout — the cookie is already dead.
+    if (!useAuthStore.getState().user) return;
+    try { lockVault(); } catch { /* noop */ }
+    try { tokens.clear(); } catch { /* noop */ }
+    set({ user: null, loading: false });
+  },
   signOut: async () => {
     // Drop the in-memory vault key immediately — sign-out must not leave
     // an unlocked vault accessible to whoever signs in next.
@@ -61,3 +72,13 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ user: null });
   },
 }));
+
+// Bridge the api-client's global 401 signal (api/client.ts dispatches
+// "neuthek:session-expired" when a live session is rejected) into the auth
+// store so the app drops to the sign-in screen instead of showing a confusing
+// "not authorized" on whichever view fired the fresh request.
+if (typeof window !== "undefined") {
+  window.addEventListener("neuthek:session-expired", () => {
+    useAuthStore.getState().sessionExpired();
+  });
+}
