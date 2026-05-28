@@ -1304,6 +1304,72 @@ class DocumentChunk(Base):
     )
 
 
+class VaultMeta(Base):
+    """Zero-knowledge vault — per-user KDF params + verifier (VLT-3).
+
+    The server stores ONLY what's needed to let the browser re-derive
+    the vault key and confirm the master password — never the password
+    or the key themselves. `kdf_salt` is public-by-design (random per
+    user). `verifier_*` is a random constant encrypted under the vault
+    key: the client decrypts it on unlock and the AES-GCM tag only
+    validates with the correct key. See migration 0044 for the full
+    crypto contract. RLS-scoped; cascade-deleted with the account.
+    """
+
+    __tablename__ = "vault_meta"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kdf: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="PBKDF2-SHA256"
+    )
+    kdf_iterations: Mapped[int] = mapped_column(Integer, nullable=False)
+    kdf_salt: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    verifier_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    verifier_ct: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class VaultItem(Base):
+    """A single encrypted vault entry — a password or a secure note
+    (VLT-3). `kind` is the only cleartext attribute (it selects the
+    client viewer). `nonce` + `ciphertext` are AES-256-GCM; the
+    plaintext is a JSON blob the server never sees. RLS-scoped;
+    cascade-deleted with the account.
+    """
+
+    __tablename__ = "vault_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class SearchTelemetry(Base):
     """Sprint I D3 — per-search score telemetry for blend tuning.
 
