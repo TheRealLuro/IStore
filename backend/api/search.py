@@ -560,6 +560,16 @@ async def semantic_search(
     if mentions_self and self_image_ids is not None:
         ranked = [(img, sc) for (img, sc) in ranked if img.id in self_image_ids]
 
+    # Sprint I D3 — search-score telemetry. Consent-gated under
+    # `bandit_compression_telemetry`. Logs the query + top-10
+    # (image_id, score) + the blend weights so the operator can tune
+    # the CLIP/FTS blend empirically. Best-effort + fire-and-forget:
+    # a telemetry failure must never break the search response.
+    try:
+        await _log_search_telemetry(session, user.id, q_clean, ranked)
+    except Exception:
+        logger.exception("search telemetry log failed")
+
     return [
         ImageSearchHit(
             **ImageRead.model_validate(image, from_attributes=True).model_dump(),
@@ -567,6 +577,44 @@ async def semantic_search(
         )
         for image, score in ranked
     ]
+
+
+async def _log_search_telemetry(
+    session: AsyncSession,
+    user_id,
+    query: str,
+    ranked: list,
+) -> None:
+    """Persist one search-telemetry row when the user has an active
+    `bandit_compression_telemetry` consent scope. No-op otherwise —
+    we never log query text for users who haven't opted in.
+
+    `ranked` is the final list of (Image, score) tuples. We record
+    only the top 10 (image_id, score) pairs — enough to evaluate
+    ranking quality without storing the whole result set.
+    """
+    from backend.consent import is_scope_active
+    from backend.models import SearchTelemetry
+
+    opted_in = await is_scope_active(
+        session, user_id, "bandit_compression_telemetry"
+    )
+    if not opted_in:
+        return
+
+    top_results = [
+        {"image_id": str(img.id), "score": round(float(sc), 4)}
+        for img, sc in ranked[:10]
+    ]
+    row = SearchTelemetry(
+        user_id=user_id,
+        query=query[:200],
+        top_results=top_results,
+        weights={"clip": _W_CLIP, "text": _W_TEXT},
+        result_count=len(ranked),
+    )
+    session.add(row)
+    await session.flush()  # same txn as the search; cheap insert
 
 
 async def _clip_search(
