@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from io import BytesIO
 
 # Override DB env BEFORE backend modules import (Settings() reads env at
 # instantiation time, and backend.db creates the engine at module load).
@@ -146,10 +147,42 @@ async def db_client(_test_db, monkeypatch) -> AsyncClient:
     def _delete(bucket, key):
         blobs.pop((bucket, key), None)
 
+    def _put_stream(bucket, key, stream, length, content_type, **kwargs):  # noqa: ARG001
+        # Mirror Storage.put_stream by draining the file-like object.
+        blobs[(bucket, key)] = bytes(stream.read())
+
+    def _stat(bucket, key):
+        return len(blobs[(bucket, key)])
+
     monkeypatch.setattr(storage_mod.storage, "put", _put)
     monkeypatch.setattr(storage_mod.storage, "get", _get)
     monkeypatch.setattr(storage_mod.storage, "delete", _delete)
+    monkeypatch.setattr(storage_mod.storage, "put_stream", _put_stream)
+    monkeypatch.setattr(storage_mod.storage, "stat", _stat)
     monkeypatch.setattr(storage_mod.storage, "ensure_buckets", lambda: None)
+
+    # The vault download endpoint reads ranges straight off the MinIO client
+    # (storage.client.get_object), so stub that too. `length == 0` → read to
+    # the end, matching MinIO's semantics.
+    class _FakeObj:
+        def __init__(self, data: bytes):
+            self._buf = BytesIO(data)
+
+        def read(self, n: int = -1) -> bytes:
+            return self._buf.read(n)
+
+        def close(self):
+            pass
+
+        def release_conn(self):
+            pass
+
+    def _get_object(bucket, key, offset: int = 0, length: int = 0, **kwargs):  # noqa: ARG001
+        blob = blobs[(bucket, key)]
+        end = (offset + length) if length else len(blob)
+        return _FakeObj(blob[offset:end])
+
+    monkeypatch.setattr(storage_mod.storage.client, "get_object", _get_object)
 
     # Per-test truncate for isolation. CASCADE handles FK chains; RESTART IDENTITY
     # resets sequence counters so person_id / face_id are stable across tests.

@@ -1,5 +1,5 @@
 from io import BytesIO
-from typing import Iterable
+from typing import BinaryIO, Iterable
 
 from minio import Minio
 from minio.error import S3Error
@@ -25,6 +25,9 @@ class Storage:
         # fine-tune (D6) finishes. The `model_runs` row points at the
         # object key so the admin Models tab can offer a download.
         self.bucket_models = getattr(settings, "minio_bucket_models", "neuthek-models")
+        # VLT-8 — zero-knowledge vault ciphertext. Its own bucket so E2E
+        # blobs never share space with AI-processed originals/served.
+        self.bucket_vault = getattr(settings, "minio_bucket_vault", "neuthek-vault")
 
     def _bucket_names(self) -> Iterable[str]:
         return (
@@ -33,6 +36,7 @@ class Storage:
             self.bucket_faces,
             self.bucket_quarantine,
             self.bucket_models,
+            self.bucket_vault,
         )
 
     def ensure_buckets(self) -> None:
@@ -68,6 +72,33 @@ class Storage:
             length=len(data),
             content_type=content_type,
             sse=self._sse(sse_scope),
+        )
+
+    def put_stream(
+        self,
+        bucket: str,
+        key: str,
+        stream: BinaryIO,
+        length: int,
+        content_type: str,
+        *,
+        sse_scope: str = "content",
+        part_size: int = 16 * 1024 * 1024,
+    ) -> None:
+        """Stream a file-like object straight to object storage without
+        buffering the whole payload in a Python `bytes`. Used for vault
+        file uploads (potentially multi-GB ciphertext): the request body
+        is spooled by Starlette to a temp file, and we hand that file
+        handle to MinIO's multipart uploader. `length` must be the exact
+        byte length of `stream` (we seek to size it before calling)."""
+        self.client.put_object(
+            bucket,
+            key,
+            stream,
+            length=length,
+            content_type=content_type,
+            sse=self._sse(sse_scope),
+            part_size=part_size,
         )
 
     def get(self, bucket: str, key: str) -> bytes:

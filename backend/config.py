@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     # C8.2 — fine-tune checkpoint storage. Contains .pkl / .safetensors
     # written by the trainer when D6 fine-tuning eventually lands.
     minio_bucket_models: str = Field(default="neuthek-models")
+    # VLT-8 — zero-knowledge vault file storage. Objects here are
+    # client-side-encrypted ciphertext only (the server never holds the
+    # key), kept in their own bucket so they're never mixed with the
+    # AI-processed originals/served buckets.
+    minio_bucket_vault: str = Field(default="neuthek-vault")
     # off | sse-s3 | sse-kms. KMS mode can use distinct key IDs for content
     # and biometric buckets.
     minio_sse_mode: str = Field(default="off")
@@ -95,6 +100,12 @@ class Settings(BaseSettings):
     jwt_lifetime_seconds: int = Field(default=60 * 60 * 24)
 
     upload_max_bytes: int = Field(default=200 * 1024 * 1024)
+    # VLT-8 — vault files can be much larger than AI-processed photos
+    # (videos, disk images, archives the user wants zero-knowledge). The
+    # ciphertext is streamed straight to object storage, so a generous
+    # per-file cap is safe; total usage is still bounded by the account
+    # quota. Default 5 GB per file.
+    vault_upload_max_bytes: int = Field(default=5 * 1024 * 1024 * 1024)
     upload_max_count_per_hour: int = Field(default=300)
     upload_max_bytes_per_day: int = Field(default=10 * 1024 * 1024 * 1024)
     upload_max_image_pixels: int = Field(default=120_000_000)
