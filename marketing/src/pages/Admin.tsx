@@ -3,6 +3,7 @@ import {
   adminNewsletterPreviewUrl,
   adminNewsletterRecipients,
   adminNewsletterSend,
+  adminNewsletterTest,
   adminResendVerify,
   clearAdminAuth,
   hasAdminAuth,
@@ -454,6 +455,9 @@ function NewsletterPanel({
   const [sendResult, setSendResult] = useState<NewsletterSendResult | null>(null);
   const [error, setError] = useState<string>("");
   const [confirming, setConfirming] = useState<boolean>(false);
+  const [testEmail, setTestEmail] = useState<string>("");
+  const [testBusy, setTestBusy] = useState<boolean>(false);
+  const [testNote, setTestNote] = useState<string>("");
 
   // Whenever the operator picks a new slug, look up how many people would
   // get it and how many have already received it. Cheap query — no rate
@@ -486,6 +490,27 @@ function NewsletterPanel({
     } finally {
       setSendBusy(false);
       setConfirming(false);
+    }
+  }
+
+  async function doTest() {
+    setTestBusy(true);
+    setTestNote("");
+    try {
+      const r = await adminNewsletterTest(slug, testEmail.trim());
+      if (r.ok) {
+        setTestNote(
+          r.resend_configured
+            ? `Test sent to ${r.to}.`
+            : `Logged to server console (RESEND_API_KEY not set) — no real email sent.`,
+        );
+      } else {
+        setTestNote(`Couldn't send test: ${r.reason || "unknown error"}.`);
+      }
+    } catch (e) {
+      setTestNote(e instanceof Error ? e.message : "Test send failed.");
+    } finally {
+      setTestBusy(false);
     }
   }
 
@@ -604,8 +629,61 @@ function NewsletterPanel({
           {recipients.previous_failures > 0 && (
             <> &middot; {recipients.previous_failures} previously failed</>
           )}
+          {recipients.eligible === 0 && (
+            <div style={{ marginTop: 4, color: "var(--ink-3)" }}>
+              Nothing to send for this update — everyone eligible has already
+              received it, or no verified addresses have opted in yet. Use a
+              test send below to preview the email.
+            </div>
+          )}
         </div>
       )}
+
+      {/* Mailer-config warning surfaced BEFORE sending so "nothing happened"
+          is never a surprise. RESEND_API_KEY is set per-deploy on Render. */}
+      {!recipientsBusy && recipients && !recipients.resend_configured && (
+        <div
+          className="callout"
+          style={{
+            marginTop: 12, marginBottom: 0,
+            background: "var(--warn-bg)", borderColor: "var(--warn-line)",
+            color: "var(--warn-ink)",
+          }}
+        >
+          <strong>Email sending isn’t configured.</strong> RESEND_API_KEY is
+          not set on this deployment, so sends are written to the server log
+          instead of actually emailing anyone. Set it in the Render
+          environment to send real mail.
+        </div>
+      )}
+
+      {/* Test send — bypasses eligibility so the operator can always verify
+          the pipeline + see the real email, regardless of list state. */}
+      <div style={{ marginTop: 14, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          type="email"
+          value={testEmail}
+          onChange={(e) => setTestEmail(e.target.value)}
+          placeholder="you@example.com"
+          style={{
+            padding: "9px 12px", border: "1px solid var(--line)", borderRadius: 8,
+            fontSize: 14, background: "#ffffff", color: "#0a0a0a", minWidth: 220,
+            fontFamily: "inherit",
+          }}
+        />
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={doTest}
+          disabled={testBusy || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(testEmail.trim())}
+          style={{ fontSize: 13, padding: "9px 16px" }}
+        >
+          {testBusy ? "Sending…" : "Send test to this address"}
+        </button>
+        {testNote && (
+          <span style={{ fontSize: 13, color: "var(--ink-2)" }}>{testNote}</span>
+        )}
+      </div>
 
       {error && (
         <div style={{ marginTop: 10, fontSize: 13, color: "var(--bad)" }}>{error}</div>

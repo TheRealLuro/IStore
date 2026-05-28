@@ -1159,6 +1159,38 @@ app.get("/api/admin/newsletter/recipients", adminRateLimit, adminAuth, async (re
     eligible: recipients.length,
     already_sent: stats.sent,
     previous_failures: stats.failed,
+    // Surface mailer config UP FRONT so the operator knows BEFORE
+    // sending whether real email will go out (vs. console-logged).
+    resend_configured: !!process.env.RESEND_API_KEY,
+  });
+});
+
+// ----- Admin: send a TEST copy of a newsletter to one address -----
+// Bypasses eligibility (opt-in / verified / already-sent) entirely so the
+// operator can confirm the pipeline + see the real email, regardless of
+// list state. Does NOT record a newsletter_send row (it's a test, not a
+// broadcast). Honors the same RESEND_API_KEY gate as a real send.
+app.post("/api/admin/newsletter/test", adminRateLimit, adminAuth, async (req, res) => {
+  const slug = String(req.body?.slug || "").trim();
+  const to = String(req.body?.to || "").trim();
+  if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+    return res.status(400).json({ ok: false, detail: "invalid email" });
+  }
+  const entry = UPDATE_INDEX.find((u) => u.slug === slug);
+  if (!entry) return res.status(404).json({ ok: false, detail: "unknown update slug" });
+
+  const readMoreUrl = `${PUBLIC_ORIGIN}/updates/${slug}`;
+  const unsubUrl = `${PUBLIC_ORIGIN}/api/waitlist/unsubscribe?token=${encodeURIComponent(signUnsubToken(0))}`;
+  const subject = `[TEST] ${entry.title.length > 64 ? entry.title.slice(0, 61) + "..." : entry.title}`;
+  const html = buildNewsletterHtml(entry, { readMoreUrl, unsubUrl, browserUrl: readMoreUrl });
+  const text = buildNewsletterText(entry, { readMoreUrl, unsubUrl });
+  const result = await sendNewsletterEmail({ to, subject, html, text, unsubUrl });
+  return res.json({
+    ok: result.sent,
+    to,
+    reason: result.sent ? null : result.reason || "unknown",
+    resend_configured: !!process.env.RESEND_API_KEY,
   });
 });
 
