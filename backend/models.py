@@ -1302,3 +1302,44 @@ class DocumentChunk(Base):
             name="uq_document_chunks_image_chunk",
         ),
     )
+
+
+class SearchTelemetry(Base):
+    """Sprint I D3 — per-search score telemetry for blend tuning.
+
+    Logs the query + top-10 result ids/scores + the CLIP/FTS weights
+    in effect, so the operator can tune the blend empirically against
+    real usage rather than guessing. Strictly consent-gated: rows are
+    written only when the user has an active
+    `bandit_compression_telemetry` scope. RLS-scoped to the owner;
+    cascade-deleted with the account.
+    """
+
+    __tablename__ = "search_telemetry"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    top_results: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    weights: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    result_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
