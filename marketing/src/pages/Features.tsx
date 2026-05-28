@@ -348,8 +348,11 @@ export default function Features() {
               <Chip>+ 6 more, ranked</Chip>
             </FlowNode>
             <PanelDivider label="synonym-aware" />
-            <FlowNode kind="step">type "vibrant" — we expand it</FlowNode>
             <FlowNode kind="result">
+              <span className="panel-chip panel-chip--query">vibrant</span>
+              <span className="panel-syn-arrow" aria-hidden="true">
+                <svg width="20" height="12" viewBox="0 0 20 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M1 6h16m0 0-5-5m5 5-5 5"/></svg>
+              </span>
               <Chip>colorful</Chip>
               <Chip>vivid</Chip>
               <Chip>bright</Chip>

@@ -1175,6 +1175,18 @@ p {
   background: var(--surface-2); border: 1px solid var(--line);
   padding: 5px 11px; border-radius: 999px;
 }
+/* The query word being expanded (dark pill) + the arrow that maps it
+   to its synonyms — "vibrant → colorful · vivid · bright" reads as one
+   clear expansion. */
+.panel-chip--query {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+.panel-syn-arrow {
+  display: inline-flex; align-items: center;
+  color: var(--ink-4); margin: 0 1px;
+}
 
 /* Divider between two sub-demos inside one panel. */
 .panel-divider {
