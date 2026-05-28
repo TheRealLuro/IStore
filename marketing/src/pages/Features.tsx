@@ -584,15 +584,19 @@ export default function Features() {
               </p>
             </div>
             <div className="card">
-              <h3>Multi-data-type platform</h3>
+              <h3>End-to-end encrypted Vault</h3>
               <p>
-                The <strong>password vault is live</strong> — passwords
-                and secure notes encrypted in your browser with a key
-                derived from your master password; we store only
-                ciphertext. Next up: contacts (vCard import), game
-                saves, and IoT time-series. Search will work across
-                types so "Jason" finds the contact, the photos of him,
-                and any document that names him.
+                The <strong>Vault is live</strong> — a drive-like store
+                that's end-to-end encrypted. Files of any type, nested
+                folders, and secure items (passwords, notes, crypto seed
+                phrases, cards/IDs) are encrypted in your browser with a
+                key derived from your master password; we store only
+                ciphertext and no AI ever touches it. Share a single item
+                with another account by sealing it to their key on your
+                device — only they can open it, no comments or public
+                links, revocable anytime. The normal Drive stays
+                server-readable so the AI features work; the Vault is the
+                zero-knowledge corner.
               </p>
             </div>
             <div className="card">
