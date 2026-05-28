@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import Banner from "./components/Banner";
 import Nav from "./components/Nav";
 import Footer from "./components/Footer";
+import AutoReveal from "./components/AutoReveal";
 import Home from "./pages/Home";
 import Features from "./pages/Features";
 import Hosting from "./pages/Hosting";
@@ -40,6 +41,7 @@ export default function App() {
       <Banner />
       <Nav />
       <ScrollToTop />
+      <AutoReveal />
       <main>
         <Routes>
           <Route path="/"           element={<Home />} />

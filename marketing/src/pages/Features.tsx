@@ -582,11 +582,13 @@ export default function Features() {
             <div className="card">
               <h3>Multi-data-type platform</h3>
               <p>
-                Passwords vault (end-to-end encrypted with a key the
-                server never sees), contacts (vCard import), game
-                saves, IoT time-series. Search will work across types
-                so "Jason" finds the contact, the photos of him, and
-                any document that names him.
+                The <strong>password vault is live</strong> — passwords
+                and secure notes encrypted in your browser with a key
+                derived from your master password; we store only
+                ciphertext. Next up: contacts (vCard import), game
+                saves, and IoT time-series. Search will work across
+                types so "Jason" finds the contact, the photos of him,
+                and any document that names him.
               </p>
             </div>
             <div className="card">
