@@ -802,6 +802,12 @@ setInterval(() => {
 }, 5 * 60 * 1000).unref();
 
 function clientIp(req) {
+  // Behind Cloudflare the true visitor IP is in CF-Connecting-IP (set by
+  // Cloudflare; trustworthy once the origin only accepts Cloudflare
+  // traffic — see CLOUDFLARE_SETUP.md). Prefer it, then fall back to the
+  // leftmost X-Forwarded-For, then the socket peer.
+  const cf = req.headers["cf-connecting-ip"];
+  if (typeof cf === "string" && cf.length) return cf.trim();
   const fwd = req.headers["x-forwarded-for"];
   if (typeof fwd === "string" && fwd.length) return fwd.split(",")[0].trim();
   return req.ip || req.socket?.remoteAddress || "unknown";
@@ -820,11 +826,16 @@ function makeRateLimit({ limit, windowMs, detail }) {
     limit,
     standardHeaders: "draft-7",
     legacyHeaders: false,
-    // The library defaults to keying by `req.ip` which Express sets
-    // from `X-Forwarded-For` once `trust proxy` is configured (we
-    // do, below at `app.set("trust proxy", true)`). That gives us
-    // the same per-IP throttle the home-grown limiter had, minus
-    // its IPv6 normalisation gaps.
+    // Key on the true client. Behind Cloudflare that's CF-Connecting-IP
+    // (one CF edge node otherwise shares a bucket for many users and
+    // could exhaust the limit for everyone); otherwise fall back to
+    // `req.ip` (Express derives it from X-Forwarded-For via the
+    // `trust proxy` setting below). CF-Connecting-IP is trustworthy once
+    // the origin only accepts Cloudflare traffic — see CLOUDFLARE_SETUP.md.
+    keyGenerator: (req) => {
+      const cf = req.headers["cf-connecting-ip"];
+      return typeof cf === "string" && cf.length ? cf.trim() : req.ip;
+    },
     handler: (_req, res) => {
       res.status(429).json({
         ok: false,
