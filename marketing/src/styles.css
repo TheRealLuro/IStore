@@ -2041,21 +2041,28 @@ button:focus-visible,
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 8px 0 36px;
+  margin: 12px 0 40px;
 }
 .faq-jump a {
-  font-size: 12px;
-  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 14px;
   border: 1px solid var(--line);
   border-radius: 999px;
+  background: var(--surface-2);
   color: var(--ink-2);
   text-decoration: none;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
 }
 .faq-jump a:hover {
-  color: var(--ink);
-  border-color: var(--ink-3);
-  background: var(--surface-2);
+  color: var(--surface);
+  border-color: var(--ink);
+  background: var(--ink);
+  transform: translateY(-1px);
 }
 
 .faq-topic {
@@ -2119,6 +2126,79 @@ button:focus-visible,
   color: var(--ink-2);
 }
 .faq-foot a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---------- Waitlist ---------- */
+.waitlist-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 28px;
+  align-items: start;
+}
+@media (max-width: 820px) {
+  .waitlist-grid { grid-template-columns: 1fr; gap: 20px; }
+}
+.waitlist-card {
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-4);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+.waitlist-card .form { margin: 0; }
+.waitlist-card .form h2 { font-size: 22px; }
+
+/* Confirmation card */
+.waitlist-ok { text-align: left; }
+.waitlist-ok__badge {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  margin-bottom: 16px;
+}
+.waitlist-ok--good .waitlist-ok__badge  { color: var(--good); background: #ecfdf3; }
+.waitlist-ok--info .waitlist-ok__badge  { color: var(--ink); background: var(--surface-3); }
+.waitlist-ok--bad .waitlist-ok__badge   { color: var(--bad); background: #fef2f2; }
+.waitlist-ok__title { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+.waitlist-ok__body { margin-top: 12px; }
+.waitlist-ok__body p { font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+.waitlist-ok__body code { color: var(--ink); }
+
+/* While-you-wait link list */
+.waitlist-aside__title {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-3); margin: 4px 0 14px;
+}
+.waitlist-links { display: flex; flex-direction: column; gap: 10px; }
+.waitlist-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  text-decoration: none;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.waitlist-link:hover {
+  transform: translateY(-2px);
+  border-color: var(--ink-4);
+  box-shadow: var(--shadow-1);
+}
+.waitlist-link__main { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.waitlist-link__t { font-size: 14.5px; font-weight: 600; color: var(--ink); }
+.waitlist-link__d { font-size: 12.5px; color: var(--ink-3); }
+.waitlist-link__arr {
+  color: var(--ink-4);
+  font-size: 16px;
+  transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.waitlist-link:hover .waitlist-link__arr { transform: translateX(3px); color: var(--ink); }
 
 @media (max-width: 720px) {
   .faq-topic { margin-bottom: 30px; }
