@@ -365,7 +365,13 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
         ext = _suffix(filename)
         if ext in _OOXML:
             return _OOXML[ext], "document"
-        raise UploadValidationError("Archive uploads are not enabled yet.", 415)
+        # VLT-2 — a generic ZIP (incl. .sketch, .key, .numbers, .pages,
+        # epub, and plain .zip). Store it as an opaque "other" blob. We
+        # never auto-extract user archives, so the zip-bomb concern
+        # (which only bites on decompression) doesn't apply — the bytes
+        # sit inert in the originals bucket until the user downloads
+        # them. MIME forced to octet-stream so it's download-only.
+        return "application/octet-stream", "other"
     # ISO Base Media File Format — mp4 / mov / m4a / m4v. The first
     # four bytes are a 32-bit box size, followed by `ftyp` and a 4-char
     # brand. Brand → MIME table catches the common cases; unknown
@@ -437,7 +443,35 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
         base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
         if base in _CODE_BASENAMES and _looks_text(data):
             return _CODE_BASENAMES[base], "document"
-    raise UploadValidationError("Unsupported or unrecognized file type.", 415)
+
+    # VLT-2 — generic-binary fallback. Anything that reached here is
+    # NOT one of the dangerous content shapes (HTML / SVG / script
+    # were rejected above by *content* inspection, regardless of
+    # extension), and isn't a recognized media/document type. Rather
+    # than reject it — which made cloud-synced libraries lose every
+    # .aep, .drawio, .sketch, .psd, .zip, etc. — accept it as an
+    # opaque "other" file.
+    #
+    # Security stance for opaque files:
+    #   * MIME is forced to application/octet-stream so the serve layer
+    #     never renders it inline — browsers always download octet-
+    #     stream, they never execute it. (The serve path also sends
+    #     Content-Disposition: attachment for non-previewable types.)
+    #   * Bytes are stored unmodified and NEVER auto-extracted /
+    #     executed. A zip stored here is an inert blob — the zip-bomb
+    #     concern only applies to archives we decompress, and we don't.
+    #   * No AI pipeline runs on "other" — no Florence / CLIP / OCR
+    #     pass touches an opaque binary.
+    #
+    # Text-shaped files that slipped past the code/text allow-lists
+    # above still get the script-injection guard: if it looks like
+    # text, run it through _reject_scriptable_text before accepting,
+    # so a `.weirdext` full of `<script>` can't sneak through as
+    # "other" and later be coaxed into an inline render.
+    if _looks_text(data):
+        _reject_scriptable_text(data)
+        return "text/plain", "document"
+    return "application/octet-stream", "other"
 
 
 def _text_mime(filename: str | None) -> str:
@@ -463,6 +497,13 @@ def _looks_text(data: bytes) -> bool:
 
 
 def _client_mime_ok(client_mime: str | None, detected: str) -> bool:
+    # VLT-2 — when we fell back to the opaque-binary type, the file is
+    # stored unmodified and served download-only; the client's claimed
+    # MIME is irrelevant (and providers report all sorts of vendor
+    # MIMEs for .drawio / .sketch / etc.). Accept any client MIME in
+    # that case rather than rejecting on a cosmetic mismatch.
+    if detected == "application/octet-stream":
+        return True
     ct = (client_mime or "").split(";", 1)[0].lower().strip()
     if ct in _GENERIC_CLIENT_MIME:
         return True

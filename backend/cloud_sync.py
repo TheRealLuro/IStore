@@ -1502,7 +1502,20 @@ async def sync_user_provider(
     pulled = 0
     skipped_unchanged = 0
     skipped_over_quota = 0
+    # VLT-1 — files Apple's "Optimize Storage" has evicted from the
+    # cloud (only a placeholder/stub exists; the real bytes live on a
+    # device). pyicloud's download returns empty / near-empty bytes
+    # for these, which used to fail validation with a confusing
+    # "Unsupported file type" error. We now count + skip them cleanly.
+    skipped_dataless = 0
+    # VLT-2 — files whose type isn't supported even after the allow-list
+    # broadening (residual html/svg/script blocks + truly unrecognized
+    # binaries). Counted + skipped with a WARNING instead of an ERROR
+    # stack trace so a folder of exotic files doesn't flood the log.
+    skipped_unsupported = 0
     conflicts: list[str] = []
+
+    from backend.upload_validation import UploadValidationError
 
     if budget_remaining <= 0:
         await add_audit(
@@ -1645,6 +1658,44 @@ async def sync_user_provider(
             )
             continue
 
+        # VLT-1 — dataless / evicted-file guard. Apple's "Optimize
+        # iPhone/Mac Storage" keeps only a placeholder for files whose
+        # bytes have been pushed off-device; pyicloud's download then
+        # returns empty or a tiny stub. Other providers can also hand
+        # back a 0-byte body for a transient error. Either way, an
+        # empty blob can't be a real file — feeding it to store_upload
+        # throws "Unsupported or unrecognized file type" and spams the
+        # log. Skip it with a clear status + a one-time audit row so
+        # the user can see WHY a file didn't come across, and the next
+        # sync (after they download it on a device) picks it up.
+        #
+        # Threshold: the listing reported `size_bytes`; if the download
+        # came back dramatically smaller (< 16 bytes, or < 1% of the
+        # reported size when the reported size was non-trivial), treat
+        # it as a stub. 16 bytes is below any real file with a magic
+        # header; the 1% rule catches partial stubs.
+        reported_size = int(entry.get("size_bytes") or 0)
+        is_stub = (
+            len(blob) < 16
+            or (reported_size > 1024 and len(blob) < reported_size * 0.01)
+        )
+        if is_stub:
+            skipped_dataless += 1
+            await add_audit(
+                session,
+                user_id=user_id,
+                action="cloud.sync.skipped_dataless",
+                details={
+                    "provider": provider,
+                    "remote_id": entry["remote_id"],
+                    "remote_path": entry.get("remote_path"),
+                    "downloaded_bytes": len(blob),
+                    "reported_size_bytes": reported_size,
+                    "reason": "dataless_or_evicted_file",
+                },
+            )
+            continue
+
         # Safety net: even when the listing-reported size was 0 or
         # missing, the actual byte count is now known. If the
         # downloaded blob alone would blow the budget, drop it on the
@@ -1754,6 +1805,19 @@ async def sync_user_provider(
                         "poll will pick it up as a safety net",
                         image.id,
                     )
+        except UploadValidationError as exc:
+            # VLT-2 — a genuinely unsupported / blocked type (after the
+            # allow-list broadening, this is the residual tail:
+            # html/svg/script blocks + anything still unrecognized).
+            # Skip it as "unsupported" with a single WARNING — not an
+            # ERROR with a stack trace — so the log stays readable when
+            # a Drive folder has a handful of exotic files.
+            skipped_unsupported += 1
+            logger.warning(
+                "cloud_sync: skipping unsupported file %s (%s)",
+                entry["name"], exc,
+            )
+            continue
         except Exception:
             logger.exception("ingest failed for %s", entry["name"])
             continue
@@ -1806,15 +1870,19 @@ async def sync_user_provider(
     await session.commit()
     logger.info(
         "cloud_sync: sync user=%s provider=%s seen=%d pulled=%d "
-        "skipped=%d skipped_quota=%d conflicts=%d budget_remaining=%d",
+        "skipped=%d skipped_quota=%d skipped_dataless=%d "
+        "skipped_unsupported=%d conflicts=%d budget_remaining=%d",
         user_id, provider, seen, pulled, skipped_unchanged,
-        skipped_over_quota, len(conflicts), budget_remaining,
+        skipped_over_quota, skipped_dataless, skipped_unsupported,
+        len(conflicts), budget_remaining,
     )
     return {
         "seen": seen,
         "pulled": pulled,
         "skipped_unchanged": skipped_unchanged,
         "skipped_over_quota": skipped_over_quota,
+        "skipped_dataless": skipped_dataless,
+        "skipped_unsupported": skipped_unsupported,
         "conflicts": len(conflicts),
         "conflict_remote_ids": conflicts,
         "provider": provider,
