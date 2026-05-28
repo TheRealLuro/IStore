@@ -15,6 +15,10 @@ export interface VaultMeta {
   kdf_salt: string; // base64
   verifier_nonce: string; // base64
   verifier_ct: string; // base64
+  // VLT-8 — present once the account keypair has been provisioned. The
+  // private key is master-key-wrapped; the server never sees it unwrapped.
+  account_public_key?: string | null; // base64 raw P-256 point
+  enc_account_private_key?: string | null; // base64 nonce‖AES-GCM(pkcs8)
   created_at?: string;
   updated_at?: string;
 }
@@ -25,6 +29,13 @@ export interface VaultSetupBody {
   kdf_salt: string; // base64
   verifier_nonce: string; // base64
   verifier_ct: string; // base64
+  account_public_key?: string | null; // base64
+  enc_account_private_key?: string | null; // base64
+}
+
+export interface VaultAccountKeyBody {
+  account_public_key: string; // base64
+  enc_account_private_key: string; // base64
 }
 
 export interface VaultItem {
@@ -61,6 +72,14 @@ export async function getVaultMeta(): Promise<VaultMeta | null> {
 
 export async function setupVault(body: VaultSetupBody): Promise<VaultMeta> {
   return api.post<VaultMeta>("/vault/setup", body);
+}
+
+// Provision the account keypair for a vault that predates VLT-8 (or whose
+// keypair wasn't set at setup). 409 if one already exists.
+export async function setAccountKey(
+  body: VaultAccountKeyBody,
+): Promise<VaultMeta> {
+  return api.post<VaultMeta>("/vault/account-key", body);
 }
 
 export async function listVaultItems(): Promise<VaultItem[]> {

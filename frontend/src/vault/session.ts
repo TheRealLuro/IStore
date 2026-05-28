@@ -13,6 +13,12 @@
 import { useSyncExternalStore } from "react";
 
 let _key: CryptoKey | null = null;
+// VLT-8 — the unwrapped account private key (non-extractable ECDH key) and
+// the matching public key (base64). Held only while unlocked, alongside the
+// master key, so the vault can unseal per-file keys and seal new ones for
+// sharing. Cleared on lock exactly like the master key.
+let _accountPrivateKey: CryptoKey | null = null;
+let _accountPublicKey: string | null = null;
 let _idleTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
@@ -35,6 +41,18 @@ export function unlockVault(key: CryptoKey): void {
   emit();
 }
 
+// Attach the account keypair to the live session. Called right after
+// unlockVault once the private key has been unwrapped with the master key.
+// Separate from unlockVault so legacy callers (and the setup path before the
+// keypair exists) keep working unchanged.
+export function setAccountKeys(
+  privateKey: CryptoKey,
+  publicKey: string,
+): void {
+  _accountPrivateKey = privateKey;
+  _accountPublicKey = publicKey;
+}
+
 export function lockVault(): void {
   if (_idleTimer) {
     clearTimeout(_idleTimer);
@@ -42,11 +60,25 @@ export function lockVault(): void {
   }
   if (_key === null) return; // already locked — don't spam listeners
   _key = null;
+  _accountPrivateKey = null;
+  _accountPublicKey = null;
   emit();
 }
 
 export function getVaultKey(): CryptoKey | null {
   return _key;
+}
+
+// The unwrapped account private key (for unsealing per-file keys). Null when
+// locked or when the vault predates the keypair and hasn't provisioned one.
+export function getAccountPrivateKey(): CryptoKey | null {
+  return _accountPrivateKey;
+}
+
+// The account public key (base64), for sealing per-file keys to oneself on
+// upload and to recipients when sharing.
+export function getAccountPublicKey(): string | null {
+  return _accountPublicKey;
 }
 
 export function isVaultUnlocked(): boolean {

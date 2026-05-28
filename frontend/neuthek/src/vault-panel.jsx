@@ -20,6 +20,7 @@ import { Modal, ModalClose } from "./primitives.jsx";
 import {
   getVaultMeta,
   setupVault,
+  setAccountKey,
   listVaultItems,
   createVaultItem,
   updateVaultItem,
@@ -33,14 +34,45 @@ import {
   encryptItem,
   decryptItem,
   b64ToBytes,
+  createAccountKeyPair,
+  unwrapAccountPrivateKey,
 } from "@/vault/crypto";
 import {
   unlockVault,
+  setAccountKeys,
   lockVault,
   getVaultKey,
   touchVault,
   useVaultUnlocked,
 } from "@/vault/session";
+
+// VLT-8 — bring the account keypair into the live session after the master
+// key is available. If the vault has a keypair, unwrap its private key; if it
+// predates VLT-8 (no keypair yet), generate one and persist it. Best-effort:
+// a provisioning failure must never block access to passwords/notes, so any
+// error here is swallowed (sharing/upload simply stays unavailable until the
+// next unlock). The unwrapped private key never leaves memory.
+async function loadAccountSession(masterKey, meta) {
+  try {
+    let publicKey = meta?.account_public_key || null;
+    let encPrivate = meta?.enc_account_private_key || null;
+    if (!publicKey || !encPrivate) {
+      // Legacy vault — provision a keypair now.
+      const kp = await createAccountKeyPair(masterKey);
+      const updated = await setAccountKey({
+        account_public_key: kp.publicKey,
+        enc_account_private_key: kp.enc_private_key,
+      });
+      publicKey = updated.account_public_key;
+      encPrivate = updated.enc_account_private_key;
+    }
+    const priv = await unwrapAccountPrivateKey(encPrivate, masterKey);
+    setAccountKeys(priv, publicKey);
+  } catch {
+    // Sharing/upload features will be unavailable this session; core
+    // password/note access is unaffected.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -217,8 +249,19 @@ function VaultSetup({ onDone }) {
     try {
       // Derive key + verifier in the browser, POST only the public meta.
       const { key, payload } = await createVaultSetup(pw);
-      await setupVault(payload);
+      // Generate the account keypair (for sharing/file-key sealing) under the
+      // master key and persist it alongside the meta at setup time.
+      const kp = await createAccountKeyPair(key);
+      await setupVault({
+        ...payload,
+        account_public_key: kp.publicKey,
+        enc_account_private_key: kp.enc_private_key,
+      });
       unlockVault(key); // session is live immediately after setup
+      await loadAccountSession(key, {
+        account_public_key: kp.publicKey,
+        enc_account_private_key: kp.enc_private_key,
+      });
       setPw("");
       setConfirm("");
       toast.success("Vault created");
@@ -356,6 +399,9 @@ function VaultUnlock({ meta }) {
         return;
       }
       unlockVault(key);
+      // Bring the account keypair into the session (unwrap, or provision for
+      // a legacy vault). Best-effort — never blocks unlock.
+      await loadAccountSession(key, meta);
       setPw("");
     } catch (err) {
       setError(err?.message || "Couldn’t unlock");
