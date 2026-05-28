@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { User } from "@/types/file";
 import { tokens } from "@/api/client";
 import { logout as serverLogout, me } from "@/api/auth";
+import { lockVault } from "@/vault/session";
 
 interface AuthState {
   user: User | null;
@@ -33,6 +34,9 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
   setUser: (u) => set({ user: u }),
   signOut: async () => {
+    // Drop the in-memory vault key immediately — sign-out must not leave
+    // an unlocked vault accessible to whoever signs in next.
+    lockVault();
     // Tell the server to clear the cookie before we drop local
     // state. `serverLogout` swallows network errors so a
     // disconnected user can still sign out locally.

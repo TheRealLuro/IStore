@@ -23,6 +23,7 @@ import {
 import { Sidebar, GalleryView, EmptyGallery } from "./gallery.jsx";
 import { UploadModal } from "./upload.jsx";
 import { PreviewPanel } from "./preview.jsx";
+import { VaultPanel } from "./vault-panel.jsx";
 import { AccountModal } from "./account.jsx";
 import { AuthScreen } from "./auth.jsx";
 import { RenameModal } from "./rename.jsx";
@@ -386,6 +387,7 @@ const VIEW_LABELS = {
   places: "Map",
   shared: "Shared",
   trash: "Trash",
+  vault: "Vault",
 };
 
 // Tweaks panel was a dev-only prototype tool — replaced with a frozen
@@ -2395,6 +2397,10 @@ export function App() {
       />
 
       <main className="main" ref={mainRef}>
+        {view === "vault" ? (
+          <VaultPanel theme={theme} setTheme={setTheme} />
+        ) : (
+        <>
         <VerifyEmailBanner user={user} signedIn={signedIn}/>
         <SummarizingBanner
           signedIn={signedIn}
@@ -2670,6 +2676,8 @@ export function App() {
                   onClearPeopleFilter={() => setPeopleFilter(null)}
                   onPersonPick={(p) => setPeopleFilter(p)}
                 />}
+        </>
+        )}
       </main>
 
       {/* §C9 tag fix — pass the LIVE MAPPED row (looked up by id in

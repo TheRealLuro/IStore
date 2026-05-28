@@ -145,6 +145,11 @@ export function Sidebar({ view, onView, onUpload, onAccount, attentionCount = 0,
       { id: "shared",  label: "Shared",      icon: "share",   count: c.shared ?? 0 },
       { id: "trash",   label: "Trash",       icon: "trash",   count: c.trash ?? 0 },
     ]},
+    { group: "SECURE", items: [
+      // Zero-knowledge vault — encrypted client-side, opaque to the server.
+      // No count: the server can't (and we don't) expose item totals here.
+      { id: "vault",   label: "Vault",       icon: "lock",    count: 0 },
+    ]},
   ];
 
   // Real storage usage from /storage/usage. Gated on the real `user` prop
