@@ -38,9 +38,11 @@ htmlcov/
 .ruff_cache/
 
 # Environment / credentials
+# Ignore ALL env files (incl. ad-hoc backups like `.env.pre-rebrand-backup`)
+# except the committed example. The previous narrower patterns missed
+# `.env.<anything>` that wasn't `*.local`, so a stray backup could be staged.
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
 secrets/*
 !secrets/.gitkeep
@@ -144,3 +146,13 @@ coverage.xml
 *.gguf
 *.bin
 !frontend/node_modules/**/*.bin   # node_modules .bin shims are exec, not weights
+
+# Internal working docs — kept on disk for reference but NOT tracked, to
+# keep the repo's doc surface to the canonical README / policy / operator /
+# security set. (Blanket `*.md` / `*.docx` ignores were removed: they were
+# inconsistent — they'd block `git add` for legitimately-tracked docs while
+# leaving already-tracked ones in place.)
+/AUDIT.md
+/todo.md
+/updates.md
+/backend/backend.md
