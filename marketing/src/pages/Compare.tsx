@@ -27,9 +27,21 @@ const HEADERS = [
   "neuthek",
   "Google Photos",
   "Apple iCloud Photos",
-  "Microsoft OneDrive",
+  "MEGA",
   "Dropbox",
   "Amazon Photos",
+];
+
+// Official source pages each non-neuthek claim is drawn from. Rendered as
+// a "Sources" list under the table + an asterisk in the disclaimer, so
+// every comparative statement is traceable to the provider's own
+// documentation (verified May 2026).
+const SOURCES: { name: string; url: string }[] = [
+  { name: "Google Photos", url: "https://one.google.com/about/plans" },
+  { name: "Apple iCloud Photos", url: "https://support.apple.com/en-us/108047" },
+  { name: "MEGA", url: "https://mega.io/storage" },
+  { name: "Dropbox", url: "https://www.dropbox.com/plans" },
+  { name: "Amazon Photos", url: "https://www.amazon.com/photos/" },
 ];
 
 // ----- Group 1: Experience (the day-to-day) -----
@@ -38,14 +50,14 @@ const HEADERS = [
 // disparaging or unverifiable claims (legal: truthful comparative use).
 const EXPERIENCE: Row[] = [
   {
-    feature: "Search by what you remember (natural language)",
+    feature: "Search photos by content / natural language",
     cells: [
       { label: "Shipped — core feature", tone: "good" },
       { label: "Offered" },
       { label: "Offered" },
-      { label: "Varies by plan" },
-      { label: "Varies by plan" },
-      { label: "Offered" },
+      { label: "Not offered (end-to-end encrypted)" },
+      { label: "Image search offered" },
+      { label: "Keyword/object search offered" },
     ],
   },
   {
@@ -54,7 +66,7 @@ const EXPERIENCE: Row[] = [
       { label: "Shipped — per-user isolation", tone: "good" },
       { label: "Provider-managed" },
       { label: "Provider-managed" },
-      { label: "Provider-managed" },
+      { label: "No content index (E2E)" },
       { label: "Provider-managed" },
       { label: "Provider-managed" },
     ],
@@ -76,8 +88,8 @@ const EXPERIENCE: Row[] = [
       { label: "Shipped — opt-in, consent-first", tone: "good" },
       { label: "Offered" },
       { label: "Offered" },
-      { label: "Offered" },
-      { label: "Not a focus" },
+      { label: "Not offered (E2E)" },
+      { label: "Not offered" },
       { label: "Offered" },
     ],
   },
@@ -87,8 +99,8 @@ const EXPERIENCE: Row[] = [
       { label: "Shipped — picks codec per image", tone: "good" },
       { label: "Provider default" },
       { label: "Provider default" },
-      { label: "Keeps originals" },
-      { label: "Keeps originals" },
+      { label: "Stores files as-is" },
+      { label: "Stores files as-is" },
       { label: "Provider default" },
     ],
   },
@@ -96,6 +108,17 @@ const EXPERIENCE: Row[] = [
 
 // ----- Group 2: Trust (what's behind the experience) -----
 const TRUST: Row[] = [
+  {
+    feature: "End-to-end encrypted (provider can't read your files)",
+    cells: [
+      { label: "Zero-knowledge vault; opt-in E2E in progress", tone: "good" },
+      { label: "In transit + at rest" },
+      { label: "Optional — Advanced Data Protection" },
+      { label: "Yes — on by default" },
+      { label: "In transit + at rest" },
+      { label: "In transit + at rest" },
+    ],
+  },
   {
     feature: "Can run on hardware you control",
     cells: [
@@ -108,23 +131,12 @@ const TRUST: Row[] = [
     ],
   },
   {
-    feature: "Vector embeddings kept in a database you can run",
-    cells: [
-      { label: "Self-host planned", tone: "good" },
-      { label: "Provider-managed" },
-      { label: "Provider-managed" },
-      { label: "Provider-managed" },
-      { label: "Provider-managed" },
-      { label: "Provider-managed" },
-    ],
-  },
-  {
     feature: "Source code open and auditable",
     cells: [
       { label: "Planned (no committed date)", tone: "good" },
       { label: "Proprietary" },
       { label: "Proprietary" },
-      { label: "Proprietary" },
+      { label: "Open-source clients" },
       { label: "Proprietary" },
       { label: "Proprietary" },
     ],
@@ -182,7 +194,7 @@ const RUNTIME: Row[] = [
     cells: [
       { label: "Shipped — CUDA / XPU / Apple Metal", tone: "good" },
       { label: "Provider-run" },
-      { label: "On Apple silicon" },
+      { label: "On Apple devices" },
       { label: "Provider-run" },
       { label: "Provider-run" },
       { label: "Provider-run" },
@@ -192,9 +204,9 @@ const RUNTIME: Row[] = [
     feature: "Free tier (as publicly listed)",
     cells: [
       { label: "Self-host: free when released" },
-      { label: "15 GB shared with Google account" },
-      { label: "5 GB across iCloud" },
+      { label: "Up to 15 GB (shared)" },
       { label: "5 GB free" },
+      { label: "20 GB free" },
       { label: "2 GB free" },
       { label: "5 GB (photos with Prime)" },
     ],
@@ -226,9 +238,9 @@ const GROUPS: Group[] = [
 
 export default function Compare() {
   usePageSeo({
-    title: "Compare neuthek vs Google Photos, iCloud, OneDrive, Dropbox, Amazon Photos",
+    title: "Compare neuthek vs Google Photos, iCloud, MEGA, Dropbox, Amazon Photos",
     description:
-      "How neuthek compares to Google Photos, Apple iCloud Photos, Microsoft OneDrive, Dropbox, and Amazon Photos on search, ownership, privacy, hardware, and pricing. neuthek's column reflects our development build; other columns use neutral, publicly-documented descriptions.",
+      "How neuthek compares to Google Photos, Apple iCloud Photos, MEGA, Dropbox, and Amazon Photos on search, ownership, privacy, encryption, hardware, and pricing. neuthek's column reflects our development build; other columns use neutral descriptions sourced from each provider's official documentation (verified May 2026).",
     path: "/compare",
     jsonLd: [
       webPage({
@@ -305,17 +317,32 @@ export default function Compare() {
       <section className="section">
         <div className="container">
           <p style={{ fontSize: 12, color: "var(--ink-3)", lineHeight: 1.6 }}>
-            Brand names belong to their respective owners and are referenced
-            here nominatively to identify each product. Descriptions of other
-            providers are deliberately neutral and reflect publicly available
-            documentation at the time of writing; they may change, and you
-            should confirm current details with each provider directly. Only
+            <strong>*</strong> Brand names belong to their respective owners
+            and are referenced here nominatively to identify each product.
+            Descriptions of other providers are deliberately neutral and are
+            drawn from each provider&rsquo;s own public documentation, verified{" "}
+            <strong>May 2026</strong> (see Sources below). Features and plans
+            change — confirm current details with each provider directly. Only
             the neuthek column makes specific feature claims — items marked{" "}
             <strong>Shipped</strong> exist in our development build with tests;{" "}
-            <strong>Planned</strong> means committed pre-launch but not yet
-            built. neuthek is not publicly released — join the waitlist to be
-            notified at launch.
+            <strong>Planned</strong> / <strong>in progress</strong> means
+            committed but not yet finished. neuthek is not publicly released —
+            join the waitlist to be notified at launch.
           </p>
+
+          <div className="compare-sources">
+            <span className="compare-sources__label">Sources *</span>
+            <ul className="compare-sources__list">
+              {SOURCES.map((s) => (
+                <li key={s.name}>
+                  {s.name}:{" "}
+                  <a href={s.url} target="_blank" rel="noopener noreferrer nofollow">
+                    {s.url.replace(/^https?:\/\//, "")}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </section>
 
