@@ -672,6 +672,81 @@ p {
   line-height: 1.5;
 }
 .roadmap__list li strong { color: var(--ink); font-weight: 500; }
+.roadmap__list li {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.roadmap__list li:hover {
+  transform: translateY(-2px);
+  border-color: var(--ink-4);
+  box-shadow: var(--shadow-1);
+}
+
+/* Roadmap progress — a 3-up stat band + a single proportional bar that
+   shows shipped-vs-building-vs-planned at a glance. The whole thing is
+   monochrome; the segments differ by tone (solid ink → mid → hatched). */
+.roadmap-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.roadmap-stat {
+  padding: 22px 22px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+.roadmap-stat__num {
+  display: block;
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.roadmap-stat__label {
+  display: block;
+  margin-top: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.roadmap-stat__sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.roadmap-progress {
+  display: flex;
+  gap: 4px;
+  height: 8px;
+  margin-top: 16px;
+}
+.roadmap-progress__seg {
+  border-radius: 999px;
+  min-width: 8px;
+}
+.roadmap-progress__seg--done    { background: var(--ink); }
+.roadmap-progress__seg--active  { background: var(--ink-4); }
+.roadmap-progress__seg--planned {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      var(--surface-3),
+      var(--surface-3) 5px,
+      var(--surface-4) 5px,
+      var(--surface-4) 10px
+    );
+}
+@media (max-width: 720px) {
+  .roadmap-stats { grid-template-columns: 1fr; }
+  .roadmap-stat__num { font-size: 36px; }
+}
 
 /* Pre-launch checklist — designed B&W status pills replace the emoji
    indicators. Each card carries a small icon + uppercase label so the
@@ -876,50 +951,67 @@ p {
    (driven by Panel.tsx adding .is-visible). The aesthetic is "app
    surface", not "scary code dump". */
 .panel {
+  position: relative;
   border: 1px solid var(--line);
-  border-radius: var(--radius-3);
+  border-radius: var(--radius-4);
   overflow: hidden;
   background: var(--surface);
-  box-shadow: var(--shadow-2);
+  /* Layered, soft, Apple-grade depth — a tight contact shadow plus a
+     wide ambient one. The hairline top highlight (::after) gives the
+     surface a faint sheen so it reads as a real pane of glass. */
+  box-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.03),
+    0 2px 6px rgba(0, 0, 0, 0.04),
+    0 18px 48px -12px rgba(0, 0, 0, 0.14);
   /* Panel shell entrance — settles up with the expo ease. */
   opacity: 0;
-  transform: translateY(20px) scale(0.985);
+  transform: translateY(22px) scale(0.984);
   transition:
-    opacity 600ms var(--ease-out),
-    transform 600ms var(--ease-out);
+    opacity 700ms var(--ease-out),
+    transform 700ms var(--ease-out);
 }
 .panel.is-visible { opacity: 1; transform: translateY(0) scale(1); }
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent, rgba(255, 255, 255, 0.7) 30%, rgba(255, 255, 255, 0.7) 70%, transparent);
+  pointer-events: none;
+}
 
 .panel__chrome {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  gap: 11px;
+  padding: 13px 18px;
+  background: linear-gradient(180deg, #fcfcfc 0%, var(--surface-2) 100%);
   border-bottom: 1px solid var(--line);
 }
-.panel__dots { display: inline-flex; gap: 6px; }
+.panel__dots { display: inline-flex; gap: 7px; }
 .panel__dots span {
-  width: 10px; height: 10px; border-radius: 50%;
+  width: 11px; height: 11px; border-radius: 50%;
   background: var(--surface-4);
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.06);
 }
-.panel__dots span:nth-child(1) { background: #f0b9b3; }
-.panel__dots span:nth-child(2) { background: #f3d9a6; }
-.panel__dots span:nth-child(3) { background: #b9dfc0; }
+.panel__dots span:nth-child(1) { background: #fdbcb4; }
+.panel__dots span:nth-child(2) { background: #fcdf9e; }
+.panel__dots span:nth-child(3) { background: #b6e3bd; }
 .panel__title {
   font-size: 13px; font-weight: 500; color: var(--ink-2);
   letter-spacing: -0.01em;
 }
 .panel__tag {
   margin-left: auto;
-  font-size: 11px; font-weight: 500;
-  text-transform: uppercase; letter-spacing: 0.08em;
+  font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.09em;
   color: var(--ink-3);
-  background: var(--surface-2);
+  background: var(--surface);
   border: 1px solid var(--line);
-  padding: 3px 9px; border-radius: 999px;
+  padding: 3px 10px; border-radius: 999px;
 }
-.panel__body { padding: 22px 20px; display: flex; flex-direction: column; gap: 2px; }
+.panel__body { padding: 24px 22px; display: flex; flex-direction: column; gap: 2px; }
 
 /* Row reveal — each .panel-row rises in once the panel is visible,
    staggered by position for the "render building itself" feel. */
@@ -1131,6 +1223,23 @@ p {
   opacity: 1;
   transform: translateY(0);
   filter: blur(0);
+}
+
+/* Auto-reveal — applied to every page's section blocks by
+   <AutoReveal>. Lighter than <Reveal> (shorter rise, no blur) because
+   it's applied to many elements at once: it has to stay crisp and
+   buttery on long pages. Same expo-out arrival, same stagger var. */
+.reveal-auto {
+  opacity: 0;
+  transform: translateY(16px);
+  transition:
+    opacity var(--dur-screen) var(--ease-out),
+    transform var(--dur-screen) var(--ease-out);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+.reveal-auto.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 /* Hero entrance — staggered cascade of the eyebrow → title → sub →
@@ -1940,25 +2049,47 @@ button:focus-visible,
 .guarantees-strip {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 12px;
-  margin: 32px 0 56px;
+  gap: 14px;
+  margin: 36px 0 56px;
+  counter-reset: vow;
 }
 .guarantee {
-  padding: 14px 16px;
-  border-left: 3px solid var(--ink);
-  background: var(--surface-2);
-  border-radius: 8px;
+  position: relative;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--ink);
+  background: var(--surface);
+  border-radius: var(--radius-2);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.guarantee:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-2);
+}
+.guarantee::before {
+  counter-increment: vow;
+  content: counter(vow, decimal-leading-zero);
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--ink-4);
+  margin-bottom: 12px;
 }
 .guarantee__eyebrow {
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ink-3);
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
 .guarantee__body {
   font-size: 13.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--ink);
   font-weight: 500;
 }
@@ -1969,10 +2100,19 @@ button:focus-visible,
   margin: 14px 0 8px;
 }
 .feature-tile {
-  padding: 14px 16px;
+  padding: 15px 17px;
   border: 1px solid var(--line);
   border-radius: var(--radius-2);
   background: var(--surface);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.feature-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--ink-4);
+  box-shadow: var(--shadow-1);
 }
 .feature-tile__title {
   font-size: 14px;

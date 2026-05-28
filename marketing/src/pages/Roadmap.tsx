@@ -47,6 +47,10 @@ const SHIPPED: Item[] = [
     t: "No secrets in the codebase",
     d: "Every commit is scanned for accidentally-committed passwords or keys before it can merge. The repo ignores every secret-shaped filename people have leaked over the years.",
   },
+  {
+    t: "A password vault the server can't read",
+    d: "Passwords and secure notes are encrypted in your browser with a key derived from your master password (PBKDF2-SHA256 → AES-256-GCM, with a non-extractable key). The server only ever stores ciphertext — your master password and the vault key never reach it, so even a full database compromise reveals nothing. Auto-locks on idle and sign-out. Apple-style viewers and file import are being polished next.",
+  },
 
   // --- Product & UX ---
   {
@@ -190,10 +194,6 @@ const PLANNED: Item[] = [
     d: "Same engine and same privacy guarantees for documents, contacts, passwords, game saves, and IoT data. Search works across every type from day one.",
   },
   {
-    t: "Password vault the server can't read",
-    d: "Passwords encrypted in your browser with a key derived from your master password. We only ever see ciphertext — even we can't read them.",
-  },
-  {
     t: "Contacts",
     d: "Import vCard / CSV. Contact photos can opt in as a face source for the existing People feature.",
   },
@@ -330,9 +330,49 @@ export default function Roadmap() {
         </div>
       </section>
 
+      <section className="section section--tight">
+        <div className="container">
+          <div className="roadmap-stats">
+            <div className="roadmap-stat">
+              <span className="roadmap-stat__num">{SHIPPED.length}</span>
+              <span className="roadmap-stat__label">Working today</span>
+              <span className="roadmap-stat__sub">In the engine, with tests</span>
+            </div>
+            <div className="roadmap-stat">
+              <span className="roadmap-stat__num">{ACTIVE.length}</span>
+              <span className="roadmap-stat__label">Building now</span>
+              <span className="roadmap-stat__sub">In active development</span>
+            </div>
+            <div className="roadmap-stat">
+              <span className="roadmap-stat__num">{PLANNED.length}</span>
+              <span className="roadmap-stat__label">On the roadmap</span>
+              <span className="roadmap-stat__sub">Designed, not yet started</span>
+            </div>
+          </div>
+          <div
+            className="roadmap-progress"
+            role="img"
+            aria-label={`${SHIPPED.length} shipped, ${ACTIVE.length} building, ${PLANNED.length} planned`}
+          >
+            <span
+              className="roadmap-progress__seg roadmap-progress__seg--done"
+              style={{ flexGrow: SHIPPED.length }}
+            />
+            <span
+              className="roadmap-progress__seg roadmap-progress__seg--active"
+              style={{ flexGrow: ACTIVE.length }}
+            />
+            <span
+              className="roadmap-progress__seg roadmap-progress__seg--planned"
+              style={{ flexGrow: PLANNED.length }}
+            />
+          </div>
+        </div>
+      </section>
+
       <section className="section">
         <div className="container">
-          <details className="cat-disclosure">
+          <details className="cat-disclosure" open>
             <summary className="cat-disclosure__summary">
               <span className="cat-disclosure__eyebrow">Working today</span>
               <span className="cat-disclosure__heading">
