@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import Reveal from "../components/Reveal";
 import { usePageSeo, webPage, breadcrumbs } from "../seo";
 
 export default function Hosting() {
@@ -45,7 +46,7 @@ export default function Hosting() {
 
       <section className="section">
         <div className="container split">
-          <div className="card">
+          <Reveal as="div" className="card" delay={0}>
             <span className="eyebrow">Self-host (planned)</span>
             <h2 style={{ fontSize: 28, marginBottom: 8 }}>Free when released</h2>
             <p>
@@ -60,9 +61,9 @@ export default function Hosting() {
               <li>Intel iGPU + NPU passthrough via opt-in compose overlay</li>
               <li>Backups are your responsibility</li>
             </ul>
-          </div>
+          </Reveal>
 
-          <div className="card" style={{ borderColor: "var(--ink)" }}>
+          <Reveal as="div" className="card" delay={120} style={{ borderColor: "var(--ink)" }}>
             <span className="eyebrow">Managed (planned)</span>
             <h2 style={{ fontSize: 28, marginBottom: 8 }}>Pricing announced soon</h2>
             <p>
@@ -82,7 +83,7 @@ export default function Hosting() {
             <p style={{ marginTop: 20 }}>
               <Link to="/waitlist" className="btn btn--primary">Join waitlist</Link>
             </p>
-          </div>
+          </Reveal>
         </div>
       </section>
 
