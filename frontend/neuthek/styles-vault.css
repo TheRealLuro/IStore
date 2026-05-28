@@ -472,6 +472,80 @@
   padding: 28px 16px;
 }
 
+/* ---- VLT-8 secure-item viewers (P4) ---- */
+/* The add picker now holds four kinds — let the pill row wrap. */
+.vault-segments--wrap {
+  display: flex;
+  flex-wrap: wrap;
+  border-radius: var(--radius-3, 14px);
+}
+.vault-mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  letter-spacing: 0.02em;
+}
+/* Two fields side by side (expiry / CVV). */
+.vault-field-row {
+  display: flex;
+  gap: 12px;
+}
+.vault-field-row .vault-field { flex: 1; min-width: 0; }
+.vault-warn--tight { margin: 0; }
+
+.vault-seed { display: flex; flex-direction: column; gap: 12px; }
+.vault-seed__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.vault-seed__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.vault-seed__word {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+  color: var(--ink);
+}
+.vault-seed__num {
+  flex: 0 0 auto;
+  min-width: 18px;
+  font-size: 11px;
+  color: var(--ink-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.vault-seed__cover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 26px 16px;
+  background: var(--surface-2);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--ink-3);
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.vault-seed__cover:hover { border-color: var(--ink-4, var(--ink-3)); color: var(--ink-2); }
+@media (max-width: 560px) {
+  .vault-seed__grid { grid-template-columns: repeat(2, 1fr); }
+}
+
 .vault-empty {
   flex: 1;
   display: flex;

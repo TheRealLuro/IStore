@@ -157,6 +157,16 @@ function formatBytes(n) {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
 }
 
+// Secure-item kinds — icon, label, and add-form placeholder. Drives the row
+// icons, the add picker, and the detail header so all four kinds look
+// first-class. (Files use fileIconName instead.)
+const KIND_META = {
+  password: { icon: "key", label: "Password", placeholder: "e.g. GitHub" },
+  note: { icon: "document", label: "Note", placeholder: "e.g. Recovery codes" },
+  seed: { icon: "shield", label: "Seed phrase", placeholder: "e.g. Ledger backup" },
+  card: { icon: "contact", label: "Card / ID", placeholder: "e.g. Visa ending 4242" },
+};
+
 // Map a MIME type / filename to one of our existing Icon names.
 function fileIconName(name = "", mime = "") {
   const ext = name.split(".").pop()?.toLowerCase() || "";
@@ -1049,9 +1059,7 @@ function VaultHome() {
                       name={
                         isFile
                           ? fileIconName(item.data?.title, item.data?.mime)
-                          : item.kind === "password"
-                            ? "key"
-                            : "document"
+                          : KIND_META[item.kind]?.icon || "document"
                       }
                       size={16}
                     />
@@ -1067,7 +1075,7 @@ function VaultHome() {
                         ? formatBytes(item.size_bytes) || "File"
                         : item.kind === "password"
                           ? item.data?.username || item.data?.url || "Password"
-                          : "Secure note"}
+                          : KIND_META[item.kind]?.label || "Secure item"}
                     </span>
                   </span>
                 </button>
@@ -1345,31 +1353,38 @@ function NewFolderModal({ open, parentId, onClose, onSaved }) {
 }
 
 // ---------------------------------------------------------------------------
-// AddItemModal — create a password or note
+// AddItemModal — create a password, note, seed phrase, or card / ID
 // ---------------------------------------------------------------------------
 
 function AddItemModal({ open, folderId = null, onClose, onSaved }) {
   const [kind, setKind] = useState("password");
   const [busy, setBusy] = useState(false);
-  // password fields
   const [title, setTitle] = useState("");
+  // password
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [url, setUrl] = useState("");
   const [pnotes, setPnotes] = useState("");
   const [showPw, setShowPw] = useState(false);
-  // note fields
+  // note
   const [body, setBody] = useState("");
+  // seed phrase
+  const [phrase, setPhrase] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  // card / id
+  const [cardholder, setCardholder] = useState("");
+  const [cardNumber, setCardNumber] = useState("");
+  const [expiry, setExpiry] = useState("");
+  const [cvv, setCvv] = useState("");
+  const [brand, setBrand] = useState("");
 
   const reset = () => {
     setKind("password");
     setTitle("");
-    setUsername("");
-    setPassword("");
-    setUrl("");
-    setPnotes("");
+    setUsername(""); setPassword(""); setUrl(""); setPnotes(""); setShowPw(false);
     setBody("");
-    setShowPw(false);
+    setPhrase(""); setPassphrase("");
+    setCardholder(""); setCardNumber(""); setExpiry(""); setCvv(""); setBrand("");
   };
 
   const close = () => {
@@ -1379,9 +1394,27 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
 
   const canSave =
     !busy &&
-    title.trim() &&
-    (kind === "password" ? password : true) &&
-    (kind === "note" ? body.trim() : true);
+    !!title.trim() &&
+    (kind === "password"
+      ? !!password
+      : kind === "note"
+        ? !!body.trim()
+        : kind === "seed"
+          ? !!phrase.trim()
+          : kind === "card"
+            ? !!cardNumber.trim()
+            : true);
+
+  const buildPlaintext = () => {
+    const t = title.trim();
+    if (kind === "password") return { title: t, username, password, url, notes: pnotes };
+    if (kind === "note") return { title: t, body };
+    // Seed + card carry only their structured secret fields — no freeform
+    // notes, which keeps anything potentially shareable free of stray context.
+    if (kind === "seed") return { title: t, phrase: phrase.trim().replace(/\s+/g, " "), passphrase };
+    if (kind === "card") return { title: t, cardholder, number: cardNumber, expiry, cvv, brand };
+    return { title: t };
+  };
 
   const save = async (e) => {
     e.preventDefault();
@@ -1393,24 +1426,14 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
     }
     setBusy(true);
     try {
-      const plaintext =
-        kind === "password"
-          ? {
-              title: title.trim(),
-              username,
-              password,
-              url,
-              notes: pnotes,
-            }
-          : { title: title.trim(), body };
-      const sealed = await encryptItem(key, plaintext);
+      const sealed = await encryptItem(key, buildPlaintext());
       await createVaultItem({
         kind,
         nonce: sealed.nonce,
         ciphertext: sealed.ciphertext,
         folder_id: folderId,
       });
-      toast.success(kind === "password" ? "Password saved" : "Note saved");
+      toast.success(`${KIND_META[kind]?.label || "Item"} saved`);
       reset();
       onSaved?.();
     } catch (err) {
@@ -1429,23 +1452,18 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
           Add to vault
         </h2>
 
-        <div className="vault-segments" style={{ alignSelf: "flex-start" }}>
-          <button
-            type="button"
-            className="vault-segment"
-            data-active={kind === "password"}
-            onClick={() => setKind("password")}
-          >
-            <Icon name="key" size={13} /> Password
-          </button>
-          <button
-            type="button"
-            className="vault-segment"
-            data-active={kind === "note"}
-            onClick={() => setKind("note")}
-          >
-            <Icon name="document" size={13} /> Note
-          </button>
+        <div className="vault-segments vault-segments--wrap">
+          {Object.entries(KIND_META).map(([k, m]) => (
+            <button
+              key={k}
+              type="button"
+              className="vault-segment"
+              data-active={kind === k}
+              onClick={() => setKind(k)}
+            >
+              <Icon name={m.icon} size={13} /> {m.label}
+            </button>
+          ))}
         </div>
 
         <label className="vault-field">
@@ -1455,11 +1473,11 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
             value={title}
             autoFocus
             onChange={(e) => setTitle(e.target.value)}
-            placeholder={kind === "password" ? "e.g. GitHub" : "e.g. Recovery codes"}
+            placeholder={KIND_META[kind]?.placeholder}
           />
         </label>
 
-        {kind === "password" ? (
+        {kind === "password" && (
           <>
             <label className="vault-field">
               <span>Username or email</span>
@@ -1521,7 +1539,9 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
               />
             </label>
           </>
-        ) : (
+        )}
+
+        {kind === "note" && (
           <label className="vault-field">
             <span>Note</span>
             <textarea
@@ -1532,6 +1552,98 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
               placeholder="Type anything — it’s encrypted before it leaves your device."
             />
           </label>
+        )}
+
+        {kind === "seed" && (
+          <>
+            <div className="vault-warn">
+              <Icon name="alert" size={16} />
+              <div>
+                <strong>Never share your recovery phrase.</strong> Anyone with
+                these words controls the wallet. neuthek will never ask for it —
+                store it here, and type it only on a device you trust.
+              </div>
+            </div>
+            <label className="vault-field">
+              <span>Recovery phrase</span>
+              <textarea
+                className="input vault-mono"
+                rows={3}
+                value={phrase}
+                spellCheck={false}
+                autoComplete="off"
+                onChange={(e) => setPhrase(e.target.value)}
+                placeholder="word1 word2 word3 … (12 or 24 words)"
+              />
+            </label>
+            <label className="vault-field">
+              <span>Passphrase (optional)</span>
+              <input
+                className="input"
+                value={passphrase}
+                autoComplete="off"
+                onChange={(e) => setPassphrase(e.target.value)}
+                placeholder="BIP39 25th-word passphrase, if you use one"
+              />
+            </label>
+          </>
+        )}
+
+        {kind === "card" && (
+          <>
+            <label className="vault-field">
+              <span>Cardholder / name</span>
+              <input
+                className="input"
+                value={cardholder}
+                autoComplete="off"
+                onChange={(e) => setCardholder(e.target.value)}
+              />
+            </label>
+            <label className="vault-field">
+              <span>Number</span>
+              <input
+                className="input vault-mono"
+                value={cardNumber}
+                inputMode="numeric"
+                autoComplete="off"
+                onChange={(e) => setCardNumber(e.target.value)}
+                placeholder="Card or ID number"
+              />
+            </label>
+            <div className="vault-field-row">
+              <label className="vault-field">
+                <span>Expiry</span>
+                <input
+                  className="input"
+                  value={expiry}
+                  autoComplete="off"
+                  onChange={(e) => setExpiry(e.target.value)}
+                  placeholder="MM / YY"
+                />
+              </label>
+              <label className="vault-field">
+                <span>CVV / code</span>
+                <input
+                  className="input vault-mono"
+                  value={cvv}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  onChange={(e) => setCvv(e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="vault-field">
+              <span>Type / issuer (optional)</span>
+              <input
+                className="input"
+                value={brand}
+                autoComplete="off"
+                onChange={(e) => setBrand(e.target.value)}
+                placeholder="e.g. Visa, Passport, Driver’s license"
+              />
+            </label>
+          </>
         )}
 
         </div>
@@ -1566,7 +1678,7 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
 
   if (!item) return null;
   const d = item.data || {};
-  const isPw = item.kind === "password";
+  const toggleReveal = () => setReveal((v) => !v);
 
   const saveEdit = async () => {
     const key = getVaultKey();
@@ -1597,14 +1709,14 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
         <div className="vault-modal-scroll">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span className="vault-row__icon" data-kind={item.kind}>
-            <Icon name={isPw ? "key" : "document"} size={18} />
+            <Icon name={KIND_META[item.kind]?.icon || "document"} size={18} />
           </span>
           <div>
             <h2 id="vault-detail-title" style={{ margin: 0, fontSize: 18 }}>
               {d.title || "(untitled)"}
             </h2>
             <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
-              Updated {relTime(item.updated_at)}
+              {KIND_META[item.kind]?.label} · Updated {relTime(item.updated_at)}
             </div>
           </div>
         </div>
@@ -1615,7 +1727,7 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
           </div>
         ) : editing ? (
           <EditFields kind={item.kind} draft={draft} setDraft={setDraft} />
-        ) : isPw ? (
+        ) : item.kind === "password" ? (
           <>
             <DetailRow label="Username" value={d.username} copyable />
             <DetailRow
@@ -1623,11 +1735,43 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
               value={d.password}
               secret
               reveal={reveal}
-              onReveal={() => setReveal((v) => !v)}
+              onReveal={toggleReveal}
               copyable
+              mono
             />
             <DetailRow label="Website" value={d.url} link copyable />
             <DetailRow label="Notes" value={d.notes} multiline />
+          </>
+        ) : item.kind === "seed" ? (
+          <SeedView
+            phrase={d.phrase}
+            passphrase={d.passphrase}
+            reveal={reveal}
+            onReveal={toggleReveal}
+          />
+        ) : item.kind === "card" ? (
+          <>
+            <DetailRow label="Cardholder / name" value={d.cardholder} copyable />
+            <DetailRow
+              label="Number"
+              value={d.number}
+              secret
+              reveal={reveal}
+              onReveal={toggleReveal}
+              copyable
+              mono
+            />
+            <DetailRow label="Expiry" value={d.expiry} />
+            <DetailRow
+              label="CVV / code"
+              value={d.cvv}
+              secret
+              reveal={reveal}
+              onReveal={toggleReveal}
+              copyable
+              mono
+            />
+            <DetailRow label="Type / issuer" value={d.brand} />
           </>
         ) : (
           <DetailRow label="" value={d.body} multiline />
@@ -1678,15 +1822,89 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
   );
 }
 
+// Reveal-gated viewer for a recovery phrase: a numbered word grid behind a
+// tap-to-reveal cover, with copy-all. No freeform notes — nothing to leak.
+function SeedView({ phrase, passphrase, reveal, onReveal }) {
+  const words = String(phrase || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return (
+    <div className="vault-seed">
+      <div className="vault-warn vault-warn--tight">
+        <Icon name="alert" size={15} />
+        <div>
+          Never share these words. Anyone who has them controls the wallet.
+        </div>
+      </div>
+      <div className="vault-seed__bar">
+        <span className="vault-detail-row__label">
+          Recovery phrase · {words.length} words
+        </span>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            className="btn-icon"
+            onClick={onReveal}
+            aria-label={reveal ? "Hide" : "Reveal"}
+            title={reveal ? "Hide" : "Reveal"}
+          >
+            <Icon name={reveal ? "eyeOff" : "eye"} size={14} />
+          </button>
+          <button
+            className="btn-icon"
+            onClick={() => {
+              touchVault();
+              copyToClipboard(words.join(" "), "Recovery phrase");
+            }}
+            aria-label="Copy"
+            title="Copy"
+          >
+            <Icon name="copy" size={14} />
+          </button>
+        </div>
+      </div>
+      {reveal ? (
+        <ol className="vault-seed__grid">
+          {words.map((w, i) => (
+            <li key={i} className="vault-seed__word">
+              <span className="vault-seed__num">{i + 1}</span>
+              {w}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <button type="button" className="vault-seed__cover" onClick={onReveal}>
+          <Icon name="eye" size={15} /> Tap to reveal {words.length} words
+        </button>
+      )}
+      {passphrase ? (
+        <DetailRow
+          label="Passphrase"
+          value={passphrase}
+          secret
+          reveal={reveal}
+          onReveal={onReveal}
+          copyable
+          mono
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function EditFields({ kind, draft, setDraft }) {
   const set = (k) => (e) => setDraft((d) => ({ ...d, [k]: e.target.value }));
+  const titleField = (
+    <label className="vault-field">
+      <span>Title</span>
+      <input className="input" value={draft?.title || ""} onChange={set("title")} />
+    </label>
+  );
+
   if (kind === "note") {
     return (
       <>
-        <label className="vault-field">
-          <span>Title</span>
-          <input className="input" value={draft?.title || ""} onChange={set("title")} />
-        </label>
+        {titleField}
         <label className="vault-field">
           <span>Note</span>
           <textarea
@@ -1699,12 +1917,63 @@ function EditFields({ kind, draft, setDraft }) {
       </>
     );
   }
+
+  if (kind === "seed") {
+    return (
+      <>
+        {titleField}
+        <label className="vault-field">
+          <span>Recovery phrase</span>
+          <textarea
+            className="input vault-mono"
+            rows={3}
+            spellCheck={false}
+            value={draft?.phrase || ""}
+            onChange={set("phrase")}
+          />
+        </label>
+        <label className="vault-field">
+          <span>Passphrase (optional)</span>
+          <input className="input" value={draft?.passphrase || ""} onChange={set("passphrase")} />
+        </label>
+      </>
+    );
+  }
+
+  if (kind === "card") {
+    return (
+      <>
+        {titleField}
+        <label className="vault-field">
+          <span>Cardholder / name</span>
+          <input className="input" value={draft?.cardholder || ""} onChange={set("cardholder")} />
+        </label>
+        <label className="vault-field">
+          <span>Number</span>
+          <input className="input vault-mono" value={draft?.number || ""} onChange={set("number")} />
+        </label>
+        <div className="vault-field-row">
+          <label className="vault-field">
+            <span>Expiry</span>
+            <input className="input" value={draft?.expiry || ""} onChange={set("expiry")} />
+          </label>
+          <label className="vault-field">
+            <span>CVV / code</span>
+            <input className="input vault-mono" value={draft?.cvv || ""} onChange={set("cvv")} />
+          </label>
+        </div>
+        <label className="vault-field">
+          <span>Type / issuer (optional)</span>
+          <input className="input" value={draft?.brand || ""} onChange={set("brand")} />
+        </label>
+      </>
+    );
+  }
+
+  // password
   return (
     <>
-      <label className="vault-field">
-        <span>Title</span>
-        <input className="input" value={draft?.title || ""} onChange={set("title")} />
-      </label>
+      {titleField}
       <label className="vault-field">
         <span>Username or email</span>
         <input className="input" value={draft?.username || ""} onChange={set("username")} />
@@ -1730,7 +1999,7 @@ function EditFields({ kind, draft, setDraft }) {
   );
 }
 
-function DetailRow({ label, value, secret, reveal, onReveal, copyable, link, multiline }) {
+function DetailRow({ label, value, secret, reveal, onReveal, copyable, link, multiline, mono }) {
   if (!value) return null;
   return (
     <div className="vault-detail-row">
@@ -1745,7 +2014,7 @@ function DetailRow({ label, value, secret, reveal, onReveal, copyable, link, mul
             {value}
           </a>
         ) : (
-          <span>{value}</span>
+          <span className={mono ? "vault-mono" : undefined}>{value}</span>
         )}
         <div className="vault-detail-row__actions">
           {secret && (
