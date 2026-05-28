@@ -21,6 +21,7 @@ from backend.api.storage import router as storage_router
 from backend.api.tags import folder_attach_router as tag_folder_attach_router
 from backend.api.tags import image_attach_router as tag_image_attach_router
 from backend.api.tags import router as tags_router
+from backend.api.vault import router as vault_router
 from backend.api.email_link import router as email_link_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
@@ -343,6 +344,7 @@ def create_app() -> FastAPI:
     app.include_router(cloud_router)
     app.include_router(feedback_router)
     app.include_router(billing_router)
+    app.include_router(vault_router)
     # §C1.6 — tags CRUD + image/folder attach.
     app.include_router(tags_router)
     app.include_router(tag_image_attach_router)
