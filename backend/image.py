@@ -795,10 +795,23 @@ async def _store_non_image(
         source_provider=source_provider,
         folder_id=folder_id,
         skip_ai_training=skip_ai_training,
-        # Background workers shouldn't pick up cloud-synced rows
-        # unless the user explicitly opts in (`pending_*` re-flips
-        # to True when they enable AI on the cloud link).
-        pending_face_scan=False if skip_ai_training else False,
+        # Background workers must NOT pick up cloud-synced rows unless
+        # the user opted in. `pending_summary` defaults to TRUE at the
+        # DB level (server_default="true"), and this constructor never
+        # set it — so every non-image cloud-synced row (PDF, video,
+        # audio, "other") was getting summarized by the background
+        # summarize sweeper even when the cloud link's AI toggle was
+        # OFF. That's the "AI ran when it wasn't enabled" bug. Honor
+        # skip_ai_training explicitly here, exactly like the image
+        # path (store_upload) does. `pending_*` re-flips to True when
+        # the user enables AI on the cloud link + re-syncs.
+        pending_summary=not skip_ai_training,
+        # Face scan only applies to VIDEO among the non-image
+        # categories (docs/audio have no faces). Gate it on opt-in
+        # too — previously this was `False if skip_ai_training else
+        # False` (always False), so opted-in videos never got a face
+        # scan; now they do, and non-opted-in ones still don't.
+        pending_face_scan=(category == "video" and not skip_ai_training),
         # Mirror the image-upload path — non-image categories (docs,
         # video, audio) honor the same per-user retention policy.
         original_expires_at=_policy_to_expiry_safe(user),
