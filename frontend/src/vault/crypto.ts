@@ -540,3 +540,102 @@ export async function decryptFile(
 export function fileChunkCiphertextOffset(meta: FileCryptoMeta, index: number): number {
   return index * (meta.chunkSize + GCM_TAG_BYTES);
 }
+
+// ---- public links (VLT-8 P7: anyone-with-the-link sharing) ----
+//
+// A public link is zero-knowledge: the AES key is derived from a random secret
+// carried in the URL FRAGMENT (never sent to the server). If the owner sets a
+// password, the key is derived from BOTH the fragment secret AND the password
+// (PBKDF2 → mixed into HKDF), so the sealed blob can't be opened with the link
+// alone. The server stores only the sealed blob + (for password links) a
+// public salt + iteration count.
+
+export const PUBLINK_KDF_ITERATIONS = 600_000;
+export const PUBLINK_SALT_BYTES = 16;
+const PUBLINK_INFO = "neuthek.vault.publiclink.v1";
+
+/** Fresh 32-byte link secret (goes in the URL fragment, base64url). */
+export function randomLinkSecret(): Uint8Array {
+  return randomBytes(32);
+}
+
+// base64url (URL-fragment friendly: no +, /, or = padding).
+export function bytesToB64Url(bytes: Uint8Array): string {
+  return bytesToB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+export function b64UrlToBytes(s: string): Uint8Array {
+  const norm = s.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = norm.length % 4 === 0 ? "" : "=".repeat(4 - (norm.length % 4));
+  return b64ToBytes(norm + pad);
+}
+
+/** Derive the public-link AES-GCM key from the fragment secret and, when the
+ *  link is password-protected, the password (PBKDF2 → HKDF combine). */
+export async function derivePublicLinkKey(
+  linkSecret: Uint8Array,
+  password: string | null,
+  salt: Uint8Array | null,
+  iterations: number | null,
+): Promise<CryptoKey> {
+  const s = subtle();
+  let ikm: Uint8Array;
+  if (password && salt && iterations) {
+    const baseKey = await s.importKey(
+      "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveBits"],
+    );
+    const pwBits = new Uint8Array(
+      await s.deriveBits(
+        { name: "PBKDF2", salt: salt as BufferSource, iterations, hash: "SHA-256" },
+        baseKey, 256,
+      ),
+    );
+    ikm = new Uint8Array(linkSecret.length + pwBits.length);
+    ikm.set(linkSecret, 0);
+    ikm.set(pwBits, linkSecret.length);
+  } else {
+    ikm = linkSecret;
+  }
+  const hkdfBase = await s.importKey("raw", ikm as BufferSource, "HKDF", false, ["deriveKey"]);
+  return s.deriveKey(
+    {
+      name: "HKDF", hash: "SHA-256",
+      salt: new Uint8Array(0) as BufferSource, info: enc.encode(PUBLINK_INFO),
+    },
+    hkdfBase,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+/** Seal a bundle under the link key. Output: base64 of nonce(12) ‖ ct. */
+export async function sealPublicLink(linkKey: CryptoKey, obj: unknown): Promise<string> {
+  const s = subtle();
+  const nonce = randomBytes(NONCE_BYTES);
+  const ct = new Uint8Array(
+    await s.encrypt(
+      { name: "AES-GCM", iv: nonce as BufferSource },
+      linkKey,
+      enc.encode(JSON.stringify(obj)) as BufferSource,
+    ),
+  );
+  const out = new Uint8Array(nonce.length + ct.length);
+  out.set(nonce, 0);
+  out.set(ct, nonce.length);
+  return bytesToB64(out);
+}
+
+/** Inverse of sealPublicLink. Throws on wrong key / wrong password / tamper. */
+export async function openPublicLink<T = unknown>(
+  linkKey: CryptoKey,
+  sealedB64: string,
+): Promise<T> {
+  const s = subtle();
+  const blob = b64ToBytes(sealedB64);
+  const nonce = blob.subarray(0, NONCE_BYTES);
+  const ct = blob.subarray(NONCE_BYTES);
+  const pt = await s.decrypt(
+    { name: "AES-GCM", iv: nonce as BufferSource }, linkKey, ct as BufferSource,
+  );
+  return JSON.parse(dec.decode(new Uint8Array(pt))) as T;
+}
