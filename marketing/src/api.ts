@@ -199,6 +199,7 @@ export interface NewsletterRecipientsInfo {
   eligible: number;        // verified + opted-in + not yet sent
   already_sent: number;    // dedupe count
   previous_failures: number;
+  resend_configured: boolean; // is RESEND_API_KEY set on this deploy
 }
 
 export async function adminNewsletterRecipients(slug: string): Promise<NewsletterRecipientsInfo> {
@@ -237,4 +238,31 @@ export async function adminNewsletterSend(slug: string): Promise<NewsletterSendR
 
 export function adminNewsletterPreviewUrl(slug: string): string {
   return `${API_PREFIX}/admin/newsletter/preview?slug=${encodeURIComponent(slug)}`;
+}
+
+export interface NewsletterTestResult {
+  ok: boolean;
+  to: string;
+  reason?: string | null;
+  resend_configured: boolean;
+}
+
+/** Send a one-off TEST copy of a newsletter to a single address,
+ *  bypassing eligibility — lets the operator verify the pipeline. */
+export async function adminNewsletterTest(
+  slug: string,
+  to: string,
+): Promise<NewsletterTestResult> {
+  const res = await fetch(`${API_PREFIX}/admin/newsletter/test`, {
+    method: "POST",
+    headers: { ...adminHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({ slug, to }),
+  });
+  if (res.status === 401) throw new Error("unauthorized");
+  if (!res.ok) {
+    let detail = `server-error-${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+  return (await res.json()) as NewsletterTestResult;
 }
