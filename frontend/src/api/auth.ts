@@ -78,6 +78,21 @@ export async function completeSsoTotp(
   return await me();
 }
 
+/** F4 — "Sign out my other devices". The backend bumps token_version
+ *  (invalidating every live session) and re-issues THIS session's
+ *  token + cookie. Bearer-mode callers must adopt the re-issued token or
+ *  their next request 401s under the new version. */
+export async function signOutOtherSessions(): Promise<void> {
+  const res = await api.post<{ access_token: string }>(
+    "/account/sessions/sign-out-others",
+  );
+  try {
+    if (localStorage.getItem("neuthek.jwt")) {
+      localStorage.setItem("neuthek.jwt", res.access_token);
+    }
+  } catch { /* private-browsing localStorage can throw */ }
+}
+
 export interface RegisterConsent {
   kind: string;
   state: "GRANTED" | "WITHDRAWN";
