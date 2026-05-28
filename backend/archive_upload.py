@@ -436,7 +436,34 @@ async def _create_archive_folder(
     )
 
 
+# F17 — global cap on concurrent archive extractions (see config). Module-level
+# so it's shared across all requests in this process.
+_ARCHIVE_EXTRACT_SEM = asyncio.Semaphore(settings.archive_extract_concurrency)
+
+
 async def extract_archive_into_folder(
+    *,
+    session: AsyncSession,
+    user: User,
+    raw_bytes: bytes,
+    filename: str | None,
+    parent_folder_id: UUID | None,
+) -> ArchiveExtractResult:
+    """Concurrency-bounded entry point. Serializes archive extraction to at
+    most `archive_extract_concurrency` simultaneous runs (F17) so a burst of
+    large-archive uploads can't stack their decompression amplification and
+    exhaust memory/CPU, then delegates to the real implementation."""
+    async with _ARCHIVE_EXTRACT_SEM:
+        return await _extract_archive_into_folder_impl(
+            session=session,
+            user=user,
+            raw_bytes=raw_bytes,
+            filename=filename,
+            parent_folder_id=parent_folder_id,
+        )
+
+
+async def _extract_archive_into_folder_impl(
     *,
     session: AsyncSession,
     user: User,

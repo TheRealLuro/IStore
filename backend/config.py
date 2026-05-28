@@ -244,6 +244,11 @@ class Settings(BaseSettings):
     # (see deploy/initdb/10-app-role.sql). When false, a superuser connection
     # still logs a loud warning at boot.
     require_least_privilege_db: bool = Field(default=False)
+    # F17 — max number of archive (zip/tar/7z/rar) extractions allowed to run
+    # at once. Each extraction holds the (≤upload_max_bytes) source in memory
+    # plus per-entry decode buffers; a burst of large-archive uploads could
+    # otherwise stack their decompression amplification and exhaust memory/CPU.
+    archive_extract_concurrency: int = Field(default=2, ge=1, le=16)
 
     # ---- Phase 13 (C2) cloud sync — Drive (Dropbox hooked, not implemented) ----
     # Symmetric Fernet key used by backend.secret_box to encrypt OAuth
