@@ -55,6 +55,59 @@
 		reverse_proxy {$NEUTHEK_API_UPSTREAM}
 	}
 
+	# Remaining API routers that live on the same origin. These are
+	# pure-API prefixes with no SPA page collision (the public vault-link
+	# VIEWER is served at /v/* and falls through to the frontend via the
+	# catch-all below; only the /vault/* API is proxied here).
+	#
+	# NOTE: /billing is intentionally NOT blanket-proxied — its API paths
+	# (e.g. /billing/checkout-session) would otherwise swallow the SPA's
+	# /billing/checkout + /billing/return pages. Route billing per-path if
+	# it must live same-origin.
+	handle /vault/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /storage/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /search/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /people/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /faces/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /tags/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /folders/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /comments/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /shares/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /users/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
+	handle /feedback/* {
+		reverse_proxy {$NEUTHEK_API_UPSTREAM}
+	}
+
 	handle {
 		reverse_proxy {$NEUTHEK_FRONTEND_UPSTREAM}
 	}

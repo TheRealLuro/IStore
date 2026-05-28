@@ -558,7 +558,274 @@ None of these are committed; production values live only in the deploy
 environment.
 
 ---
+---
 
-*End of dossier. Pair this with read access to the repository and a staging
-deploy. Questions on any subsystem can be traced to the module paths cited
-above.*
+# PART II — Offensive testing playbook (pen-test / red-team)
+
+This part is written for the testing team. It enumerates concrete attack
+vectors, the exact defensive limits to expect (so you know what "normal" looks
+like and can design bypasses), the highest-value targets, the non-obvious
+behaviors ("tricks") worth abusing, and tooling. **Authorized scope only**:
+this is the product owner's own application; test against a **staging** deploy,
+never production user data.
+
+## A. Rules of engagement & target setup
+
+- **Stand up staging:** `docker compose up -d` brings the full stack
+  (Postgres/Redis/MinIO/API/worker/SPA). Set a *real* `.env` (see §18) and
+  **`SECURITY_RATE_LIMITS_ENABLED=true`** + `APP_ENV=production`-equivalent so
+  rate-limits/lockouts are live (they **silently no-op in dev/test** — testing
+  with them off will give false-negative results on brute-force findings).
+- **Provision accounts:** at least 3 users (attacker A, victim B, bystander C),
+  one **admin/superuser**, and (optionally) Stripe **test-mode** keys + a
+  throwaway Google/iCloud/Proton/MEGA account for the cloud-sync surface.
+- **For Vault tests:** set up a vault on A and B (master passwords you control),
+  upload files + create secure items + create direct shares and public links so
+  there is live ciphertext + grants + tokens to attack.
+- **Capture everything through Burp/ZAP.** The SPA talks to the API with a
+  **HttpOnly cookie** (`neuthek_session`) — there is no bearer token in JS, so
+  drive the API directly with the cookie jar.
+- **In scope:** API (`:8000`/edge), SPA, Vault crypto, the marketing Express
+  service, the Caddy edge config, the docker/compose posture.
+- **Out of scope unless asked:** third-party providers themselves
+  (Google/Apple/Stripe/MEGA), Cloudflare's own infra.
+
+## B. Full attack-surface map (per router)
+
+198 operations across 18 routers. Auth model: **per-endpoint dependency**
+(`current_active_user` / `current_admin_user` / `current_superuser`), a handful
+of **deliberately unauthenticated** endpoints, and middleware
+(CSRF-origin, rate-limit, security-headers) wrapping all of it.
+
+| Router | ~ops | Auth | Prime test targets |
+|---|---|---|---|
+| `/images` | 43 | user | upload validation, IDOR on image_id, signed-URL forgery, EXIF/metadata leakage, transcode/HLS path handling, pagination caps |
+| `/vault` | 25 | user + **2 public** | crypto contract, base64-bound gate, IDOR on item/folder/grant/link ids, **`GET /vault/public/{token}` + `/public/{token}/file` are UNAUTH**, share/recipient-key enumeration |
+| `/admin` | 23 | **admin/superuser** | privilege-escalation to reach it, IDOR/role checks on every op, the `system_probes` (psutil) surface, user-impersonation/quota/delete |
+| `/auth` + `/users` | 22 | mixed | brute-force, lockout bypass, token replay (reset/verify/magic-link), SSO state CSRF + account-linking takeover, session fixation, user-enumeration via timing/response diffs |
+| `/account` | 17 | user | export (data-exfil scope), schedule-delete/cancel window, email-change re-verify, consent toggles |
+| `/cloud` | 16 | user | OAuth state, SSRF on provider fetch, token confidentiality, quota bypass, rclone arg injection |
+| `/folders` | 9 | user | IDOR, cycle/ტree abuse, tag joins |
+| `/consent` | 8 | user | bypass → does AI run without consent? (CS5 regression) |
+| `/people`,`/faces` | 10 | user | BIPA/biometric data IDOR (D2 regression: image_persons write) |
+| `/shares` | 5 | user + **public** | signed share links, recipient binding (U3/S4), claim flow, comments |
+| `/storage` | 5 | user | quota math, free-originals/variants actions, combined-pool accounting |
+| `/billing` | 5 | user + **webhook** | **Stripe webhook signature forgery**, price/tier tampering, IDOR on subscription |
+| `/tags`,`/search`,`/comments`,`/feedback`,`/health` | ~10 | mixed | search injection/ReDoS, comment XSS stored, health info-leak |
+
+Pull the live, exact list from `GET /openapi.json` on the running API.
+
+## C. Authentication & brute-force playbook (exact limits)
+
+Defenses live in `backend/security.py` + `backend/config.py`. **Known values
+to design around:**
+
+- **Per-IP auth burst:** `auth_rate_limit_per_minute = 5` (60-second window) on
+  `SecurityControlsMiddleware`-matched auth endpoints (login, TOTP login,
+  password-reset, magic-link, etc.).
+- **Failure lockout:** after `auth_lockout_failures = 5` failures in a **24h
+  window**, exponential backoff `auth_lockout_base_seconds(60) * 2^min(n-5,4)`
+  capped at `auth_lockout_max_seconds(900s)` → effective lock steps **60s →
+  120s → 240s → 480s → 900s**.
+- **Lockout key = identity + IP** (A5 fix) — designed so attacking one victim
+  doesn't lock everyone, and so failed attempts from one IP across many
+  accounts still throttle. **Test:** can you bypass by rotating
+  `X-Forwarded-For` / `CF-Connecting-IP`? (Should fail unless the origin is NOT
+  locked to Cloudflare — see §13; this is the #1 lockout-bypass to verify.)
+- **TOTP / 6-digit codes count toward lockout** (a previously-fixed loophole) —
+  re-verify failed 2FA + magic-code attempts increment the counter.
+- **JWT:** lifetime capped at 7 days; `tv` (token_version) claim revokes all
+  sessions when bumped. **Test:** does an old JWT survive a password reset / 2FA
+  disable? (Should not.) Can you forge/strip the `tv` claim or downgrade the
+  signing alg? Inspect the cookie JWT for `alg`, `exp`, `tv`.
+- **Brute-force targets to enumerate:** login password, TOTP 6-digit
+  (10^6 space — confirm lockout makes it infeasible), recovery codes,
+  magic-link 6-digit code, password-reset token, email-verify token,
+  **vault public-link passwords** (offline, see §F).
+- **User enumeration:** compare timing + response bodies for
+  existing-vs-nonexistent emails on login / forgot-password / register /
+  `/vault/recipient-key`. (`/vault/recipient-key` returns 404 for unknown email
+  — confirm it's rate-limited at **60/hr/user** and doesn't leak existence via
+  timing.)
+- **Session:** test fixation (does the cookie rotate on login?), `Secure` +
+  `SameSite` + `HttpOnly` flags in every deploy mode, logout invalidation.
+
+## D. Injection & web-vuln test matrix
+
+| Class | Where to aim | Existing defense | What to try |
+|---|---|---|---|
+| **SQLi** | All query params, search, filters, admin lookups | SQLAlchemy 2.0 parameterized everywhere; **raw SQL is limited to the per-request `SET app.current_user_id` GUC** (RLS) and migrations | Fuzz search/filter/sort params; specifically probe whether `app.current_user_id` can be influenced by any client value (a true RLS break) |
+| **Command injection** | ffmpeg (`transcode.py`/`ffmpeg_args.py`), rclone (`rclone_wrapper.py`), exiftool | args built as lists (no shell); ffmpeg `-protocol_whitelist` set | Craft filenames/playlists/provider paths with shell metacharacters, `file:`/`http:` URLs inside media containers, rclone remote-name injection |
+| **SSRF** | cloud-sync provider fetches, Nominatim reverse-geocode (`name_suggest.py`/geocoder), ffmpeg playlists, any URL the server fetches | ffmpeg protocol allow-list; review needed elsewhere | Point provider/redirect/geocode inputs at `169.254.169.254`, internal hosts, `minio:9000`, `redis:6379`, `postgres:5432`; test redirect-follow |
+| **Path traversal** | object storage keys, transcode/HLS temp files, any filename echoed to disk | storage keys are **server-generated** (`{user_id}/{uuid}`), clients never name them | Try `../`, null bytes, absolute paths in upload filenames + folder names; confirm temp-file dirs are isolated |
+| **Stored/Reflected XSS** | comments, display_name, tags, file/folder names rendered in SPA; marketing waitlist fields; **decrypted Vault content rendered in the viewer** | React escapes by default; the public viewer **refuses to inline-render HTML/SVG** from decrypted blobs (download-only); PDFs sandboxed iframe | Inject `<img onerror>`/`<svg>`/`javascript:` into every text field; test the file-preview path (a malicious HTML file in the vault) and the `/v/{token}` viewer; check CSP presence + `dangerouslySetInnerHTML` |
+| **CSRF** | all cookie-authenticated state changes | `CsrfOriginMiddleware` (Origin/Referer) + `SameSite` cookie | Forge cross-origin POST/PUT/DELETE with/without Origin; test `SameSite` edge cases, `null` origin, sub-domain |
+| **Open redirect** | reset/verify/magic-link landing `?next=`, SSO callback redirect | CodeQL open-redirect finding remediated | Re-test `next`/redirect params for `//evil.com`, `\/\/`, `%2f%2f`, data:/javascript: |
+| **Header injection / response splitting** | any reflected header (filename in Content-Disposition, redirects) | — | CRLF in filenames, redirect targets |
+| **ReDoS** | search/synonym/regex paths (`synonyms.py`, search) | one ReDoS finding remediated | Send pathological inputs to search + any regex-backed validator |
+| **Deserialization** | ML model loading (`transformers`/`insightface` pickle), any pickle/`eval`/`yaml.load` | ships known weights only | Grep for `pickle.load`/`torch.load`/`yaml.load`/`eval`; confirm no user-controlled model path |
+| **XXE / SSTI** | XML/SVG parsers, any templating | not expected | Probe `openpyxl`/`docx`/SVG ingestion for external entities; confirm no server-side template renders user input |
+| **Decompression/zip bomb** | archive upload, PDF rasterize, RAW/HEIC | per-entry + total uncompressed caps, max entries/depth/ratio, max pixels (U2) | Nested zips, high-ratio entries, pixel-flood images, multi-GB PDFs |
+| **Mass assignment** | any model-bound create/update (Pydantic) | explicit schemas | Send extra fields (`is_superuser`, `role`, `quota_bytes`, `user_id`, `token_version`) on register/profile/update |
+
+## E. IDOR / broken-access-control plan
+
+Every endpoint that takes an `{id}` (image, folder, vault item, vault folder,
+share grant, public link, person, face, comment, subscription) is an IDOR
+candidate. **Method:** as user A, enumerate UUIDs from your own objects, then
+replay every read/update/delete against B's object IDs.
+
+- Expect **404 (not 403)** on wrong-owner IDs — by design, to avoid existence
+  oracles. A `200`/`204`/`500` on another user's object is a finding.
+- Two-layer defense: app-layer `user_id == current_user` check **and** Postgres
+  FORCE RLS. **Try to defeat both**: e.g., does the worker/background DB session
+  set the GUC? Does any admin endpoint skip the role check? Does
+  `image_persons` write re-check ownership (D2 regression)?
+- Vault-specific: as a non-recipient, can you fetch `/vault/shares/{grant}/file`
+  or `/vault/files/{id}`? As a non-owner, can you create/get/delete another
+  user's `/vault/items/{id}/public-link`? (All should 404.)
+
+## F. Vault crypto attack playbook (top priority)
+
+Threat model split: **honest-but-curious server** (the design target) vs
+**malicious server** (note residual risk). Attacks to attempt:
+
+1. **Read plaintext from the server side.** Confirm the API never returns/logs
+   plaintext, master password, per-file keys, or unwrapped account private key.
+   Inspect DB rows + MinIO objects directly — everything should be opaque
+   (nonce‖ciphertext / sealed bundles).
+2. **Nonce reuse / counter overflow** in chunked file encryption (per-file key
+   is random; nonce = 4-B random prefix ‖ 8-B BE counter). Try to force two
+   chunks to share a nonce, or a >2^32-chunk file edge case.
+3. **AAD / domain-separation confusion.** Each blob is bound to a context tag
+   (`neuthek.vault.verifier.v1`, `.item.v1`, `.file.v1`, `.account-key.v1`,
+   `.seal.v1`, `.publiclink.v1`). Try swapping a verifier blob for an item blob,
+   a file chunk across files/indices, or replaying a sealed bundle to the wrong
+   endpoint — GCM auth + AAD should reject all.
+4. **Truncation / reordering** of file chunks — drop/duplicate/reorder
+   ciphertext chunks; the decoder re-checks chunk count + total size and each
+   chunk's index-bound AAD. Confirm it fails closed.
+5. **Public-link password — offline brute-force.** Fetch the sealed blob once
+   (it's served unauthenticated by token), then brute-force the password
+   **offline** (PBKDF2-SHA256, **600k iters** + HKDF). Quantify the real cost
+   for weak passwords; this is an inherent, documented risk — measure it.
+6. **URL-fragment leakage.** The link key lives in `#…`. Verify it is **never**
+   sent to the server, never appears in `Referer` to third-party assets, never
+   logged, and isn't leaked by the SPA to analytics/error reporters. A fragment
+   leak fully breaks a no-password link.
+7. **Token entropy / enumeration.** `secrets.token_urlsafe(32)` = 256-bit.
+   Confirm tokens aren't guessable/sequential and that `/vault/public/{token}`
+   is rate-limited (**240/hr/token**) against scraping. Test expired/rotated
+   tokens 404.
+8. **Recipient-key substitution (malicious-server / MITM).** During a share,
+   the sharer fetches the recipient's public key from the server
+   (`users.vault_public_key`). A malicious server could serve an attacker key.
+   This is **TOFU** — note as residual risk; test whether the client pins or
+   verifies anything.
+9. **Downgrade / parameter tampering.** Can the server force a weaker KDF iter
+   count? Server bounds vault iters to **310k–5M**; public-link salt/iters are
+   client-set but server-stored — try returning absurd KDF params on a public
+   view and see if the client honors them.
+10. **XSS-assisted key theft.** While unlocked, the master key + account private
+    key live in JS memory (non-extractable CryptoKey limits export but not
+    *use*). Any XSS ⇒ attacker can call decrypt/seal in-page. This makes §D XSS
+    findings **critical**, not medium.
+
+## G. Rate-limit / DoS / resource-exhaustion (exact caps)
+
+- **Auth:** §C (5/min burst, lockout 5-fail/24h).
+- **Uploads:** per-file **200 MB**, **300 uploads/hour**, **10 GB/day** (free
+  floor; higher tiers via `plans`). Vault per-file cap **5 GB**.
+- **Vault writes:** `vault:write` **300/hr**; setup **5/hr**; account-key
+  **5/hr**; share **100/hr**; recipient-key lookup **60/hr**; public view/file
+  **240/hr per token**; wipe **5/hr**.
+- **Expensive work:** ML inference jobs (Florence-2/Whisper) are queued
+  per-user — test queue-flooding, oversized media to exhaust the worker, and
+  whether one user can starve others. Decompression bombs (§D). Pixel-flood
+  images vs `upload_max_image_pixels`.
+- **Redis dependency:** rate-limits + the job queue + lockout counters all live
+  in Redis. **`require_redis_when_production()`** refuses to boot without it —
+  but test the failure mode if Redis dies *at runtime* (do limits fail open or
+  closed?).
+- **Algorithmic:** ReDoS (§D), unbounded pagination (capped, D1 — re-test),
+  large `limit`/`offset`, deeply nested folder trees / share graphs.
+
+## H. Business-logic abuse
+
+- **Quota bypass:** the Drive + Vault now share **one** quota pool
+  (`compute_used_bytes_fast`). Try to exceed it by racing concurrent uploads,
+  mixing Drive + Vault + cloud-sync ingest, or exploiting the variants/originals
+  accounting (CR-4 was a real bypass here).
+- **Sharing abuse:** can a recipient re-share? Can a revoked grant/link still
+  fetch ciphertext (revocation must be immediate)? Can you create a public link
+  on an item you don't own? Does deleting an item truly cascade-kill its grants
+  + links + MinIO blobs?
+- **Billing:** **forge Stripe webhooks** (signature verification — `billing.py`
+  imports Stripe lazily; confirm `stripe_webhook_secret` is enforced and events
+  are idempotent via `stripe_events`). Tamper price/tier IDs to upgrade for
+  free; IDOR on subscription/customer.
+- **Consent:** disable AI consent, then trigger an action that would normally
+  run AI — confirm nothing runs (CS5). Toggle consent races.
+- **Account deletion:** the schedule-delete grace window + the nightly sweep —
+  test cancel-after-delete, and that a deleted account's blobs/rows/grants are
+  fully removed (A5 full-deletion test exists).
+
+## I. Tooling & commands
+
+- **Proxy/fuzz:** Burp Suite / OWASP ZAP (cookie-jar the `neuthek_session`).
+- **API enumeration:** `GET /openapi.json` → import into Burp/Postman; drive
+  every operation.
+- **SQLi:** `sqlmap` against search/filter/sort params (cookie-authenticated).
+- **Content/endpoint discovery:** `ffuf`/`feroxbuster` (note the
+  unauthenticated `/vault/public/*`, `/v/*`, `/share/*`, `/health`, marketing).
+- **Vuln templates:** `nuclei` (CVEs in the native deps — pin-check Pillow,
+  PyMuPDF, ffmpeg, rawpy/LibRaw, torch at audit time).
+- **SAST:** `semgrep --config p/python p/react p/owasp-top-ten`; the repo also
+  ships CodeQL workflows + Dependabot — re-run on the audit branch.
+- **Container/IaC:** `trivy image neuthek-backend:latest`,
+  `trivy fs .`, `hadolint Dockerfile`, `dockle`; review `docker-compose*.yml`
+  for exposed ports + secrets.
+- **Crypto:** bundle `frontend/src/vault/crypto.ts` with esbuild and exercise
+  the primitives under Node for an independent review; inspect raw DB rows +
+  MinIO objects to confirm opacity.
+- **TLS/headers:** `testssl.sh`, `nikto`, check HSTS/CSP/`X-Frame-Options`/
+  `Permissions-Policy` from Caddy + `SecurityHeadersMiddleware`.
+
+## J. Non-obvious behaviors & "tricks" worth abusing
+
+- **404-not-403 everywhere** for wrong-owner/missing objects → no existence
+  oracle, but also means a successful cross-tenant op would be silent; assert on
+  body/side-effects, not just status.
+- **Vault base64 gate:** the server validates strict base64 + **exact byte
+  bounds** on every binary field (nonce = 12B, pubkey = 65B, etc.). Fuzz with
+  off-by-one lengths, non-canonical base64, oversized blobs (256 KB item /
+  metadata cap, 5 GB file cap, 512 B wrapped-key cap) to find a validation gap.
+- **Public-link one-time reveal:** the full link URL is shown **once** at
+  creation because the server never stores the fragment secret — confirm the
+  secret truly isn't recoverable server-side later (a "regenerate that returns
+  the same URL" would be a finding).
+- **Rate-limits no-op in dev/test:** if `SECURITY_RATE_LIMITS_ENABLED=false` or
+  Redis is absent in a misconfigured prod, **all brute-force protection
+  silently disappears** — verify the prod config actually enforces it
+  (`validate_production_settings`).
+- **Edge IP trust:** `CF-Connecting-IP` is trusted only behind locked-down
+  Cloudflare. If the origin is reachable directly (not firewalled to CF
+  ranges), an attacker can **spoof the client IP header** and bypass per-IP
+  limits + poison audit logs. Test direct-to-origin reachability.
+- **Edge routing:** the hosted `deploy/Caddyfile` enumerates API prefixes
+  explicitly; `/billing` is intentionally not blanket-proxied (page collision).
+  Probe for **path-confusion** (does any API path get served by the SPA, or any
+  SPA route reach the API?).
+- **`/admin` is both a page and an API prefix** (`/admin` SPA page vs
+  `/admin/*` API) — test the boundary for path confusion / auth gaps.
+- **Worker DB sessions** operate as the data owner — confirm a crafted job
+  payload can't read/write across users.
+
+---
+
+*End of dossier. Part I is the architecture/asset/threat-model reference; Part
+II is the offensive testing playbook. Pair both with read access to the
+repository and a staging deploy with rate-limits ENABLED. Every claim above is
+traceable to the module paths and config keys cited; the testing team should
+treat the "known issues / residual risks" (§7.5, §17, Part II) as starting
+hypotheses to confirm or refute, not as an exhaustive list.*
