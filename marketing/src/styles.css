@@ -462,6 +462,74 @@ p {
 .btn--ghost:hover { border-color: var(--ink-4); color: var(--ink); }
 .btn--lg { padding: 14px 24px; font-size: 15px; }
 
+/* ---------- Developer cards (scannable: name + one-liner, why on tap) ---------- */
+.dev-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+  margin-top: 28px;
+}
+.dev-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  padding: 18px 20px;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.dev-card:hover { border-color: var(--ink-4); }
+.dev-card[open] { box-shadow: var(--shadow-2); }
+.dev-card__summary {
+  list-style: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.dev-card__summary::-webkit-details-marker { display: none; }
+.dev-card__summary::marker { content: ""; }
+.dev-card__name {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.dev-card__what {
+  display: block;
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.dev-card__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.dev-card:hover .dev-card__more { color: var(--ink-2); }
+.dev-card__more svg { transition: transform var(--dur-med) var(--ease-out); }
+.dev-card[open] .dev-card__more { color: var(--ink); }
+.dev-card[open] .dev-card__more svg { transform: rotate(180deg); }
+.dev-card__why {
+  margin: 12px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-2);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--ink-2);
+  animation: disclosureOpen 320ms var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .dev-card__why { animation: none; }
+}
+
 /* ---------- Cards ---------- */
 
 .cards {

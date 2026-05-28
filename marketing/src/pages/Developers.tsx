@@ -1,6 +1,129 @@
 import { Link } from "react-router-dom";
 import { useEffect } from "react";
 
+// Each dependency / model is name + a one-line "what" (always shown) +
+// a fuller "why" (revealed on demand). Keeping the page scannable by
+// default — you read 19 names + one-liners, and expand only what you
+// care about — instead of a wall of two-paragraph cards.
+type Item = { name: string; what: string; why: string };
+
+const STACK: Item[] = [
+  {
+    name: "FastAPI + Python 3.12",
+    what: "The HTTP layer and every business endpoint — async SQLAlchemy + asyncpg, Alembic migrations.",
+    why: "Async by default (no Flask/WSGI greenlet dance), automatic OpenAPI docs at /docs, and Pydantic v2 validation that doubles as the published schema. Python keeps the API on the same runtime as the PyTorch inference workers — no IPC layer between API and models.",
+  },
+  {
+    name: "PostgreSQL 16 + pgvector",
+    what: "Source of truth for every row, plus the cosine-similarity index over CLIP + face embeddings.",
+    why: "Vectors and ACID in one transaction — no separate Pinecone or Qdrant to keep in sync with the row that owns the embedding. Deleting a row deletes its vector atomically. And FORCE Row-Level Security per user means a bug in an app handler still can't return another user's row.",
+  },
+  {
+    name: "Redis 7",
+    what: "Per-user ML job queues (summarize, face-scan, vision backfill) and rate-limit counters.",
+    why: "The per-user fair scheduler needs cheap atomic lists (LPUSH/BRPOP) and counters (INCR + EXPIRE). Postgres can do both but pays a transaction cost we don't need for ephemeral state — single-purpose, single-process, trivially backed up by skipping the backup.",
+  },
+  {
+    name: "MinIO (S3 API)",
+    what: "Object storage for originals, compressed variants, and face crops — SSE-S3/KMS encrypted at rest.",
+    why: "The S3 wire protocol lets us swap MinIO for real AWS / R2 / Backblaze without changing a line of application code. MinIO itself runs anywhere — a NUC, a Raspberry Pi, or a Kubernetes cluster — same binary.",
+  },
+  {
+    name: "Caddy (TLS edge)",
+    what: "Reverse proxy + automatic Let's Encrypt for TLS, HSTS, HTTP/3, and security headers.",
+    why: "nginx + certbot is two tools to configure and a cron job to forget. Caddy is one config file, certs auto-renew, and the defaults are tighter than most hand-rolled nginx blocks — operators don't need to know HTTPS to run the stack.",
+  },
+  {
+    name: "fastapi-users + JWT + TOTP",
+    what: "Account creation, password reset, email verification, JWT, TOTP 2FA, and Argon2id hashing.",
+    why: "Rolling your own auth is the fastest way to ship a security bug. fastapi-users is production-tested, plugs into FastAPI's dependency system natively, and lets us layer our own consent-bundle hook on the user-create path without forking.",
+  },
+  {
+    name: "Fernet for at-rest secrets",
+    what: "Authenticated-encryption envelope for OAuth tokens, TOTP secrets — anything a DB dump shouldn't reveal.",
+    why: "Fernet is the boring-correct choice: authenticated encryption, no nonce-reuse footguns, key rotation built in. The key comes from CLOUD_ENCRYPTION_KEY in the operator environment; a boot-time validator refuses to start in prod without it.",
+  },
+  {
+    name: "React 18 + Vite + TanStack Query",
+    what: "The SPA — Vite for dev/build, TanStack Query for server state, Zustand for the rest.",
+    why: "TanStack Query removes most of the reasons people reach for Redux, Vite's HMR is the fastest dev loop we've used, and React 18's concurrent features (filter-chip transitions, lightbox Suspense) are load-bearing for perceived responsiveness.",
+  },
+  {
+    name: "Prism (~40 grammars)",
+    what: "Syntax highlighting for the in-browser code-file preview surface.",
+    why: "highlight.js auto-detect misfires on small files. Prism's per-language grammars are explicit, ship as small modules, and we eager-load the 40 that cover almost every source file people store in a personal cloud.",
+  },
+  {
+    name: "Docker Compose",
+    what: "One docker compose up -d brings up API, ML worker, Postgres, Redis, MinIO, and Caddy with TLS.",
+    why: "Self-host is the headline deployment story. Compose is the lowest-friction way to run a multi-container app on a single host — no Kubernetes, no Helm, no cluster to manage. Optional overlays add TLS, encrypted backups, and GPU passthrough without touching the base file.",
+  },
+  {
+    name: "pytest + pytest-asyncio",
+    what: "End-to-end suite over uploads, codec dispatch, RLS, consent gates, auth, deletion, and migrations.",
+    why: "We lean on tests to prove security properties: one uploads + deletes + asserts 0 rows + 0 objects; another reads another tenant's data with RLS active and asserts the empty result; and there's a test for every hygiene contract (no real PII in fixtures, gitleaks over full history).",
+  },
+  {
+    name: "Stripe (Embedded Checkout)",
+    what: "Free / Pro / Business tiers via hosted checkout + signed webhooks + Customer Portal.",
+    why: "Embedded Checkout means we never see a card number or take on PCI scope. Empty Stripe env vars short-circuit /billing/* to 503 in dev, so the operator never has to wire it up to run self-host.",
+  },
+];
+
+const MODELS: Item[] = [
+  {
+    name: "OpenCLIP ViT-L-14",
+    what: "Embeds every image into a 768-dim vector; query text embeds into the same space for cosine ranking.",
+    why: "OpenAI's original CLIP is closed and never got a proper open release. OpenCLIP is the open re-implementation trained on LAION-2B — same architecture, openly licensed weights, stronger benchmarks. ViT-L-14 is the accuracy/cost sweet spot on a single consumer GPU; larger variants gain ~3-5% recall at 3-4× the cost.",
+  },
+  {
+    name: "Florence-2-large",
+    what: "Generates the detailed caption for every image, plus scene-gated inline OCR.",
+    why: "vs. BLIP-2 or LLaVA: Florence-2 (Microsoft Research) is purpose-built for vision — caption, detect, segment, OCR in one model — runs on a mid-tier GPU, and produces far more concrete captions (“auth-flow review on a whiteboard” vs. “a person near a whiteboard”). Apache-2.0 and small enough for 8-bit/4-bit quant.",
+  },
+  {
+    name: "Qwen2.5-Instruct",
+    what: "Rewrites raw captions into readable summaries, splices scene labels, summarizes documents via map-reduce.",
+    why: "Llama-3.2-Instruct was the runner-up; Qwen2.5 was consistently better on instruction-following at the same parameter count, ships in 0.5B–7B variants so operators pick by hardware, and is Apache-2.0. The 1.5B variant runs at acceptable latency on CPU; the 4-bit GGUF path is well-trodden.",
+  },
+  {
+    name: "RetinaFace + ArcFace (buffalo_l)",
+    what: "Opt-in only: detects faces, embeds each into 512-dim, clusters into Me + people you tag.",
+    why: "insightface is the standard reference implementation for both. ArcFace's angular-margin loss outperforms FaceNet's triplet loss on standard benchmarks and stays stable across age + lighting. The buffalo_l bundle ships both models with consistent preprocessing, so we don't wire two pipelines.",
+  },
+  {
+    name: "rawpy + LibRaw",
+    what: "Decodes camera RAW (NEF, CR2, ARW, DNG, RAF, ORF, RW2, PEF) into the full sensor image.",
+    why: "LibRaw is the open-source standard dcraw evolved into; rawpy is the Python binding. Pillow's RAW support only grabs the embedded preview — we re-encode the full-resolution decode at JPEG q=95 so the gallery shows what your camera actually captured.",
+  },
+  {
+    name: "LinUCB contextual bandit",
+    what: "Picks the best codec (WebP/MozJPEG/AVIF/JXL) and quality per image from a 32-dim feature vector.",
+    why: "A fixed “JPEG q=85” is mediocre on everything; a neural policy would need per-user training data. LinUCB learns online, converges in dozens of impressions per arm, and stays explainable — you can read the per-arm coefficients and see exactly why it picked AVIF over WebP. Reward feeds back per-user; we never share arm state.",
+  },
+  {
+    name: "WordNet (via NLTK)",
+    what: "Expands each search query into related terms before the token-exact FTS pass over summaries.",
+    why: "CLIP already handles most of the semantic stretch, but the FTS pass is token-exact and benefits from explicit synonym expansion. WordNet is offline (no API), tiny (~10 MB), and exhaustive for English — plus a small visual-domain overlay for terms it doesn't link in the photographer sense.",
+  },
+];
+
+function DevCard({ item }: { item: Item }) {
+  return (
+    <details className="dev-card">
+      <summary className="dev-card__summary">
+        <span className="dev-card__name">{item.name}</span>
+        <span className="dev-card__what">{item.what}</span>
+        <span className="dev-card__more">
+          Why we chose it
+          <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 6 7 9 10 6" /></svg>
+        </span>
+      </summary>
+      <p className="dev-card__why">{item.why}</p>
+    </details>
+  );
+}
+
 export default function Developers() {
   useEffect(() => {
     document.title = "Developers — neuthek stack & model choices";
@@ -18,13 +141,11 @@ export default function Developers() {
           <span className="eyebrow">Developers</span>
           <h1>What we built it with, and why.</h1>
           <p className="lead">
-            Two questions worth answering up front: which dependencies
-            we picked and what each one earns its place doing, and
-            which AI/ML models we run and why those over the
-            alternatives. Both lists are real — every name below is in
-            our development tree today. The source isn't published
-            publicly yet; we're cleaning up the tree before a public
-            release.
+            Every dependency and model below is real — in our development
+            tree today. Each shows what it does at a glance; tap{" "}
+            <em>Why we chose it</em> for the reasoning over the obvious
+            alternative. The source isn't public yet — we're cleaning up the
+            tree before release.
           </p>
         </div>
       </section>
@@ -33,226 +154,9 @@ export default function Developers() {
       <section className="section">
         <div className="container">
           <span className="eyebrow">The stack</span>
-          <h2>What it runs on, and why.</h2>
-          <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
-            One short paragraph per dependency: what it does for us +
-            why we picked it over the obvious alternative.
-          </p>
-          <div className="cards" style={{ marginTop: 24 }}>
-            <div className="card">
-              <h3>FastAPI + Python 3.12</h3>
-              <p>
-                <strong>What:</strong> the HTTP layer + every business
-                endpoint, with async SQLAlchemy + asyncpg under the
-                hood and Alembic for migrations.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> async by default (none of the
-                Flask/WSGI dance with greenlets), automatic OpenAPI
-                docs at <code>/docs</code>, and Pydantic v2 gives us
-                request/response validation that doubles as the
-                published schema. Python because the ML side is
-                already PyTorch — same runtime as the inference
-                workers means no IPC layer between API and models.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>PostgreSQL 16 + pgvector</h3>
-              <p>
-                <strong>What:</strong> the source of truth for every
-                user row, plus the cosine-similarity index over
-                CLIP + face embeddings.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> we wanted vectors and ACID in
-                the same transaction — no separate Pinecone or Qdrant
-                to keep in sync with the row that owns the embedding.
-                pgvector does HNSW or IVFFlat indexing in-database;
-                deleting a row deletes its vector atomically. Postgres
-                also gives us <strong>FORCE Row-Level Security</strong>{" "}
-                per user on every multi-tenant table — a bug in an
-                app handler still can't return another user's row.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Redis 7</h3>
-              <p>
-                <strong>What:</strong> per-user job queues for the ML
-                pipeline (summarize, face-scan, vision backfill), plus
-                rate-limit counters for every gated endpoint.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> the per-user fair scheduler
-                needs cheap atomic list operations (LPUSH / BRPOP) and
-                cheap atomic counters (INCR with EXPIRE). Postgres can
-                do both but pays a transaction cost we don't need for
-                ephemeral state. Single-purpose, single-process,
-                trivially backed up by skipping the backup.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>MinIO (S3 API)</h3>
-              <p>
-                <strong>What:</strong> object storage for originals,
-                served (compressed) variants, and face crops — three
-                logical buckets with SSE-S3 or SSE-KMS encryption at
-                rest.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> the S3 wire protocol means we
-                can swap MinIO out for real AWS / R2 / Backblaze
-                without changing a single line of application code.
-                MinIO itself runs anywhere — a NUC, a Raspberry Pi,
-                or a Kubernetes cluster — same binary.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Caddy (TLS edge)</h3>
-              <p>
-                <strong>What:</strong> reverse proxy + automatic
-                Let's Encrypt for TLS, HSTS, HTTP/3, and the security
-                headers the app expects to find on inbound requests.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> nginx + certbot is two tools to
-                configure and one cron job to forget. Caddy is one
-                config file, certificates auto-renew, and the defaults
-                are already tighter than most hand-rolled nginx
-                blocks. Saves operators from having to know HTTPS to
-                run the stack.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>fastapi-users + JWT + TOTP</h3>
-              <p>
-                <strong>What:</strong> account creation, password
-                reset, email verification, JWT issuance, TOTP 2FA via
-                pyotp, and Argon2id password hashing — all from one
-                pluggable library.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> rolling your own auth is the
-                fastest way to ship a security bug. fastapi-users is
-                production-tested, plugs into FastAPI's dependency
-                system natively, and lets us layer our own
-                consent-bundle hook on top of the user-create path
-                without forking.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Fernet for at-rest secrets</h3>
-              <p>
-                <strong>What:</strong> AES-128-CBC + HMAC-SHA-256
-                envelope for OAuth refresh tokens, TOTP secrets, and
-                anything else the server holds that an attacker
-                shouldn't be able to read straight out of a database
-                dump.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> Fernet is the boring-correct
-                choice — authenticated encryption, no nonce reuse
-                footguns, key rotation built in. The key itself comes
-                from <code>CLOUD_ENCRYPTION_KEY</code> in the
-                operator environment; a boot-time validator refuses
-                to start in prod without it.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>React 18 + Vite + TanStack Query</h3>
-              <p>
-                <strong>What:</strong> the SPA you actually use. Vite
-                for dev + build, TanStack Query for every server-state
-                fetch (caching, retries, optimistic updates), Zustand
-                for the small slice of client state that isn't
-                server-derived.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> TanStack Query removes most of
-                the reasons people reach for Redux. Vite's HMR is the
-                fastest dev loop we've used. React 18 because the
-                concurrent features (transitions for the gallery
-                filter chips, Suspense for the lightbox) are load-
-                bearing for perceived responsiveness.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Prism (≈ 40 grammars)</h3>
-              <p>
-                <strong>What:</strong> syntax highlighting for the
-                code-file preview surface — open a <code>.py</code>{" "}
-                or <code>.ts</code> in your library and it renders
-                with proper tokens.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> highlight.js auto-detect mis-
-                fires on small files. Prism's per-language grammars
-                are explicit, ship as small modules, and we
-                eager-load the 40 grammars that cover almost every
-                source file people store in personal clouds.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Docker Compose</h3>
-              <p>
-                <strong>What:</strong> one <code>docker compose up -d</code>{" "}
-                brings up the API container, ML worker container,
-                Postgres, Redis, MinIO, and Caddy with TLS.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> self-host is the headline
-                deployment story. Compose is the lowest-friction way
-                to spin a multi-container app on a single host — no
-                Kubernetes, no Helm chart, no cluster you need to
-                manage. Optional overlays add TLS, encrypted backups,
-                and Intel iGPU/NPU device-passthrough without
-                touching the base file.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>pytest + pytest-asyncio</h3>
-              <p>
-                <strong>What:</strong> end-to-end test suite covering
-                upload validation, codec dispatch, RLS enforcement,
-                consent gates, auth flows, deletion completeness, and
-                migration idempotency.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> we lean on the test suite to
-                prove security properties — there's a test that uploads
-                + deletes + asserts 0 rows + 0 objects, a test that
-                tries to read another tenant's data with RLS active
-                and asserts the empty result, and a test for every
-                hygiene contract (no real PII in fixtures, no binary
-                blobs under <code>tests/</code>, gitleaks runs full
-                history).
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Stripe (Embedded Checkout)</h3>
-              <p>
-                <strong>What:</strong> Free / Pro / Business tiers via
-                Stripe-hosted checkout + signature-verified webhooks +
-                Customer Portal for invoices and plan management.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why:</strong> Embedded Checkout means we
-                never see a card number or PCI scope. Empty Stripe
-                env vars short-circuit <code>/billing/*</code> to 503
-                in dev so the operator never has to wire it up to run
-                self-host.
-              </p>
-            </div>
+          <h2>What it runs on.</h2>
+          <div className="dev-grid">
+            {STACK.map((s) => <DevCard key={s.name} item={s} />)}
           </div>
         </div>
       </section>
@@ -261,167 +165,13 @@ export default function Developers() {
       <section className="section">
         <div className="container">
           <span className="eyebrow">Models we chose</span>
-          <h2>The AI side: what we run, and why we run it.</h2>
-          <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
-            Every model below is pre-trained with frozen weights —{" "}
+          <h2>The AI side.</h2>
+          <p className="lead" style={{ marginTop: 12, maxWidth: 680 }}>
+            Every model is pre-trained with frozen weights —{" "}
             <strong>we never fine-tune anything on your library</strong>.
-            Why we picked each over the obvious alternative is in the
-            second paragraph of every card.
           </p>
-          <div className="cards" style={{ marginTop: 24 }}>
-            <div className="card">
-              <h3>OpenCLIP ViT-L-14</h3>
-              <p>
-                <strong>What it does:</strong> embeds every image
-                into a 768-dim vector that captures visual meaning.
-                Query text embeds into the same space; pgvector
-                cosine-similarity ranks results. That's how "snowy
-                roof at sunset" finds the photo without ever indexing
-                that string.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> OpenAI's original CLIP
-                is closed and never got a proper open release.
-                OpenCLIP is the open re-implementation trained on
-                LAION-2B — same architecture, openly licensed weights,
-                stronger benchmarks. ViT-L-14 is the sweet spot
-                between accuracy and inference cost on a single
-                consumer GPU. Larger variants (ViT-H, ViT-G) gain
-                ~3-5 % recall at 3-4× the cost; not worth it at this
-                scale.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Florence-2-large</h3>
-              <p>
-                <strong>What it does:</strong> generates the detailed
-                caption for every image ("a black-and-white photo of
-                two people standing on a rocky beach at sunset"). Also
-                handles inline OCR — scene-gated so we only run it on
-                images likely to contain text.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> the obvious alternative
-                is BLIP-2 or LLaVA. Florence-2 from Microsoft Research
-                is purpose-built for vision tasks (caption, detect,
-                segment, OCR — all in one model), runs comfortably on
-                a mid-tier GPU, and produces noticeably more concrete
-                captions than BLIP-2 ("auth-flow review on a
-                whiteboard" vs. "a person near a whiteboard"). Apache-
-                2.0 licensed and small enough that 8-bit / 4-bit quant
-                paths are tractable for self-hosters.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>Qwen2.5-Instruct</h3>
-              <p>
-                <strong>What it does:</strong> rewrites Florence-2's
-                raw caption into the human-readable summary you see
-                in the library, splices in detected scene labels,
-                handles document summarization (PDFs, code, markdown)
-                via map-reduce over chunked content.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> Llama-3.2-Instruct was
-                the runner-up; Qwen2.5 was consistently better on
-                instruction following at the same parameter count and
-                ships in 0.5B / 1.5B / 3B / 7B variants so operators
-                can pick by hardware. Apache-2.0 licensed (no
-                license-acceptance gate). The 1.5B variant runs at
-                acceptable latency on CPU for self-hosters without a
-                GPU; the 4-bit GGUF quant path is well-trodden.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>RetinaFace + ArcFace (insightface buffalo_l)</h3>
-              <p>
-                <strong>What it does:</strong> when face recognition
-                is enabled (opt-in only — off by default), RetinaFace
-                detects faces in the image and ArcFace produces a
-                512-dim embedding per face. Embeddings cluster into
-                Me + tagged people; everyone else is grouped but never
-                named without your input.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> insightface is the
-                standard reference implementation for both — used by
-                most face-recognition production stacks. ArcFace's
-                angular margin loss outperforms FaceNet's triplet loss
-                on standard benchmarks and the embeddings are stable
-                across age + lighting. The buffalo_l bundle ships
-                both models together with consistent preprocessing,
-                so we don't have to wire two pipelines.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>rawpy + LibRaw</h3>
-              <p>
-                <strong>What it does:</strong> decodes camera RAW
-                files — Nikon NEF, Canon CR2, Sony ARW, Adobe DNG,
-                Fuji RAF, Olympus ORF, Panasonic RW2, Pentax PEF —
-                into the full sensor image, not just the small
-                embedded JPEG preview most apps fall back to.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> LibRaw is the open-
-                source standard that dcraw evolved into; rawpy is the
-                Python binding. Pillow's RAW support is read-only and
-                grabs only the embedded preview. We re-encode the
-                decoded full-resolution image at JPEG q=95 for
-                thumbnails so the gallery shows what your camera
-                actually captured, not what the manufacturer's
-                preview JPEG decided was good enough.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>LinUCB contextual bandit (compression)</h3>
-              <p>
-                <strong>What it does:</strong> picks the best codec
-                (WebP / MozJPEG / AVIF / JXL) and quality level
-                (55-92) for each image, from a 32-dim feature vector
-                covering resolution, aspect ratio, detected
-                screenshot vs. photo, color count, dynamic range,
-                file-size class, and a few others.
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> a fixed "JPEG q=85"
-                policy gives mediocre results on everything. A neural
-                policy would need training data per user. LinUCB is
-                the contextual-bandit baseline that learns online,
-                converges in dozens of impressions per arm, and stays
-                explainable — you can read the per-arm coefficients
-                and explain exactly why it picked AVIF over WebP for
-                a given image. Per-user telemetry feeds reward back
-                privately; we never share arm state across users.
-              </p>
-            </div>
-
-            <div className="card">
-              <h3>WordNet (via NLTK)</h3>
-              <p>
-                <strong>What it does:</strong> expands every search
-                query into related terms before scoring. "vibrant"
-                also matches summaries that say "colorful", "vivid",
-                "bright", "saturated"; "sunset" matches "dusk",
-                "evening", "golden hour", "twilight".
-              </p>
-              <p style={{ marginTop: 8 }}>
-                <strong>Why this one:</strong> CLIP already handles
-                most of the semantic stretch, but the FTS pass over
-                summaries is token-exact and benefits from explicit
-                synonym expansion. WordNet is offline (no API), tiny
-                (~10 MB), exhaustive for English nouns and adjectives,
-                and has been the standard since 1995 for good
-                reason. We layer a small visual-domain overlay on top
-                for terms WordNet doesn't link well in the
-                photographer sense.
-              </p>
-            </div>
+          <div className="dev-grid" style={{ marginTop: 24 }}>
+            {MODELS.map((m) => <DevCard key={m.name} item={m} />)}
           </div>
         </div>
       </section>
@@ -479,40 +229,17 @@ export default function Developers() {
 `}<span className="tok-k">POST</span>   /images/{`{id}`}/resummarize     <span className="tok-c"># force re-caption</span>{`
 `}<span className="tok-k">PATCH</span>  /images/{`{id}`}/name            <span className="tok-c"># rename</span>{`
 `}<span className="tok-k">DELETE</span> /images/{`{id}`}                 <span className="tok-c"># soft delete (?purge=true → hard)</span>{`
-`}<span className="tok-k">POST</span>   /images/bulk-delete          <span className="tok-c"># bulk soft / hard delete</span>{`
-`}<span className="tok-k">POST</span>   /images/bulk-restore         <span className="tok-c"># restore from trash</span>{`
-`}<span className="tok-k">POST</span>   /images/bulk-move            <span className="tok-c"># move to folder</span>{`
-`}<span className="tok-k">POST</span>   /images/best-of              <span className="tok-c"># rank N selected (sharpness +</span>{`
-                                  `}<span className="tok-c">#   exposure + face + use-case)</span>{`
-
-`}<span className="tok-c"># Folders, tags & sharing</span>{`
-`}<span className="tok-k">GET</span>    /folders/                    <span className="tok-c"># tree (?contains_type=image|video|doc)</span>{`
-`}<span className="tok-k">POST</span>   /folders/with-images         <span className="tok-c"># create + move N images atomically</span>{`
-`}<span className="tok-k">GET</span>    /tags/                       <span className="tok-c"># user's tag list</span>{`
-`}<span className="tok-k">POST</span>   /images/{`{id}`}/tags            <span className="tok-c"># attach by id or label</span>{`
-`}<span className="tok-k">POST</span>   /shares/                     <span className="tok-c"># grant a share</span>{`
-`}<span className="tok-k">GET</span>    /shares/incoming             <span className="tok-c"># files shared with me</span>{`
-
-`}<span className="tok-c"># People (opt-in)</span>{`
-`}<span className="tok-k">GET</span>    /people/                     <span className="tok-c"># named + unlabeled clusters</span>{`
-`}<span className="tok-k">POST</span>   /people/clusters/{`{cluster_id}`} <span className="tok-c"># name a cluster</span>{`
-`}<span className="tok-k">POST</span>   /people/detect-and-label     <span className="tok-c"># multi-select tag</span>{`
+`}<span className="tok-k">POST</span>   /images/best-of              <span className="tok-c"># rank N selected</span>{`
 
 `}<span className="tok-c"># Search</span>{`
-`}<span className="tok-k">GET</span>    /search/?q=<span className="tok-s">&lt;text&gt;</span>            <span className="tok-c"># hybrid CLIP + FTS + WordNet expansion</span>{`
+`}<span className="tok-k">GET</span>    /search/?q=<span className="tok-s">&lt;text&gt;</span>            <span className="tok-c"># hybrid CLIP + FTS + WordNet</span>{`
 
-`}<span className="tok-c"># Cloud sync (Google Drive)</span>{`
-`}<span className="tok-k">POST</span>   /cloud/google_drive/connect  <span className="tok-c"># PKCE start</span>{`
-`}<span className="tok-k">GET</span>    /cloud/callback/google_drive <span className="tok-c"># OAuth callback</span>{`
-`}<span className="tok-k">POST</span>   /cloud/google_drive/sync     <span className="tok-c"># manual sweep</span>{`
-`}<span className="tok-k">POST</span>   /cloud/{`{src}`}/ai-opt-in        <span className="tok-c"># enable AI on synced files</span>{`
+`}<span className="tok-c"># Cloud sync</span>{`
+`}<span className="tok-k">POST</span>   /cloud/{`{src}`}/connect          <span className="tok-c"># OAuth / credentials start</span>{`
+`}<span className="tok-k">POST</span>   /cloud/{`{src}`}/sync             <span className="tok-c"># manual sweep</span>{`
 
-`}<span className="tok-c"># Billing</span>{`
+`}<span className="tok-c"># Billing · Health</span>{`
 `}<span className="tok-k">POST</span>   /billing/checkout            <span className="tok-c"># Stripe Embedded Checkout</span>{`
-`}<span className="tok-k">POST</span>   /billing/webhook             <span className="tok-c"># subscription events</span>{`
-`}<span className="tok-k">GET</span>    /billing/subscription        <span className="tok-c"># current tier + period</span>{`
-
-`}<span className="tok-c"># Health</span>{`
 `}<span className="tok-k">GET</span>    /health                      <span className="tok-c"># liveness + DB ping</span>
             </pre>
           </div>
