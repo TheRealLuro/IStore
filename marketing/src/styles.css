@@ -530,6 +530,84 @@ p {
   .dev-card__why { animation: none; }
 }
 
+/* ---------- API routes table (clean, structured — not a terminal) ---------- */
+.routes-note {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  margin-top: 18px;
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+}
+.routes-note strong { color: var(--ink); }
+.routes-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--ink-3); }
+
+.routes {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.routes__group { padding: 8px 0 10px; }
+.routes__group + .routes__group { border-top: 1px solid var(--line-2); }
+.routes__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 14px 22px 8px;
+}
+.route-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 248px) 1fr;
+  align-items: baseline;
+  gap: 16px;
+  padding: 7px 22px;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.route-row:hover { background: var(--surface-2); }
+.route-m {
+  justify-self: start;
+  min-width: 56px;
+  text-align: center;
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+/* Restrained verb tints — the one place a touch of color earns its
+   keep (developers expect to scan by method). */
+.route-m--get    { color: #15803d; border-color: #cdeed6; background: #f1faf4; }
+.route-m--post   { color: #1d4ed8; border-color: #d2e0fb; background: #f1f5fe; }
+.route-m--patch  { color: #b45309; border-color: #f3e2b8; background: #fdf8ee; }
+.route-m--delete { color: #b91c1c; border-color: #f5cfcf; background: #fdf2f2; }
+.route-path {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.route-note { font-size: 12.5px; color: var(--ink-3); line-height: 1.45; }
+@media (max-width: 640px) {
+  .route-row { grid-template-columns: 56px 1fr; gap: 12px; }
+  .route-note { grid-column: 2; }
+}
+
 /* ---------- Cards ---------- */
 
 .cards {
