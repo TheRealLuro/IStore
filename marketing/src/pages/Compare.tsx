@@ -33,60 +33,63 @@ const HEADERS = [
 ];
 
 // ----- Group 1: Experience (the day-to-day) -----
+// neuthek's column states what is actually in our engine (good tone). Other
+// providers' columns use neutral, publicly-verifiable language only — no
+// disparaging or unverifiable claims (legal: truthful comparative use).
 const EXPERIENCE: Row[] = [
   {
     feature: "Search by what you remember (natural language)",
     cells: [
       { label: "Shipped — core feature", tone: "good" },
-      { label: "Yes", tone: "good" },
-      { label: "Yes", tone: "good" },
-      { label: "Limited", tone: "mid" },
-      { label: "Limited", tone: "mid" },
-      { label: "Yes", tone: "good" },
+      { label: "Offered" },
+      { label: "Offered" },
+      { label: "Varies by plan" },
+      { label: "Varies by plan" },
+      { label: "Offered" },
     ],
   },
   {
-    feature: "Your embeddings stay in your account (no shared index)",
+    feature: "Search index kept in your own account / instance",
     cells: [
       { label: "Shipped — per-user isolation", tone: "good" },
-      { label: "Shared index", tone: "bad" },
-      { label: "Shared index", tone: "bad" },
-      { label: "Shared index", tone: "bad" },
-      { label: "Shared index", tone: "bad" },
-      { label: "Shared index", tone: "bad" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
     ],
   },
   {
-    feature: "Browse without ads, suggestions, or upsell prompts",
+    feature: "Browse without ads or upsell prompts",
     cells: [
       { label: "By design — no ads, ever", tone: "good" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Yes", tone: "good" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Mixed", tone: "mid" },
+      { label: "Varies" },
+      { label: "Varies" },
+      { label: "Varies" },
+      { label: "Varies" },
+      { label: "Varies" },
     ],
   },
   {
     feature: "Face / people grouping",
     cells: [
       { label: "Shipped — opt-in, consent-first", tone: "good" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "No", tone: "bad" },
-      { label: "Yes" },
+      { label: "Offered" },
+      { label: "Offered" },
+      { label: "Offered" },
+      { label: "Not a focus" },
+      { label: "Offered" },
     ],
   },
   {
-    feature: "Smart compression that picks lossless for documents",
+    feature: "Content-aware compression (lossless for documents)",
     cells: [
       { label: "Shipped — picks codec per image", tone: "good" },
-      { label: "Lossy default", tone: "mid" },
-      { label: "Lossy default", tone: "mid" },
-      { label: "Original kept", tone: "good" },
-      { label: "Original kept", tone: "good" },
-      { label: "Lossy / original tiered" },
+      { label: "Provider default" },
+      { label: "Provider default" },
+      { label: "Keeps originals" },
+      { label: "Keeps originals" },
+      { label: "Provider default" },
     ],
   },
 ];
@@ -94,69 +97,69 @@ const EXPERIENCE: Row[] = [
 // ----- Group 2: Trust (what's behind the experience) -----
 const TRUST: Row[] = [
   {
-    feature: "Your data lives where you say it does",
+    feature: "Can run on hardware you control",
     cells: [
       { label: "Self-host planned", tone: "good" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
+      { label: "Provider-hosted" },
+      { label: "Provider-hosted" },
+      { label: "Provider-hosted" },
+      { label: "Provider-hosted" },
+      { label: "Provider-hosted" },
     ],
   },
   {
-    feature: "Vector embeddings stored in your own database",
+    feature: "Vector embeddings kept in a database you can run",
     cells: [
       { label: "Self-host planned", tone: "good" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
+      { label: "Provider-managed" },
     ],
   },
   {
-    feature: "Source code is open and auditable",
+    feature: "Source code open and auditable",
     cells: [
       { label: "Planned (no committed date)", tone: "good" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
+      { label: "Proprietary" },
+      { label: "Proprietary" },
+      { label: "Proprietary" },
+      { label: "Proprietary" },
+      { label: "Proprietary" },
     ],
   },
   {
     feature: "Documented export of your full library",
     cells: [
       { label: "Shipped — one-click ZIP", tone: "good" },
-      { label: "Yes (Google Takeout)" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "Yes" },
+      { label: "Offered" },
+      { label: "Offered" },
+      { label: "Offered" },
+      { label: "Offered" },
+      { label: "Offered" },
     ],
   },
   {
-    feature: "Hard account delete (every byte, every embedding, every face)",
+    feature: "Account delete removes files, embeddings, and face data",
     cells: [
       { label: "Shipped — covered by a test", tone: "good" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Mixed", tone: "mid" },
-      { label: "Mixed", tone: "mid" },
+      { label: "Per provider policy" },
+      { label: "Per provider policy" },
+      { label: "Per provider policy" },
+      { label: "Per provider policy" },
+      { label: "Per provider policy" },
     ],
   },
   {
     feature: "No AI training on your library",
     cells: [
       { label: "Hard guarantee", tone: "good" },
-      { label: "Mixed — see policy", tone: "mid" },
-      { label: "Mixed — see policy", tone: "mid" },
-      { label: "Mixed — see policy", tone: "mid" },
-      { label: "Mixed — see policy", tone: "mid" },
-      { label: "Mixed — see policy", tone: "mid" },
+      { label: "See provider policy" },
+      { label: "See provider policy" },
+      { label: "See provider policy" },
+      { label: "See provider policy" },
+      { label: "See provider policy" },
     ],
   },
 ];
@@ -164,47 +167,47 @@ const TRUST: Row[] = [
 // ----- Group 3: Runtime (where it runs) -----
 const RUNTIME: Row[] = [
   {
-    feature: "No mandatory cloud account",
+    feature: "Usable without a vendor account",
     cells: [
       { label: "Self-host planned", tone: "good" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
+      { label: "Account required" },
+      { label: "Account required" },
+      { label: "Account required" },
+      { label: "Account required" },
+      { label: "Account required" },
     ],
   },
   {
-    feature: "Runs on your own GPU / NPU",
+    feature: "Runs inference on your own GPU / NPU",
     cells: [
       { label: "Shipped — CUDA / XPU / Apple Metal", tone: "good" },
-      { label: "No", tone: "bad" },
-      { label: "Apple devices only", tone: "mid" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
-      { label: "No", tone: "bad" },
+      { label: "Provider-run" },
+      { label: "On Apple silicon" },
+      { label: "Provider-run" },
+      { label: "Provider-run" },
+      { label: "Provider-run" },
     ],
   },
   {
-    feature: "Free tier",
+    feature: "Free tier (as publicly listed)",
     cells: [
       { label: "Self-host: free when released" },
       { label: "15 GB shared with Google account" },
       { label: "5 GB across iCloud" },
       { label: "5 GB free" },
       { label: "2 GB free" },
-      { label: "5 GB (unlimited photos with Prime)" },
+      { label: "5 GB (photos with Prime)" },
     ],
   },
   {
     feature: "Available today",
     cells: [
-      { label: "Pre-release — join the waitlist", tone: "bad" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "Yes" },
-      { label: "Yes" },
+      { label: "Pre-release — join the waitlist", tone: "mid" },
+      { label: "Available" },
+      { label: "Available" },
+      { label: "Available" },
+      { label: "Available" },
+      { label: "Available" },
     ],
   },
 ];
@@ -223,9 +226,9 @@ const GROUPS: Group[] = [
 
 export default function Compare() {
   usePageSeo({
-    title: "Compare neuthek vs Google Photos, iCloud, Dropbox, Proton, MEGA",
+    title: "Compare neuthek vs Google Photos, iCloud, OneDrive, Dropbox, Amazon Photos",
     description:
-      "Side-by-side comparison of neuthek against Google Photos, Apple iCloud Photos, Dropbox, Proton Drive, and MEGA. Search quality, ownership, privacy, encryption (E2E roadmap), hardware, pricing — your experience first.",
+      "How neuthek compares to Google Photos, Apple iCloud Photos, Microsoft OneDrive, Dropbox, and Amazon Photos on search, ownership, privacy, hardware, and pricing. neuthek's column reflects our development build; other columns use neutral, publicly-documented descriptions.",
     path: "/compare",
     jsonLd: [
       webPage({
@@ -301,16 +304,17 @@ export default function Compare() {
 
       <section className="section">
         <div className="container">
-          <p style={{ fontSize: 12, color: "var(--ink-3)" }}>
-            Brand names belong to their respective owners and are
-            referenced here to describe each product. Third-party
-            capabilities reflect public documentation at the time of
-            writing and may change. The neuthek column reflects what
-            is actually in the engine today — items marked{" "}
-            <strong>Shipped</strong> exist with tests; items marked{" "}
-            <strong>Planned</strong> are committed pre-launch but
-            not yet built. The product itself is not publicly
-            released — join the waitlist to be notified at launch.
+          <p style={{ fontSize: 12, color: "var(--ink-3)", lineHeight: 1.6 }}>
+            Brand names belong to their respective owners and are referenced
+            here nominatively to identify each product. Descriptions of other
+            providers are deliberately neutral and reflect publicly available
+            documentation at the time of writing; they may change, and you
+            should confirm current details with each provider directly. Only
+            the neuthek column makes specific feature claims — items marked{" "}
+            <strong>Shipped</strong> exist in our development build with tests;{" "}
+            <strong>Planned</strong> means committed pre-launch but not yet
+            built. neuthek is not publicly released — join the waitlist to be
+            notified at launch.
           </p>
         </div>
       </section>
