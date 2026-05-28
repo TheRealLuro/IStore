@@ -1491,6 +1491,58 @@ class VaultShareGrant(Base):
     )
 
 
+class VaultPublicLink(Base):
+    """A public, anyone-with-the-link share of one vault item (VLT-8 P7).
+
+    Zero-knowledge: the decryption key lives in the URL fragment (never sent to
+    the server). When password-protected, the key is derived from BOTH the
+    fragment secret AND the password (PBKDF2 → HKDF), so `sealed_payload` can't
+    be opened with the link alone — the server holds only a public salt + iters.
+
+    Deliberately has NO row-level security: a public link is read by an
+    unauthenticated visitor who only knows the high-entropy `token`, so the read
+    path runs with no user context. Owner management endpoints fence on
+    owner_user_id; the row holds only ciphertext + routing. Cascade-deletes with
+    the item or the owner.
+    """
+
+    __tablename__ = "vault_public_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("vault_items.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    storage_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    sealed_payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    password_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    kdf_salt: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    kdf_iterations: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class SearchTelemetry(Base):
     """Sprint I D3 — per-search score telemetry for blend tuning.
 

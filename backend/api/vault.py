@@ -35,7 +35,17 @@ Endpoints:
   GET    /vault/shares          — items shared WITH me (recipient view).
   DELETE /vault/shares/{id}     — revoke / decline a share (either party).
   GET    /vault/shares/{id}/file— stream a shared file's ciphertext (recipient).
+  POST   /vault/items/{id}/public-link — create/replace an anyone-with-link share.
+  GET    /vault/items/{id}/public-link — the item's current public link (owner).
+  DELETE /vault/items/{id}/public-link — revoke the public link.
+  GET    /vault/public/{token}        — UNAUTH: sealed bundle + KDF params.
+  GET    /vault/public/{token}/file   — UNAUTH: stream a public file's ciphertext.
   DELETE /vault                 — wipe the vault (meta + items + folders + blobs).
+
+Public links keep the zero-knowledge property: the decryption key rides in the
+URL fragment (never sent to the server); an optional password is mixed into the
+key derivation client-side. The /public/* read endpoints are unauthenticated,
+gated only by the high-entropy token, and the row carries only ciphertext.
 
 Vault shares carry NO comments and no public links — a share is a direct,
 revocable, read-only grant to a named neuthek account, sealed to its public
@@ -54,8 +64,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import secrets
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
@@ -85,6 +96,7 @@ from backend.models import (
     VaultFolder,
     VaultItem,
     VaultMeta,
+    VaultPublicLink,
     VaultShareGrant,
 )
 from backend.security import enforce_rate_limit
@@ -394,6 +406,38 @@ class VaultIncomingShareResponse(BaseModel):
     owner_email: str | None = None
     owner_display_name: str | None = None
     created_at: datetime
+
+
+# ---- public link schemas (VLT-8 P7) ---------------------------------------
+
+
+class VaultPublicLinkCreate(BaseModel):
+    sealed_payload: str  # base64 — bundle sealed under the link key
+    password_required: bool = False
+    kdf_salt: str | None = None        # base64, present iff password_required
+    kdf_iterations: int | None = None  # present iff password_required
+    expires_in_days: int | None = None  # null = never
+
+
+class VaultPublicLinkResponse(BaseModel):
+    """Owner view: enough to build + display the link. The fragment secret is
+    NOT here — it never leaves the creator's browser."""
+    token: str
+    password_required: bool
+    expires_at: datetime | None = None
+    created_at: datetime
+
+
+class VaultPublicLinkView(BaseModel):
+    """Unauthenticated viewer payload. The visitor derives the link key from
+    the URL fragment (+ password) and decrypts `sealed_payload` locally."""
+    kind: str
+    has_file: bool = False
+    size_bytes: int | None = None
+    sealed_payload: str  # base64
+    password_required: bool
+    kdf_salt: str | None = None      # base64
+    kdf_iterations: int | None = None
 
 
 # ---- endpoints -------------------------------------------------------------
@@ -1190,6 +1234,215 @@ async def download_shared_file(
     headers["Content-Length"] = str(size)
     return StreamingResponse(
         _iter_vault_object(grant.storage_key, 0, 0),
+        media_type="application/octet-stream",
+        headers=headers,
+    )
+
+
+# ---- public links (VLT-8 P7) ----------------------------------------------
+#
+# An "anyone with the link" share. Still zero-knowledge: the decryption key
+# lives in the URL fragment (never sent to the server). When password-set, the
+# key is derived from the fragment secret AND the password client-side, so the
+# stored blob can't be opened with the link alone. The public read endpoints
+# are UNAUTHENTICATED and gated only by the high-entropy token.
+
+_PUBLIC_LINK_MAX_EXPIRY_DAYS = 365
+
+
+async def _live_public_link(session: AsyncSession, token: str) -> VaultPublicLink | None:
+    link = await session.scalar(
+        select(VaultPublicLink).where(VaultPublicLink.token == token)
+    )
+    if link is None:
+        return None
+    if link.expires_at is not None and link.expires_at <= datetime.now(timezone.utc):
+        return None
+    return link
+
+
+@router.post("/items/{item_id}/public-link", status_code=status.HTTP_201_CREATED,
+             response_model=VaultPublicLinkResponse)
+async def create_public_link(
+    item_id: UUID,
+    payload: VaultPublicLinkCreate,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VaultPublicLinkResponse:
+    """Create (or replace) the public link for an item. Replacing rotates the
+    token, so any previously-shared link stops working."""
+    await enforce_rate_limit(
+        key=f"vault:publiclink:{user.id}",
+        limit=100, window_seconds=3600,
+        detail="Too many link operations. Try again shortly.",
+    )
+    item = await session.get(VaultItem, item_id)
+    if item is None or item.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vault item not found.")
+    sealed = _b64_field(payload.sealed_payload, min_bytes=1,
+                        max_bytes=_MAX_SEALED_PAYLOAD_BYTES, field="sealed_payload")
+    salt: bytes | None = None
+    iters: int | None = None
+    if payload.password_required:
+        if not payload.kdf_salt or not payload.kdf_iterations:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "kdf_salt and kdf_iterations are required for a password link.",
+            )
+        salt = _b64_field(payload.kdf_salt, min_bytes=_MIN_SALT_BYTES,
+                          max_bytes=_MAX_SALT_BYTES, field="kdf_salt")
+        if payload.kdf_iterations < _MIN_KDF_ITER or payload.kdf_iterations > _MAX_KDF_ITER:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "kdf_iterations out of range.",
+            )
+        iters = payload.kdf_iterations
+    expires_at: datetime | None = None
+    if payload.expires_in_days is not None:
+        d = payload.expires_in_days
+        if d <= 0 or d > _PUBLIC_LINK_MAX_EXPIRY_DAYS:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "expires_in_days out of range.",
+            )
+        expires_at = datetime.now(timezone.utc) + timedelta(days=d)
+    # One link per item — drop any existing one so the token rotates.
+    await session.execute(
+        sa_delete(VaultPublicLink).where(
+            VaultPublicLink.item_id == item_id,
+            VaultPublicLink.owner_user_id == user.id,
+        )
+    )
+    link = VaultPublicLink(
+        token=secrets.token_urlsafe(32),
+        item_id=item_id,
+        owner_user_id=user.id,
+        kind=item.kind,
+        storage_key=item.storage_key,
+        size_bytes=item.size_bytes,
+        sealed_payload=sealed,
+        password_required=payload.password_required,
+        kdf_salt=salt,
+        kdf_iterations=iters,
+        expires_at=expires_at,
+    )
+    session.add(link)
+    await session.commit()
+    await session.refresh(link)
+    return VaultPublicLinkResponse(
+        token=link.token,
+        password_required=link.password_required,
+        expires_at=link.expires_at,
+        created_at=link.created_at,
+    )
+
+
+@router.get("/items/{item_id}/public-link", response_model=VaultPublicLinkResponse)
+async def get_public_link(
+    item_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VaultPublicLinkResponse:
+    """The current public link for an item (owner view), or 404."""
+    link = await session.scalar(
+        select(VaultPublicLink).where(
+            VaultPublicLink.item_id == item_id,
+            VaultPublicLink.owner_user_id == user.id,
+        )
+    )
+    if link is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No public link.")
+    return VaultPublicLinkResponse(
+        token=link.token,
+        password_required=link.password_required,
+        expires_at=link.expires_at,
+        created_at=link.created_at,
+    )
+
+
+@router.delete("/items/{item_id}/public-link", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_public_link(
+    item_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Revoke the public link — the URL stops working immediately."""
+    link = await session.scalar(
+        select(VaultPublicLink).where(
+            VaultPublicLink.item_id == item_id,
+            VaultPublicLink.owner_user_id == user.id,
+        )
+    )
+    if link is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No public link.")
+    await session.delete(link)
+    await session.commit()
+
+
+@router.get("/public/{token}", response_model=VaultPublicLinkView)
+async def view_public_link(
+    token: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VaultPublicLinkView:
+    """UNAUTHENTICATED. Return the sealed bundle + public KDF params for a
+    link. The visitor derives the key from the URL fragment (+ password) and
+    decrypts locally — the server never sees the key or plaintext."""
+    await enforce_rate_limit(
+        key=f"vault:publicview:{token}",
+        limit=240, window_seconds=3600,
+        detail="Too many requests for this link. Try again shortly.",
+    )
+    link = await _live_public_link(session, token)
+    if link is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This link is unavailable.")
+    return VaultPublicLinkView(
+        kind=link.kind,
+        has_file=link.storage_key is not None,
+        size_bytes=link.size_bytes,
+        sealed_payload=_b64(link.sealed_payload),
+        password_required=link.password_required,
+        kdf_salt=_b64(link.kdf_salt) if link.kdf_salt else None,
+        kdf_iterations=link.kdf_iterations,
+    )
+
+
+@router.get("/public/{token}/file")
+async def download_public_link_file(
+    token: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """UNAUTHENTICATED. Stream a public file link's ciphertext (Range-capable).
+    The visitor decrypts with the key derived from the fragment (+ password)."""
+    await enforce_rate_limit(
+        key=f"vault:publicfile:{token}",
+        limit=240, window_seconds=3600,
+        detail="Too many requests for this link. Try again shortly.",
+    )
+    link = await _live_public_link(session, token)
+    if link is None or link.storage_key is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This link is unavailable.")
+    size = await run_in_threadpool(
+        storage.stat, storage.bucket_vault, link.storage_key,
+    )
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+        "Content-Disposition": "attachment",
+    }
+    rng = _parse_range(request.headers.get("range"), size)
+    if rng is not None:
+        start, end = rng
+        length = end - start + 1
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        headers["Content-Length"] = str(length)
+        return StreamingResponse(
+            _iter_vault_object(link.storage_key, start, length),
+            status_code=status.HTTP_206_PARTIAL_CONTENT,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+    headers["Content-Length"] = str(size)
+    return StreamingResponse(
+        _iter_vault_object(link.storage_key, 0, 0),
         media_type="application/octet-stream",
         headers=headers,
     )
