@@ -1330,6 +1330,50 @@ class VaultMeta(Base):
     kdf_salt: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     verifier_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     verifier_ct: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    # VLT-8 — X25519 account keypair. Public key is stored in the clear so
+    # others can seal a file-key to this user when a vault item is shared;
+    # the private key is stored master-key-wrapped (the server never sees
+    # it unwrapped). Nullable until the client populates them on unlock.
+    account_public_key: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True
+    )
+    enc_account_private_key: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class VaultFolder(Base):
+    """A folder in the E2E vault drive (VLT-8). Nests via `parent_id`.
+    The folder NAME is encrypted client-side (name_nonce + name_ct) — even
+    the name is opaque to the server. RLS-scoped; cascade-deletes with the
+    account and with its parent folder.
+    """
+
+    __tablename__ = "vault_folders"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("vault_folders.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    name_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    name_ct: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1362,6 +1406,21 @@ class VaultItem(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    # VLT-8 — vault-as-drive. Items live in a folder (null = vault root).
+    folder_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("vault_folders.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # File items offload their ciphertext to object storage; `ciphertext`
+    # above then holds the (small) encrypted metadata blob, `storage_key`
+    # points at the MinIO object, and `wrapped_key` is the per-file AES key
+    # sealed to the owner's account public key. Small items
+    # (password/note/seed/card) leave these null.
+    storage_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    wrapped_key: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

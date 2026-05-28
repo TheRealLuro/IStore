@@ -1,12 +1,75 @@
 # neuthek end-to-end encryption — architecture & build plan (VLT-8)
 
-Status: **design, pre-build.** This document is the single source of truth
-for the opt-in E2E re-architecture. It supersedes the "vault-only" model
-(VLT-3…VLT-7, shipped) by generalizing the vault's zero-knowledge crypto to
-the whole library, while keeping the AI features that define neuthek.
+Status: **design, pre-build.**
 
-The vault we already shipped becomes a *special case* of this design: the
-"always-E2E, never-AI" folder.
+> ## ⚑ REVISION 2 — FINAL MODEL (2026-05-28, supersedes §4–§12 below)
+>
+> Product owner clarified the model. It is now **simpler** than the
+> per-folder design that follows. Build to THIS section; the sections
+> below are kept for crypto reference (key hierarchy in §3 still holds)
+> but the per-folder-AI / server-key / `ai_mode` / onboarding-choice
+> machinery is **dropped**.
+>
+> ### The model: E2E is a destination, not a toggle
+> - **Vault** = a full, drive-like, **end-to-end encrypted** store. Nested
+>   folders + any file type (PDF, image, video, docs) + specialized secure
+>   items (passwords, secure notes, crypto seed phrases, cards/IDs). The
+>   server only ever holds ciphertext for vault content — it **never**
+>   reads it and **no AI ever runs on it**. You upload *into* the Vault to
+>   get E2E.
+> - **Drive** = the normal library, **unchanged from today**: server-
+>   readable, AI features available **with the user's existing per-feature
+>   consent** (search / summaries / faces). No re-architecture here.
+> - There is **no per-folder E2E toggle** and **no onboarding auto/manual
+>   screen**. Where a file lives decides everything.
+>
+> ### What this removes vs. the design below
+> - ❌ server keypair / `wrapped_fk_server` (server never reads vault; Drive
+>   is already plaintext-readable, so nothing to wrap).
+> - ❌ `users.ai_mode`, `folders.ai_enabled`, per-folder enable/disable
+>   re-wrap + AI-artifact purge.
+> - ❌ the one-screen onboarding AI choice.
+> - ❌ encrypting the existing Drive / a "migrate Drive to E2E" tool.
+>
+> ### What stays / is added
+> - ✅ Key hierarchy from §3: master password → MK → **X25519 account
+>   keypair** (public stored; private MK-wrapped). Reuse the **existing
+>   vault master password** as the account master password; store the
+>   keypair on `vault_meta`.
+> - ✅ Per-file AES-256-GCM key; for vault content the key is wrapped to
+>   the **owner** only (+ to **recipients** when shared — see sharing).
+> - ✅ **Vault is now a file store**: large file ciphertext goes to object
+>   storage (MinIO), not an inline `bytea`. Folders nest; folder names are
+>   encrypted client-side.
+> - ✅ **Sharing IS in scope** (owner chose key-wrapping): grant one vault
+>   item to a specific neuthek user by sealing its file-key to their
+>   account public key, or to a non-user via a `#fragment` link-key. File-
+>   scoped, revocable.
+> - ✅ **Specialized secure-item viewers**, all clean + reveal-by-default:
+>   passwords, secure notes, **seed phrases** (word grid, blur/reveal,
+>   per-word copy, never in previews), **cards/IDs** (masked + copy).
+> - ✅ Rule: **shareable item types do not carry a free-text "notes" field**
+>   that would travel with a share (avoid leaking context on share). Notes
+>   remain their own non-… item type; sensitive fields are reveal-gated.
+>
+> ### Revised phases (VLT-8)
+> 1. **Keys + vault-as-drive schema** — migration `0046`: X25519 account
+>    keypair on `vault_meta`; `vault_folders` (nested, encrypted names);
+>    extend `vault_items` (folder_id, kinds file|password|note|seed|card,
+>    object-storage ref for file blobs). Client account-keypair gen +
+>    MK-wrap, derived from the existing master password.
+> 2. **Encrypted upload + folders UI** — client encrypts (chunked for big
+>    files/video), uploads ciphertext to MinIO via the vault API; vault
+>    folder tree + destination = a vault folder.
+> 3. **Encrypted download / preview** — client fetch → unwrap → decrypt →
+>    render; PDF / image / video viewers, all client-side.
+> 4. **Secure-item viewers** — seed phrase / password / note / card, clean,
+>    reveal-gated.
+> 5. **Sharing via key-wrapping** — per-recipient seal + `#fragment` links,
+>    revoke; honor the "no notes on shareable items" rule.
+> 6. **Polish + marketing copy** — describe the Vault as zero-knowledge
+>    E2E (true); the Drive as encrypted-in-transit-+-at-rest with opt-in
+>    AI. No whole-product E2E claim.
 
 ---
 
