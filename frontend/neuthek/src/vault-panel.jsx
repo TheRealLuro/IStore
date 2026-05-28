@@ -31,6 +31,12 @@ import {
   deleteVaultFolder,
   uploadVaultFile,
   downloadVaultFile,
+  getRecipientKey,
+  shareVaultItem,
+  listItemShares,
+  listIncomingShares,
+  deleteShare,
+  downloadSharedFile,
 } from "@/api/vault";
 import {
   createVaultSetup,
@@ -39,6 +45,7 @@ import {
   encryptItem,
   decryptItem,
   b64ToBytes,
+  bytesToB64,
   createAccountKeyPair,
   unwrapAccountPrivateKey,
   randomFileKey,
@@ -235,6 +242,18 @@ function previewKind(mime = "") {
   if (m.startsWith("text/") && m !== "text/html") return "text";
   if (m === "application/json") return "text";
   return "none";
+}
+
+// Recipient-side: decrypt a SHARED file. The per-file key + metadata come from
+// the unsealed bundle (not from the owner's wrapped_key), and the ciphertext
+// streams from the share endpoint. Plaintext only ever lives in memory here.
+async function decryptSharedFileToBlob(grantId, bundle) {
+  const blob = await downloadSharedFile(grantId);
+  const ct = new Uint8Array(await blob.arrayBuffer());
+  const plain = await decryptFile(ct, b64ToBytes(bundle.key), bundle.data.file);
+  return new Blob([plain], {
+    type: bundle.data?.mime || "application/octet-stream",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +662,7 @@ function ResetVaultModal({ open, onClose, onWiped }) {
 
 function VaultHome() {
   const qc = useQueryClient();
+  const [tab, setTab] = useState("mine"); // mine | shared
   const [currentFolder, setCurrentFolder] = useState(null); // null = vault root
   const [search, setSearch] = useState("");
   const [items, setItems] = useState(null); // decrypted item views, null = loading
@@ -652,8 +672,18 @@ function VaultHome() {
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [detail, setDetail] = useState(null);
   const [viewer, setViewer] = useState(null); // decrypted file row being previewed
+  const [shareItem, setShareItem] = useState(null); // item being shared (owner)
   const [uploading, setUploading] = useState(0); // in-flight upload count
   const fileInputRef = useRef(null);
+
+  // Count of items shared WITH me — drives the tab badge. SharedWithMe reuses
+  // the same query key, so the cache is shared.
+  const incomingQ = useQuery({
+    queryKey: ["vault", "shares"],
+    queryFn: listIncomingShares,
+    staleTime: 30_000,
+  });
+  const incomingCount = incomingQ.data?.length || 0;
 
   const itemsQ = useQuery({
     queryKey: ["vault", "items"],
@@ -914,6 +944,30 @@ function VaultHome() {
         hidden
         onChange={onPickFiles}
       />
+      <div className="vault-tabs">
+        <button
+          className="vault-tab"
+          data-active={tab === "mine"}
+          onClick={() => setTab("mine")}
+        >
+          My vault
+        </button>
+        <button
+          className="vault-tab"
+          data-active={tab === "shared"}
+          onClick={() => setTab("shared")}
+        >
+          Shared with me
+          {incomingCount > 0 && (
+            <span className="vault-segment__count">{incomingCount}</span>
+          )}
+        </button>
+      </div>
+
+      {tab === "shared" ? (
+        <SharedWithMe />
+      ) : (
+        <>
       <div className="vault-toolbar">
         <div className="vault-breadcrumb">
           <button
@@ -1095,6 +1149,8 @@ function VaultHome() {
           })}
         </div>
       )}
+        </>
+      )}
 
       <AddItemModal
         open={addOpen}
@@ -1118,18 +1174,51 @@ function VaultHome() {
         item={detail}
         onClose={() => setDetail(null)}
         onDelete={onDelete}
+        onShare={(it) => setShareItem(it)}
         onSaved={() => {
           setDetail(null);
           refresh();
         }}
       />
       <FileViewerModal
-        item={viewer}
+        open={!!viewer}
+        sourceId={viewer?.id}
+        title={viewer?.data?.title || "File"}
+        mime={viewer?.data?.mime}
+        size={viewer?.size_bytes}
+        loadBlob={() => decryptFileToBlob(viewer)}
+        actions={({ save }) => (
+          <>
+            <button
+              className="btn btn--danger btn--sm"
+              onClick={() => {
+                if (window.confirm("Delete this file permanently?")) {
+                  const id = viewer.id;
+                  setViewer(null);
+                  onDelete(id);
+                }
+              }}
+            >
+              <Icon name="trash" size={13} /> Delete
+            </button>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                className="btn btn--secondary"
+                onClick={() => setShareItem(viewer)}
+              >
+                <Icon name="share" size={13} /> Share
+              </button>
+              <button className="btn btn--primary" onClick={save}>
+                <Icon name="download" size={13} /> Download
+              </button>
+            </div>
+          </>
+        )}
         onClose={() => setViewer(null)}
-        onDelete={(id) => {
-          setViewer(null);
-          onDelete(id);
-        }}
+      />
+      <ShareModal
+        item={shareItem}
+        onClose={() => setShareItem(null)}
       />
     </div>
   );
@@ -1141,24 +1230,29 @@ function VaultHome() {
 // Decryption happens on this device; the server only ever sees ciphertext.
 // ---------------------------------------------------------------------------
 
-function FileViewerModal({ item, onClose, onDelete }) {
+// Generic file viewer: given a stable `sourceId`, display meta and decrypt
+// via `loadBlob()` (owner or recipient path), render the right inline preview,
+// and let the footer (`actions`) trigger a Download of the decrypted blob.
+function FileViewerModal({ open, sourceId, title = "File", mime, size, loadBlob, actions, onClose }) {
   const [state, setState] = useState("loading"); // loading|locked|error|image|video|audio|pdf|text|nopreview
   const [url, setUrl] = useState(null);
   const [text, setText] = useState("");
   const blobRef = useRef(null);
   const urlRef = useRef(null);
+  const loadRef = useRef(loadBlob);
+  loadRef.current = loadBlob;
 
   useEffect(() => {
-    if (!item) return;
+    if (!open || !sourceId) return;
     let cancelled = false;
     setState("loading");
     setUrl(null);
     setText("");
     blobRef.current = null;
-    const kind = previewKind(item.data?.mime);
+    const kind = previewKind(mime);
     (async () => {
       try {
-        const blob = await decryptFileToBlob(item);
+        const blob = await loadRef.current();
         if (cancelled) return;
         blobRef.current = blob;
         if (kind === "text") {
@@ -1187,32 +1281,28 @@ function FileViewerModal({ item, onClose, onDelete }) {
       }
       blobRef.current = null;
     };
-  }, [item]);
+  }, [open, sourceId, mime]);
 
-  if (!item) return null;
-  const title = item.data?.title || "File";
+  if (!open) return null;
   const save = () => {
     if (blobRef.current) saveBlob(blobRef.current, title);
-    else downloadDecryptedFile(item);
   };
 
   return (
-    <Modal open={!!item} onClose={onClose} size="lg" labelledBy="vault-view-title">
+    <Modal open={open} onClose={onClose} size="lg" labelledBy="vault-view-title">
       <ModalClose onClose={onClose} />
       <div className="vault-modal-form">
         <div className="vault-viewer">
           <div className="vault-viewer__head">
             <span className="vault-row__icon" data-kind="file">
-              <Icon name={fileIconName(title, item.data?.mime)} size={18} />
+              <Icon name={fileIconName(title, mime)} size={18} />
             </span>
             <div style={{ minWidth: 0 }}>
               <h2 id="vault-view-title" className="vault-viewer__title">
                 {title}
               </h2>
               <div className="vault-viewer__meta">
-                {[formatBytes(item.size_bytes), item.data?.mime]
-                  .filter(Boolean)
-                  .join(" · ")}
+                {[formatBytes(size), mime].filter(Boolean).join(" · ")}
               </div>
             </div>
           </div>
@@ -1262,19 +1352,7 @@ function FileViewerModal({ item, onClose, onDelete }) {
           className="vault-modal-actions"
           style={{ justifyContent: "space-between" }}
         >
-          <button
-            className="btn btn--danger btn--sm"
-            onClick={() => {
-              if (window.confirm("Delete this file permanently?")) {
-                onDelete?.(item.id);
-              }
-            }}
-          >
-            <Icon name="trash" size={13} /> Delete
-          </button>
-          <button className="btn btn--primary" onClick={save}>
-            <Icon name="download" size={13} /> Download
-          </button>
+          {actions ? actions({ save }) : <span />}
         </div>
       </div>
     </Modal>
@@ -1664,7 +1742,7 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
 // ItemDetailModal — view / reveal / copy / edit / delete
 // ---------------------------------------------------------------------------
 
-function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
+function ItemDetailModal({ item, onClose, onDelete, onShare, onSaved }) {
   const [reveal, setReveal] = useState(false);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1811,9 +1889,17 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
                   </button>
                 </>
               ) : (
-                <button className="btn btn--secondary" onClick={() => setEditing(true)}>
-                  <Icon name="edit" size={13} /> Edit
-                </button>
+                <>
+                  <button
+                    className="btn btn--secondary"
+                    onClick={() => onShare?.(item)}
+                  >
+                    <Icon name="share" size={13} /> Share
+                  </button>
+                  <button className="btn btn--secondary" onClick={() => setEditing(true)}>
+                    <Icon name="edit" size={13} /> Edit
+                  </button>
+                </>
               ))}
           </div>
         </div>
@@ -2043,5 +2129,361 @@ function DetailRow({ label, value, secret, reveal, onReveal, copyable, link, mul
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ShareModal — owner: seal an item to a recipient's account public key.
+// No comments, no public links — a direct, revocable grant to a named account.
+// ---------------------------------------------------------------------------
+
+function ShareModal({ item, onClose }) {
+  const qc = useQueryClient();
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [shares, setShares] = useState(null); // recipient list, null = loading
+
+  const isFile = !!item && (item.has_file || item.kind === "file");
+
+  useEffect(() => {
+    setEmail("");
+    setShares(null);
+    if (!item) return;
+    let cancelled = false;
+    listItemShares(item.id)
+      .then((s) => !cancelled && setShares(s))
+      .catch(() => !cancelled && setShares([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [item]);
+
+  if (!item) return null;
+
+  const refreshShares = async () => {
+    try {
+      setShares(await listItemShares(item.id));
+    } catch {
+      /* keep prior list */
+    }
+    qc.invalidateQueries({ queryKey: ["vault", "shares"] });
+  };
+
+  // Build the bundle the recipient will unseal. Files carry the per-file key
+  // + decrypt metadata; secure items carry their plaintext fields. No notes
+  // beyond what the item already holds.
+  const buildBundle = async () => {
+    if (isFile) {
+      const priv = getAccountPrivateKey();
+      if (!priv) throw new Error("locked");
+      const fileKey = await unsealFromPrivateKey(priv, item.wrapped_key);
+      return {
+        v: 1,
+        kind: "file",
+        key: bytesToB64(fileKey),
+        data: {
+          title: item.data?.title,
+          mime: item.data?.mime,
+          file: item.data?.file,
+        },
+      };
+    }
+    return { v: 1, kind: item.kind, data: item.data || {} };
+  };
+
+  const share = async (e) => {
+    e.preventDefault();
+    const addr = email.trim();
+    if (!addr || busy) return;
+    if (!getAccountPrivateKey() || !getAccountPublicKey()) {
+      toast.error("Lock and unlock the vault, then try again.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const rk = await getRecipientKey(addr);
+      const bundle = await buildBundle();
+      const bytes = new TextEncoder().encode(JSON.stringify(bundle));
+      const sealed = await sealToPublicKey(rk.account_public_key, bytes);
+      await shareVaultItem(item.id, {
+        recipient_email: addr,
+        sealed_payload: sealed,
+      });
+      toast.success(`Shared with ${addr}`);
+      setEmail("");
+      await refreshShares();
+    } catch (err) {
+      if (err?.status === 404)
+        toast.error("No neuthek vault found for that email.");
+      else if (err?.status === 400)
+        toast.error(err?.detail || "Can’t share with that recipient.");
+      else if (err?.message === "locked")
+        toast.error("Lock and unlock the vault, then try again.");
+      else toast.error(err?.detail || "Couldn’t share.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (grantId) => {
+    try {
+      await deleteShare(grantId);
+      toast.success("Access revoked");
+      await refreshShares();
+    } catch (e) {
+      toast.error(e?.detail || "Couldn’t revoke");
+    }
+  };
+
+  return (
+    <Modal open={!!item} onClose={onClose} size="md" labelledBy="vault-share-title">
+      <ModalClose onClose={onClose} />
+      <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div>
+          <h2 id="vault-share-title" style={{ margin: 0, fontSize: 18 }}>
+            Share securely
+          </h2>
+          <p style={{ margin: "6px 0 0", color: "var(--ink-2)", fontSize: 13.5, lineHeight: 1.5 }}>
+            “{item.data?.title || "This item"}” is sealed to the recipient’s
+            neuthek key on your device — only they can open it. Revoke any time.
+          </p>
+        </div>
+        <form onSubmit={share} style={{ display: "flex", gap: 8 }}>
+          <input
+            className="input"
+            type="email"
+            value={email}
+            autoFocus
+            placeholder="Recipient’s neuthek email"
+            onChange={(e) => setEmail(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button className="btn btn--primary" disabled={!email.trim() || busy}>
+            {busy ? "Sharing…" : "Share"}
+          </button>
+        </form>
+
+        <div className="vault-share-list">
+          {shares === null ? (
+            <div className="vault-share-empty">Loading…</div>
+          ) : shares.length === 0 ? (
+            <div className="vault-share-empty">Not shared with anyone yet.</div>
+          ) : (
+            shares.map((s) => (
+              <div key={s.id} className="vault-share-row">
+                <span className="vault-row__icon" data-kind="contact">
+                  <Icon name="user" size={14} />
+                </span>
+                <span className="vault-share-row__main">
+                  <span className="vault-share-row__email">{s.recipient_email}</span>
+                  {s.recipient_display_name && (
+                    <span className="vault-share-row__name">
+                      {s.recipient_display_name}
+                    </span>
+                  )}
+                </span>
+                <button
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => revoke(s.id)}
+                >
+                  Revoke
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SharedWithMe — recipient: items shared with me, opened by unsealing the
+// bundle on this device. Read-only, no comments.
+// ---------------------------------------------------------------------------
+
+function SharedWithMe() {
+  const qc = useQueryClient();
+  const sharesQ = useQuery({
+    queryKey: ["vault", "shares"],
+    queryFn: listIncomingShares,
+    staleTime: 30_000,
+  });
+  const [opened, setOpened] = useState(null); // { grant, bundle }
+  const [opening, setOpening] = useState(false);
+
+  const open = async (grant) => {
+    const priv = getAccountPrivateKey();
+    if (!priv) {
+      toast.error("Lock and unlock the vault, then try again.");
+      return;
+    }
+    setOpening(true);
+    const t = toast.loading("Opening…");
+    try {
+      const bytes = await unsealFromPrivateKey(priv, grant.sealed_payload);
+      const bundle = JSON.parse(new TextDecoder().decode(bytes));
+      toast.dismiss(t);
+      setOpened({ grant, bundle });
+    } catch {
+      toast.error("Couldn’t open this share.", { id: t });
+    } finally {
+      setOpening(false);
+    }
+  };
+
+  const remove = async (grantId) => {
+    try {
+      await deleteShare(grantId);
+      toast.success("Removed");
+      qc.invalidateQueries({ queryKey: ["vault", "shares"] });
+    } catch (e) {
+      toast.error(e?.detail || "Couldn’t remove");
+    }
+  };
+
+  if (sharesQ.isLoading) return <VaultCenter>Loading…</VaultCenter>;
+  const rows = sharesQ.data || [];
+  const openedIsFile =
+    opened && (opened.grant.has_file || opened.bundle?.kind === "file");
+
+  return (
+    <>
+      {rows.length === 0 ? (
+        <div className="vault-empty">
+          <div className="empty__icon">
+            <Icon name="share" size={26} strokeWidth={1.4} />
+          </div>
+          <div className="empty__title">Nothing shared with you</div>
+          <div className="empty__body">
+            When someone shares a vault item with you, it appears here —
+            end-to-end encrypted, openable only by you.
+          </div>
+        </div>
+      ) : (
+        <div className="vault-list">
+          {rows.map((g) => {
+            const isFile = g.has_file || g.kind === "file";
+            return (
+              <div key={g.id} className="vault-row">
+                <button
+                  className="vault-row__hit"
+                  disabled={opening}
+                  onClick={() => open(g)}
+                >
+                  <span className="vault-row__icon" data-kind={g.kind}>
+                    <Icon
+                      name={isFile ? "file" : KIND_META[g.kind]?.icon || "document"}
+                      size={16}
+                    />
+                  </span>
+                  <span className="vault-row__main">
+                    <span className="vault-row__title">
+                      {isFile ? "Shared file" : KIND_META[g.kind]?.label || "Shared item"}
+                    </span>
+                    <span className="vault-row__sub">
+                      From {g.owner_email}
+                      {isFile && g.size_bytes
+                        ? ` · ${formatBytes(g.size_bytes)}`
+                        : ""}
+                    </span>
+                  </span>
+                </button>
+                <button
+                  className="btn-icon vault-row__del"
+                  title="Remove"
+                  aria-label="Remove"
+                  onClick={() => remove(g.id)}
+                >
+                  <Icon name="x" size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <FileViewerModal
+        open={!!opened && openedIsFile}
+        sourceId={opened?.grant?.id}
+        title={opened?.bundle?.data?.title || "Shared file"}
+        mime={opened?.bundle?.data?.mime}
+        size={opened?.grant?.size_bytes}
+        loadBlob={() => decryptSharedFileToBlob(opened.grant.id, opened.bundle)}
+        actions={({ save }) => (
+          <>
+            <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+              Shared with you · read-only
+            </span>
+            <button className="btn btn--primary" onClick={save}>
+              <Icon name="download" size={13} /> Download
+            </button>
+          </>
+        )}
+        onClose={() => setOpened(null)}
+      />
+      <SharedSecureViewer
+        open={!!opened && !openedIsFile}
+        kind={opened?.bundle?.kind}
+        data={opened?.bundle?.data}
+        ownerEmail={opened?.grant?.owner_email}
+        onClose={() => setOpened(null)}
+      />
+    </>
+  );
+}
+
+// Read-only viewer for a shared secure item (password/note/seed/card). Reuses
+// the same reveal-gated rows; no edit, no delete, no comments.
+function SharedSecureViewer({ open, kind, data, ownerEmail, onClose }) {
+  const [reveal, setReveal] = useState(false);
+  useEffect(() => {
+    if (open) setReveal(false);
+  }, [open]);
+  if (!open) return null;
+  const d = data || {};
+  const toggle = () => setReveal((v) => !v);
+  return (
+    <Modal open={open} onClose={onClose} size="md" labelledBy="vault-shared-title">
+      <ModalClose onClose={onClose} />
+      <div className="vault-modal-form">
+        <div className="vault-modal-scroll">
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span className="vault-row__icon" data-kind={kind}>
+              <Icon name={KIND_META[kind]?.icon || "document"} size={18} />
+            </span>
+            <div>
+              <h2 id="vault-shared-title" style={{ margin: 0, fontSize: 18 }}>
+                {d.title || "(untitled)"}
+              </h2>
+              <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                Shared by {ownerEmail} · read-only
+              </div>
+            </div>
+          </div>
+
+          {kind === "password" ? (
+            <>
+              <DetailRow label="Username" value={d.username} copyable />
+              <DetailRow label="Password" value={d.password} secret reveal={reveal} onReveal={toggle} copyable mono />
+              <DetailRow label="Website" value={d.url} link copyable />
+              <DetailRow label="Notes" value={d.notes} multiline />
+            </>
+          ) : kind === "seed" ? (
+            <SeedView phrase={d.phrase} passphrase={d.passphrase} reveal={reveal} onReveal={toggle} />
+          ) : kind === "card" ? (
+            <>
+              <DetailRow label="Cardholder / name" value={d.cardholder} copyable />
+              <DetailRow label="Number" value={d.number} secret reveal={reveal} onReveal={toggle} copyable mono />
+              <DetailRow label="Expiry" value={d.expiry} />
+              <DetailRow label="CVV / code" value={d.cvv} secret reveal={reveal} onReveal={toggle} copyable mono />
+              <DetailRow label="Type / issuer" value={d.brand} />
+            </>
+          ) : (
+            <DetailRow label="" value={d.body} multiline />
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }

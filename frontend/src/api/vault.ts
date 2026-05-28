@@ -198,3 +198,62 @@ export async function downloadVaultFile(id: string): Promise<Blob> {
 export function vaultFileUrl(id: string): string {
   return `${API_BASE_URL}/vault/files/${id}`;
 }
+
+// ---- sharing (VLT-8 P5) ----
+
+export interface VaultRecipientKey {
+  email: string;
+  display_name?: string | null;
+  account_public_key: string; // base64
+}
+
+export interface VaultShareRecipient {
+  id: string; // grant id
+  recipient_email: string;
+  recipient_display_name?: string | null;
+  created_at: string;
+}
+
+export interface VaultIncomingShare {
+  id: string; // grant id
+  kind: VaultItemKind;
+  size_bytes?: number | null;
+  has_file: boolean;
+  sealed_payload: string; // base64 — unseal with the account private key
+  owner_email?: string | null;
+  owner_display_name?: string | null;
+  created_at: string;
+}
+
+// Look up a recipient's account public key by email. Throws ApiError 404 when
+// the address has no neuthek vault.
+export async function getRecipientKey(email: string): Promise<VaultRecipientKey> {
+  return api.get<VaultRecipientKey>(
+    `/vault/recipient-key?email=${encodeURIComponent(email)}`,
+  );
+}
+
+export async function shareVaultItem(
+  itemId: string,
+  body: { recipient_email: string; sealed_payload: string },
+): Promise<VaultShareRecipient> {
+  return api.post<VaultShareRecipient>(`/vault/items/${itemId}/share`, body);
+}
+
+export async function listItemShares(itemId: string): Promise<VaultShareRecipient[]> {
+  return api.get<VaultShareRecipient[]>(`/vault/items/${itemId}/shares`);
+}
+
+export async function listIncomingShares(): Promise<VaultIncomingShare[]> {
+  return api.get<VaultIncomingShare[]>("/vault/shares");
+}
+
+export async function deleteShare(grantId: string): Promise<void> {
+  await api.delete(`/vault/shares/${grantId}`);
+}
+
+// Fetch a shared file's ciphertext (recipient). Decrypt with the per-file key
+// recovered from the unsealed bundle.
+export async function downloadSharedFile(grantId: string): Promise<Blob> {
+  return api.get<Blob>(`/vault/shares/${grantId}/file`, "blob");
+}
