@@ -123,6 +123,18 @@ export function Chip({ children }: { children: ReactNode }) {
   return <span className="panel-chip">{children}</span>;
 }
 
+/** A hairline divider with an optional centered label — separates two
+ *  sub-demos inside one panel so they don't read as one cramped block. */
+export function PanelDivider({ label }: { label?: string }) {
+  return (
+    <div className="panel-row panel-divider" aria-hidden="true">
+      <span className="panel-divider__line" />
+      {label ? <span className="panel-divider__label">{label}</span> : null}
+      <span className="panel-divider__line" />
+    </div>
+  );
+}
+
 /** label → value spec row with a leading glyph. */
 export function SpecRow({
   glyph,
