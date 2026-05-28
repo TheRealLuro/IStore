@@ -124,6 +124,70 @@ function DevCard({ item }: { item: Item }) {
   );
 }
 
+// API routes rendered as a clean, structured table (method badge · path ·
+// note) grouped by area — not a clipping monospace terminal dump.
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Route = { m: Method; path: string; note: string };
+const ROUTE_GROUPS: { group: string; routes: Route[] }[] = [
+  { group: "Auth", routes: [
+    { m: "POST", path: "/auth/jwt/login", note: "JWT login (TOTP-gated if enabled)" },
+    { m: "POST", path: "/auth/jwt/login-totp", note: "2-factor follow-up" },
+    { m: "POST", path: "/auth/register", note: "account create" },
+    { m: "GET", path: "/auth/google/login", note: "Google SSO start" },
+    { m: "GET", path: "/users/me", note: "current user + linked identities" },
+  ]},
+  { group: "Account & security", routes: [
+    { m: "POST", path: "/account/totp/enroll", note: "2FA setup" },
+    { m: "POST", path: "/account/totp/codes", note: "regen recovery codes" },
+    { m: "POST", path: "/account/google/link", note: "attach Google to existing account" },
+    { m: "GET", path: "/account/trash", note: "soft-deleted rows" },
+    { m: "POST", path: "/account/export", note: "portable ZIP (rate-limited)" },
+    { m: "POST", path: "/account/delete", note: "hard delete (every byte)" },
+  ]},
+  { group: "Images", routes: [
+    { m: "POST", path: "/images/", note: "upload" },
+    { m: "GET", path: "/images/", note: "list — scene, type, faces, gps, person, folder, starred, tag" },
+    { m: "GET", path: "/images/facets", note: "filter chip options + counts" },
+    { m: "GET", path: "/images/{id}/original", note: "original bytes" },
+    { m: "GET", path: "/images/{id}/served", note: "compressed (?max_dim=N for thumbs)" },
+    { m: "POST", path: "/images/{id}/star", note: "toggle favorite" },
+    { m: "POST", path: "/images/{id}/resummarize", note: "force re-caption" },
+    { m: "PATCH", path: "/images/{id}/name", note: "rename" },
+    { m: "DELETE", path: "/images/{id}", note: "soft delete (?purge=true → hard)" },
+    { m: "POST", path: "/images/best-of", note: "rank N selected" },
+  ]},
+  { group: "Search", routes: [
+    { m: "GET", path: "/search/?q=<text>", note: "hybrid CLIP + FTS + WordNet" },
+  ]},
+  { group: "Cloud sync", routes: [
+    { m: "POST", path: "/cloud/{src}/connect", note: "OAuth / credentials start" },
+    { m: "POST", path: "/cloud/{src}/sync", note: "manual sweep" },
+  ]},
+  { group: "Billing · Health", routes: [
+    { m: "POST", path: "/billing/checkout", note: "Stripe Embedded Checkout" },
+    { m: "GET", path: "/health", note: "liveness + DB ping" },
+  ]},
+];
+
+function RoutesTable() {
+  return (
+    <div className="routes">
+      {ROUTE_GROUPS.map((g) => (
+        <div className="routes__group" key={g.group}>
+          <div className="routes__label">{g.group}</div>
+          {g.routes.map((r) => (
+            <div className="route-row" key={r.m + r.path}>
+              <span className={`route-m route-m--${r.m.toLowerCase()}`}>{r.m}</span>
+              <code className="route-path">{r.path}</code>
+              <span className="route-note">{r.note}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Developers() {
   useEffect(() => {
     document.title = "Developers — neuthek stack & model choices";
@@ -178,71 +242,30 @@ export default function Developers() {
 
       {/* ===================== API surface ===================== */}
       <section className="section">
-        <div className="container split">
-          <div>
-            <span className="eyebrow">API surface</span>
-            <h2>Small, predictable, documented.</h2>
-            <p style={{ marginTop: 16 }}>
-              FastAPI ships interactive OpenAPI docs at
-              <code> /docs</code>. Every route below is gated by JWT
-              and scoped to the authenticated user by Postgres FORCE
-              Row-Level Security at the DB layer — even a bug in the
-              app handler can't return another user's row.
-            </p>
-            <p style={{ marginTop: 12, color: "var(--ink-3)" }}>
-              The endpoint shapes are what the engine exposes today.
-              The published API may add fields but won't remove them
-              without a release-note migration.
-            </p>
-          </div>
-          <div className="code-card">
-            <div className="code-card__chrome">
-              <span className="code-card__dots"><span/><span/><span/></span>
-              <span className="code-card__title">routes — engine API surface</span>
-              <span className="code-card__lang">http</span>
+        <div className="container">
+          <span className="eyebrow">API surface</span>
+          <h2>Small, predictable, documented.</h2>
+          <p className="lead" style={{ marginTop: 12, maxWidth: 720 }}>
+            FastAPI ships interactive OpenAPI docs at <code>/docs</code>. Every
+            route is gated by JWT and scoped to the authenticated user by
+            Postgres FORCE Row-Level Security — even a bug in an app handler
+            can't return another user's row.
+          </p>
+
+          <div className="routes-note">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <div>
+              <strong>This is the self-host engine surface.</strong> These are
+              the routes your own instance exposes when you run neuthek on your
+              hardware — a home server or NAS. The hosted neuthek service runs
+              the same engine behind additional gateway guards (WAF, stricter
+              rate limits, bot protection), so these endpoints aren't reachable
+              directly there. Shapes may gain fields but won't lose them without
+              a release-note migration.
             </div>
-            <pre className="code"><span className="tok-c"># Auth</span>{`
-`}<span className="tok-k">POST</span>   /auth/jwt/login              <span className="tok-c"># JWT login (TOTP-gated if enabled)</span>{`
-`}<span className="tok-k">POST</span>   /auth/jwt/login-totp         <span className="tok-c"># 2-factor follow-up</span>{`
-`}<span className="tok-k">POST</span>   /auth/register               <span className="tok-c"># account create</span>{`
-`}<span className="tok-k">GET</span>    /auth/google/login           <span className="tok-c"># Google SSO start</span>{`
-`}<span className="tok-k">GET</span>    /users/me                    <span className="tok-c"># current user + linked identities</span>{`
-
-`}<span className="tok-c"># Account & security</span>{`
-`}<span className="tok-k">POST</span>   /account/totp/enroll         <span className="tok-c"># 2FA setup</span>{`
-`}<span className="tok-k">POST</span>   /account/totp/codes          <span className="tok-c"># regen recovery codes</span>{`
-`}<span className="tok-k">POST</span>   /account/google/link         <span className="tok-c"># attach Google to existing account</span>{`
-`}<span className="tok-k">GET</span>    /account/trash               <span className="tok-c"># soft-deleted rows</span>{`
-`}<span className="tok-k">POST</span>   /account/export              <span className="tok-c"># portable ZIP (rate-limited)</span>{`
-`}<span className="tok-k">POST</span>   /account/delete              <span className="tok-c"># hard delete (every byte)</span>{`
-
-`}<span className="tok-c"># Images</span>{`
-`}<span className="tok-k">POST</span>   /images/                     <span className="tok-c"># upload</span>{`
-`}<span className="tok-k">GET</span>    /images/                     <span className="tok-c"># list (scene, content_type,</span>{`
-                                  `}<span className="tok-c">#   indoor_outdoor, has_faces,</span>{`
-                                  `}<span className="tok-c">#   has_gps, person_id, folder_id,</span>{`
-                                  `}<span className="tok-c">#   starred, trashed, tag, all)</span>{`
-`}<span className="tok-k">GET</span>    /images/facets               <span className="tok-c"># filter chip options + counts</span>{`
-`}<span className="tok-k">GET</span>    /images/{`{id}`}/original        <span className="tok-c"># original bytes</span>{`
-`}<span className="tok-k">GET</span>    /images/{`{id}`}/served          <span className="tok-c"># compressed (?max_dim=N for thumbs)</span>{`
-`}<span className="tok-k">POST</span>   /images/{`{id}`}/star            <span className="tok-c"># toggle favorite</span>{`
-`}<span className="tok-k">POST</span>   /images/{`{id}`}/resummarize     <span className="tok-c"># force re-caption</span>{`
-`}<span className="tok-k">PATCH</span>  /images/{`{id}`}/name            <span className="tok-c"># rename</span>{`
-`}<span className="tok-k">DELETE</span> /images/{`{id}`}                 <span className="tok-c"># soft delete (?purge=true → hard)</span>{`
-`}<span className="tok-k">POST</span>   /images/best-of              <span className="tok-c"># rank N selected</span>{`
-
-`}<span className="tok-c"># Search</span>{`
-`}<span className="tok-k">GET</span>    /search/?q=<span className="tok-s">&lt;text&gt;</span>            <span className="tok-c"># hybrid CLIP + FTS + WordNet</span>{`
-
-`}<span className="tok-c"># Cloud sync</span>{`
-`}<span className="tok-k">POST</span>   /cloud/{`{src}`}/connect          <span className="tok-c"># OAuth / credentials start</span>{`
-`}<span className="tok-k">POST</span>   /cloud/{`{src}`}/sync             <span className="tok-c"># manual sweep</span>{`
-
-`}<span className="tok-c"># Billing · Health</span>{`
-`}<span className="tok-k">POST</span>   /billing/checkout            <span className="tok-c"># Stripe Embedded Checkout</span>{`
-`}<span className="tok-k">GET</span>    /health                      <span className="tok-c"># liveness + DB ping</span>
-            </pre>
           </div>
+
+          <RoutesTable />
         </div>
       </section>
 
