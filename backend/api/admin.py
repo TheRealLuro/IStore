@@ -26,11 +26,11 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sa_delete_user, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.storage import DEFAULT_QUOTA_BYTES
+from backend.api.storage import DEFAULT_QUOTA_BYTES, vault_used_bytes
 from backend.auth.users import current_admin_user, current_superuser
 from backend.config import settings
 from backend.db import get_session
-from backend.models import AuditLog, ConsentRecord, Image, User
+from backend.models import AuditLog, ConsentRecord, Image, User, VaultItem
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -74,9 +74,44 @@ async def admin_storage(
         )
     ).all()
     by_category: dict[str, int] = {c: int(b) for c, b, _ in cat_rows}
-    total_bytes = sum(by_category.values())
+    # Cluster-wide encrypted-Vault footprint (file blobs only — secure items
+    # are tiny inline ciphertext with NULL size). Folded into total_bytes so
+    # the operator total is honest; by_category stays image-only since vault
+    # has no AI category.
+    cluster_vault = int(
+        (
+            await session.execute(
+                select(func.coalesce(func.sum(VaultItem.size_bytes), 0)).where(
+                    VaultItem.size_bytes.is_not(None)
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
+    total_bytes = sum(by_category.values()) + cluster_vault
     total_images = sum(int(n) for _, _, n in cat_rows)
 
+    # Per-user storage = Drive (served) + Vault (file blobs), ranked by the
+    # COMBINED pool so a heavy-vault / light-photos user still surfaces.
+    img_sq = (
+        select(
+            Image.user_id.label("uid"),
+            func.coalesce(func.sum(Image.byte_size_served), 0).label("ibytes"),
+            func.count(Image.id).label("n"),
+        )
+        .where(Image.deleted_at.is_(None))
+        .group_by(Image.user_id)
+        .subquery()
+    )
+    vault_sq = (
+        select(
+            VaultItem.user_id.label("uid"),
+            func.coalesce(func.sum(VaultItem.size_bytes), 0).label("vbytes"),
+        )
+        .where(VaultItem.size_bytes.is_not(None))
+        .group_by(VaultItem.user_id)
+        .subquery()
+    )
     user_rows = (
         await session.execute(
             select(
@@ -84,12 +119,14 @@ async def admin_storage(
                 User.email,
                 User.display_name,
                 User.quota_bytes,
-                func.coalesce(func.sum(Image.byte_size_served), 0).label("used"),
-                func.count(Image.id).label("n"),
+                (
+                    func.coalesce(img_sq.c.ibytes, 0)
+                    + func.coalesce(vault_sq.c.vbytes, 0)
+                ).label("used"),
+                func.coalesce(img_sq.c.n, 0).label("n"),
             )
-            .join(Image, Image.user_id == User.id, isouter=True)
-            .where((Image.deleted_at.is_(None)) | (Image.id.is_(None)))
-            .group_by(User.id, User.email, User.display_name, User.quota_bytes)
+            .join(img_sq, img_sq.c.uid == User.id, isouter=True)
+            .join(vault_sq, vault_sq.c.uid == User.id, isouter=True)
             .order_by(desc("used"))
             .limit(top)
         )
@@ -171,6 +208,18 @@ async def admin_list_users(
         )
     ).all()
     use_by_user = {uid: (int(b), int(n)) for uid, b, n in use_rows}
+    # Fold in each user's encrypted-Vault file footprint (shared quota pool).
+    vault_rows = (
+        await session.execute(
+            select(
+                VaultItem.user_id,
+                func.coalesce(func.sum(VaultItem.size_bytes), 0),
+            )
+            .where(VaultItem.user_id.in_(user_ids), VaultItem.size_bytes.is_not(None))
+            .group_by(VaultItem.user_id)
+        )
+    ).all()
+    vault_by_user = {uid: int(b) for uid, b in vault_rows}
 
     # Last-seen comes from the audit log — the most recent event with a
     # user_id is a reasonable proxy for "active this session". We pull
@@ -194,7 +243,7 @@ async def admin_list_users(
             is_superuser=u.is_superuser,
             is_verified=u.is_verified,
             quota_bytes=u.quota_bytes if u.quota_bytes is not None else DEFAULT_QUOTA_BYTES,
-            used_bytes=use_by_user.get(u.id, (0, 0))[0],
+            used_bytes=use_by_user.get(u.id, (0, 0))[0] + vault_by_user.get(u.id, 0),
             image_count=use_by_user.get(u.id, (0, 0))[1],
             last_seen_at=last_seen_by_user.get(u.id),
         )
@@ -246,6 +295,7 @@ async def admin_update_quota(
             ).where(Image.user_id == user_id, Image.deleted_at.is_(None))
         )
     ).one()
+    vault_b, _ = await vault_used_bytes(session, user_id)
 
     return AdminUserRead(
         id=target.id,
@@ -256,7 +306,7 @@ async def admin_update_quota(
         is_superuser=target.is_superuser,
         is_verified=target.is_verified,
         quota_bytes=target.quota_bytes if target.quota_bytes is not None else DEFAULT_QUOTA_BYTES,
-        used_bytes=int(used_b),
+        used_bytes=int(used_b) + int(vault_b),
         image_count=int(image_n),
     )
 
@@ -318,6 +368,7 @@ async def admin_update_role(
             ).where(Image.user_id == user_id, Image.deleted_at.is_(None))
         )
     ).one()
+    vault_b, _ = await vault_used_bytes(session, user_id)
     return AdminUserRead(
         id=target.id,
         email=target.email,
@@ -327,7 +378,7 @@ async def admin_update_role(
         is_superuser=target.is_superuser,
         is_verified=target.is_verified,
         quota_bytes=target.quota_bytes if target.quota_bytes is not None else DEFAULT_QUOTA_BYTES,
-        used_bytes=int(used_b),
+        used_bytes=int(used_b) + int(vault_b),
         image_count=int(image_n),
     )
 
