@@ -1678,16 +1678,42 @@ async def sync_user_provider(
             continue
 
         remote_mod = entry.get("modified_at")
-        # SHA dedup: if we already pulled this exact byte sequence, the
-        # remote-side timestamp bump alone isn't worth re-downloading.
-        if (
-            existing is not None
-            and existing.remote_modified == remote_mod
-            and entry.get("sha256") is not None
-            and existing.sha256 == entry["sha256"]
-        ):
-            skipped_unchanged += 1
-            continue
+        entry_sha = entry.get("sha256")
+        # Change detection — skip files we've already pulled and that
+        # haven't changed remotely. Two paths:
+        #
+        #   (a) Provider gives a content hash (Google Drive, Dropbox):
+        #       skip when remote_modified AND sha256 both match.
+        #
+        #   (b) Provider gives NO hash (iCloud, some rclone backends):
+        #       sha256 is None in the listing, so path (a) could NEVER
+        #       fire — which is exactly why iCloud re-downloaded and
+        #       re-stored EVERY file on EVERY sync, producing endless
+        #       duplicates. Fall back to "already pulled this remote_id
+        #       AND it still maps to a live local image AND the
+        #       remote_modified matches (or both are None)." This is
+        #       the dedup for hash-less providers.
+        #
+        # Both paths require the CloudFile to already point at a
+        # non-deleted Image — a tombstoned/deleted local row should
+        # re-pull (the user may have deleted it locally and wants it
+        # back via a fresh sync), and the conflict check below handles
+        # the "edited locally" case.
+        if existing is not None and existing.local_image_id is not None:
+            if entry_sha is not None and existing.sha256 is not None:
+                if (
+                    existing.remote_modified == remote_mod
+                    and existing.sha256 == entry_sha
+                ):
+                    skipped_unchanged += 1
+                    continue
+            elif existing.remote_modified == remote_mod:
+                # Hash-less provider: timestamp match (or both None).
+                # Confirm the local image still exists before skipping.
+                _local = await session.get(Image, existing.local_image_id)
+                if _local is not None and _local.deleted_at is None:
+                    skipped_unchanged += 1
+                    continue
 
         # Conflict: the existing local image was edited after our last
         # sync. Refuse to overwrite.
