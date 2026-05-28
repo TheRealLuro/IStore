@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster, toast } from "react-hot-toast";
 import { App } from "../neuthek/src/app.jsx";
 import { SharedView } from "../neuthek/src/shared-view.jsx";
+import { VaultLinkView } from "../neuthek/src/vault-link-view.jsx";
 import { AdminPage } from "../neuthek/src/admin-page.jsx";
 import {
   BillingPage,
@@ -81,6 +82,13 @@ function bootstrap(): JSX.Element {
   if (path.startsWith("/share/")) {
     const token = decodeURIComponent(path.slice("/share/".length).replace(/\/$/, ""));
     if (token) return <SharedView token={token}/>;
+  }
+  // VLT-8 P7 — public vault link viewer. The decryption key is in the URL
+  // fragment (#…), which this standalone page reads client-side; the server
+  // never sees it. Unauthenticated — anyone with the link can open it.
+  if (path.startsWith("/v/")) {
+    const token = decodeURIComponent(path.slice("/v/".length).replace(/\/$/, ""));
+    if (token) return <VaultLinkView token={token}/>;
   }
   if (path === "/admin" || path.startsWith("/admin/")) {
     return <AdminPage/>;

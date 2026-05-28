@@ -37,6 +37,9 @@ import {
   listIncomingShares,
   deleteShare,
   downloadSharedFile,
+  createPublicLink,
+  getPublicLink,
+  deletePublicLink,
 } from "@/api/vault";
 import {
   createVaultSetup,
@@ -46,6 +49,7 @@ import {
   decryptItem,
   b64ToBytes,
   bytesToB64,
+  randomBytes,
   createAccountKeyPair,
   unwrapAccountPrivateKey,
   randomFileKey,
@@ -53,6 +57,12 @@ import {
   decryptFile,
   sealToPublicKey,
   unsealFromPrivateKey,
+  randomLinkSecret,
+  bytesToB64Url,
+  derivePublicLinkKey,
+  sealPublicLink,
+  PUBLINK_KDF_ITERATIONS,
+  PUBLINK_SALT_BYTES,
 } from "@/vault/crypto";
 import {
   unlockVault,
@@ -254,6 +264,28 @@ async function decryptSharedFileToBlob(grantId, bundle) {
   return new Blob([plain], {
     type: bundle.data?.mime || "application/octet-stream",
   });
+}
+
+// Build the bundle a recipient/visitor unseals: files carry the per-file key
+// (unsealed from the owner's wrapped_key) + decrypt metadata; secure items
+// carry their plaintext fields. Used by both direct shares and public links.
+async function buildItemBundle(item) {
+  if (item.has_file || item.kind === "file") {
+    const priv = getAccountPrivateKey();
+    if (!priv) throw new Error("locked");
+    const fileKey = await unsealFromPrivateKey(priv, item.wrapped_key);
+    return {
+      v: 1,
+      kind: "file",
+      key: bytesToB64(fileKey),
+      data: {
+        title: item.data?.title,
+        mime: item.data?.mime,
+        file: item.data?.file,
+      },
+    };
+  }
+  return { v: 1, kind: item.kind, data: item.data || {} };
 }
 
 // ---------------------------------------------------------------------------
@@ -2143,8 +2175,6 @@ function ShareModal({ item, onClose }) {
   const [busy, setBusy] = useState(false);
   const [shares, setShares] = useState(null); // recipient list, null = loading
 
-  const isFile = !!item && (item.has_file || item.kind === "file");
-
   useEffect(() => {
     setEmail("");
     setShares(null);
@@ -2169,28 +2199,6 @@ function ShareModal({ item, onClose }) {
     qc.invalidateQueries({ queryKey: ["vault", "shares"] });
   };
 
-  // Build the bundle the recipient will unseal. Files carry the per-file key
-  // + decrypt metadata; secure items carry their plaintext fields. No notes
-  // beyond what the item already holds.
-  const buildBundle = async () => {
-    if (isFile) {
-      const priv = getAccountPrivateKey();
-      if (!priv) throw new Error("locked");
-      const fileKey = await unsealFromPrivateKey(priv, item.wrapped_key);
-      return {
-        v: 1,
-        kind: "file",
-        key: bytesToB64(fileKey),
-        data: {
-          title: item.data?.title,
-          mime: item.data?.mime,
-          file: item.data?.file,
-        },
-      };
-    }
-    return { v: 1, kind: item.kind, data: item.data || {} };
-  };
-
   const share = async (e) => {
     e.preventDefault();
     const addr = email.trim();
@@ -2202,7 +2210,7 @@ function ShareModal({ item, onClose }) {
     setBusy(true);
     try {
       const rk = await getRecipientKey(addr);
-      const bundle = await buildBundle();
+      const bundle = await buildItemBundle(item);
       const bytes = new TextEncoder().encode(JSON.stringify(bundle));
       const sealed = await sealToPublicKey(rk.account_public_key, bytes);
       await shareVaultItem(item.id, {
@@ -2292,8 +2300,195 @@ function ShareModal({ item, onClose }) {
             ))
           )}
         </div>
+
+        <PublicLinkSection item={item} />
       </div>
     </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PublicLinkSection — an "anyone with the link" share, optionally password-
+// protected. The decryption key lives only in the URL fragment, which the
+// server never sees; the password (if any) is mixed into the key on this
+// device. Because the secret never reaches us, the full URL can only be shown
+// ONCE, at creation — afterwards you can revoke or replace, not re-reveal.
+// ---------------------------------------------------------------------------
+
+function PublicLinkSection({ item }) {
+  const [existing, setExisting] = useState(undefined); // undefined=loading, null=none
+  const [createdUrl, setCreatedUrl] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [pwEnabled, setPwEnabled] = useState(false);
+  const [password, setPassword] = useState("");
+  const [expiry, setExpiry] = useState(0); // days; 0 = never
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setExisting(undefined);
+    setCreatedUrl(null);
+    setShowForm(false);
+    setPwEnabled(false);
+    setPassword("");
+    setExpiry(0);
+    if (!item) return;
+    let cancelled = false;
+    getPublicLink(item.id)
+      .then((l) => !cancelled && setExisting(l))
+      .catch(() => !cancelled && setExisting(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [item]);
+
+  const create = async () => {
+    if (busy) return;
+    if (pwEnabled && !password.trim()) {
+      toast.error("Enter a password or turn it off.");
+      return;
+    }
+    if (!getAccountPrivateKey()) {
+      toast.error("Lock and unlock the vault, then try again.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const bundle = await buildItemBundle(item);
+      const secret = randomLinkSecret();
+      let salt = null;
+      let iters = null;
+      let key;
+      if (pwEnabled) {
+        salt = randomBytes(PUBLINK_SALT_BYTES);
+        iters = PUBLINK_KDF_ITERATIONS;
+        key = await derivePublicLinkKey(secret, password, salt, iters);
+      } else {
+        key = await derivePublicLinkKey(secret, null, null, null);
+      }
+      const sealed = await sealPublicLink(key, bundle);
+      const link = await createPublicLink(item.id, {
+        sealed_payload: sealed,
+        password_required: pwEnabled,
+        kdf_salt: salt ? bytesToB64(salt) : null,
+        kdf_iterations: iters,
+        expires_in_days: expiry || null,
+      });
+      const url = `${window.location.origin}/v/${link.token}#${bytesToB64Url(secret)}`;
+      setCreatedUrl(url);
+      setExisting(link);
+      setShowForm(false);
+      setPassword("");
+    } catch (err) {
+      if (err?.message === "locked")
+        toast.error("Lock and unlock the vault, then try again.");
+      else toast.error(err?.detail || "Couldn’t create the link.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await deletePublicLink(item.id);
+      toast.success("Public link revoked");
+      setExisting(null);
+      setCreatedUrl(null);
+      setShowForm(false);
+    } catch (e) {
+      toast.error(e?.detail || "Couldn’t revoke");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = () => {
+    if (createdUrl) copyToClipboard(createdUrl, "Link");
+  };
+
+  return (
+    <div className="vault-publink">
+      <div className="vault-publink__head">
+        <Icon name="cloud" size={14} />
+        <span>Public link</span>
+        <span className="vault-publink__sub">anyone with the link can open it</span>
+      </div>
+
+      {existing === undefined ? (
+        <div className="vault-share-empty">Loading…</div>
+      ) : createdUrl ? (
+        <>
+          <div className="vault-publink__url">
+            <input className="input vault-mono" readOnly value={createdUrl} onFocus={(e) => e.target.select()} />
+            <button className="btn btn--secondary btn--sm" onClick={copy}>
+              <Icon name="copy" size={13} /> Copy
+            </button>
+          </div>
+          <div className="vault-publink__note">
+            <Icon name="alert" size={13} /> Copy it now — for your security we
+            can’t show this link again.{existing?.password_required ? " Share the password separately." : ""}
+          </div>
+          <button className="btn btn--danger btn--sm" onClick={revoke} disabled={busy}>
+            Revoke link
+          </button>
+        </>
+      ) : existing && !showForm ? (
+        <>
+          <div className="vault-publink__active">
+            <span><Icon name="check" size={13} /> A public link is active{existing.password_required ? " · password-protected" : ""}{existing.expires_at ? ` · expires ${relTime(existing.expires_at)}` : ""}.</span>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn--secondary btn--sm" onClick={() => setShowForm(true)} disabled={busy}>
+              Replace
+            </button>
+            <button className="btn btn--danger btn--sm" onClick={revoke} disabled={busy}>
+              Revoke
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="vault-ack vault-ack--inline"
+            data-checked={pwEnabled}
+            onClick={() => setPwEnabled((v) => !v)}
+          >
+            <span className="vault-ack__box">
+              <Icon name="check" size={11} strokeWidth={2.6} />
+            </span>
+            <span>Require a password to open</span>
+          </button>
+          {pwEnabled && (
+            <input
+              className="input"
+              type="text"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Set a password (share it separately)"
+            />
+          )}
+          <label className="vault-field">
+            <span>Expires</span>
+            <select
+              className="input"
+              value={expiry}
+              onChange={(e) => setExpiry(Number(e.target.value))}
+            >
+              <option value={0}>Never</option>
+              <option value={1}>After 1 day</option>
+              <option value={7}>After 7 days</option>
+              <option value={30}>After 30 days</option>
+              <option value={90}>After 90 days</option>
+            </select>
+          </label>
+          <button className="btn btn--primary btn--sm" onClick={create} disabled={busy}>
+            {busy ? "Creating…" : existing ? "Replace link" : "Create public link"}
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 

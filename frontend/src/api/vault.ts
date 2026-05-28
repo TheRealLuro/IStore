@@ -257,3 +257,62 @@ export async function deleteShare(grantId: string): Promise<void> {
 export async function downloadSharedFile(grantId: string): Promise<Blob> {
   return api.get<Blob>(`/vault/shares/${grantId}/file`, "blob");
 }
+
+// ---- public links (VLT-8 P7) ----
+
+export interface VaultPublicLink {
+  token: string;
+  password_required: boolean;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+export interface VaultPublicLinkCreate {
+  sealed_payload: string; // base64 — bundle sealed under the link key
+  password_required: boolean;
+  kdf_salt?: string | null; // base64, iff password_required
+  kdf_iterations?: number | null; // iff password_required
+  expires_in_days?: number | null;
+}
+
+// Unauthenticated viewer payload (the public /v/{token} page consumes this).
+export interface VaultPublicLinkView {
+  kind: VaultItemKind;
+  has_file: boolean;
+  size_bytes?: number | null;
+  sealed_payload: string; // base64
+  password_required: boolean;
+  kdf_salt?: string | null; // base64
+  kdf_iterations?: number | null;
+}
+
+export async function createPublicLink(
+  itemId: string,
+  body: VaultPublicLinkCreate,
+): Promise<VaultPublicLink> {
+  return api.post<VaultPublicLink>(`/vault/items/${itemId}/public-link`, body);
+}
+
+// Current link for an item, or null when none exists (404).
+export async function getPublicLink(itemId: string): Promise<VaultPublicLink | null> {
+  try {
+    return await api.get<VaultPublicLink>(`/vault/items/${itemId}/public-link`);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+export async function deletePublicLink(itemId: string): Promise<void> {
+  await api.delete(`/vault/items/${itemId}/public-link`);
+}
+
+// Unauthenticated: fetch a public link's sealed bundle + KDF params by token.
+export async function viewPublicLink(token: string): Promise<VaultPublicLinkView> {
+  return api.get<VaultPublicLinkView>(`/vault/public/${encodeURIComponent(token)}`);
+}
+
+// Unauthenticated: fetch a public file link's ciphertext.
+export async function downloadPublicFile(token: string): Promise<Blob> {
+  return api.get<Blob>(`/vault/public/${encodeURIComponent(token)}/file`, "blob");
+}
