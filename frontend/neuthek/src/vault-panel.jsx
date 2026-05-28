@@ -239,10 +239,21 @@ function VaultSetup({ onDone }) {
           </div>
           <h2>Create your vault</h2>
           <p>
-            Your master password encrypts everything on your device. We never
-            see it — so we can’t reset it. Choose something strong and
-            memorable.
+            Your master password encrypts everything on your device before it
+            ever leaves it. We never see it — so we can’t reset it, and there
+            is no “forgot password”.
           </p>
+        </div>
+
+        <div className="vault-warn">
+          <Icon name="key" size={16} />
+          <div>
+            <strong>This is the only key — write it down.</strong> If you
+            forget your master password, your vault and everything inside it
+            is <strong>permanently deleted and unrecoverable</strong>, even by
+            neuthek. Choose something strong but memorable, and save it
+            somewhere safe (a password manager or written down).
+          </div>
         </div>
 
         <label className="vault-field">
@@ -301,9 +312,9 @@ function VaultSetup({ onDone }) {
             <Icon name="check" size={11} strokeWidth={2.6} />
           </span>
           <span>
-            I understand that if I forget this password,{" "}
-            <strong>my vault cannot be recovered</strong> — not even by
-            neuthek.
+            I’ve saved my master password somewhere safe and understand that
+            if I lose it, <strong>everything in my vault is permanently
+            deleted</strong> — not even neuthek can recover it.
           </span>
         </button>
 
@@ -795,10 +806,8 @@ function AddItemModal({ open, onClose, onSaved }) {
   return (
     <Modal open={open} onClose={close} size="md" labelledBy="vault-add-title">
       <ModalClose onClose={close} />
-      <form
-        onSubmit={save}
-        style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}
-      >
+      <form onSubmit={save} className="vault-modal-form">
+        <div className="vault-modal-scroll">
         <h2 id="vault-add-title" style={{ margin: 0, fontSize: 18 }}>
           Add to vault
         </h2>
@@ -908,7 +917,8 @@ function AddItemModal({ open, onClose, onSaved }) {
           </label>
         )}
 
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        </div>
+        <div className="vault-modal-actions">
           <button type="button" className="btn btn--secondary" onClick={close}>
             Cancel
           </button>
@@ -966,7 +976,8 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
   return (
     <Modal open={!!item} onClose={onClose} size="md" labelledBy="vault-detail-title">
       <ModalClose onClose={onClose} />
-      <div style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div className="vault-modal-form">
+        <div className="vault-modal-scroll">
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span className="vault-row__icon" data-kind={item.kind}>
             <Icon name={isPw ? "key" : "document"} size={18} />
@@ -1005,14 +1016,8 @@ function ItemDetailModal({ item, onClose, onDelete, onSaved }) {
           <DetailRow label="" value={d.body} multiline />
         )}
 
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            justifyContent: "space-between",
-            marginTop: 4,
-          }}
-        >
+        </div>
+        <div className="vault-modal-actions" style={{ justifyContent: "space-between" }}>
           <button
             className="btn btn--danger btn--sm"
             onClick={() => {
