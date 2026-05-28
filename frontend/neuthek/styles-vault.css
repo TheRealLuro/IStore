@@ -344,6 +344,71 @@
   color: var(--ink-4, var(--ink-3));
 }
 
+/* ---- VLT-8 drive: breadcrumb + row hit area + trailing actions ---- */
+.vault-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.vault-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 4px 9px;
+  border: 0;
+  background: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-3);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.12s, color 0.12s;
+}
+.vault-crumb:hover { background: var(--surface-2); color: var(--ink); }
+.vault-crumb[data-active="true"] { color: var(--ink); font-weight: 600; }
+.vault-crumb__sep {
+  flex: 0 0 auto;
+  color: var(--ink-4, var(--ink-3));
+  opacity: 0.6;
+}
+
+/* The row is now a container; the hit area is the clickable button. */
+.vault-row { cursor: default; }
+.vault-row__hit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.vault-row__icon[data-kind="folder"] { color: var(--accent, #2f6df6); }
+.vault-row__del {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.vault-row:hover .vault-row__del,
+.vault-row:focus-within .vault-row__del { opacity: 0.55; }
+.vault-row__del:hover { opacity: 1; color: var(--danger, #e5484d); }
+@media (hover: none) {
+  .vault-row__del { opacity: 0.55; }
+}
+
 .vault-empty {
   flex: 1;
   display: flex;

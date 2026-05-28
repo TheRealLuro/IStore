@@ -26,6 +26,11 @@ import {
   updateVaultItem,
   deleteVaultItem,
   wipeVault,
+  listVaultFolders,
+  createVaultFolder,
+  deleteVaultFolder,
+  uploadVaultFile,
+  downloadVaultFile,
 } from "@/api/vault";
 import {
   createVaultSetup,
@@ -36,12 +41,19 @@ import {
   b64ToBytes,
   createAccountKeyPair,
   unwrapAccountPrivateKey,
+  randomFileKey,
+  encryptFile,
+  decryptFile,
+  sealToPublicKey,
+  unsealFromPrivateKey,
 } from "@/vault/crypto";
 import {
   unlockVault,
   setAccountKeys,
   lockVault,
   getVaultKey,
+  getAccountPublicKey,
+  getAccountPrivateKey,
   touchVault,
   useVaultUnlocked,
 } from "@/vault/session";
@@ -130,6 +142,67 @@ function relTime(iso) {
     month: "short",
     day: "numeric",
   });
+}
+
+function formatBytes(n) {
+  if (n == null || isNaN(n)) return "";
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+// Map a MIME type / filename to one of our existing Icon names.
+function fileIconName(name = "", mime = "") {
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "music";
+  if (mime === "application/pdf" || ext === "pdf") return "document";
+  if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) return "archive";
+  return "file";
+}
+
+// Download a vault file: fetch ciphertext, unseal the per-file key with the
+// account private key, decrypt chunk-by-chunk, and save to disk. The bytes
+// are only ever plaintext in memory on this device. `view` is a decrypted
+// row: { id, wrapped_key, data: { title, mime, file } }.
+async function downloadDecryptedFile(view) {
+  const priv = getAccountPrivateKey();
+  if (!priv) {
+    toast.error("Lock and unlock the vault, then try again.");
+    return;
+  }
+  if (!view.wrapped_key || !view.data?.file) {
+    toast.error("This file is missing its key material.");
+    return;
+  }
+  const t = toast.loading(`Decrypting ${view.data.title || "file"}…`);
+  try {
+    const fileKey = await unsealFromPrivateKey(priv, view.wrapped_key);
+    const blob = await downloadVaultFile(view.id);
+    const ct = new Uint8Array(await blob.arrayBuffer());
+    const plain = await decryptFile(ct, fileKey, view.data.file);
+    const out = new Blob([plain], {
+      type: view.data.mime || "application/octet-stream",
+    });
+    const url = URL.createObjectURL(out);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = view.data.title || "file";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    toast.success("Downloaded", { id: t });
+  } catch {
+    toast.error("Couldn’t decrypt this file.", { id: t });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -531,26 +604,37 @@ function ResetVaultModal({ open, onClose, onWiped }) {
 }
 
 // ---------------------------------------------------------------------------
-// VaultHome — unlocked: list + add + view items
+// VaultHome — unlocked: a drive-like, end-to-end-encrypted file store with
+// nested folders + secure items (passwords / notes). Files are encrypted on
+// this device and uploaded as ciphertext; folder names are encrypted too.
 // ---------------------------------------------------------------------------
 
 function VaultHome() {
   const qc = useQueryClient();
-  const [filter, setFilter] = useState("all"); // all | password | note
+  const [currentFolder, setCurrentFolder] = useState(null); // null = vault root
   const [search, setSearch] = useState("");
-  const [decrypted, setDecrypted] = useState(null); // null = decrypting
+  const [items, setItems] = useState(null); // decrypted item views, null = loading
+  const [folders, setFolders] = useState(null); // decrypted folder views
   const [decryptErr, setDecryptErr] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
-  const [detail, setDetail] = useState(null); // decrypted item being viewed
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [uploading, setUploading] = useState(0); // in-flight upload count
+  const fileInputRef = useRef(null);
 
   const itemsQ = useQuery({
     queryKey: ["vault", "items"],
     queryFn: listVaultItems,
     staleTime: 30_000,
   });
+  const foldersQ = useQuery({
+    queryKey: ["vault", "folders"],
+    queryFn: listVaultFolders,
+    staleTime: 30_000,
+  });
 
-  // Decrypt every row whenever the ciphertext list changes. Decryption is
-  // async, so it can't live in react-query's (sync) `select`.
+  // Decrypt item rows (small items decrypt to their fields; file items decrypt
+  // to their metadata { title, mime, file }). Async → can't live in `select`.
   useEffect(() => {
     let cancelled = false;
     const rows = itemsQ.data;
@@ -570,15 +654,20 @@ function VaultHome() {
             out.push({
               id: row.id,
               kind: row.kind,
+              folder_id: row.folder_id ?? null,
+              has_file: !!row.has_file,
+              wrapped_key: row.wrapped_key ?? null,
+              size_bytes: row.size_bytes ?? null,
               created_at: row.created_at,
               updated_at: row.updated_at,
               data,
             });
           } catch {
-            // One bad row shouldn't blank the whole vault.
             out.push({
               id: row.id,
               kind: row.kind,
+              folder_id: row.folder_id ?? null,
+              has_file: !!row.has_file,
               created_at: row.created_at,
               updated_at: row.updated_at,
               data: null,
@@ -586,7 +675,7 @@ function VaultHome() {
             });
           }
         }
-        if (!cancelled) setDecrypted(out);
+        if (!cancelled) setItems(out);
       } catch {
         if (!cancelled) setDecryptErr(true);
       }
@@ -596,35 +685,97 @@ function VaultHome() {
     };
   }, [itemsQ.data]);
 
-  const visible = useMemo(() => {
-    let list = decrypted || [];
-    if (filter !== "all") list = list.filter((i) => i.kind === filter);
-    const q = search.trim().toLowerCase();
-    if (q) {
+  // Decrypt folder names.
+  useEffect(() => {
+    let cancelled = false;
+    const rows = foldersQ.data;
+    if (!rows) return;
+    const key = getVaultKey();
+    if (!key) return;
+    (async () => {
+      try {
+        const out = [];
+        for (const f of rows) {
+          let name = "Folder";
+          try {
+            const d = await decryptItem(key, {
+              nonce: f.name_nonce,
+              ciphertext: f.name_ct,
+            });
+            name = d?.name || name;
+          } catch {
+            name = "Unreadable folder";
+          }
+          out.push({
+            id: f.id,
+            parent_id: f.parent_id ?? null,
+            name,
+            created_at: f.created_at,
+            updated_at: f.updated_at,
+          });
+        }
+        if (!cancelled) setFolders(out);
+      } catch {
+        if (!cancelled) setFolders([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [foldersQ.data]);
+
+  const folderById = useMemo(() => {
+    const m = new Map();
+    (folders || []).forEach((f) => m.set(f.id, f));
+    return m;
+  }, [folders]);
+
+  // Breadcrumb chain from root down to the current folder.
+  const crumbs = useMemo(() => {
+    const chain = [];
+    const guard = new Set();
+    let cur = currentFolder;
+    while (cur) {
+      const f = folderById.get(cur);
+      if (!f || guard.has(cur)) break;
+      guard.add(cur);
+      chain.unshift(f);
+      cur = f.parent_id;
+    }
+    return chain;
+  }, [currentFolder, folderById]);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["vault", "items"] });
+    qc.invalidateQueries({ queryKey: ["vault", "folders"] });
+  };
+
+  const q = search.trim().toLowerCase();
+  const searching = q.length > 0;
+
+  const shownFolders = useMemo(() => {
+    let list = folders || [];
+    if (searching) list = list.filter((f) => f.name.toLowerCase().includes(q));
+    else list = list.filter((f) => (f.parent_id ?? null) === currentFolder);
+    return [...list].sort((a, b) => a.name.localeCompare(b.name));
+  }, [folders, currentFolder, searching, q]);
+
+  const shownItems = useMemo(() => {
+    let list = items || [];
+    if (searching) {
       list = list.filter((i) => {
         const d = i.data || {};
         return [d.title, d.username, d.url]
           .filter(Boolean)
           .some((s) => String(s).toLowerCase().includes(q));
       });
+    } else {
+      list = list.filter((i) => (i.folder_id ?? null) === currentFolder);
     }
-    // Most-recently-updated first.
     return [...list].sort((a, b) =>
       String(b.updated_at).localeCompare(String(a.updated_at)),
     );
-  }, [decrypted, filter, search]);
-
-  const counts = useMemo(() => {
-    const d = decrypted || [];
-    return {
-      all: d.length,
-      password: d.filter((i) => i.kind === "password").length,
-      note: d.filter((i) => i.kind === "note").length,
-    };
-  }, [decrypted]);
-
-  const refresh = () =>
-    qc.invalidateQueries({ queryKey: ["vault", "items"] });
+  }, [items, currentFolder, searching, q]);
 
   const onDelete = async (id) => {
     touchVault();
@@ -638,7 +789,73 @@ function VaultHome() {
     }
   };
 
-  if (itemsQ.isLoading || decrypted === null) {
+  const onDeleteFolder = async (folder) => {
+    touchVault();
+    if (
+      !window.confirm(
+        `Delete “${folder.name}” and everything inside it? This can’t be undone.`,
+      )
+    )
+      return;
+    try {
+      await deleteVaultFolder(folder.id);
+      toast.success("Folder deleted");
+      if (currentFolder === folder.id) setCurrentFolder(folder.parent_id ?? null);
+      refresh();
+    } catch (e) {
+      toast.error(e?.detail || "Couldn’t delete folder");
+    }
+  };
+
+  // Encrypt + upload each picked file into the current folder.
+  const onPickFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    touchVault();
+    const key = getVaultKey();
+    const pub = getAccountPublicKey();
+    if (!key) {
+      toast.error("Vault locked");
+      return;
+    }
+    if (!pub) {
+      toast.error("Lock and unlock the vault, then try again.");
+      return;
+    }
+    for (const file of files) {
+      setUploading((n) => n + 1);
+      const t = toast.loading(`Encrypting ${file.name}…`);
+      try {
+        const fileKey = randomFileKey();
+        const { blob, meta } = await encryptFile(file, fileKey);
+        const wrapped_key = await sealToPublicKey(pub, fileKey);
+        const sealed = await encryptItem(key, {
+          title: file.name,
+          mime: file.type || "application/octet-stream",
+          file: meta,
+        });
+        toast.loading(`Uploading ${file.name}…`, { id: t });
+        await uploadVaultFile({
+          nonce: sealed.nonce,
+          ciphertext: sealed.ciphertext,
+          wrapped_key,
+          folderId: currentFolder,
+          blob,
+        });
+        toast.success(`Uploaded ${file.name}`, { id: t });
+      } catch (err) {
+        toast.error(err?.detail || `Couldn’t upload ${file.name}`, { id: t });
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }
+    refresh();
+  };
+
+  const loading =
+    itemsQ.isLoading || foldersQ.isLoading || items === null || folders === null;
+  if (loading) {
     return <VaultCenter>Decrypting your vault…</VaultCenter>;
   }
   if (decryptErr) {
@@ -653,30 +870,49 @@ function VaultHome() {
     );
   }
 
+  const empty = shownFolders.length === 0 && shownItems.length === 0;
+
   return (
     <div className="vault-home">
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        hidden
+        onChange={onPickFiles}
+      />
       <div className="vault-toolbar">
-        <div className="vault-segments">
-          {[
-            ["all", "All", counts.all],
-            ["password", "Passwords", counts.password],
-            ["note", "Notes", counts.note],
-          ].map(([id, label, n]) => (
-            <button
-              key={id}
-              className="vault-segment"
-              data-active={filter === id}
-              onClick={() => setFilter(id)}
-            >
-              {label}
-              <span className="vault-segment__count">{n}</span>
-            </button>
+        <div className="vault-breadcrumb">
+          <button
+            className="vault-crumb"
+            data-active={currentFolder === null}
+            onClick={() => {
+              setCurrentFolder(null);
+              setSearch("");
+            }}
+          >
+            <Icon name="lock" size={12} /> Vault
+          </button>
+          {crumbs.map((f) => (
+            <React.Fragment key={f.id}>
+              <Icon name="chevronRight" size={12} className="vault-crumb__sep" />
+              <button
+                className="vault-crumb"
+                data-active={currentFolder === f.id}
+                onClick={() => {
+                  setCurrentFolder(f.id);
+                  setSearch("");
+                }}
+              >
+                {f.name}
+              </button>
+            </React.Fragment>
           ))}
         </div>
         <div className="vault-search">
           <Icon name="search" size={14} style={{ color: "var(--ink-3)" }} />
           <input
-            placeholder="Search this vault…"
+            placeholder="Search the vault…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -691,73 +927,159 @@ function VaultHome() {
             </button>
           )}
         </div>
+        <button
+          className="btn btn--secondary"
+          onClick={() => setNewFolderOpen(true)}
+        >
+          <Icon name="folderPlus" size={14} /> New folder
+        </button>
+        <button
+          className="btn btn--secondary"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading > 0}
+        >
+          <Icon name="upload" size={14} />{" "}
+          {uploading > 0 ? `Uploading ${uploading}…` : "Upload"}
+        </button>
         <button className="btn btn--primary" onClick={() => setAddOpen(true)}>
           <Icon name="plus" size={14} /> Add
         </button>
       </div>
 
-      {visible.length === 0 ? (
+      {empty ? (
         <div className="vault-empty">
           <div className="empty__icon">
             <Icon name="lock" size={26} strokeWidth={1.4} />
           </div>
           <div className="empty__title">
-            {decrypted.length === 0
-              ? "Your vault is empty"
-              : "Nothing matches"}
+            {searching ? "Nothing matches" : "This folder is empty"}
           </div>
           <div className="empty__body">
-            {decrypted.length === 0
-              ? "Add a password or a secure note. Everything is encrypted on your device before it’s saved."
-              : "Try a different search or filter."}
+            {searching
+              ? "Try a different search."
+              : "Upload a file, create a folder, or add a password or note. Everything is encrypted on your device before it leaves it."}
           </div>
-          {decrypted.length === 0 && (
-            <button
-              className="btn btn--primary"
-              style={{ marginTop: 14 }}
-              onClick={() => setAddOpen(true)}
-            >
-              <Icon name="plus" size={14} /> Add your first item
-            </button>
+          {!searching && (
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button
+                className="btn btn--secondary"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Icon name="upload" size={14} /> Upload a file
+              </button>
+              <button
+                className="btn btn--primary"
+                onClick={() => setAddOpen(true)}
+              >
+                <Icon name="plus" size={14} /> Add an item
+              </button>
+            </div>
           )}
         </div>
       ) : (
         <div className="vault-list">
-          {visible.map((item) => (
-            <button
-              key={item.id}
-              className="vault-row"
-              onClick={() => {
-                touchVault();
-                setDetail(item);
-              }}
-            >
-              <span className="vault-row__icon" data-kind={item.kind}>
-                <Icon name={item.kind === "password" ? "key" : "document"} size={16} />
-              </span>
-              <span className="vault-row__main">
-                <span className="vault-row__title">
-                  {item.corrupt
-                    ? "Unreadable item"
-                    : item.data?.title || "(untitled)"}
+          {shownFolders.map((f) => (
+            <div key={f.id} className="vault-row vault-row--folder">
+              <button
+                className="vault-row__hit"
+                onClick={() => {
+                  touchVault();
+                  setCurrentFolder(f.id);
+                  setSearch("");
+                }}
+              >
+                <span className="vault-row__icon" data-kind="folder">
+                  <Icon name="folder" size={16} />
                 </span>
-                <span className="vault-row__sub">
-                  {item.kind === "password"
-                    ? item.data?.username || item.data?.url || "Password"
-                    : "Secure note"}
+                <span className="vault-row__main">
+                  <span className="vault-row__title">{f.name}</span>
+                  <span className="vault-row__sub">Folder</span>
                 </span>
-              </span>
-              <span className="vault-row__meta">{relTime(item.updated_at)}</span>
-            </button>
+              </button>
+              <button
+                className="btn-icon vault-row__del"
+                title="Delete folder"
+                aria-label="Delete folder"
+                onClick={() => onDeleteFolder(f)}
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            </div>
           ))}
+          {shownItems.map((item) => {
+            const isFile = item.has_file || item.kind === "file";
+            return (
+              <div
+                key={item.id}
+                className={`vault-row${isFile ? " vault-row--file" : ""}`}
+              >
+                <button
+                  className="vault-row__hit"
+                  onClick={() => {
+                    touchVault();
+                    if (isFile) downloadDecryptedFile(item);
+                    else setDetail(item);
+                  }}
+                >
+                  <span className="vault-row__icon" data-kind={item.kind}>
+                    <Icon
+                      name={
+                        isFile
+                          ? fileIconName(item.data?.title, item.data?.mime)
+                          : item.kind === "password"
+                            ? "key"
+                            : "document"
+                      }
+                      size={16}
+                    />
+                  </span>
+                  <span className="vault-row__main">
+                    <span className="vault-row__title">
+                      {item.corrupt
+                        ? "Unreadable item"
+                        : item.data?.title || "(untitled)"}
+                    </span>
+                    <span className="vault-row__sub">
+                      {isFile
+                        ? formatBytes(item.size_bytes) || "File"
+                        : item.kind === "password"
+                          ? item.data?.username || item.data?.url || "Password"
+                          : "Secure note"}
+                    </span>
+                  </span>
+                </button>
+                <span className="vault-row__meta">
+                  {relTime(item.updated_at)}
+                </span>
+                <button
+                  className="btn-icon vault-row__del"
+                  title="Delete"
+                  aria-label="Delete"
+                  onClick={() => onDelete(item.id)}
+                >
+                  <Icon name="trash" size={13} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
       <AddItemModal
         open={addOpen}
+        folderId={currentFolder}
         onClose={() => setAddOpen(false)}
         onSaved={() => {
           setAddOpen(false);
+          refresh();
+        }}
+      />
+      <NewFolderModal
+        open={newFolderOpen}
+        parentId={currentFolder}
+        onClose={() => setNewFolderOpen(false)}
+        onSaved={() => {
+          setNewFolderOpen(false);
           refresh();
         }}
       />
@@ -775,10 +1097,81 @@ function VaultHome() {
 }
 
 // ---------------------------------------------------------------------------
+// NewFolderModal — create a folder with an encrypted name
+// ---------------------------------------------------------------------------
+
+function NewFolderModal({ open, parentId, onClose, onSaved }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const close = () => {
+    setName("");
+    onClose?.();
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed || busy) return;
+    const key = getVaultKey();
+    if (!key) {
+      toast.error("Vault locked");
+      return;
+    }
+    setBusy(true);
+    try {
+      const sealed = await encryptItem(key, { name: trimmed });
+      await createVaultFolder({
+        parent_id: parentId,
+        name_nonce: sealed.nonce,
+        name_ct: sealed.ciphertext,
+      });
+      toast.success("Folder created");
+      setName("");
+      onSaved?.();
+    } catch (err) {
+      toast.error(err?.detail || "Couldn’t create the folder");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={close} size="sm" labelledBy="vault-folder-title">
+      <ModalClose onClose={close} />
+      <form onSubmit={save} style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+        <h2 id="vault-folder-title" style={{ margin: 0, fontSize: 18 }}>
+          New folder
+        </h2>
+        <label className="vault-field">
+          <span>Folder name</span>
+          <input
+            className="input"
+            value={name}
+            autoFocus
+            maxLength={120}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Tax documents"
+          />
+        </label>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          <button type="button" className="btn btn--secondary" onClick={close} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn btn--primary" disabled={!name.trim() || busy}>
+            {busy ? "Creating…" : "Create"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // AddItemModal — create a password or note
 // ---------------------------------------------------------------------------
 
-function AddItemModal({ open, onClose, onSaved }) {
+function AddItemModal({ open, folderId = null, onClose, onSaved }) {
   const [kind, setKind] = useState("password");
   const [busy, setBusy] = useState(false);
   // password fields
@@ -838,6 +1231,7 @@ function AddItemModal({ open, onClose, onSaved }) {
         kind,
         nonce: sealed.nonce,
         ciphertext: sealed.ciphertext,
+        folder_id: folderId,
       });
       toast.success(kind === "password" ? "Password saved" : "Note saved");
       reset();
