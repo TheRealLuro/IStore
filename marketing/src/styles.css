@@ -778,6 +778,42 @@ p {
 }
 .compare-wrap .compare { margin-top: 0; }
 
+/* Official-source list under the table — every competitor claim is
+   traceable to the provider's own documentation. */
+.compare-sources {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--surface-2);
+}
+.compare-sources__label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.compare-sources__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.compare-sources__list a {
+  color: var(--ink-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.compare-sources__list a:hover { color: var(--ink); }
+
 /* Narrow viewports: 7 columns won't read at <800px no matter how we
    wrap. Below that breakpoint, repaint the table as a stacked list
    where each capability becomes a "card" with its provider values
