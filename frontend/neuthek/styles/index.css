@@ -15,6 +15,7 @@
 @import "../styles-settings-v2.css";
 @import "../styles-settings-v3.css";
 @import "../styles-map4.css";
+@import "../styles-vault.css";
 
 /* Default Geist as the app font now that the inline `style="font-family"`
    on <body> in the prototype HTML is gone. */
