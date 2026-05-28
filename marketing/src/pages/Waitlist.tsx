@@ -273,10 +273,11 @@ export default function Waitlist() {
                 </select>
 
                 <label
+                  className="wl-check"
                   style={{
                     display: "flex",
                     alignItems: "flex-start",
-                    gap: 10,
+                    gap: 11,
                     marginTop: 4,
                     fontSize: 13,
                     color: "var(--ink-2)",
@@ -288,7 +289,6 @@ export default function Waitlist() {
                     type="checkbox"
                     checked={newsletter}
                     onChange={(e) => setNewsletter(e.target.checked)}
-                    style={{ marginTop: 3, flexShrink: 0, width: "auto" }}
                   />
                   <span style={{ minWidth: 0 }}>
                     Also send me the weekly newsletter — release notes
