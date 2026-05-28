@@ -114,6 +114,7 @@ context, *neither* GUC is set → RLS compares against NULL → **0 rows
 | F3 | Cloud-sync worker disables RLS wholesale (`app.rls_bypass`) | MEDIUM — 5.3 (def-in-depth) `AV:N/AC:H/PR:L/S:U/C:L/I:L/A:N` | Confirmed (design) | `backend/api/cloud.py:424` | CWE-285 |
 | F4 | No per-session JWT revocation (global `tv` bump only) | LOW — 3.5 `AV:N/AC:H/PR:L/C:L/I:N/A:N` | Confirmed (design) | `backend/auth/users.py` (`token_version`) | CWE-613 |
 | F5 | Single app master key — broad blast radius | LOW/INFO — n/a (design) | Confirmed (design) | `backend/key_derivation.py`, `backend/secret_box.py` | CWE-320 |
+| F6 | Recovery-codes print popup writes unescaped `userEmail` via `document.write` | LOW — 2.0 `AV:L/AC:H/PR:L/UI:R/S:U/C:L/I:N/A:N` (self-XSS only) | Confirmed | `frontend/neuthek/src/account-panels.jsx:631-651` | CWE-79 |
 | R1 | Vault metadata leakage (kind/size/folder graph) | INFO (by design) | Confirmed | `backend/api/vault.py` | CWE-200 |
 | R2 | Password public links offline-brute-forceable | INFO (by design) | Confirmed | `frontend/src/vault/crypto.ts` | CWE-307 |
 | R3 | Recipient-key TOFU under malicious server | INFO (by design) | Confirmed | share flow | CWE-295 |
@@ -254,6 +255,30 @@ keys / a KMS for the at-rest token key vs the URL-signing key.
 
 ---
 
+### F6 — Recovery-codes print popup writes unescaped `userEmail` — LOW, self-XSS only (Confirmed)
+**Location:** `frontend/neuthek/src/account-panels.jsx:631-651` — the “Print”
+button builds an HTML string interpolating `${userEmail}` + the issued codes,
+then `w.document.write(...)` into a new window.
+
+**Exploitation (self-only):** The interpolated values are the **viewing user’s
+own** email + server-generated base32 codes — not attacker-controlled or
+cross-tenant. Injecting markup would require registering with an HTML-bearing
+email and printing one’s own codes (self-XSS, no cross-user reach); email-format
+validation bounds it further.
+
+**Impact:** Negligible (self-XSS). Listed for completeness + defense-in-depth.
+
+**Remediation (propose):** Escape `userEmail` before `document.write`, or build
+the popup with `createElement`/`textContent`:
+```js
+const esc = (s) => String(s).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ownerLine = userEmail ? `<div ...>Account: ${esc(userEmail)}</div>` : "";
+```
+**Refs:** CWE-79.
+
+---
+
 ## 3. Verified-secure properties (corroborated by code review)
 
 - **JWT `tv` revocation is correctly enforced on both cookie + bearer
@@ -380,7 +405,138 @@ live re-test):
 
 ---
 
+## 9. Injection & web-vuln matrix (every class examined, with verdict)
+
+This is the breadth pass — each OWASP-class sink was located and judged, even
+where the verdict is “no finding.” Evidence is `file:line`.
+
+| Class | What was checked | Verdict | Evidence |
+|-------|------------------|---------|----------|
+| **SQL injection** | All queries; searched for f-string/`%`-format SQL. SQLAlchemy 2.0 is parameterized; raw SQL is only the per-request RLS GUC (`set_config('app.current_user_id', :uid, true)` — bound param) and DDL in migrations. Marketing `pg` uses `$1` parameterized queries (`server.mjs:440`). | **No finding.** The one client-influenced value reaching SQL is the RLS GUC, and it’s a bound parameter sourced from the server-validated user id, not request input. | `backend/db.py:46`; `marketing/server.mjs:440-462`; grep for `text(f"`/`execute(f"` → none |
+| **Command injection** | Every `subprocess` call. **None use `shell=True`**; all pass an argv **list**. ffmpeg/rclone/exiftool/whisper/ps. | **No finding.** Filenames/values are separate argv elements, so metacharacters can’t break out. | `transcode.py:59,253,430,458`; `hls.py:205`; `image.py:291`; `transcribe.py:152`; `rclone_wrapper.py:120,209,284`; `system_probes.py:158…`; grep `shell=True` → none |
+| **SSRF (via ffmpeg)** | ffmpeg following URIs inside crafted media/playlists. | **Mitigated.** `-protocol_whitelist` set as an explicit per-input list arg (CR-6). | `backend/ffmpeg_args.py:5,42,54` |
+| **SSRF (provider/geocode)** | Server-side fetches in cloud-sync + reverse-geocode. Providers via OAuth/rclone/pyicloud SDKs (not raw user URLs); geocoder hits a fixed Nominatim host. | **No fixed-host finding; recommend a dynamic redirect-follow test** of any provider path that takes a provider-supplied URL. | `backend/cloud_sync.py`, `rclone_wrapper.py`, `name_suggest.py` (§12) |
+| **Path traversal** | Object keys + temp files. Storage keys are **server-generated** `"{user_id}/{uuid4().hex}"`; temp files use `tempfile.NamedTemporaryFile`/`TemporaryDirectory` with random names. | **No finding** (clients never name buckets/keys; suffixes derive from the validated type). | `backend/api/vault.py` (upload_vault_file storage_key), `backend/image.py:262`, `backend/transcode.py:31` |
+| **Stored/Reflected XSS** | Every `dangerouslySetInnerHTML`/`document.write`/`innerHTML` sink (see §9.1). | **No cross-tenant finding.** One self-XSS hardening item (**F6**). | `code-preview.jsx:320`, `policies.jsx:263`, `account-panels.jsx:641`, marketing `Faq/Updates/UpdateDetail` |
+| **CSRF** | All cookie-authed state-changes. `CsrfOriginMiddleware` (Origin/Referer) + SameSite cookie; the Stripe webhook is signed (not cookie-authed). | **No finding.** | `backend/security.py` (CsrfOrigin), `billing.py` webhook |
+| **Open redirect** | Reset/verify/magic-link landings + SSO callback redirect targets. SSO redirects to a server-built FE landing URL (`_fe_landing`), not a client `next`. | **No finding observed; recommend confirming** no `next=`/return param is reflected into a redirect without allow-listing. | `auth/google_sso.py` `_fe_landing`, `email_link.py` |
+| **Insecure deserialization** | `pickle`/`yaml.load`/`eval`/`torch.load` with user-controlled paths. ML weights are app-shipped; no user-controlled model path found. `.eval()` hits are PyTorch `Module.eval()` (mode toggle), **not** Python `eval()`. | **No finding.** | `backend/vision/runtime.py:202…` (`Module.eval()`), grep `pickle.loads`/`yaml.load(` → none in request paths |
+| **Decompression / bombs** | Archive + image + PDF ingestion vs caps. Per-entry + total uncompressed caps, max entries/depth/ratio (U2); max image pixels. | **Controls present; recommend dynamic confirmation** (nested zip, pixel-flood). | `backend/archive_upload.py`, `backend/upload_validation.py`, `backend/config.py` `upload_max_*` |
+| **Mass assignment** | Register/profile payloads. `UserCreate`/`UserUpdate` expose only `display_name`/`age_confirmed`; `role`/`quota_bytes`/`is_superuser`/`token_version` not on the schemas; fastapi-users `create(safe=True)`. | **No finding.** | `backend/schemas.py` (UserCreate/UserUpdate) |
+| **SSTI / XXE** | Server-side templating of user input; XML/SVG/openpyxl/docx external entities. No server-side template renders user input; email HTML is escaped (`server.mjs:124,144…`). | **No finding observed; recommend confirming** the openpyxl/docx/SVG parse paths disable external entities. | `marketing/server.mjs:124` `escapeHtml`; `document_compress.py` |
+| **ReDoS** | Search/synonym/regex validators. One prior ReDoS remediated (CodeQL). | **Recommend a dynamic pathological-input pass** on search/synonyms. | `backend/synonyms.py`, search router |
+
+### 9.1 XSS sink-by-sink verdict
+- `frontend/neuthek/src/code-preview.jsx:320` — `__html: highlightLine(html,i)`
+  where `html` is **`Prism.highlight(text, grammar, lang)`** (line 220), which
+  HTML-escapes input; when no grammar is available `html` is `null` and the
+  component renders plain text (no `innerHTML`). **Safe.**
+- `frontend/neuthek/src/policies.jsx:263` — `__html: it.title` iterates a
+  **static, hardcoded** policy-section array. **Safe** (no user data).
+- `frontend/neuthek/src/account-panels.jsx:641` — `document.write` with the
+  user’s **own** email + codes → **F6** (self-XSS only).
+- marketing `Faq.tsx`, `Updates.tsx`, `UpdateDetail.tsx` — render
+  **owner-authored static content**; the newsletter EMAIL templates escape all
+  user-derived values (`server.mjs:144-181`). **Safe** as long as the updates
+  content stays non-user-derived (note for maintainers).
+
+---
+
+## 10. Per-router authorization & IDOR map
+
+Auth is a per-endpoint dependency. Pattern verified: wrong-owner/missing object
+IDs return **404 (not 403)** — no existence oracle — backed by app-layer
+`user_id == current_user` **and** Postgres FORCE-RLS (§0.2).
+
+| Router | Auth dependency | IDOR posture |
+|--------|-----------------|--------------|
+| `/vault/*` | `current_active_user` (+ 2 unauth public-link reads, token-gated) | item/folder/grant/link ops fence on owner; non-recipient `/shares/{id}/file` + non-owner `/items/{id}/public-link` → 404 (verified by `tests/test_vault_*`) |
+| `/admin/*` | **`current_admin_user`**, with **`current_superuser`** on role-mutation + bulk-delete (`admin.py:322,978`) | every route gated; **no unprotected admin op found** |
+| `/images,/folders,/people,/faces,/tags,/comments` | `current_active_user` | filtered on `user_id` + RLS; D2 (`image_persons`) re-checks ownership |
+| `/account,/consent,/storage,/billing(user),/cloud,/search,/feedback` | `current_active_user` | per-user scoped |
+| `/shares/*` | `current_active_user` + signed public link | recipient-bound (U3/S4) |
+| `/billing/webhook` | **none** (Stripe-signed) | signature + idempotency (`stripe_events`) |
+| `/auth,/users` | fastapi-users | §2/§3 |
+
+**Verdict:** authorization model is consistent and the admin surface is fully
+gated. Recommend a dynamic IDOR sweep (A vs B object ids) to convert this to
+Confirmed-by-test for the non-vault routers.
+
+---
+
+## 11. File-ingestion pipeline (parser-RCE surface)
+
+Path: upload → `upload_validation.py` (type/size/pixel/zip caps) → store
+original (MinIO, server-named key) → background transcode/re-encode → derived
+blobs → optional consent-gated AI.
+
+- **Subprocess safety:** every ffmpeg/rclone/exiftool/whisper invocation is a
+  list-arg `subprocess.run` with **no shell** (§9) → no command injection from
+  filenames/metadata.
+- **ffmpeg SSRF:** `-protocol_whitelist` (CR-6) blocks `file:`/`http:` follows
+  from crafted containers/playlists.
+- **Bombs:** per-entry + total uncompressed caps, max entries/depth/ratio (U2),
+  max pixels — present.
+- **EXIF/metadata:** stripped on re-encode (B1/U5/U6).
+- **Residual surface (recommend `nuclei`/CVE pin-check at audit time):** the
+  native parsers themselves — Pillow, pillow-heif, imagecodecs, rawpy/LibRaw,
+  PyMuPDF — run on attacker bytes; a memory-safety CVE in any is the largest
+  RCE risk. The **non-root container (CR-7)** bounds blast radius. No
+  user-controlled ML model path was found.
+
+---
+
+## 12. SSRF surface inventory
+
+| Outbound | Trigger | Risk | Note |
+|----------|---------|------|------|
+| Google OAuth/Drive | SSO + sync | low | SDK + fixed Google hosts; `state` HMAC+PKCE |
+| iCloud (pyicloud) | sync | low–med | SDK to Apple endpoints; no raw user URL |
+| Proton/MEGA (rclone) | sync | low–med | rclone config **server-generated**, list-arg invocation; verify remote-name interpolation dynamically |
+| Nominatim geocode | reverse-geocode | low | **fixed host**; no user-supplied URL |
+| Stripe | billing | low | SDK, fixed host |
+| ffmpeg input | transcode | mitigated | protocol whitelist |
+
+**Verdict:** no raw-user-URL SSRF sink found in static review; the residual is
+redirect-follow behavior inside the provider SDKs/rclone — **recommend a staging
+test** pointing provider/redirect inputs at `169.254.169.254`, `minio:9000`,
+`redis:6379`, `postgres:5432`.
+
+---
+
+## 13. Marketing service (Express)
+
+- **Admin auth fails CLOSED:** `adminAuth` returns 401/“not configured” when
+  `ADMIN_PASS` is unset, and compares with `crypto.timingSafeEqual`
+  (`server.mjs:107,1227-1237`). Admin routes are also `adminRateLimit`-wrapped.
+- **SQL:** `pg` parameterized (`$1`) inserts/selects (`server.mjs:440-462`) — no
+  injection.
+- **Email HTML:** all user-derived values pass `escapeHtml` (`server.mjs:124,
+  144-181`) — no email-template injection.
+- **Tokens:** verify/unsubscribe are HMAC-signed + purpose-namespaced
+  (`server.mjs:80-117`) so one can’t be replayed as the other.
+- **Rate-limit:** `express-rate-limit` keyed on `CF-Connecting-IP`→`req.ip`.
+- **Recommend:** confirm `express` security headers / a CSP on the marketing
+  origin, and that `ADMIN_PASS` is set to a strong value in the deploy env.
+
+---
+
+## 14. Coverage delta vs the first cut
+
+This revision converts the earlier “lighter review / recommend dynamic” hedges
+(file pipeline, SSRF, XSS, marketing, admin authz) into **actual reviewed
+sections with file:line verdicts** (§9–§13). Net new finding: **F6** (low,
+self-XSS). The headline finding count stays small because the injection /
+authz / XSS / command surfaces are, on inspection, **properly defended** — the
+real risks remain F1–F3 (auth/SSO/MFA + the worker RLS bypass). What still
+genuinely requires a live target + the SAST/dep/container scanners (not
+installed here) is dynamic confirmation: IDOR sweep, ffmpeg crafted-playlist,
+provider SSRF redirect-follow, decompression bombs, ReDoS, and dependency-CVE
+pinning — enumerated in `SECURITY_AUDIT_DOSSIER.md §I` with exact commands.
+
+---
+
 *Prepared read-only. No files were modified to produce this review; all fixes
 above are proposals. Re-run against a staging deploy with rate-limits ENABLED
-and the SAST suite installed to convert the “Likely” findings and “~”
-regressions to Confirmed.*
+and the SAST/dep/container suite installed to convert the “Likely” findings,
+the §10/§12 “recommend dynamic” items, and the §6 “~” regressions to Confirmed.*
