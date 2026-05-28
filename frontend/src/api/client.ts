@@ -121,6 +121,30 @@ async function request<T>(
     } catch {
       /* fall through */
     }
+    // Global "session died" handling. If a NON-auth request 401s while the
+    // signed-in breadcrumb still says we're logged in, the HttpOnly session
+    // cookie has expired / been revoked (token_version bump) / been cleared.
+    // Without this the app sits in a "zombie" half-authed state: cached views
+    // (React Query) still render so the gallery looks fine, but every FRESH
+    // fetch 401s — e.g. opening the Map fires new queries that fail and the
+    // user sees "not authorized" even though Drive looks like it works. Clear
+    // the breadcrumb (so only the first 401 fires) and signal the app to drop
+    // back to the sign-in screen. `/auth/*` is excluded so a failed
+    // login / 2FA challenge doesn't self-trigger a logout.
+    if (
+      res.status === 401 &&
+      !path.startsWith("/auth/") &&
+      typeof window !== "undefined"
+    ) {
+      try {
+        if (localStorage.getItem(SIGNED_IN_KEY)) {
+          tokens.clear();
+          window.dispatchEvent(new CustomEvent("neuthek:session-expired"));
+        }
+      } catch {
+        /* private-browsing localStorage can throw */
+      }
+    }
     throw new ApiError(res.status, detail);
   }
   if (parse === "blob") return (await res.blob()) as unknown as T;
