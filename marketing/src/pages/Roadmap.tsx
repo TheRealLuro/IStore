@@ -48,8 +48,8 @@ const SHIPPED: Item[] = [
     d: "Every commit is scanned for accidentally-committed passwords or keys before it can merge. The repo ignores every secret-shaped filename people have leaked over the years.",
   },
   {
-    t: "A password vault the server can't read",
-    d: "Passwords and secure notes are encrypted in your browser with a key derived from your master password (PBKDF2-SHA256 → AES-256-GCM, with a non-extractable key). The server only ever stores ciphertext — your master password and the vault key never reach it, so even a full database compromise reveals nothing. Auto-locks on idle and sign-out. Apple-style viewers and file import are being polished next.",
+    t: "An end-to-end encrypted Vault the server can't read",
+    d: "The Vault is a drive-like, end-to-end encrypted store: files of any type in nested folders, plus secure items — passwords, notes, crypto seed phrases, cards/IDs. Everything is encrypted in your browser with a key derived from your master password (PBKDF2-SHA256 → AES-256-GCM; files use a random per-file key, chunked) before upload. The server only ever stores ciphertext — your master password and keys never reach it, so even a full database compromise reveals nothing, and no AI ever touches Vault contents. You can share a single item with another account by sealing it to their key on your device (no comments, no public links, revocable anytime). Auto-locks on idle and sign-out.",
   },
 
   // --- Product & UX ---
@@ -230,8 +230,8 @@ const PLANNED: Item[] = [
     d: "Account recovery via email. Needs the operator to pick an email provider (Resend or SMTP) and bake it into the deployment.",
   },
   {
-    t: "End-to-end encryption (Mega/Proton-class)",
-    d: "Client-side encryption with a key derived from your master passphrase — we hold ciphertext, never plaintext, never the key. Will ship feature-by-feature with very clear \"this feature loses AI capability when you turn on E2E\" trade-offs. Until it lands, we describe neuthek as encrypted in transit + at rest, not end-to-end.",
+    t: "End-to-end encryption beyond the Vault",
+    d: "The zero-knowledge Vault (Mega/Proton-class — client-side keys, we hold only ciphertext) has shipped for files + secure items, with key-wrapped sharing. What's still ahead is letting the AI-readable Drive go end-to-end too, feature-by-feature, with very clear \"this feature loses AI capability when you turn on E2E\" trade-offs. Until that lands we describe the Drive as encrypted in transit + at rest, not end-to-end — only the Vault is end-to-end today.",
   },
   {
     t: "Easy migration for teams",
