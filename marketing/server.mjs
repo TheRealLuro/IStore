@@ -1083,9 +1083,14 @@ app.post("/api/admin/newsletter/send", adminRateLimit, adminAuth, async (req, re
   }
 
   const readMoreUrl = `${PUBLIC_ORIGIN}/updates/${slug}`;
-  const subject = `${entry.title.length > 70
-    ? entry.title.slice(0, 67) + "..."
-    : entry.title}`;
+  // Defensive: a real broadcast must NEVER go out tagged as a test. Strip
+  // any leading "[test]" / "[TEST]" marker that may have leaked in from a
+  // draft title (or a copy-pasted subject) before truncating — the only
+  // place a test marker belongs is the dedicated /newsletter/test endpoint.
+  const cleanTitle = entry.title.replace(/^\s*\[\s*test\s*\]\s*/i, "");
+  const subject = `${cleanTitle.length > 70
+    ? cleanTitle.slice(0, 67) + "..."
+    : cleanTitle}`;
 
   // Sequential send with a small await between calls. Resend's free tier
   // limits to 10 req/sec; we stay well under by sleeping 150ms between

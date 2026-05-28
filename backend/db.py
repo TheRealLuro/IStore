@@ -4,7 +4,7 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.orm import Session as SyncSession
 
 from backend.config import settings
-from backend.context import get_current_user_id
+from backend.context import get_current_user_id, get_rls_bypass
 
 
 class Base(DeclarativeBase):
@@ -40,6 +40,13 @@ def _set_rls_context(session, transaction, connection) -> None:  # noqa: ARG001
     # asyncpg dialect — asyncpg uses `$1`-style params, and SQLAlchemy
     # won't auto-translate inside the raw-SQL fast path. Use a bound
     # `text()` so the dialect formats the placeholder correctly.
+    # Trusted cross-user maintenance paths (Stripe webhook, admin/retention
+    # sweepers) opt into a full RLS bypass via the ContextVar. Honor it FIRST
+    # and on every transaction (transaction-local, so it can't leak onto a
+    # pooled connection). Never settable from request input — see context.py.
+    if get_rls_bypass():
+        connection.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
+        return
     user_id = get_current_user_id()
     if user_id:
         connection.execute(

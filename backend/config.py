@@ -232,6 +232,18 @@ class Settings(BaseSettings):
     # emails. The trailing slash is intentionally absent — email_send
     # appends `/verify?token=...` directly.
     frontend_base_url: str = Field(default="http://localhost:5173")
+    # Optional comma-separated extra origins trusted for credentialed CORS +
+    # CSRF (e.g. a second domain, a staging host, the Tauri shell). The prod
+    # frontend origin is derived from `frontend_base_url` automatically (F15) —
+    # this is only for additional origins beyond that one.
+    cors_extra_origins: str = Field(default="")
+    # F7 — when true, boot FAILS in production if the app's Postgres role is a
+    # SUPERUSER or has BYPASSRLS (either silently voids row-level security).
+    # Default False so existing deployments aren't bricked on upgrade; flip to
+    # true AFTER cutting the DSN over to the least-privilege `neuthek_app` role
+    # (see deploy/initdb/10-app-role.sql). When false, a superuser connection
+    # still logs a loud warning at boot.
+    require_least_privilege_db: bool = Field(default=False)
 
     # ---- Phase 13 (C2) cloud sync — Drive (Dropbox hooked, not implemented) ----
     # Symmetric Fernet key used by backend.secret_box to encrypt OAuth

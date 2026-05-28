@@ -41,7 +41,7 @@ from backend.audit import add_audit
 from backend.auth.users import COOKIE_NAME, current_active_user, get_jwt_strategy
 from backend.config import settings
 from backend.db import get_session
-from backend.deletion import hard_delete_images
+from backend.deletion import delete_user_vault_blobs, hard_delete_images
 from backend.email_send import send_recovery_codes_email
 from backend.models import (
     AuditLog,
@@ -94,42 +94,12 @@ class DeleteResult(BaseModel):
 
 
 # ---------- DELETE ACCOUNT ----------
-
-async def _collect_user_blob_keys(
-    session: AsyncSession, user_id: UUID
-) -> tuple[list[tuple[str, str]], int]:
-    """Return [(bucket, key), ...] for every blob owned by the user."""
-    keys: list[tuple[str, str]] = []
-
-    # Originals + served variants from `images`. Both buckets must be hit.
-    img_rows = (
-        await session.execute(
-            select(Image.original_blob_key, Image.served_blob_key, Image.thumbnail_blob_key).where(
-                Image.user_id == user_id
-            )
-        )
-    ).all()
-    for original_key, served_key, thumbnail_key in img_rows:
-        if original_key:
-            keys.append((storage.bucket_originals, original_key))
-        if served_key and served_key != original_key:
-            keys.append((storage.bucket_served, served_key))
-        if thumbnail_key:
-            keys.append((storage.bucket_served, thumbnail_key))
-
-    # Face crops.
-    face_keys = (
-        await session.execute(
-            select(FaceDetection.crop_blob_key).where(
-                FaceDetection.user_id == user_id,
-                FaceDetection.crop_blob_key.is_not(None),
-            )
-        )
-    ).scalars().all()
-    for k in face_keys:
-        keys.append((storage.bucket_faces, k))
-
-    return keys, len(img_rows)
+#
+# Blob cleanup is handled inside `hard_delete_images` (image originals /
+# served / thumbnails / face crops) and `delete_user_vault_blobs` (vault
+# file ciphertext) — both called from `delete_account` below. The old
+# `_collect_user_blob_keys` helper + its standalone deletion loop were dead
+# code (sat after an unconditional `return`) and have been removed.
 
 
 @router.post("/delete", response_model=DeleteResult)
@@ -193,6 +163,14 @@ async def delete_account(
             "deleted_at": datetime.now(timezone.utc).isoformat(),
         },
     )
+    # Vault file blobs live in MinIO (bucket_vault) and are NOT reached by the
+    # FK CASCADE — delete them explicitly BEFORE dropping the user row, while
+    # the vault_items rows are still visible. Without this the encrypted file
+    # ciphertext is orphaned in object storage after the account is gone
+    # (incomplete GDPR erasure + unbounded storage leak).
+    vault_blobs_deleted, vault_blob_errors = await delete_user_vault_blobs(
+        session, user_id
+    )
     await session.execute(sa_delete(User).where(User.id == user_id))
     await session.flush()
     remaining = await _verify_account_deleted(session, user_id)
@@ -207,53 +185,8 @@ async def delete_account(
         images_deleted=len(images_count),
         faces_deleted=len(faces_count),
         persons_deleted=len(persons_count),
-        blobs_deleted=image_delete.blobs_deleted,
-        blob_errors=image_delete.blob_errors,
-    )
-
-    # 2. Collect blob keys (must happen BEFORE delete; rows are cascading).
-    blob_keys, _ = await _collect_user_blob_keys(session, user_id)
-
-    # 3. Audit log first — proof artifact survives even if next steps fail.
-    session.add(
-        AuditLog(
-            user_id=user_id,
-            action="account.delete",
-            details={
-                "user_id": str(user_id),
-                "email": user.email,
-                "images": len(images_count),
-                "faces": len(faces_count),
-                "persons": len(persons_count),
-                "blobs_planned": len(blob_keys),
-                "deleted_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-    )
-    await session.commit()
-
-    # 4. Drop blobs from MinIO.
-    blobs_deleted = 0
-    blob_errors = 0
-    for bucket, key in blob_keys:
-        try:
-            storage.delete(bucket, key)
-            blobs_deleted += 1
-        except Exception as exc:
-            blob_errors += 1
-            logger.warning("account.delete: blob %s/%s removal failed: %s", bucket, key, exc)
-
-    # 5. Delete the user row. FKs cascade per-table.
-    await session.execute(sa_delete(User).where(User.id == user_id))
-    await session.commit()
-
-    return DeleteResult(
-        deleted_user_id=user_id,
-        images_deleted=len(images_count),
-        faces_deleted=len(faces_count),
-        persons_deleted=len(persons_count),
-        blobs_deleted=blobs_deleted,
-        blob_errors=blob_errors,
+        blobs_deleted=image_delete.blobs_deleted + vault_blobs_deleted,
+        blob_errors=image_delete.blob_errors + vault_blob_errors,
     )
 
 

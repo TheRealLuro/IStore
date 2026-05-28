@@ -78,6 +78,9 @@ frontend/dist/
 frontend/.vite/
 *.dump
 *.sql
+# …except committed DB init/provisioning scripts (NOT data dumps). The
+# least-privilege app-role provisioner (F7) is infra config, not a dump.
+!deploy/initdb/*.sql
 *.sql.gz
 *.bak
 *.sqlite3

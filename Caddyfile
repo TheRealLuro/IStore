@@ -38,6 +38,11 @@
         -Server
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options nosniff
+        # Anti-clickjacking at the edge. The backend already sends
+        # X-Frame-Options + a `frame-ancestors 'none'` CSP on its own
+        # responses; setting it here too guarantees it on everything this
+        # site fronts (incl. the share-viewer) regardless of upstream.
+        X-Frame-Options DENY
         Referrer-Policy strict-origin-when-cross-origin
         Permissions-Policy "camera=(), microphone=(), geolocation=()"
     }

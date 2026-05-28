@@ -631,7 +631,16 @@ async def sweep_scheduled_account_deletes(
     """
     from sqlalchemy import select as sa_select  # local — avoid shadowing
 
-    from backend.deletion import hard_delete_images
+    from backend.context import set_rls_bypass
+    from backend.deletion import delete_user_vault_blobs, hard_delete_images
+
+    # Trusted cross-user maintenance: this sweeper deletes ANY due user's rows,
+    # so it can't run under a single-user RLS context. Opt into the audited
+    # bypass (db.py re-stamps it per transaction). Inert today (the app role is
+    # a superuser — audit F7), but required once a non-superuser role lands so
+    # the cascade DELETE on FORCE-RLS tables (faces/persons/vault_*) isn't
+    # silently a no-op. Set on this background task's own ContextVar → no leak.
+    set_rls_bypass(True)
 
     now = datetime.now(timezone.utc)
     due_users = (
@@ -678,6 +687,9 @@ async def sweep_scheduled_account_deletes(
                 audit_action="account.images.delete",
                 reset_bandit=True,
             )
+            # Vault file ciphertext lives in MinIO and is NOT reached by the FK
+            # CASCADE — drop it before the user row, same as /account/delete.
+            await delete_user_vault_blobs(session, user_id)
             await session.execute(sa_delete(User).where(User.id == user_id))
             await session.flush()
             # Audit AFTER the user row is gone — anchor by user_id in

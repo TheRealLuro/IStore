@@ -65,10 +65,49 @@ from backend.models import (
     FaceDetection,
     Image,
     Person,
+    VaultItem,
 )
 from backend.storage import storage
 
 logger = logging.getLogger(__name__)
+
+
+async def delete_user_vault_blobs(
+    session: AsyncSession, user_id: UUID
+) -> tuple[int, int]:
+    """Delete every Vault file ciphertext object the user owns from MinIO.
+
+    The FK ``ON DELETE CASCADE`` on ``vault_items`` removes the DB rows when
+    the account is deleted, but the cascade does NOT reach into object
+    storage — the encrypted file blobs in ``storage.bucket_vault`` would
+    otherwise be orphaned forever (a GDPR-erasure gap + an unbounded storage
+    leak). Small items (password/note/seed/card) keep their ciphertext inline
+    with ``storage_key IS NULL`` and have no blob to remove.
+
+    Must be called BEFORE the ``DELETE FROM users`` so the rows are still
+    visible. Returns ``(blobs_deleted, blob_errors)``.
+    """
+    keys = (
+        await session.execute(
+            select(VaultItem.storage_key).where(
+                VaultItem.user_id == user_id,
+                VaultItem.storage_key.is_not(None),
+            )
+        )
+    ).scalars().all()
+    deleted = 0
+    errors = 0
+    for key in keys:
+        try:
+            storage.delete(storage.bucket_vault, key)
+            deleted += 1
+        except Exception as exc:  # best-effort; never block the account delete
+            errors += 1
+            logger.warning(
+                "vault blob removal failed for user %s key %s: %s",
+                user_id, key, exc,
+            )
+    return deleted, errors
 
 
 @dataclass

@@ -52,6 +52,7 @@ async def _process_summarize(session_factory, image_id: UUID) -> None:
 
 
 async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> None:
+    from backend.consent import is_consent_active
     from backend.faces_pipeline import process_image_for_faces
     from backend.models import Image, User
     from backend.storage import storage
@@ -66,6 +67,21 @@ async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> 
             await s.execute(select(User).where(User.id == user_id))
         ).scalar_one_or_none()
         if user is None:
+            return
+        # CONSENT GATE (mirrors the inline path in api/images.py:_run_face_scan_one).
+        # `pending_face_scan` is set at UPLOAD time and does NOT reflect the
+        # user's *current* biometric-consent state. Re-check consent HERE, at
+        # scan time, so a user who never granted — or has since REVOKED —
+        # face/biometric consent is never run through ArcFace. Without this the
+        # worker (the live production path) would generate biometric embeddings
+        # regardless of consent. Clear the flag so the job isn't retried forever.
+        if not await is_consent_active(s, user_id):
+            image.pending_face_scan = False
+            await s.commit()
+            logger.info(
+                "worker.face_scan: consent inactive for user %s — skipping "
+                "biometric scan of %s", user_id, image_id,
+            )
             return
         try:
             raw = (

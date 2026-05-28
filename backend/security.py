@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
 from backend.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -332,6 +335,39 @@ async def validate_production_settings() -> None:
                 "(must be 44-char URL-safe base64). Regenerate with "
                 "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`."
             )
+    # F7 — the app must NOT connect to Postgres as a superuser / BYPASSRLS
+    # role: either silently voids ALL row-level security (even FORCE RLS), so
+    # the audited tenant-isolation backstop becomes inert and isolation rests
+    # solely on app-layer WHERE filters. Detect it at boot.
+    try:
+        from sqlalchemy import text as _sql_text  # noqa: PLC0415
+
+        from backend.db import engine
+        async with engine.connect() as _conn:
+            _row = (
+                await _conn.execute(
+                    _sql_text(
+                        "SELECT rolsuper, rolbypassrls FROM pg_roles "
+                        "WHERE rolname = current_user"
+                    )
+                )
+            ).first()
+        if _row is not None and (_row[0] or _row[1]):
+            msg = (
+                "DATABASE_URL connects as a SUPERUSER / BYPASSRLS Postgres role "
+                "— this silently bypasses ALL row-level security (FORCE RLS "
+                "included). Provision the NOSUPERUSER NOBYPASSRLS 'neuthek_app' "
+                "role (deploy/initdb/10-app-role.sql) and point DATABASE_URL at "
+                "it; keep the superuser only for running migrations."
+            )
+            if settings.require_least_privilege_db:
+                errors.append(msg)
+            else:
+                logger.error("SECURITY: %s (set REQUIRE_LEAST_PRIVILEGE_DB=true to enforce)", msg)
+    except Exception:
+        # A transient DB hiccup at boot shouldn't crash the warn-only path.
+        logger.exception("F7 DB-role privilege check could not run")
+
     await require_redis_when_production()
     if errors:
         raise RuntimeError("Production configuration is unsafe: " + " ".join(errors))
@@ -851,10 +887,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         # CSP: every API response is JSON or an opaque media blob —
         # nothing should ever be parsed as HTML. `default-src 'none'`
-        # is the safest possible default; the frontend never reads
-        # these headers and the browser only enforces them on HTML
-        # navigations, so this is purely defence-in-depth for the
-        # rare misconfigured client that interprets bytes as HTML.
+        # is the safest possible default and, critically, it neutralizes
+        # any inline <script>/onload in a served SVG/HTML blob (the serve
+        # path can't always force Content-Disposition: attachment).
+        #
+        # NOTE: this header covers ONLY responses that flow through this
+        # API process (JSON + served media). The SPA *HTML* is served by
+        # the frontend container, NOT this app, so its CSP is set at the
+        # Caddy edge (deploy/Caddyfile + root Caddyfile `header` blocks),
+        # not here and not via an index.html meta tag. Keep the two in sync.
         headers.setdefault(
             "Content-Security-Policy",
             "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
