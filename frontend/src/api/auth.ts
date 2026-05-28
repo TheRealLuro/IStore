@@ -62,6 +62,22 @@ export async function loginWithTotp(
   return await me();
 }
 
+/** F1 — complete a TOTP-gated Google sign-in. The SSO callback bounced back
+ *  with `#sso_totp=<pending>`; redeem it with the 6-digit code. Mirrors
+ *  `loginWithTotp`'s bearer-fallback so /users/me authenticates even in the
+ *  dev cross-origin setup (the backend also sets the cookie for prod). */
+export async function completeSsoTotp(
+  pending: string, code: string,
+): Promise<User> {
+  const res = await api.post<{ sso_token: string; sso_new: boolean }>(
+    "/auth/google/complete-totp",
+    { pending, code },
+  );
+  try { localStorage.setItem("neuthek.jwt", res.sso_token); } catch {}
+  tokens.set();
+  return await me();
+}
+
 export interface RegisterConsent {
   kind: string;
   state: "GRANTED" | "WITHDRAWN";

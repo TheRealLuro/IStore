@@ -152,6 +152,12 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   // state so the retry uses the same credentials.
   const [totpNeeded, setTotpNeeded] = useStateA(false);
   const [totpCode, setTotpCode] = useStateA("");
+  // F1 — when a TOTP-enabled user signs in with Google, the callback bounces
+  // back with `#sso_totp=<pending>` instead of a session. We reuse the same
+  // 6-digit input below; submit redeems the pending token + code at
+  // /auth/google/complete-totp. Non-null = we're in the SSO second-factor step.
+  const [ssoTotpPending, setSsoTotpPending] = useStateA(null);
+  const [ssoTotpNew, setSsoTotpNew] = useStateA(false);
   // §C6c — fallback step when the user lost their authenticator app.
   // After /auth/jwt/login returns totp_required, the user can click
   // "Use a recovery code instead" to flip into this branch; the form
@@ -268,14 +274,32 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   useEffectA(() => {
     if (typeof window === "undefined") return;
     const hash = window.location.hash || "";
-    if (!hash || (!hash.includes("sso_token=") && !hash.includes("sso_error="))) return;
+    if (
+      !hash ||
+      (!hash.includes("sso_token=") &&
+        !hash.includes("sso_error=") &&
+        !hash.includes("sso_totp="))
+    ) return;
     const frag = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
     const ssoToken = frag.get("sso_token");
     const ssoError = frag.get("sso_error");
+    const ssoTotp = frag.get("sso_totp");
     // Strip immediately so a reload doesn't re-enter this path.
     try {
       window.history.replaceState({}, "", window.location.pathname + window.location.search);
     } catch {}
+    // F1 — TOTP-gated SSO: the Google leg completed but the account has an
+    // authenticator. Drop into the same 6-digit step the password path uses;
+    // submit redeems the pending token + code at /auth/google/complete-totp.
+    if (ssoTotp) {
+      setMode("signin");
+      setSsoTotpPending(ssoTotp);
+      setSsoTotpNew(frag.get("sso_new") === "1");
+      setTotpNeeded(true);
+      setTotpCode("");
+      setAuthError(null);
+      return;
+    }
     if (ssoError) {
       const msg = ssoError === "not_configured"
         ? "Google sign-in isn't set up yet on this deployment."
@@ -332,7 +356,9 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
   }, [mode]);
 
   const emailValid = /^\S+@\S+\.\S+$/.test(email);
-  const canSubmit = mode === "signin"
+  const canSubmit = ssoTotpPending
+    ? totpCode.trim().length === 6
+    : mode === "signin"
     ? email.length > 3 && pwd.length > 3
     : emailValid && pwd.length >= 10 && /[A-Z]/.test(pwd) && /\d/.test(pwd) && /[^A-Za-z0-9]/.test(pwd) && name.length > 1;
 
@@ -348,7 +374,13 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       try {
         setSubmitting(true);
         let u;
-        if (signinCodeMode) {
+        if (ssoTotpPending) {
+          // F1 — redeem the SSO pending token + the 6-digit code. On success
+          // the server mints the session (bearer + cookie); completeSsoTotp
+          // stores it and bootstraps the profile, same as loginWithTotp.
+          const { completeSsoTotp } = await import("@/api/auth");
+          u = await completeSsoTotp(ssoTotpPending, totpCode.trim());
+        } else if (signinCodeMode) {
           // §H#7b — magic-link 6-digit code path. Use the captured
           // signinCodeEmail (the email the code was actually sent
           // to), NOT the live `email` field, so a user who typed

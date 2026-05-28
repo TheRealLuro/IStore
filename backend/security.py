@@ -575,6 +575,9 @@ class SecurityControlsMiddleware(BaseHTTPMiddleware):
         # policy as the password path so a TOTP-enabled account can't
         # be code-guessed.
         "/auth/jwt/login-totp",
+        # F1 — TOTP completion for a Google SSO sign-in. Same lockout as
+        # login-totp so the 6-digit code on the SSO path can't be brute-forced.
+        "/auth/google/complete-totp",
         "/auth/forgot-password",
         "/auth/reset-password",
         "/auth/request-verify-token",
