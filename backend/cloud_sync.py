@@ -710,11 +710,34 @@ def _icloud_service_sync(link: "CloudLink") -> "PyiCloudService":
         link.encrypted_refresh_token,
     )
     cookie_dir = _icloud_cookie_dir(link.id)
-    return PyiCloudService(
+    svc = PyiCloudService(
         apple_id=apple_id,
         password=password,
         cookie_directory=str(cookie_dir),
     )
+
+    # SYNC-2 — pyicloud sets NO network timeout on its requests.Session,
+    # so a stuck Apple endpoint (a single slow get_children() or a hung
+    # file download) blocks the worker thread forever and the sync
+    # status sticks on "running" indefinitely — the user's "iCloud
+    # never stops syncing" complaint. Inject a default (connect, read)
+    # timeout on every HTTP call the session makes. A timed-out node
+    # then raises requests.Timeout, which the BFS / download try/except
+    # already turns into a skip-and-continue, so the walk makes progress
+    # or fails fast instead of hanging. Every other provider already
+    # uses httpx with explicit timeouts; this brings iCloud in line.
+    try:
+        _orig_request = svc.session.request
+
+        def _request_with_timeout(*args, **kwargs):  # noqa: ANN001
+            kwargs.setdefault("timeout", (10, 60))  # (connect, read) seconds
+            return _orig_request(*args, **kwargs)
+
+        svc.session.request = _request_with_timeout  # type: ignore[method-assign]
+    except Exception:
+        logger.exception("icloud: failed to install session timeout shim")
+
+    return svc
 
 
 async def _icloud_collect_entries(link: "CloudLink") -> list[dict]:
@@ -1513,6 +1536,11 @@ async def sync_user_provider(
     # binaries). Counted + skipped with a WARNING instead of an ERROR
     # stack trace so a folder of exotic files doesn't flood the log.
     skipped_unsupported = 0
+    # SYNC-1 — files skipped because their exact bytes already exist as
+    # a non-deleted Image for this user (same content in two providers,
+    # or a re-pull). Counted separately so the sync summary can show
+    # "deduplicated N" rather than silently dropping them.
+    skipped_duplicate = 0
     conflicts: list[str] = []
 
     from backend.upload_validation import UploadValidationError
@@ -1745,6 +1773,60 @@ async def sync_user_provider(
         if folder_id is None:
             skipped_unchanged += 1
             continue
+
+        # SYNC-1 — content-hash dedup. The same physical file often
+        # lives in more than one connected cloud (a doc kept in BOTH
+        # MEGA and Proton Drive was producing two gallery rows), and a
+        # re-pull that lost its CloudFile row would also duplicate.
+        # Before creating a new Image, hash the downloaded bytes and
+        # look for an existing non-deleted Image with the same content
+        # for this user. If found, link THIS provider's CloudFile to
+        # that existing image instead of storing a second copy.
+        #
+        # store_upload computes the same sha256 over the post-validation
+        # bytes; for the dedup pre-check we hash the raw download. They
+        # match for every non-image category (passthrough). Images get
+        # re-encoded/EXIF-stripped inside store_upload so their stored
+        # sha differs from the raw — for those the pre-check simply
+        # misses and we fall through to store_upload (no harm, just no
+        # cross-provider image dedup yet; the dominant dupe case the
+        # user hit is documents/videos/other from rclone providers).
+        blob_sha = hashlib.sha256(blob).digest()
+        dup_image_id = (
+            await session.execute(
+                select(Image.id).where(
+                    Image.user_id == user_id,
+                    Image.sha256 == blob_sha,
+                    Image.deleted_at.is_(None),
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if dup_image_id is not None:
+            skipped_duplicate += 1
+            # Point this provider's CloudFile at the already-stored
+            # image so future syncs see it as known + the storage panel
+            # attributes it correctly, without a second blob in MinIO.
+            if existing is None:
+                session.add(
+                    CloudFile(
+                        user_id=user_id,
+                        provider=provider,
+                        remote_id=entry["remote_id"],
+                        remote_path=entry.get("remote_path"),
+                        local_image_id=dup_image_id,
+                        remote_modified=remote_mod,
+                        sha256=blob_sha,
+                        last_synced_at=datetime.now(timezone.utc),
+                    )
+                )
+            else:
+                existing.local_image_id = dup_image_id
+                existing.remote_modified = remote_mod
+                existing.sha256 = blob_sha
+                existing.last_synced_at = datetime.now(timezone.utc)
+            await session.commit()
+            continue
+
         try:
             image = await store_upload(
                 session,
@@ -1871,10 +1953,11 @@ async def sync_user_provider(
     logger.info(
         "cloud_sync: sync user=%s provider=%s seen=%d pulled=%d "
         "skipped=%d skipped_quota=%d skipped_dataless=%d "
-        "skipped_unsupported=%d conflicts=%d budget_remaining=%d",
+        "skipped_unsupported=%d skipped_duplicate=%d conflicts=%d "
+        "budget_remaining=%d",
         user_id, provider, seen, pulled, skipped_unchanged,
         skipped_over_quota, skipped_dataless, skipped_unsupported,
-        len(conflicts), budget_remaining,
+        skipped_duplicate, len(conflicts), budget_remaining,
     )
     return {
         "seen": seen,
@@ -1883,6 +1966,7 @@ async def sync_user_provider(
         "skipped_over_quota": skipped_over_quota,
         "skipped_dataless": skipped_dataless,
         "skipped_unsupported": skipped_unsupported,
+        "skipped_duplicate": skipped_duplicate,
         "conflicts": len(conflicts),
         "conflict_remote_ids": conflicts,
         "provider": provider,
