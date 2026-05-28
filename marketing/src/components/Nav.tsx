@@ -14,6 +14,25 @@ const links = [
 
 export default function Nav() {
   const [open, setOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+
+  // Transparent at the very top (sitting over the hero), then settle
+  // into a frosted, hairline-bordered bar once the page scrolls — the
+  // Apple nav feel. Passive listener; rAF-throttled to stay smooth.
+  useEffect(() => {
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        setScrolled(window.scrollY > 8);
+        ticking = false;
+      });
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Close the menu on viewport changes — the desktop nav becomes
   // visible at the breakpoint and an open mobile drawer would shadow
@@ -42,7 +61,7 @@ export default function Nav() {
   }, [open]);
 
   return (
-    <header className="nav">
+    <header className={`nav${scrolled ? " nav--scrolled" : ""}`}>
       <div className="nav__inner">
         <Link to="/" className="nav__brand" onClick={() => setOpen(false)}>
           <WordMark />

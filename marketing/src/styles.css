@@ -185,12 +185,12 @@ img, svg { display: block; max-width: 100%; }
 }
 
 .section {
-  padding: 80px 0;
+  padding: 96px 0;
   border-bottom: 1px solid var(--line);
 }
 
-.section--tight { padding: 56px 0; }
-.section--loose { padding: 120px 0; }
+.section--tight { padding: 60px 0; }
+.section--loose { padding: 132px 0; }
 .section--ink {
   background: var(--ink);
   color: var(--surface);
@@ -270,10 +270,26 @@ p {
 
 .nav {
   position: sticky; top: 0; z-index: 40;
-  background: rgba(255,255,255,0.86);
-  backdrop-filter: saturate(160%) blur(12px);
-  -webkit-backdrop-filter: saturate(160%) blur(12px);
-  border-bottom: 1px solid var(--line);
+  /* Near-transparent at the top of the page (sits over the hero), with
+     just enough wash + blur to keep the brand legible. */
+  background: rgba(255,255,255,0.55);
+  backdrop-filter: saturate(150%) blur(6px);
+  -webkit-backdrop-filter: saturate(150%) blur(6px);
+  border-bottom: 1px solid transparent;
+  transition:
+    background var(--dur-med) var(--ease-out),
+    backdrop-filter var(--dur-med) var(--ease-out),
+    border-color var(--dur-med) var(--ease-out),
+    box-shadow var(--dur-med) var(--ease-out);
+}
+/* On scroll, settle into a frosted, hairline-bordered bar with a faint
+   lift — the signature Apple sticky-nav transition. */
+.nav--scrolled {
+  background: rgba(255,255,255,0.82);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  border-bottom-color: var(--line);
+  box-shadow: 0 8px 24px -18px rgba(0,0,0,0.35);
 }
 .nav__inner {
   max-width: var(--container);
@@ -282,7 +298,9 @@ p {
   display: flex;
   align-items: center;
   gap: 28px;
+  transition: padding var(--dur-med) var(--ease-out);
 }
+.nav--scrolled .nav__inner { padding-top: 11px; padding-bottom: 11px; }
 .nav__brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; }
 .nav__links { display: flex; gap: 22px; margin-left: auto; }
 .nav__link {
@@ -367,7 +385,7 @@ p {
 
 .hero {
   position: relative;
-  padding: 104px 0 72px;
+  padding: 120px 0 84px;
   background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
   overflow: hidden;
 }
@@ -377,13 +395,27 @@ p {
 .hero::before {
   content: "";
   position: absolute;
-  inset: -20% -10% auto -10%;
-  height: 70%;
-  background: radial-gradient(
-    60% 80% at 50% 0%,
-    rgba(10, 10, 10, 0.05) 0%,
-    rgba(10, 10, 10, 0) 70%
-  );
+  inset: -24% -10% auto -10%;
+  height: 78%;
+  background:
+    radial-gradient(46% 70% at 50% -4%, rgba(10,10,10,0.06) 0%, rgba(10,10,10,0) 64%),
+    radial-gradient(80% 90% at 50% -10%, rgba(10,10,10,0.025) 0%, rgba(10,10,10,0) 70%);
+  pointer-events: none;
+  z-index: var(--z-base);
+}
+/* A whisper-faint grid wash that fades out downward — gives the empty
+   hero a sense of surface (Apple's product pages do this with imagery;
+   we keep it abstract + monochrome). */
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(10,10,10,0.022) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(10,10,10,0.022) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(120% 75% at 50% 0%, #000 0%, transparent 72%);
+  mask-image: radial-gradient(120% 75% at 50% 0%, #000 0%, transparent 72%);
   pointer-events: none;
   z-index: var(--z-base);
 }
@@ -1074,6 +1106,17 @@ p {
   font-size: 13px; font-weight: 500; color: var(--ink);
   background: var(--surface-2); border: 1px solid var(--line);
   padding: 5px 11px; border-radius: 999px;
+}
+
+/* Divider between two sub-demos inside one panel. */
+.panel-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 14px 0 6px;
+}
+.panel-divider__line { flex: 1; height: 1px; background: var(--line); }
+.panel-divider__label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--ink-4); white-space: nowrap;
 }
 
 /* Spec rows (preview types, drive values) */
@@ -2204,6 +2247,13 @@ button:focus-visible,
 .cat-disclosure[open] .cat-disclosure__count {
   background: var(--surface);
 }
+.cat-disclosure {
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.cat-disclosure:hover { border-color: var(--ink-4); }
+.cat-disclosure[open] { box-shadow: var(--shadow-1); }
 .cat-disclosure__chevron {
   grid-column: 3;
   grid-row: 1 / span 2;
@@ -2218,6 +2268,8 @@ button:focus-visible,
   font-size: 13px;
   font-weight: 600;
   line-height: 1;
+  transition: color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
 }
 .cat-disclosure__chevron::before {
   content: "+";
@@ -2236,6 +2288,20 @@ button:focus-visible,
 .cat-disclosure__body {
   padding: 4px 20px 22px;
   border-top: 1px solid var(--line);
+}
+/* Expand animation — native <details> shows the body instantly; this
+   fades + slides it in each time the section opens. Children inside a
+   grid/list still cascade via their own reveal. Honors reduced-motion
+   (zeroed below). */
+.cat-disclosure[open] .cat-disclosure__body {
+  animation: disclosureOpen 380ms var(--ease-out);
+}
+@keyframes disclosureOpen {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cat-disclosure[open] .cat-disclosure__body { animation: none; }
 }
 .cat-disclosure__body .security-note { margin-bottom: 4px; }
 .faq-topic-disclosure .faq-item { margin: 14px 0; }

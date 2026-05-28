@@ -20,7 +20,7 @@
 import { Link } from "react-router-dom";
 import { usePageSeo, webPage, breadcrumbs } from "../seo";
 import Panel, {
-  FlowNode, FlowArrow, Chip, SpecRow, StepRow, MeterRow,
+  FlowNode, FlowArrow, Chip, SpecRow, StepRow, MeterRow, PanelDivider,
 } from "../components/Panel";
 
 interface Tile {
@@ -347,7 +347,8 @@ export default function Features() {
               <Chip>matched photo</Chip>
               <Chip>+ 6 more, ranked</Chip>
             </FlowNode>
-            <FlowNode kind="step" >Synonym-aware — type "vibrant"</FlowNode>
+            <PanelDivider label="synonym-aware" />
+            <FlowNode kind="step">type "vibrant" — we expand it</FlowNode>
             <FlowNode kind="result">
               <Chip>colorful</Chip>
               <Chip>vivid</Chip>
