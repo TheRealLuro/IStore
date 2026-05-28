@@ -240,15 +240,17 @@ export default function Faq() {
             ))}
           </nav>
 
-          {byTopic.map((g) => (
+          {byTopic.map((g, idx) => (
             // Each topic is a <details> collapsible. Answers stay in
             // the DOM regardless of open/closed state so AI answer
             // engines and crawlers see every answer inline — only
-            // visual display is gated by the open attribute.
+            // visual display is gated by the open attribute. The first
+            // topic opens by default so the page isn't all-collapsed.
             <details
               key={g.topic}
               id={`topic-${slugify(g.topic)}`}
               className="cat-disclosure faq-topic-disclosure"
+              open={idx === 0}
             >
               <summary className="cat-disclosure__summary">
                 <span className="cat-disclosure__heading">{g.topic}</span>

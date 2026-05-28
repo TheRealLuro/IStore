@@ -1,10 +1,42 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   postWaitlistSignup,
   resendWaitlistVerify,
   type WaitlistUseCase,
 } from "../api";
 import { usePageSeo, webPage } from "../seo";
+
+// A satisfying confirmation card — an icon medallion + heading + body —
+// shown after submit instead of bare text. tone drives the icon color.
+function OkCard({
+  tone = "good",
+  icon,
+  title,
+  children,
+}: {
+  tone?: "good" | "info" | "bad";
+  icon: "check" | "mail" | "alert";
+  title: string;
+  children: React.ReactNode;
+}) {
+  const paths: Record<string, React.ReactNode> = {
+    check: <polyline points="20 6 9 17 4 12" />,
+    mail: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></>,
+    alert: <><path d="M12 9v4" /><path d="M12 17h.01" /><circle cx="12" cy="12" r="9" /></>,
+  };
+  return (
+    <div className={`waitlist-ok waitlist-ok--${tone}`}>
+      <span className="waitlist-ok__badge" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {paths[icon]}
+        </svg>
+      </span>
+      <h2 className="waitlist-ok__title">{title}</h2>
+      <div className="waitlist-ok__body">{children}</div>
+    </div>
+  );
+}
 
 /* The form below POSTs to the marketing-site's own /api/waitlist/signup
    endpoint (served by ../server.mjs in the same Render Web Service as
@@ -120,12 +152,11 @@ export default function Waitlist() {
       </section>
 
       <section className="section">
-        <div className="container split">
-          <div>
+        <div className="container waitlist-grid">
+          <div className="waitlist-card">
             {status === "done-check-inbox" && (
-              <div>
-                <h2>Check your inbox.</h2>
-                <p style={{ marginTop: 16 }}>
+              <OkCard tone="info" icon="mail" title="Check your inbox.">
+                <p>
                   {emailSent ? (
                     <>We sent a verification link to <code>{email}</code>. Click it
                     to confirm your email and lock in your spot. The link
@@ -175,31 +206,29 @@ export default function Waitlist() {
                     .{resendNote && <span style={{ marginLeft: 8 }}>{resendNote}</span>}
                   </p>
                 )}
-              </div>
+              </OkCard>
             )}
 
             {status === "done-already-verified" && (
-              <div>
-                <h2>You're already on the list.</h2>
-                <p style={{ marginTop: 16 }}>
+              <OkCard tone="good" icon="check" title="You're already on the list.">
+                <p>
                   <code>{email}</code> is already verified. We've updated
                   your preferences. We'll email you when the hosted
                   version opens for early users and again at general
                   availability.
                 </p>
-              </div>
+              </OkCard>
             )}
 
             {status === "done-offline" && (
-              <div>
-                <h2>Couldn't reach the server.</h2>
-                <p style={{ marginTop: 16 }}>
+              <OkCard tone="bad" icon="alert" title="Couldn't reach the server.">
+                <p>
                   The signup endpoint isn't responding right now, so
                   <code> {email}</code> was not saved. Please try
                   again in a moment, or reach out at the email in the
                   footer.
                 </p>
-              </div>
+              </OkCard>
             )}
 
             {(status === "idle" || status === "submitting" || status === "error") && (
@@ -290,15 +319,39 @@ export default function Waitlist() {
             )}
           </div>
 
-          <div>
-            <h3>While you wait</h3>
-            <ul style={{ paddingLeft: 18, color: "var(--ink-2)", lineHeight: 1.8 }}>
-              <li>Read the roadmap to see what we're building toward launch</li>
-              <li>Check the features page for what the engine will do</li>
-              <li>Compare neuthek's design to the big providers you use today</li>
-              <li>Decide whether self-host or hosted is the right fit when each opens</li>
-            </ul>
-          </div>
+          <aside className="waitlist-aside">
+            <h3 className="waitlist-aside__title">While you wait</h3>
+            <div className="waitlist-links">
+              <Link to="/roadmap" className="waitlist-link">
+                <span className="waitlist-link__main">
+                  <span className="waitlist-link__t">See the roadmap</span>
+                  <span className="waitlist-link__d">What we're building toward launch</span>
+                </span>
+                <span className="waitlist-link__arr" aria-hidden="true">→</span>
+              </Link>
+              <Link to="/features" className="waitlist-link">
+                <span className="waitlist-link__main">
+                  <span className="waitlist-link__t">Explore the features</span>
+                  <span className="waitlist-link__d">Everything the engine will do</span>
+                </span>
+                <span className="waitlist-link__arr" aria-hidden="true">→</span>
+              </Link>
+              <Link to="/compare" className="waitlist-link">
+                <span className="waitlist-link__main">
+                  <span className="waitlist-link__t">Compare the options</span>
+                  <span className="waitlist-link__d">How neuthek is designed vs. the big clouds</span>
+                </span>
+                <span className="waitlist-link__arr" aria-hidden="true">→</span>
+              </Link>
+              <Link to="/hosting" className="waitlist-link">
+                <span className="waitlist-link__main">
+                  <span className="waitlist-link__t">Self-host or hosted?</span>
+                  <span className="waitlist-link__d">Decide which fits when each opens</span>
+                </span>
+                <span className="waitlist-link__arr" aria-hidden="true">→</span>
+              </Link>
+            </div>
+          </aside>
         </div>
       </section>
     </>
