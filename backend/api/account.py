@@ -312,6 +312,58 @@ async def _verify_account_deleted(session: AsyncSession, user_id: UUID) -> dict[
     return remaining
 
 
+# ---------- SESSIONS (F4 — per-session revocation) ----------
+
+
+class SignOutOthersResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+@router.post("/sessions/sign-out-others", response_model=SignOutOthersResponse)
+async def sign_out_other_sessions(
+    response: Response,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SignOutOthersResponse:
+    """Revoke every OTHER session for this account while keeping the current
+    one (F4 — "log out my other devices").
+
+    Reuses the proven `token_version` revocation: bumping it invalidates EVERY
+    live token for the user (the same lever password-reset / 2FA-disable pull),
+    then we immediately re-mint + re-cookie THIS request's session under the
+    new version so the caller stays signed in. No new hot-path checks — the
+    existing VersionedJWTStrategy.read_token enforcement does all the work.
+    """
+    refreshed = (
+        await session.execute(select(User).where(User.id == user.id))
+    ).scalar_one()
+    refreshed.token_version = (refreshed.token_version or 1) + 1
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="account.sessions.sign_out_others",
+        details={"new_token_version": refreshed.token_version},
+    )
+    await session.commit()
+    await session.refresh(refreshed)
+
+    strategy = get_jwt_strategy()
+    token = await strategy.write_token(refreshed)
+    # Re-issue the session cookie under the new token_version so the current
+    # browser keeps working (same attrs as /auth/cookie/login).
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=settings.jwt_lifetime_seconds,
+        path="/",
+        secure=settings.is_production,
+        httponly=True,
+        samesite="lax",
+    )
+    return SignOutOthersResponse(access_token=token)
+
+
 # ---------- EXPORT ACCOUNT (GDPR Art. 20) ----------
 
 

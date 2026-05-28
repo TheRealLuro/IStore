@@ -11,7 +11,7 @@ import {
   getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login,
   getAccountActivity, getAccountTrash, emptyAccountTrash,
   getTwoFactorStatus, setupTwoFactor, verifyTwoFactor, disableTwoFactor,
-  getNotificationPrefs, updateNotificationPrefs,
+  getNotificationPrefs, updateNotificationPrefs, signOutOtherSessions,
 } from "@/api/auth";
 import { backfillSummaries, backfillSummaryEmbeddings, backfillVision } from "@/api/files";
 import { API_BASE_URL, tokens } from "@/api/client";
@@ -702,6 +702,23 @@ function describeThisDevice() {
 
 function DevicesPage() {
   const { device, browser } = describeThisDevice();
+  const [signingOut, setSigningOut] = useStateSP(false);
+  const runSignOutOthers = async () => {
+    if (signingOut) return;
+    if (!window.confirm(
+      "Sign out of every OTHER device? This keeps you signed in here but ends "
+      + "all other sessions immediately."
+    )) return;
+    setSigningOut(true);
+    try {
+      await signOutOtherSessions();
+      toast.success("Signed out of all other devices.");
+    } catch {
+      toast.error("Couldn't sign out other devices. Try again.");
+    } finally {
+      setSigningOut(false);
+    }
+  };
   return (
     <>
       <DetSection title="Active sessions" desc="Sign-ins that are currently allowed access to your library.">
@@ -719,9 +736,24 @@ function DevicesPage() {
             </div>
           </div>
         </div>
-        <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 8 }}>
-          Other devices will appear here once per-device session tracking
-          ships. For now, signing out from this device ends only this session.
+        {/* F4 — user-initiated "log out everywhere else". Bumps token_version
+            server-side (revoking every other live session) then re-issues
+            this one, so a user who suspects a device is compromised can cut
+            it off without a password reset. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={runSignOutOthers}
+            disabled={signingOut}
+            style={{ fontSize: 13, padding: "8px 14px" }}
+          >
+            {signingOut ? "Signing out…" : "Sign out other devices"}
+          </button>
+          <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+            Ends every session except this one — use it if you think another
+            device is compromised.
+          </span>
         </div>
       </DetSection>
     </>
