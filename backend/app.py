@@ -45,8 +45,13 @@ from backend.storage import storage
 # requests against this API." Module-level so `validate_production_
 # settings` can cross-check against FRONTEND_BASE_URL at boot, AND
 # so `create_app()` and the CSRF middleware read the same list.
-# Adding a new frontend origin = add it here once.
-ALLOWED_ORIGINS: tuple[str, ...] = (
+#
+# F15 — the PRODUCTION origin is derived from `FRONTEND_BASE_URL` (and any
+# `CORS_EXTRA_ORIGINS`) so the deployed hostname is trusted BY CONSTRUCTION.
+# Previously this list was localhost-only, which made
+# `validate_production_settings` fail boot (the prod origin was never present)
+# unless an operator hand-edited this source tuple.
+_DEV_ORIGINS: tuple[str, ...] = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
@@ -55,6 +60,21 @@ ALLOWED_ORIGINS: tuple[str, ...] = (
     "http://127.0.0.1:4173",
     "tauri://localhost",
 )
+
+
+def _build_allowed_origins() -> tuple[str, ...]:
+    origins: list[str] = list(_DEV_ORIGINS)
+    fe = (settings.frontend_base_url or "").rstrip("/")
+    if fe and fe not in origins:
+        origins.append(fe)
+    for raw in (settings.cors_extra_origins or "").split(","):
+        o = raw.strip().rstrip("/")
+        if o and o not in origins:
+            origins.append(o)
+    return tuple(origins)
+
+
+ALLOWED_ORIGINS: tuple[str, ...] = _build_allowed_origins()
 
 
 @asynccontextmanager

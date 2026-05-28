@@ -49,6 +49,13 @@ services:
       SECRET_MANAGER: docker_secrets
       POSTGRES_AT_REST_ENCRYPTION: host_volume_confirmed
       BACKUP_AGE_RECIPIENT_FILE: /run/secrets/backup_age_recipient
+      # Billing secrets via Docker secrets (F14) — same indirection as the DB /
+      # JWT / MinIO creds, so the Stripe keys never land in plaintext env. The
+      # secret files are OPTIONAL: if billing is disabled just leave them out
+      # of the `secrets:` block below (and don't create the files) — config
+      # treats an unset Stripe key as "billing off".
+      STRIPE_SECRET_KEY_FILE: /run/secrets/stripe_secret_key
+      STRIPE_WEBHOOK_SECRET_FILE: /run/secrets/stripe_webhook_secret
       UPLOAD_MAX_BYTES: "209715200"
       UPLOAD_MAX_COUNT_PER_HOUR: "300"
       UPLOAD_MAX_BYTES_PER_DAY: "10737418240"
@@ -62,6 +69,14 @@ services:
       - minio_kms_key_content
       - minio_kms_key_biometric
       - backup_age_recipient
+      # Billing (F14): UNCOMMENT these two to mount the Stripe secrets (and
+      # uncomment their definitions in the top-level `secrets:` block + create
+      # the files). Left commented by default so non-billing deploys aren't
+      # forced to create the files — the STRIPE_*_FILE env refs above resolve
+      # to "unset" when the secret isn't mounted, which config treats as
+      # "billing off".
+      # - stripe_secret_key
+      # - stripe_webhook_secret
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,10 +101,19 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-neuthek}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: ${POSTGRES_DB:-neuthek}
+      # F7 — password for the least-privilege app role provisioned by
+      # deploy/initdb/10-app-role.sql on first init. After the role exists,
+      # point DATABASE_URL / DATABASE_URL_SYNC at neuthek_app and keep the
+      # POSTGRES_USER superuser only for running migrations. For an EXISTING
+      # database the initdb hook does NOT fire — run the script by hand once.
+      NEUTHEK_APP_DB_PASSWORD: ${NEUTHEK_APP_DB_PASSWORD:-}
     secrets:
       - postgres_password
     volumes:
       - ${NEUTHEK_DATA_ROOT:-${ISTORE_DATA_ROOT}}/postgres:/var/lib/postgresql/data
+      # F7 — provision the NOSUPERUSER NOBYPASSRLS app role on first init so
+      # the app can connect without bypassing row-level security.
+      - ./deploy/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neuthek} -d ${POSTGRES_DB:-neuthek}"]
       interval: 10s
@@ -147,6 +171,14 @@ secrets:
     file: ./secrets/minio_kms_key_biometric.txt
   backup_age_recipient:
     file: ./secrets/backup_age_recipient.txt
+  # Billing (F14): create ./secrets/stripe_secret_key.txt +
+  # ./secrets/stripe_webhook_secret.txt and UNCOMMENT these + the two lines in
+  # the backend service's `secrets:` block above to enable Stripe billing
+  # without ever putting the keys in plaintext env.
+  # stripe_secret_key:
+  #   file: ./secrets/stripe_secret_key.txt
+  # stripe_webhook_secret:
+  #   file: ./secrets/stripe_webhook_secret.txt
 
 volumes:
   caddy_data:

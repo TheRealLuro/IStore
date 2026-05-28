@@ -627,11 +627,18 @@ function TwoFactorPage() {
                 // print stylesheet doesn't try to inline-execute
                 // anything CSP-unfriendly.
                 const stamp = new Date().toISOString().slice(0, 10);
+                // Escape every interpolated value before writing it into the
+                // pop-up's HTML. The codes are server-generated base32 and the
+                // email is the viewer's own, so this is defense-in-depth, but a
+                // print popup should never be an HTML-injection sink.
+                const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => (
+                  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+                ));
                 const ownerLine = userEmail
-                  ? `<div style="font-size:13px;color:#666;margin-bottom:6px">Account: ${userEmail}</div>`
+                  ? `<div style="font-size:13px;color:#666;margin-bottom:6px">Account: ${esc(userEmail)}</div>`
                   : "";
                 const codeRows = issued
-                  .map((c) => `<div style="padding:10px 14px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:16px;text-align:center">${c}</div>`)
+                  .map((c) => `<div style="padding:10px 14px;border:1px solid #ddd;border-radius:6px;font-family:monospace;font-size:16px;text-align:center">${esc(c)}</div>`)
                   .join("");
                 const w = window.open("", "_blank", "noopener,noreferrer,width=520,height=720");
                 if (!w) {

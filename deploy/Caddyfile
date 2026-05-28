@@ -22,6 +22,30 @@
 {$NEUTHEK_DOMAIN} {
 	encode zstd gzip
 
+	# Security headers for the WHOLE origin — incl. the SPA HTML served by
+	# the frontend upstream below. The backend sets these on its own API /
+	# media responses, but the SPA HTML comes straight from the frontend
+	# container, which sets none. Without this the zero-knowledge Vault SPA
+	# (master key lives in JS memory while unlocked) shipped with no CSP and
+	# no anti-framing header. `header` here applies to every handle.
+	#
+	# CSP notes: `script-src 'self'` — the Vite production bundle is all
+	# same-origin module scripts with no inline <script>/eval. `style-src`
+	# allows 'unsafe-inline' for injected <style>/inline styles (not a
+	# script-exec vector). `img/media/worker` allow blob: for decrypted
+	# vault previews + downloads. If a future dependency needs wasm, add
+	# 'wasm-unsafe-eval' to script-src — do NOT add 'unsafe-inline'/'unsafe-eval'
+	# to script-src (that would defeat the Vault's last line of XSS defense).
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
+	}
+
 	handle_path /minio/* {
 		reverse_proxy {$NEUTHEK_MINIO_UPSTREAM}
 	}

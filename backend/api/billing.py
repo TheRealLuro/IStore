@@ -278,6 +278,22 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     if not event_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Event missing id")
 
+    # The webhook is unauthenticated (Stripe-signed) and resolves the affected
+    # user by Stripe customer id, NOT a logged-in session — a legitimately
+    # cross-user operation. Once `subscriptions` is under FORCE RLS (migration
+    # 0048) and the app connects as a non-superuser (F7), a no-context session
+    # would match zero subscription rows. Opt into the audited RLS bypass for
+    # this handler's session; db.py re-stamps it on every transaction so it
+    # survives the multiple commits below. ContextVar-scoped → no pool leak.
+    from backend.context import reset_rls_bypass, set_rls_bypass
+    _bypass_token = set_rls_bypass(True)
+    try:
+        return await _stripe_webhook_body(event, event_id, event_type)
+    finally:
+        reset_rls_bypass(_bypass_token)
+
+
+async def _stripe_webhook_body(event, event_id: str, event_type: str) -> dict[str, Any]:
     # Idempotency: a unique-constraint violation on insert means we've
     # already processed this event. Return 200 so Stripe stops retrying.
     async with SessionLocal() as session:

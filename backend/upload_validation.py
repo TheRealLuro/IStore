@@ -424,9 +424,24 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
             return "audio/mpeg", "audio"
         if ext == ".aac":
             return "audio/aac", "audio"
-    if lower.startswith((b"<svg", b"<?xml")) and b"<svg" in lower[:256]:
+    # Reject SVG / HTML / script payloads by CONTENT — robustly. `lower` is
+    # already lstrip()'d, but a leading XML/HTML *comment* (`<!--…-->`) still
+    # slips a `<svg onload=…>` / `<script>` past a naive `startswith` while a
+    # browser renders it just fine. Peel any leading comment(s) before
+    # matching so a comment-prefixed payload can't later be stored with an
+    # active image/svg+xml or text/html MIME (see _CODE_EXTS) and then
+    # rendered inline on a direct navigation to the served blob.
+    sniff = lower
+    _peeled = 0
+    while sniff.startswith(b"<!--") and _peeled < 8:
+        _end = sniff.find(b"-->")
+        if _end == -1:
+            break
+        sniff = sniff[_end + 3:].lstrip()
+        _peeled += 1
+    if sniff.startswith((b"<svg", b"<?xml")) and b"<svg" in lower:
         raise UploadValidationError("SVG uploads are not accepted.", 415)
-    if lower.startswith((b"<!doctype html", b"<html", b"<script")):
+    if sniff.startswith((b"<!doctype html", b"<html", b"<script")):
         raise UploadValidationError("HTML/script uploads are not accepted.", 415)
     if _suffix(filename) in _TEXT_EXTS and _looks_text(data):
         return _text_mime(filename), "document"

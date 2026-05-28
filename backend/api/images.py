@@ -57,6 +57,30 @@ def _detach(coro) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
+# Only these content types are safe to render inline in a browser. Everything
+# else a user can upload (SVG, HTML, text/code, office docs, octet-stream) is
+# served with `Content-Disposition: attachment` so a direct navigation to the
+# blob downloads it instead of rendering it as a document in the neuthek
+# origin. This is defense-in-depth behind the API's `default-src 'none'` CSP
+# (which already blocks script execution in a served SVG/HTML); the FE's
+# code/image previews fetch bytes via JS (XHR), which `attachment` does not
+# affect. See upload_validation.py for the content-side guard.
+_INLINE_SAFE_EXACT = {"application/pdf"}
+
+
+def _serve_headers(mime: str | None, extra: dict | None = None) -> dict:
+    headers = dict(extra or {})
+    safe = bool(mime) and (
+        (mime.startswith("image/") and mime != "image/svg+xml")
+        or mime.startswith("video/")
+        or mime.startswith("audio/")
+        or mime in _INLINE_SAFE_EXACT
+    )
+    if not safe:
+        headers.setdefault("Content-Disposition", "attachment")
+    return headers
+
+
 async def _enqueue_or_inline_fallback(enqueue_fn, *args, inline) -> None:
     """Try enqueueing the job onto the Redis queue; if that fails (Redis
     down, ml-worker not configured), run the work inline via
@@ -286,12 +310,12 @@ async def signed_download(
             return Response(
                 content=blob,
                 media_type=mime,
-                headers={"X-Original-Expired": "true"},
+                headers=_serve_headers(mime, {"X-Original-Expired": "true"}),
             )
         blob, mime = await fetch_original(image)
-        return Response(content=blob, media_type=mime)
+        return Response(content=blob, media_type=mime, headers=_serve_headers(mime))
     blob, mime = await fetch_served(image)
-    return Response(content=blob, media_type=mime)
+    return Response(content=blob, media_type=mime, headers=_serve_headers(mime))
 
 
 # ---------- Video / audio streaming with HTTP Range support ----------
@@ -1748,10 +1772,10 @@ async def download_original(
         return Response(
             content=blob,
             media_type=mime,
-            headers={"X-Original-Expired": "true"},
+            headers=_serve_headers(mime, {"X-Original-Expired": "true"}),
         )
     blob, mime = await fetch_original(image)
-    return Response(content=blob, media_type=mime)
+    return Response(content=blob, media_type=mime, headers=_serve_headers(mime))
 
 
 @router.get("/{image_id}/served")
@@ -1821,13 +1845,13 @@ async def download_served(
         except Exception:
             logger.exception("served thumb resize failed for %s; returning original", image.id)
 
-    headers = {
+    headers = _serve_headers(mime, {
         # 1 day private cache — the image content for a given (id, size)
         # is content-addressed by the stored blob's hash; we never
         # update served bytes in place. Lets the browser skip the
         # network entirely on repeat scroll-backs.
         "Cache-Control": "private, max-age=86400",
-    }
+    })
     return Response(content=blob, media_type=mime, headers=headers)
 
 

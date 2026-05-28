@@ -416,12 +416,20 @@ async def _run_sync_background(
             )
             return
         try:
+            # Workers don't go through the per-request middleware that stamps
+            # `app.current_user_id`, so RLS policies on `image_geo` / faces /
+            # etc. would block writes. Rather than disabling RLS wholesale
+            # (`app.rls_bypass='on'` removed the tenant-isolation backstop for
+            # the whole long-running sync), SCOPE this background task to the
+            # user we're syncing for. db.py's `after_begin` listener reads this
+            # ContextVar and re-stamps `app.current_user_id` on EVERY
+            # transaction the sync opens (it commits several times mid-walk),
+            # so RLS fences all writes/reads to this one tenant — exactly like
+            # a real request. The ContextVar is task-local (this runs in its
+            # own asyncio task) so it can't leak into other requests.
+            from backend.context import set_current_user_id
+            set_current_user_id(user_id)
             async with session_factory() as s:
-                from sqlalchemy import text as sql_text
-                # Workers don't go through the per-request middleware that
-                # stamps `app.current_user_id`, so the RLS policies on
-                # `images` / `image_geo` etc. would block writes. Bypass.
-                await s.execute(sql_text("SET LOCAL app.rls_bypass='on'"))
                 # SYNC-2 — overall backstop timeout. Even with the per-
                 # call timeouts now installed on the pyicloud session,
                 # wrap the whole provider walk so the status can NEVER

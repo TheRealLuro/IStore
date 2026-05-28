@@ -145,6 +145,20 @@ def _code_key(email: str) -> str:
     return f"signin-link:code:{email.lower()}"
 
 
+def _codefail_key(email: str) -> str:
+    return f"signin-link:codefail:{email.lower()}"
+
+
+# F2 — identity-scoped hard cap on 6-digit code guesses. The per-IP
+# SecurityControlsMiddleware lockout (keyed identity:IP) stops a single host,
+# but a rotating-IP pool gets a fresh budget per IP, so a 1M-space code for a
+# KNOWN email could be brute-forced within the 15-min TTL. This counter is
+# keyed on the EMAIL only: after this many total wrong guesses across all IPs
+# we BURN the in-flight code (forcing the user to request a fresh one), which
+# caps the attacker at ~_MAX_CODE_ATTEMPTS / 1_000_000 odds per issued code.
+_MAX_CODE_ATTEMPTS = 10
+
+
 def _generate_six_digit_code() -> str:
     """6-digit string. `secrets.randbelow` is the CSPRNG-backed
     primitive — NOT `random.randint`, which is a Mersenne-Twister
@@ -166,6 +180,8 @@ async def _store_code(email: str, code: str, jti: str) -> None:
             import json as _json
             payload = _json.dumps({"code": code, "jti": jti})
             await r.set(_code_key(email), payload, ex=_TOKEN_TTL_SECONDS)
+            # Fresh code → fresh attempt budget (latest-wins).
+            await r.delete(_codefail_key(email))
         finally:
             await r.aclose()
     except Exception:
@@ -202,11 +218,25 @@ async def _consume_code(email: str, candidate: str) -> tuple[bool, str | None]:
             # Constant-time string compare so timing doesn't leak
             # partial matches on the digits.
             if not secrets.compare_digest(stored_code, candidate):
+                # F2 — count this failure against the EMAIL (not the IP). Once
+                # the identity-scoped budget is spent, burn the code so even a
+                # subsequent CORRECT guess can't consume it — the attacker must
+                # force the user to request a fresh code (and re-spend the
+                # budget). TTL the counter to the code's own lifetime.
+                try:
+                    fails = await r.incr(_codefail_key(email))
+                    if fails == 1:
+                        await r.expire(_codefail_key(email), _TOKEN_TTL_SECONDS)
+                    if fails >= _MAX_CODE_ATTEMPTS:
+                        await r.delete(_code_key(email))
+                except Exception:
+                    logger.exception("magic-link consume-code: failcount update failed")
                 return False, None
             # Match. DEL atomically — if another consume races us
             # on the same key, only one DEL takes effect (the other
             # observes None on GET).
             await r.delete(_code_key(email))
+            await r.delete(_codefail_key(email))
             return True, jti
         finally:
             await r.aclose()
