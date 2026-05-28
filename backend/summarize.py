@@ -1877,6 +1877,15 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
     frames = [_extract_keyframe(raw_bytes, t) for t in offsets]
     frames = [f for f in frames if f]
 
+    # Sprint I#6 — scene-cut detection. Drop frames whose luminance
+    # histogram barely differs from the previous kept frame, so a
+    # static talking-head clip captions one frame instead of 30
+    # near-identical ones. Keeps Florence cost down + gives Qwen
+    # distinct scenes rather than the same observation repeated.
+    frames_before_scenecut = len(frames)
+    frames = dedup_frames_by_histogram(frames)
+    scenes_kept = len(frames)
+
     # Caption-quality filter — Florence occasionally emits a single
     # filler word ("photograph", "image") or a known-hallucinated
     # opener on a frame that's too dark / too noisy to parse. Those
@@ -1922,18 +1931,39 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
         else:
             dropped_low_quality += 1
 
+    # Sprint I#6 — collapse near-duplicate captions before the Qwen
+    # rollup ("a man in a suit" / "a man in a dark suit" → one). Keeps
+    # the prompt tight and stops a repeated observation from skewing
+    # the summary.
+    captions_before_dedup = len(captions)
+    captions = dedup_captions(captions)
+    dropped_dupe_captions = captions_before_dedup - len(captions)
+
     # Audio transcription — captures what was SAID, which is usually
     # more informative than what the visuals show on talking-head /
     # interview / lecture clips. Failure modes (whisper not installed,
     # no audio track, transcription crash) return None and the rest
     # of the pipeline ignores it.
+    # Sprint I#6 — does the container even HAVE an audio stream? Probed
+    # up front so we can tell a genuinely-silent video (no audio track,
+    # empty transcript expected) apart from a video that HAS audio but
+    # whose transcription came back empty (a real failure worth
+    # auditing). None when ffprobe is unavailable.
+    has_audio_track = _video_has_audio_track(raw_bytes)
+
     transcript: str | None = None
-    try:
-        from backend.transcribe import transcribe_video_audio
-        transcript = transcribe_video_audio(raw_bytes)
-    except Exception:
-        logger.exception("video: transcribe step crashed")
+    # Skip transcription entirely when we know there's no audio track —
+    # saves a whisper invocation on silent screen-recordings / GIFs-as-
+    # mp4 / b-roll, which are common in the dataset.
+    if has_audio_track is False:
         transcript = None
+    else:
+        try:
+            from backend.transcribe import transcribe_video_audio
+            transcript = transcribe_video_audio(raw_bytes)
+        except Exception:
+            logger.exception("video: transcribe step crashed")
+            transcript = None
     # Cap the transcript size before sending to Qwen. Whisper can
     # emit kilobytes of text on a long video; Qwen's context window
     # is finite and we'd rather spend it on the per-frame captions
@@ -2034,10 +2064,23 @@ def _summarize_video(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
         "kind": "video",
         "duration_s": float(duration_s) if duration_s else None,
         "frame_count": len(frames),
+        # Sprint I#6 — scene-cut + caption-dedup telemetry, so a
+        # quality regression ("summary missed the second half of the
+        # video") is debuggable: did we under-sample scenes, or did
+        # dedup collapse too aggressively?
+        "frames_sampled": frames_before_scenecut,
+        "scenes_kept": scenes_kept,
         "caption_count": len(captions),
         "dropped_low_quality_captions": dropped_low_quality,
+        "dropped_dupe_captions": dropped_dupe_captions,
+        # Sprint I#6 — audio-presence signal. Distinguishes silent
+        # video from failed transcription (see _video_has_audio_track).
+        "has_audio_track": has_audio_track,
         "has_transcript": bool(transcript),
         "transcript_chars": len(transcript) if transcript else 0,
+        # True only when the video HAS audio but transcription produced
+        # nothing — the row an operator should look at.
+        "transcription_gap": bool(has_audio_track) and not bool(transcript),
         "qwen_succeeded": bool(summary) and summary not in (
             "Video file. Preview unavailable.",
         ),
@@ -2204,6 +2247,138 @@ def _extract_keyframe(raw_bytes: bytes, seek_seconds: float = 5) -> Optional[byt
         if tmp_path:
             try: os.unlink(tmp_path)
             except OSError: pass
+
+
+# --- video summary Batch 2 (Sprint I#6) ------------------------------------
+
+
+def _video_has_audio_track(raw_bytes: bytes) -> Optional[bool]:
+    """ffprobe whether the video carries an audio stream.
+
+    Returns True/False, or None if ffprobe is unavailable / errors.
+    Lets the summary distinguish three cases that the old single
+    `has_transcript` flag conflated:
+      - has_audio_track == False           → genuinely silent video;
+        an empty transcript is EXPECTED, not a failure.
+      - has_audio_track == True,
+        has_transcript == False            → transcription failed or
+        produced nothing despite audio being present — worth auditing.
+      - both True                          → healthy.
+    """
+    import tempfile
+    import os
+    tmp_path: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="aprobe-", suffix=".bin", delete=False,
+        ) as tmp:
+            tmp.write(raw_bytes)
+            tmp_path = tmp.name
+        from backend.ffmpeg_args import safe_input_args
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-loglevel", "error",
+                *safe_input_args(),
+                "-select_streams", "a",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                tmp_path,
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            return None
+        return b"audio" in proc.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    finally:
+        if tmp_path:
+            try: os.unlink(tmp_path)
+            except OSError: pass
+
+
+def _frame_histogram(png_bytes: bytes) -> Optional[list[float]]:
+    """Coarse 256-bin luminance histogram of a frame, L1-normalized.
+    Returns None if the frame can't be decoded."""
+    try:
+        from PIL import Image as _PILImage  # type: ignore
+        img = _PILImage.open(BytesIO(png_bytes)).convert("L").resize((64, 64))
+        hist = img.histogram()  # 256 bins for an "L" image
+        total = float(sum(hist)) or 1.0
+        return [c / total for c in hist]
+    except Exception:
+        return None
+
+
+def _hist_distance(a: list[float], b: list[float]) -> float:
+    """L1 distance between two normalized histograms — 0 (identical)
+    to 2 (no overlap)."""
+    return sum(abs(x - y) for x, y in zip(a, b))
+
+
+def dedup_frames_by_histogram(
+    frames: list[bytes], threshold: float = 0.35,
+) -> list[bytes]:
+    """Scene-cut detection by histogram diff (Sprint I#6).
+
+    The video sampler extracts frames evenly across the duration, so a
+    static talking-head clip yields ~30 near-identical frames — all
+    captioned by Florence (expensive) and all fed to Qwen (redundant).
+    This keeps a frame only when its luminance histogram differs from
+    the LAST KEPT frame by >= `threshold`, biasing the kept set toward
+    information-dense moments (actual scene changes) and cutting
+    Florence calls on dead-static footage.
+
+    Always keeps the first frame. Frames that can't be decoded are
+    kept (can't compare → don't drop). Threshold 0.35 on the 0–2 L1
+    scale empirically separates "same scene, camera shake" from "the
+    shot changed."
+    """
+    if len(frames) <= 1:
+        return frames
+    kept: list[bytes] = []
+    last_hist: Optional[list[float]] = None
+    for f in frames:
+        hist = _frame_histogram(f)
+        if hist is None:
+            kept.append(f)
+            continue
+        if last_hist is None or _hist_distance(hist, last_hist) >= threshold:
+            kept.append(f)
+            last_hist = hist
+    return kept
+
+
+def dedup_captions(captions: list[str], threshold: float = 0.82) -> list[str]:
+    """Collapse near-duplicate keyframe captions before the Qwen rollup
+    (Sprint I#6).
+
+    Florence emits slight variations of the same observation across
+    adjacent frames — "a man in a suit" / "a man in a dark suit" /
+    "a man wearing a suit standing". Feeding all three to Qwen as
+    distinct facts inflates the prompt and biases the summary toward
+    whatever got repeated. We keep one representative (the longest,
+    usually the most descriptive) per near-duplicate cluster, using a
+    difflib similarity ratio.
+    """
+    import difflib
+    kept: list[str] = []
+    for cap in captions:
+        low = cap.lower()
+        matched = False
+        for i, existing in enumerate(kept):
+            ratio = difflib.SequenceMatcher(None, low, existing.lower()).ratio()
+            if ratio >= threshold:
+                # Keep the longer (more descriptive) of the pair.
+                if len(cap) > len(existing):
+                    kept[i] = cap
+                matched = True
+                break
+        if not matched:
+            kept.append(cap)
+    return kept
 
 
 # --- document --------------------------------------------------------------
