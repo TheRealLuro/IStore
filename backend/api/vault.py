@@ -29,7 +29,17 @@ Endpoints:
   DELETE /vault/folders/{id}    — delete a folder + its whole subtree + blobs.
   POST   /vault/files           — upload an E2E-encrypted file (ciphertext → MinIO).
   GET    /vault/files/{id}      — stream a file's ciphertext (HTTP Range ok).
+  GET    /vault/recipient-key   — a recipient's account public key, by email.
+  POST   /vault/items/{id}/share— grant a recipient a sealed bundle for an item.
+  GET    /vault/items/{id}/shares— who an item is shared with (owner view).
+  GET    /vault/shares          — items shared WITH me (recipient view).
+  DELETE /vault/shares/{id}     — revoke / decline a share (either party).
+  GET    /vault/shares/{id}/file— stream a shared file's ciphertext (recipient).
   DELETE /vault                 — wipe the vault (meta + items + folders + blobs).
+
+Vault shares carry NO comments and no public links — a share is a direct,
+revocable, read-only grant to a named neuthek account, sealed to its public
+key. The server stores only an opaque sealed blob plus who→whom routing.
 
 Vault files are end-to-end encrypted: the client encrypts the bytes under a
 random per-file key (chunked AES-GCM), seals that key to its own account
@@ -62,14 +72,21 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import delete as sa_delete, func, select
+from sqlalchemy import delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.storage import DEFAULT_QUOTA_BYTES
 from backend.auth.users import current_active_user
 from backend.config import settings
 from backend.db import get_session
-from backend.models import Image, User, VaultFolder, VaultItem, VaultMeta
+from backend.models import (
+    Image,
+    User,
+    VaultFolder,
+    VaultItem,
+    VaultMeta,
+    VaultShareGrant,
+)
 from backend.security import enforce_rate_limit
 from backend.storage import storage
 
@@ -100,6 +117,10 @@ _MAX_ENC_PRIVKEY_BYTES = 512
 # sealToPublicKey of a 32-byte key is ~126 bytes; cap at 256.
 _MAX_FOLDER_NAME_CT_BYTES = 8 * 1024
 _MAX_WRAPPED_KEY_BYTES = 256
+# A share's sealed bundle: for a file it's tiny (a 32-byte key + small
+# metadata); for a secure item it's the item plaintext (a note can be tens of
+# KB). Cap like an item's ciphertext so a hostile client can't park a big blob.
+_MAX_SEALED_PAYLOAD_BYTES = 256 * 1024
 # OWASP 2023 floor for PBKDF2-SHA256 is 600k. Enforce a floor so a
 # buggy/hostile client can't silently weaken a user's KDF, and a
 # ceiling so it can't wedge the user's browser with an absurd cost.
@@ -213,6 +234,15 @@ async def _used_bytes(session: AsyncSession, user_id) -> int:
         )
     )
     return int(img or 0) + int(vault or 0)
+
+
+async def _mirror_public_key(session: AsyncSession, user_id, pub: bytes) -> None:
+    """Mirror the vault account public key onto the (cross-readable) users row
+    so other accounts can fetch it to seal a shared item. vault_meta itself is
+    FORCE-RLS to its owner and can't be read cross-user."""
+    await session.execute(
+        sa_update(User).where(User.id == user_id).values(vault_public_key=pub)
+    )
 
 
 async def _folder_or_404(session: AsyncSession, user_id, folder_id: UUID) -> VaultFolder:
@@ -331,6 +361,41 @@ class VaultFolderResponse(BaseModel):
     updated_at: datetime
 
 
+# ---- share schemas (VLT-8 P5) ---------------------------------------------
+
+
+class VaultRecipientKeyResponse(BaseModel):
+    email: str
+    display_name: str | None = None
+    account_public_key: str  # base64 — used by the sharer to seal the bundle
+
+
+class VaultShareCreate(BaseModel):
+    recipient_email: str
+    sealed_payload: str  # base64 — bundle sealed to the recipient's public key
+
+
+class VaultShareRecipientResponse(BaseModel):
+    """For the OWNER's "who is this shared with" list."""
+    id: UUID
+    recipient_email: str
+    recipient_display_name: str | None = None
+    created_at: datetime
+
+
+class VaultIncomingShareResponse(BaseModel):
+    """For the RECIPIENT's "shared with me" list. The recipient unseals
+    `sealed_payload` client-side to recover the key/plaintext."""
+    id: UUID
+    kind: str
+    size_bytes: int | None = None
+    has_file: bool = False
+    sealed_payload: str  # base64
+    owner_email: str | None = None
+    owner_display_name: str | None = None
+    created_at: datetime
+
+
 # ---- endpoints -------------------------------------------------------------
 
 
@@ -402,6 +467,8 @@ async def setup_vault(
         enc_account_private_key=acct_priv,
     )
     session.add(meta)
+    if acct_pub is not None:
+        await _mirror_public_key(session, user.id, acct_pub)
     await session.commit()
     return _meta_response(meta)
 
@@ -439,6 +506,7 @@ async def set_account_key(
     meta.account_public_key = pub
     meta.enc_account_private_key = enc_priv
     meta.updated_at = datetime.now(timezone.utc)
+    await _mirror_public_key(session, user.id, pub)
     await session.commit()
     await session.refresh(meta)
     return _meta_response(meta)
@@ -897,6 +965,231 @@ async def download_vault_file(
     headers["Content-Length"] = str(size)
     return StreamingResponse(
         _iter_vault_object(item.storage_key, 0, 0),
+        media_type="application/octet-stream",
+        headers=headers,
+    )
+
+
+# ---- sharing (VLT-8 P5) ----------------------------------------------------
+#
+# A share seals the item's content key (files) or plaintext (secure items) to
+# a recipient's account public key, client-side. The server stores an opaque
+# sealed blob + routing and authorizes a recipient's ciphertext fetch. Vault
+# shares have NO comments and no public links — a direct, revocable, read-only
+# grant to a named account.
+
+
+async def _user_by_email(session: AsyncSession, email: str) -> User | None:
+    e = (email or "").strip()
+    if not e:
+        return None
+    return await session.scalar(
+        select(User).where(func.lower(User.email) == e.lower())
+    )
+
+
+@router.get("/recipient-key", response_model=VaultRecipientKeyResponse)
+async def get_recipient_key(
+    email: str,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VaultRecipientKeyResponse:
+    """Resolve a recipient's vault account PUBLIC key by email so the sharer
+    can seal a bundle to them. 404 when the address has no neuthek account or
+    hasn't set up a vault. Rate-limited to slow address enumeration."""
+    await enforce_rate_limit(
+        key=f"vault:reckey:{user.id}",
+        limit=60, window_seconds=3600,
+        detail="Too many lookups. Try again shortly.",
+    )
+    target = await _user_by_email(session, email)
+    if target is None or target.vault_public_key is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No neuthek vault found for that email.",
+        )
+    return VaultRecipientKeyResponse(
+        email=target.email,
+        display_name=getattr(target, "display_name", None),
+        account_public_key=_b64(target.vault_public_key),
+    )
+
+
+@router.post("/items/{item_id}/share", status_code=status.HTTP_201_CREATED,
+             response_model=VaultShareRecipientResponse)
+async def share_vault_item(
+    item_id: UUID,
+    payload: VaultShareCreate,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> VaultShareRecipientResponse:
+    """Grant a recipient access to one item. The client has already sealed the
+    bundle to the recipient's public key; we store it + routing. Re-sharing the
+    same item to the same recipient replaces the prior grant."""
+    await enforce_rate_limit(
+        key=f"vault:share:{user.id}",
+        limit=100, window_seconds=3600,
+        detail="Too many shares. Try again shortly.",
+    )
+    item = await session.get(VaultItem, item_id)
+    if item is None or item.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vault item not found.")
+    recipient = await _user_by_email(session, payload.recipient_email)
+    if recipient is None or recipient.vault_public_key is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No neuthek vault found for that email.",
+        )
+    if recipient.id == user.id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "You can’t share an item with yourself.",
+        )
+    sealed = _b64_field(payload.sealed_payload, min_bytes=1,
+                        max_bytes=_MAX_SEALED_PAYLOAD_BYTES, field="sealed_payload")
+    existing = await session.scalar(
+        select(VaultShareGrant).where(
+            VaultShareGrant.item_id == item_id,
+            VaultShareGrant.recipient_user_id == recipient.id,
+        )
+    )
+    if existing is not None:
+        existing.sealed_payload = sealed
+        existing.kind = item.kind
+        existing.storage_key = item.storage_key
+        existing.size_bytes = item.size_bytes
+        grant = existing
+    else:
+        grant = VaultShareGrant(
+            item_id=item_id,
+            owner_user_id=user.id,
+            recipient_user_id=recipient.id,
+            kind=item.kind,
+            storage_key=item.storage_key,
+            size_bytes=item.size_bytes,
+            sealed_payload=sealed,
+        )
+        session.add(grant)
+    await session.commit()
+    await session.refresh(grant)
+    return VaultShareRecipientResponse(
+        id=grant.id,
+        recipient_email=recipient.email,
+        recipient_display_name=getattr(recipient, "display_name", None),
+        created_at=grant.created_at,
+    )
+
+
+@router.get("/items/{item_id}/shares", response_model=list[VaultShareRecipientResponse])
+async def list_item_shares(
+    item_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[VaultShareRecipientResponse]:
+    """Who an item is currently shared with (owner view), for revoke UI."""
+    item = await session.get(VaultItem, item_id)
+    if item is None or item.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Vault item not found.")
+    rows = (
+        await session.execute(
+            select(VaultShareGrant, User.email, User.display_name)
+            .join(User, User.id == VaultShareGrant.recipient_user_id)
+            .where(
+                VaultShareGrant.item_id == item_id,
+                VaultShareGrant.owner_user_id == user.id,
+            )
+            .order_by(VaultShareGrant.created_at.asc())
+        )
+    ).all()
+    return [
+        VaultShareRecipientResponse(
+            id=g.id, recipient_email=email, recipient_display_name=dn,
+            created_at=g.created_at,
+        )
+        for (g, email, dn) in rows
+    ]
+
+
+@router.get("/shares", response_model=list[VaultIncomingShareResponse])
+async def list_incoming_shares(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[VaultIncomingShareResponse]:
+    """Items shared WITH me. The client unseals each sealed_payload with its
+    account private key to recover the key/plaintext."""
+    rows = (
+        await session.execute(
+            select(VaultShareGrant, User.email, User.display_name)
+            .join(User, User.id == VaultShareGrant.owner_user_id)
+            .where(VaultShareGrant.recipient_user_id == user.id)
+            .order_by(VaultShareGrant.created_at.desc())
+        )
+    ).all()
+    return [
+        VaultIncomingShareResponse(
+            id=g.id, kind=g.kind, size_bytes=g.size_bytes,
+            has_file=g.storage_key is not None,
+            sealed_payload=_b64(g.sealed_payload),
+            owner_email=email, owner_display_name=dn,
+            created_at=g.created_at,
+        )
+        for (g, email, dn) in rows
+    ]
+
+
+@router.delete("/shares/{grant_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_share(
+    grant_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Revoke a share. Either party may remove it — the owner revokes access,
+    the recipient declines/removes it from their list."""
+    grant = await session.get(VaultShareGrant, grant_id)
+    if grant is None or (
+        grant.owner_user_id != user.id and grant.recipient_user_id != user.id
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Share not found.")
+    await session.delete(grant)
+    await session.commit()
+
+
+@router.get("/shares/{grant_id}/file")
+async def download_shared_file(
+    grant_id: UUID,
+    request: Request,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    """Stream a shared FILE's ciphertext to the recipient (who decrypts it with
+    the per-file key recovered from the sealed bundle). Range-capable. The grant
+    carries its own copy of the object key, so this never reads the owner's
+    RLS-fenced vault_items row."""
+    grant = await session.get(VaultShareGrant, grant_id)
+    if grant is None or grant.recipient_user_id != user.id or grant.storage_key is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Shared file not found.")
+    size = await run_in_threadpool(
+        storage.stat, storage.bucket_vault, grant.storage_key,
+    )
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+        "Content-Disposition": "attachment",
+    }
+    rng = _parse_range(request.headers.get("range"), size)
+    if rng is not None:
+        start, end = rng
+        length = end - start + 1
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        headers["Content-Length"] = str(length)
+        return StreamingResponse(
+            _iter_vault_object(grant.storage_key, start, length),
+            status_code=status.HTTP_206_PARTIAL_CONTENT,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+    headers["Content-Length"] = str(size)
+    return StreamingResponse(
+        _iter_vault_object(grant.storage_key, 0, 0),
         media_type="application/octet-stream",
         headers=headers,
     )
