@@ -60,7 +60,7 @@ import hmac
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Literal
 from uuid import UUID
 
@@ -740,6 +740,53 @@ def _icloud_service_sync(link: "CloudLink") -> "PyiCloudService":
     return svc
 
 
+# SYNC-3 — per-link PyiCloudService + drive-root cache.
+#
+# The killer perf bug behind "iCloud never stops syncing yet pulls
+# nothing": `_icloud_download` rebuilt the ENTIRE PyiCloudService for
+# every file — each rebuild re-validates the session (multiple network
+# round-trips) AND accessing `service.drive` fires pyicloud's PCS
+# consent check (`requestWebAccessState` POST → the "ICDRS is not
+# disabled" warning). For a library of N files that's N full re-auths +
+# N PCS checks + N drive-root rebuilds, so the per-file loop crawls and
+# the status never flips. We cache ONE service + drive root per link
+# for the sync's duration and reuse it for the walk + every download.
+#
+# Safe because syncs are serialized per-link by the CS9 Redis lock and
+# downloads run sequentially in the loop — no concurrent access to the
+# same service instance. 10-min TTL bounds staleness (a sync that runs
+# longer rebuilds, which is fine).
+_ICLOUD_SVC_CACHE: dict[int, tuple] = {}
+_ICLOUD_SVC_TTL = timedelta(minutes=10)
+
+
+def _icloud_service_and_root(link: "CloudLink"):
+    """Return (service, drive_root_node), building + caching once per
+    link. Subsequent calls within the TTL reuse the same authenticated
+    session and the same drive root — so the expensive re-auth + PCS
+    check happen ONCE per sync instead of once per file."""
+    now = datetime.now(timezone.utc)
+    cached = _ICLOUD_SVC_CACHE.get(link.id)
+    if cached is not None:
+        svc, root, created = cached
+        if now - created < _ICLOUD_SVC_TTL:
+            return svc, root
+    svc = _icloud_service_sync(link)
+    # Accessing `.drive` once triggers the single PCS check + builds the
+    # DriveService; we hold the root node so per-file navigation starts
+    # from it without re-touching the property.
+    root = svc.drive
+    _ICLOUD_SVC_CACHE[link.id] = (svc, root, now)
+    return svc, root
+
+
+def _icloud_invalidate_service(link_id: int) -> None:
+    """Drop the cached service for a link — called at the end of a sync
+    so a long-idle session doesn't get reused on the next run with a
+    possibly-expired trust token."""
+    _ICLOUD_SVC_CACHE.pop(link_id, None)
+
+
 async def _icloud_collect_entries(link: "CloudLink") -> list[dict]:
     """BFS the user's iCloud Drive. Returns the same entry dict shape
     every other provider emits.
@@ -755,12 +802,14 @@ async def _icloud_collect_entries(link: "CloudLink") -> list[dict]:
     detection via the existing logic in `sync_user_provider`.
     """
     def _walk_sync() -> list[dict]:
-        service = _icloud_service_sync(link)
+        # SYNC-3 — shared cached service + drive root (built once per
+        # sync). Reused by every _icloud_download call below.
+        _service, root = _icloud_service_and_root(link)
         out: list[dict] = []
         # BFS queue holds (node, accumulated_parent_path) pairs. The
         # root maps to parent_path="" so files directly under root
         # land at the gallery root.
-        queue: list[tuple[object, str]] = [(service.drive, "")]
+        queue: list[tuple[object, str]] = [(root, "")]
         # Defensive depth cap — if pyicloud ever returns a cyclic
         # structure (it shouldn't, but iCloud's underlying CloudKit
         # has hit this in the wild), 50 levels is well past any
@@ -833,8 +882,14 @@ async def _icloud_download(link: "CloudLink", entry: dict) -> bytes:
     dict produced by `_icloud_collect_entries` — we use its `remote_id`
     (the full path) to navigate from `service.drive` to the leaf."""
     def _dl_sync() -> bytes:
-        service = _icloud_service_sync(link)
-        node = service.drive
+        # SYNC-3 — reuse the cached service + drive root instead of
+        # rebuilding a fresh PyiCloudService (re-auth + PCS check) per
+        # file. This is the fix for "iCloud never stops syncing yet
+        # pulls nothing": the previous per-file rebuild made each
+        # download cost a full session re-validation + a PCS consent
+        # round-trip, so a real library crawled for tens of minutes.
+        _service, root = _icloud_service_and_root(link)
+        node = root
         # `remote_id` is the full path split by `/`. Navigate one
         # component at a time. pyicloud's `node.get(name)` returns the
         # matching child or raises KeyError.
