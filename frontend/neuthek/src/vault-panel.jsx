@@ -168,41 +168,63 @@ function fileIconName(name = "", mime = "") {
   return "file";
 }
 
-// Download a vault file: fetch ciphertext, unseal the per-file key with the
-// account private key, decrypt chunk-by-chunk, and save to disk. The bytes
-// are only ever plaintext in memory on this device. `view` is a decrypted
-// row: { id, wrapped_key, data: { title, mime, file } }.
-async function downloadDecryptedFile(view) {
+// Fetch a vault file's ciphertext, unseal its per-file key with the account
+// private key, and decrypt it (chunk-by-chunk) into a plaintext Blob. The
+// bytes only ever exist as plaintext in memory on this device. Throws on any
+// failure. `view` is a decrypted row: { id, wrapped_key, data: { mime, file } }.
+async function decryptFileToBlob(view) {
   const priv = getAccountPrivateKey();
-  if (!priv) {
+  if (!priv) throw new Error("locked");
+  if (!view.wrapped_key || !view.data?.file) throw new Error("no-key");
+  const fileKey = await unsealFromPrivateKey(priv, view.wrapped_key);
+  const blob = await downloadVaultFile(view.id);
+  const ct = new Uint8Array(await blob.arrayBuffer());
+  const plain = await decryptFile(ct, fileKey, view.data.file);
+  return new Blob([plain], {
+    type: view.data.mime || "application/octet-stream",
+  });
+}
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "file";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+// Decrypt + save a file to disk (used as a fallback / explicit download).
+async function downloadDecryptedFile(view) {
+  if (!getAccountPrivateKey()) {
     toast.error("Lock and unlock the vault, then try again.");
     return;
   }
-  if (!view.wrapped_key || !view.data?.file) {
-    toast.error("This file is missing its key material.");
-    return;
-  }
-  const t = toast.loading(`Decrypting ${view.data.title || "file"}…`);
+  const t = toast.loading(`Decrypting ${view.data?.title || "file"}…`);
   try {
-    const fileKey = await unsealFromPrivateKey(priv, view.wrapped_key);
-    const blob = await downloadVaultFile(view.id);
-    const ct = new Uint8Array(await blob.arrayBuffer());
-    const plain = await decryptFile(ct, fileKey, view.data.file);
-    const out = new Blob([plain], {
-      type: view.data.mime || "application/octet-stream",
-    });
-    const url = URL.createObjectURL(out);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = view.data.title || "file";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    const out = await decryptFileToBlob(view);
+    saveBlob(out, view.data?.title || "file");
     toast.success("Downloaded", { id: t });
   } catch {
     toast.error("Couldn’t decrypt this file.", { id: t });
   }
+}
+
+// What kind of inline preview a MIME type gets. HTML/SVG are deliberately
+// NOT rendered as markup — a decrypted file is attacker-controlled and a
+// blob: URL is same-origin, so rendering it could run script in our origin.
+// Those fall through to "download only".
+function previewKind(mime = "") {
+  const m = mime.toLowerCase();
+  if (m.startsWith("image/") && m !== "image/svg+xml") return "image";
+  if (m.startsWith("video/")) return "video";
+  if (m.startsWith("audio/")) return "audio";
+  if (m === "application/pdf") return "pdf";
+  if (m.startsWith("text/") && m !== "text/html") return "text";
+  if (m === "application/json") return "text";
+  return "none";
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +641,7 @@ function VaultHome() {
   const [addOpen, setAddOpen] = useState(false);
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [detail, setDetail] = useState(null);
+  const [viewer, setViewer] = useState(null); // decrypted file row being previewed
   const [uploading, setUploading] = useState(0); // in-flight upload count
   const fileInputRef = useRef(null);
 
@@ -1017,7 +1040,7 @@ function VaultHome() {
                   className="vault-row__hit"
                   onClick={() => {
                     touchVault();
-                    if (isFile) downloadDecryptedFile(item);
+                    if (isFile) setViewer(item);
                     else setDetail(item);
                   }}
                 >
@@ -1092,7 +1115,161 @@ function VaultHome() {
           refresh();
         }}
       />
+      <FileViewerModal
+        item={viewer}
+        onClose={() => setViewer(null)}
+        onDelete={(id) => {
+          setViewer(null);
+          onDelete(id);
+        }}
+      />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FileViewerModal — decrypt + preview a file in-browser (P3). Images, video,
+// audio, PDF, and plain text render inline; everything else is download-only.
+// Decryption happens on this device; the server only ever sees ciphertext.
+// ---------------------------------------------------------------------------
+
+function FileViewerModal({ item, onClose, onDelete }) {
+  const [state, setState] = useState("loading"); // loading|locked|error|image|video|audio|pdf|text|nopreview
+  const [url, setUrl] = useState(null);
+  const [text, setText] = useState("");
+  const blobRef = useRef(null);
+  const urlRef = useRef(null);
+
+  useEffect(() => {
+    if (!item) return;
+    let cancelled = false;
+    setState("loading");
+    setUrl(null);
+    setText("");
+    blobRef.current = null;
+    const kind = previewKind(item.data?.mime);
+    (async () => {
+      try {
+        const blob = await decryptFileToBlob(item);
+        if (cancelled) return;
+        blobRef.current = blob;
+        if (kind === "text") {
+          const t = await blob.text();
+          if (cancelled) return;
+          // Cap what we render so a huge text file can't freeze the tab.
+          setText(t.length > 200_000 ? t.slice(0, 200_000) + "\n…" : t);
+          setState("text");
+        } else if (kind === "none") {
+          setState("nopreview");
+        } else {
+          const u = URL.createObjectURL(blob);
+          urlRef.current = u;
+          setUrl(u);
+          setState(kind);
+        }
+      } catch (e) {
+        if (!cancelled) setState(e?.message === "locked" ? "locked" : "error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
+      }
+      blobRef.current = null;
+    };
+  }, [item]);
+
+  if (!item) return null;
+  const title = item.data?.title || "File";
+  const save = () => {
+    if (blobRef.current) saveBlob(blobRef.current, title);
+    else downloadDecryptedFile(item);
+  };
+
+  return (
+    <Modal open={!!item} onClose={onClose} size="lg" labelledBy="vault-view-title">
+      <ModalClose onClose={onClose} />
+      <div className="vault-modal-form">
+        <div className="vault-viewer">
+          <div className="vault-viewer__head">
+            <span className="vault-row__icon" data-kind="file">
+              <Icon name={fileIconName(title, item.data?.mime)} size={18} />
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <h2 id="vault-view-title" className="vault-viewer__title">
+                {title}
+              </h2>
+              <div className="vault-viewer__meta">
+                {[formatBytes(item.size_bytes), item.data?.mime]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            </div>
+          </div>
+
+          <div className="vault-viewer__stage">
+            {state === "loading" && (
+              <div className="vault-viewer__msg">Decrypting…</div>
+            )}
+            {state === "locked" && (
+              <div className="vault-viewer__msg">
+                Lock and unlock the vault, then try again.
+              </div>
+            )}
+            {state === "error" && (
+              <div className="vault-viewer__msg">Couldn’t decrypt this file.</div>
+            )}
+            {state === "image" && (
+              <img className="vault-viewer__img" src={url} alt={title} />
+            )}
+            {state === "video" && (
+              <video className="vault-viewer__media" src={url} controls />
+            )}
+            {state === "audio" && (
+              <audio className="vault-viewer__audio" src={url} controls />
+            )}
+            {state === "pdf" && (
+              <iframe
+                className="vault-viewer__frame"
+                src={url}
+                title={title}
+                sandbox=""
+              />
+            )}
+            {state === "text" && (
+              <pre className="vault-viewer__text">{text}</pre>
+            )}
+            {state === "nopreview" && (
+              <div className="vault-viewer__msg">
+                No preview for this file type. Download it to open it on your
+                device.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="vault-modal-actions"
+          style={{ justifyContent: "space-between" }}
+        >
+          <button
+            className="btn btn--danger btn--sm"
+            onClick={() => {
+              if (window.confirm("Delete this file permanently?")) {
+                onDelete?.(item.id);
+              }
+            }}
+          >
+            <Icon name="trash" size={13} /> Delete
+          </button>
+          <button className="btn btn--primary" onClick={save}>
+            <Icon name="download" size={13} /> Download
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
