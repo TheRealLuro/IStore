@@ -19,6 +19,9 @@
 
 import { Link } from "react-router-dom";
 import { usePageSeo, webPage, breadcrumbs } from "../seo";
+import Panel, {
+  FlowNode, FlowArrow, Chip, SpecRow, StepRow, MeterRow,
+} from "../components/Panel";
 
 interface Tile {
   title: string;
@@ -334,48 +337,38 @@ export default function Features() {
               with one click.
             </p>
           </div>
-          <div className="code-card">
-            <div className="code-card__chrome">
-              <span className="code-card__dots"><span/><span/><span/></span>
-              <span className="code-card__title">search.flow</span>
-              <span className="code-card__lang">flow</span>
-            </div>
-            <pre className="code"><span className="tok-c"># What you type → what comes back</span>{`
-`}<span className="tok-p">you&gt;</span> <span className="tok-s">"snowy roof at sunset"</span>{`
-       ↓
-`}<span className="tok-n">visual + text understanding</span>{`
-       ↓
-`}<span className="tok-p">app&gt;</span> top matches sorted by relevance{`
-
-`}<span className="tok-c"># Synonym-aware too</span>{`
-`}<span className="tok-p">you&gt;</span> <span className="tok-s">"vibrant"</span>{`
-       → matches `}<span className="tok-s">"colorful"</span>, <span className="tok-s">"vivid"</span>, <span className="tok-s">"bright"</span>
-            </pre>
-          </div>
+          <Panel title="Search" tag="live">
+            <FlowNode kind="query">snowy roof at sunset</FlowNode>
+            <FlowArrow />
+            <FlowNode kind="step">Visual + text understanding</FlowNode>
+            <FlowArrow />
+            <FlowNode kind="result">
+              <Chip>matched photo</Chip>
+              <Chip>matched photo</Chip>
+              <Chip>+ 6 more, ranked</Chip>
+            </FlowNode>
+            <FlowNode kind="step" >Synonym-aware — type "vibrant"</FlowNode>
+            <FlowNode kind="result">
+              <Chip>colorful</Chip>
+              <Chip>vivid</Chip>
+              <Chip>bright</Chip>
+            </FlowNode>
+          </Panel>
         </div>
       </section>
 
       {/* ===== Spotlight 2: Inline preview ===== */}
       <section className="section">
         <div className="container split">
-          <div className="code-card">
-            <div className="code-card__chrome">
-              <span className="code-card__dots"><span/><span/><span/></span>
-              <span className="code-card__title">preview.types</span>
-              <span className="code-card__lang">supported</span>
-            </div>
-            <pre className="code"><span className="tok-c"># Everything previews in your browser:</span>{`
-`}<span className="tok-k">images</span>      <span className="tok-p">→</span> zoom, pan, arrow-key navigation{`
-`}<span className="tok-k">PDFs</span>        <span className="tok-p">→</span> multi-page stack, lazy-loaded{`
-`}<span className="tok-k">code</span>        <span className="tok-p">→</span> 40+ languages syntax-highlighted{`
-`}<span className="tok-k">RAW</span>         <span className="tok-p">→</span> NEF / CR2 / ARW / DNG decoded{`
-`}<span className="tok-k">animated GIF</span> <span className="tok-p">→</span> every frame preserved{`
-`}<span className="tok-k">video</span>       <span className="tok-p">→</span> frame-grab thumbnails{`
-`}<span className="tok-k">archives</span>    <span className="tok-p">→</span> .zip / .tar / .7z extracted{`
-
-`}<span className="tok-c"># All from the same panel.</span>
-            </pre>
-          </div>
+          <Panel title="Preview" tag="in-browser">
+            <SpecRow label="Images" value="zoom, pan, arrow-key nav" />
+            <SpecRow label="PDFs" value="multi-page, lazy-loaded" />
+            <SpecRow label="Code" value="40+ languages, highlighted" />
+            <SpecRow label="RAW" value="NEF / CR2 / ARW / DNG decoded" />
+            <SpecRow label="Animated GIF" value="every frame preserved" />
+            <SpecRow label="Video" value="frame-grab thumbnails" />
+            <SpecRow label="Archives" value=".zip / .tar / .7z extracted" />
+          </Panel>
           <div>
             <span className="eyebrow">Inline preview</span>
             <h2>Open it, don't download it.</h2>
@@ -430,42 +423,29 @@ export default function Features() {
               days.
             </p>
           </div>
-          <div className="code-card">
-            <div className="code-card__chrome">
-              <span className="code-card__dots"><span/><span/><span/></span>
-              <span className="code-card__title">best-of.scoring</span>
-              <span className="code-card__lang">live</span>
-            </div>
-            <pre className="code"><span className="tok-c"># For each frame you selected:</span>{"\n"}<span className="tok-k">sharpness</span>   <span className="tok-n">▓▓▓▓▓▓▓▓▓░</span>  <span className="tok-n">93</span>{"\n"}<span className="tok-k">exposure</span>    <span className="tok-n">▓▓▓▓▓▓▓░░░</span>  <span className="tok-n">71</span>{"\n"}<span className="tok-k">face quality</span> <span className="tok-n">▓▓▓▓▓▓▓▓▓▓</span>  <span className="tok-n">98</span>{"\n"}<span className="tok-k">use case</span>    <span className="tok-n">▓▓▓▓▓▓▓▓░░</span>  <span className="tok-n">82</span>  <span className="tok-c"># "portrait"</span>{"\n                       ─────\n"}<span className="tok-k">overall</span>     <span className="tok-n">▓▓▓▓▓▓▓▓▓░</span>  <span className="tok-n">88</span>  <span className="tok-c"># top pick</span>
-            </pre>
-          </div>
+          <Panel title="Best Of — frame scoring" tag="live">
+            <MeterRow label="Sharpness" value={93} />
+            <MeterRow label="Exposure" value={71} />
+            <MeterRow label="Face quality" value={98} />
+            <MeterRow label="Use case" value={82} note={'biased toward "portrait"'} />
+            <MeterRow label="Overall" value={88} highlight note="top pick — keep this one" />
+          </Panel>
         </div>
       </section>
 
       {/* ===== Spotlight 4: Google Drive ===== */}
       <section className="section">
         <div className="container split">
-          <div className="code-card">
-            <div className="code-card__chrome">
-              <span className="code-card__dots"><span/><span/><span/></span>
-              <span className="code-card__title">drive.sync</span>
-              <span className="code-card__lang">setup</span>
-            </div>
-            <pre className="code"><span className="tok-c"># One-time setup:</span>{`
-`}<span className="tok-p">1.</span> Settings → Cloud sync → Connect Google Drive{`
-`}<span className="tok-p">2.</span> Approve on Google's screen{`
-`}<span className="tok-p">3.</span> Done — your Drive appears as a folder{`
-
-`}<span className="tok-c"># From then on:</span>{`
-`}<span className="tok-k">hourly</span>   auto-sync pulls new files{`
-`}<span className="tok-k">manual</span>   "Sync now" button for impatient moments{`
-`}<span className="tok-k">conflicts</span> banner lists anything diverged{`
-`}<span className="tok-k">AI</span>        off by default per source{`
-
-`}<span className="tok-c"># Scope: drive.readonly — we cannot write</span>{`
-`}<span className="tok-c"># to your Drive. Ever.</span>
-            </pre>
-          </div>
+          <Panel title="Cloud sync — Google Drive" tag="read-only">
+            <StepRow n={1}>Settings → Cloud sync → Connect Google Drive</StepRow>
+            <StepRow n={2}>Approve on Google's screen</StepRow>
+            <StepRow n={3}>Done — your Drive appears as a folder</StepRow>
+            <SpecRow label="Hourly" value="auto-sync pulls new files" />
+            <SpecRow label="Manual" value={'"Sync now" on demand'} />
+            <SpecRow label="Conflicts" value="banner lists anything diverged" />
+            <SpecRow label="AI" value="off by default, per source" />
+            <SpecRow label="Scope" value="drive.readonly — never writes back" />
+          </Panel>
           <div>
             <span className="eyebrow">Cloud sync</span>
             <h2>Connect what you already have — without giving it away.</h2>
