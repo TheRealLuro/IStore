@@ -869,6 +869,191 @@ p {
 }
 .code-card .code { border: 0; border-radius: 0; }
 
+/* ---------- Panel (MKT-3) ----------
+   Clean, animated product-UI "render" cards that replace the old
+   terminal demos on Features. Light frosted surface, refined window
+   chrome, and rows that cascade in when the panel scrolls into view
+   (driven by Panel.tsx adding .is-visible). The aesthetic is "app
+   surface", not "scary code dump". */
+.panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  /* Panel shell entrance — settles up with the expo ease. */
+  opacity: 0;
+  transform: translateY(20px) scale(0.985);
+  transition:
+    opacity 600ms var(--ease-out),
+    transform 600ms var(--ease-out);
+}
+.panel.is-visible { opacity: 1; transform: translateY(0) scale(1); }
+
+.panel__chrome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-2) 100%);
+  border-bottom: 1px solid var(--line);
+}
+.panel__dots { display: inline-flex; gap: 6px; }
+.panel__dots span {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--surface-4);
+}
+.panel__dots span:nth-child(1) { background: #f0b9b3; }
+.panel__dots span:nth-child(2) { background: #f3d9a6; }
+.panel__dots span:nth-child(3) { background: #b9dfc0; }
+.panel__title {
+  font-size: 13px; font-weight: 500; color: var(--ink-2);
+  letter-spacing: -0.01em;
+}
+.panel__tag {
+  margin-left: auto;
+  font-size: 11px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 3px 9px; border-radius: 999px;
+}
+.panel__body { padding: 22px 20px; display: flex; flex-direction: column; gap: 2px; }
+
+/* Row reveal — each .panel-row rises in once the panel is visible,
+   staggered by position for the "render building itself" feel. */
+.panel-row {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.panel.is-visible .panel-row {
+  animation: panelRowIn 520ms var(--ease-out) forwards;
+}
+.panel.is-visible .panel-row:nth-child(1)  { animation-delay: 80ms; }
+.panel.is-visible .panel-row:nth-child(2)  { animation-delay: 150ms; }
+.panel.is-visible .panel-row:nth-child(3)  { animation-delay: 220ms; }
+.panel.is-visible .panel-row:nth-child(4)  { animation-delay: 290ms; }
+.panel.is-visible .panel-row:nth-child(5)  { animation-delay: 360ms; }
+.panel.is-visible .panel-row:nth-child(6)  { animation-delay: 430ms; }
+.panel.is-visible .panel-row:nth-child(7)  { animation-delay: 500ms; }
+.panel.is-visible .panel-row:nth-child(8)  { animation-delay: 570ms; }
+.panel.is-visible .panel-row:nth-child(9)  { animation-delay: 640ms; }
+.panel.is-visible .panel-row:nth-child(n+10) { animation-delay: 700ms; }
+@keyframes panelRowIn {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Flow nodes (search demo) */
+.flow-node {
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 15px;
+}
+.flow-node--query {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--ink); color: var(--surface);
+  padding: 10px 16px; border-radius: 999px;
+  font-weight: 500;
+}
+.flow-node--query::before {
+  content: "";
+  width: 14px; height: 14px;
+  background: currentColor;
+  -webkit-mask: center / contain no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");
+  mask: center / contain no-repeat
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");
+  opacity: 0.85;
+}
+.flow-node--step {
+  color: var(--ink-2); font-size: 14px;
+  background: var(--surface-2); border: 1px solid var(--line);
+  padding: 8px 14px; border-radius: var(--radius-1);
+}
+.flow-node--result {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  color: var(--ink-3); font-size: 13px;
+}
+.flow-arrow { color: var(--ink-4); margin: 2px 0 2px 14px; }
+
+.panel-chip {
+  display: inline-flex; align-items: center;
+  font-size: 13px; font-weight: 500; color: var(--ink);
+  background: var(--surface-2); border: 1px solid var(--line);
+  padding: 5px 11px; border-radius: 999px;
+}
+
+/* Spec rows (preview types, drive values) */
+.spec-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line-2);
+  font-size: 14px;
+}
+.spec-row:last-child { border-bottom: 0; }
+.spec-row__glyph { color: var(--ink-3); display: inline-flex; }
+.spec-row__label { font-weight: 500; color: var(--ink); }
+.spec-row__value { color: var(--ink-3); font-size: 13px; text-align: right; }
+
+/* Step rows (numbered setup) */
+.step-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 8px 0; font-size: 14px; color: var(--ink-2);
+}
+.step-row__n {
+  flex: none;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ink); color: var(--surface);
+  font-size: 12px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.step-row__text { padding-top: 1px; }
+
+/* Meter rows (best-of scoring) — bar fills on reveal. */
+.meter {
+  display: grid;
+  grid-template-columns: 110px 1fr 34px;
+  align-items: center; gap: 12px;
+  padding: 7px 0;
+  font-size: 13px;
+}
+.meter__label { color: var(--ink-2); }
+.meter__track {
+  height: 8px; border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.meter__fill {
+  display: block; height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--ink);
+}
+.panel.is-visible .meter__fill {
+  animation: meterFill 900ms var(--ease-out) forwards;
+  animation-delay: 400ms;
+}
+@keyframes meterFill { to { width: var(--meter); } }
+.meter__value {
+  text-align: right; font-weight: 600; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.meter__note { grid-column: 1 / -1; font-size: 11px; color: var(--ink-3); margin-top: -2px; }
+.meter--top .meter__fill { background: var(--good); }
+.meter--top .meter__value { color: var(--good); }
+.meter--top { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    opacity: 1 !important; transform: none !important; transition: none !important;
+  }
+  .panel-row { opacity: 1 !important; transform: none !important; animation: none !important; }
+  .meter__fill { animation: none !important; width: var(--meter) !important; }
+}
+
 /* When a .code is used standalone (no chrome), still give it a
    subtle "card" look that matches the chromed version. */
 :not(.code-card) > .code {
