@@ -50,6 +50,15 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     # "use the global default" (DEFAULT_QUOTA_BYTES in api/storage.py).
     quota_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
+    # VLT-8 — clear-text mirror of the vault account PUBLIC key (also held,
+    # authoritatively, on vault_meta). vault_meta is FORCE-RLS to its owner,
+    # so it can't be read cross-user; this mirror lets another user fetch
+    # this account's public key to seal a shared vault item to it. Public by
+    # design. Populated by the client when the keypair is provisioned.
+    vault_public_key: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True
+    )
+
     # Per-user originals-retention policy (migration 0038). Discrete
     # enum so the UI is a radio group and the upload path is a
     # one-switch translation. "30d" is the legacy default — existing
@@ -1426,6 +1435,59 @@ class VaultItem(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class VaultShareGrant(Base):
+    """A single shared vault item (VLT-8 P5). The owner's client sealed the
+    item's content key (files) or plaintext (secure items) to the recipient's
+    account public key; only the recipient's private key opens `sealed_payload`.
+    The server stores the opaque blob + routing and never sees a key/plaintext.
+
+    Vault shares have NO comments and no public links — a share is a direct,
+    revocable grant to a named account, read-only for the recipient. RLS lets
+    both parties see/remove a grant; only the owner can create one. Cascade
+    -deletes with the item, the owner, or the recipient.
+    """
+
+    __tablename__ = "vault_share_grants"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("vault_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    recipient_user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # File items: copy of the MinIO object key + size so the recipient can
+    # stream ciphertext without reading the owner-RLS-fenced vault_items row.
+    storage_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    sealed_payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "item_id", "recipient_user_id", name="uq_vault_share_item_recipient"
+        ),
     )
 
 
