@@ -101,7 +101,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b5 .gal{position:relative;display:grid;grid-template-columns:repeat(5,1fr);gap:7px;width:min(290px,44vw);justify-self:center;opacity:0;transform:scale(.86)}
 #b5 .gal i{aspect-ratio:1;border-radius:6px;background:linear-gradient(140deg,#262629,#141416);box-shadow:inset 0 0 0 1px rgba(244,241,234,.05);display:grid;place-items:center}
 #b5 .gal i.hot{background:linear-gradient(140deg,#f3f0e8,#cfccc4);box-shadow:0 0 30px rgba(255,255,255,.3),inset 0 0 0 1px rgba(255,255,255,.5)}
-#b5 .gal i.hot span{font-family:var(--serif);font-weight:500;font-size:clamp(15px,2.4vw,26px);color:#0a0a0a;line-height:1}
+#b5 .gal i.hot svg{width:64%;height:64%;overflow:visible}
 #b5 .biz{position:absolute;left:0;right:0;bottom:-36px;text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.16)}
 #b5 .stream{position:absolute;top:50%;height:1px;background:linear-gradient(90deg,rgba(244,241,234,0),rgba(244,241,234,.55));transform:translateY(-50%);opacity:0}
 
@@ -116,14 +116,17 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b7 .mig{position:relative;width:min(960px,100%);height:min(440px,58vh)}
 #b7 svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 #b7 .mlabel{font-family:var(--sans);font-weight:500;font-size:15px;fill:var(--paper);letter-spacing:.02em}
-#b7 .mglyph{stroke:var(--paper);stroke-width:1.7;fill:none}
+#b7 .mglyph{stroke:var(--paper);stroke-width:1.8;fill:none;stroke-linejoin:round;stroke-linecap:round}
+#b7 .mglyph.fill{fill:var(--paper);stroke:none}
 #b7 .mbase{stroke:rgba(244,241,234,.12);stroke-width:1;fill:none}
 #b7 .mflow{stroke:var(--white);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-dasharray:2 16;opacity:0}
 #b7 .mflow.run{animation:flow 1.1s linear infinite;opacity:.85}
 @keyframes flow{to{stroke-dashoffset:-72}}
 #b7 .mnode{fill:rgba(244,241,234,.04);stroke:var(--white);stroke-width:2}
-#b7 .mn-text{font-family:var(--serif);font-weight:500;font-size:42px;fill:var(--white);text-anchor:middle;dominant-baseline:central}
+#b7 .mlogo path{stroke:var(--white);stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+#b7 .mlogo circle{fill:var(--white)}
 #b7 .msrc{opacity:0}
+#b7 .disc{position:absolute;left:0;right:0;bottom:clamp(46px,9vh,94px);margin:0 auto;max-width:min(660px,86vw);text-align:center;font-family:var(--sans);font-size:11px;line-height:1.55;letter-spacing:.01em;color:rgba(244,241,234,.42)}
 
 /* BEAT 8 — close */
 #b8 .close{text-align:center;display:grid;justify-items:center}
@@ -212,7 +215,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
         <div class="t">self-host · open source · free</div>
       </div>
       <div class="gal">
-        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="hot"><span>n.</span></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="hot"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20" fill="none" stroke="#0a0a0a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><g fill="#0a0a0a"><circle cx="18" cy="44" r="3.6"/><circle cx="22" cy="18" r="3.6"/><circle cx="44" cy="44" r="3.6"/><circle cx="18" cy="28" r="2.8"/><circle cx="34" cy="30" r="2.8"/><circle cx="48" cy="20" r="5"/></g></svg></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
         <div class="biz">free open-source funnel → managed saas</div>
       </div>
       <div class="pole" id="poleR">
@@ -239,6 +242,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
   <section class="beat" id="b7" aria-hidden="true">
     <div class="center"><div class="mig"><svg id="migsvg" viewBox="0 0 960 440"></svg></div></div>
     <div class="caption" id="cap7"><span class="ac">switching over</span> has never been easier.</div>
+    <p class="disc">* All provider names and logos are trademarks of their respective owners. neuthek is independent and not affiliated with, sponsored by, or endorsed by them.</p>
   </section>
 
   <section class="beat" id="b8" aria-hidden="true">
@@ -321,50 +325,78 @@ if(glOK){
   const galaxyGroup=new THREE.Group(); const gxPoints=new THREE.Points(gg,gMat); galaxyGroup.add(gxPoints); galaxyGroup.rotation.x=galaxy.tilt; galaxyGroup.visible=false; scene.add(galaxyGroup);
 
   /* ---- BRAIN (two hemispheres + fissure + folds) + synaptic pulses ---- */
-  const BN=Math.min(innerWidth,innerHeight)<760?110:168;
-  const bpos=new Float32Array(BN*3),bsh=new Float32Array(BN),bsz=new Float32Array(BN);
-  const RX=210,RY=140,RZ=120,GAP=34;
-  for(let i=0;i<BN;i++){
-    const u=Math.random()*2-1, ph=Math.random()*Math.PI*2, r=0.82+0.18*Math.random();
-    let dx=Math.sqrt(1-u*u)*Math.cos(ph), dy=u, dz=Math.sqrt(1-u*u)*Math.sin(ph);
-    const fold=1+0.075*Math.sin(dx*7+dy*3.3)*Math.sin(dz*6.1);                 // gyri/sulci
-    let x=dx*r*fold*RX, y=dy*r*fold*RY, z=dz*r*fold*RZ;
-    z=z*0.6 + (dz>=0?1:-1)*GAP;                                                // longitudinal fissure → two lobes
-    if(y<0) y*=0.82;                                                          // flatter underside
-    if(x>0) x*=1.07;                                                         // frontal lobe a touch larger
-    bpos[i*3]=x; bpos[i*3+1]=y+6; bpos[i*3+2]=z; bsh[i]=0.5+Math.random()*0.5; bsz[i]=9+Math.random()*12;
-  }
-  const edges=[],seen=new Set();
-  for(let i=0;i<BN;i++){ const d=[]; for(let j=0;j<BN;j++) if(j!==i){const dx=bpos[i*3]-bpos[j*3],dy=bpos[i*3+1]-bpos[j*3+1],dz=bpos[i*3+2]-bpos[j*3+2];d.push([dx*dx+dy*dy+dz*dz,j]);} d.sort((a,b)=>a[0]-b[0]); for(let k=0;k<3;k++){const j=d[k][1],key=i<j?i+","+j:j+","+i; if(!seen.has(key)){seen.add(key);edges.push([i,j]);}} }
-  const lp=new Float32Array(edges.length*6); edges.forEach((e,i)=>{for(let c=0;c<3;c++){lp[i*6+c]=bpos[e[0]*3+c];lp[i*6+3+c]=bpos[e[1]*3+c];}});
+  /* ── BEAT 3 brain — parametric two-hemisphere cortex (gyri + longitudinal
+     fissure) with a cerebellum and brain stem. A faint wireframe surface gives
+     the unmistakable brain silhouette; bright neuron nodes + travelling signal
+     pulses ride that surface for the neural-network read. ── */
+  const SMALL=Math.min(innerWidth,innerHeight)<760, S=160;
+  const fbm=(a,b,c)=>0.58*Math.sin(a*3.1+b*2.3)*Math.cos(c*2.7)               // deterministic fold field
+                    +0.30*Math.sin(a*6.7-c*5.1)*Math.sin(b*4.3+1.7)
+                    +0.16*Math.sin((a+c)*9.6+2.0)*Math.cos(b*7.4);
+  const smooth=(e0,e1,x)=>{const t=Math.min(1,Math.max(0,(x-e0)/(e1-e0)));return t*t*(3-2*t);};
+  const spos=[], rows=[];
+  const UU=SMALL?40:54, VV=SMALL?20:26;                                       // cerebrum grid
+  for(let vi=0;vi<=VV;vi++){ const v=vi/VV*Math.PI, ring=[];
+    for(let ui=0;ui<UU;ui++){ const u=ui/UU*Math.PI*2;
+      const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
+      let r=1+0.072*fbm(nx,ny,nz);                                            // gyri / sulci
+      const gx=Math.exp(-(nx*nx)/0.02), top=smooth(-0.15,0.6,ny);
+      r*=1-0.20*gx*top;                                                       // longitudinal fissure groove
+      let x=nx*r*0.94*S, y=ny*r*0.86*S, z=nz*r*1.10*S;
+      x+=Math.sign(nx||1)*gx*top*0.07*S;                                      // splay the two lobes apart
+      if(ny<0) y*=0.74;                                                       // flatter underside
+      y-=0.05*S; z*=(nz>0?1.04:0.97);                                         // fuller frontal lobe
+      const idx=spos.length/3; spos.push(x,y,z); ring.push(idx);
+    } rows.push(ring); }
+  const cerebN=spos.length/3, CU=SMALL?22:30, CV=SMALL?11:15, cbRows=[];      // cerebellum
+  for(let vi=0;vi<=CV;vi++){ const v=vi/CV*Math.PI, ring=[];
+    for(let ui=0;ui<CU;ui++){ const u=ui/CU*Math.PI*2;
+      const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
+      const r=1+0.11*Math.sin(nx*16+nz*9)*Math.cos(ny*13);                    // fine cerebellar folds
+      const idx=spos.length/3; spos.push(nx*r*0.46*S, ny*r*0.34*S-0.55*S, nz*r*0.5*S-0.92*S); ring.push(idx);
+    } cbRows.push(ring); }
+  const STEM=[];                                                              // brain stem
+  for(let k=0;k<=7;k++){const tk=k/7,idx=spos.length/3; spos.push((Math.random()-.5)*6,-0.5*S-tk*0.42*S,-0.55*S+tk*0.18*S); STEM.push(idx);}
+  const SP=new Float32Array(spos);
+  const edges=[], wire=(grid,wrap)=>{for(let r=0;r<grid.length;r++){const a=grid[r];for(let i=0;i<a.length;i++){
+      if(i+1<a.length||wrap) edges.push([a[i],a[(i+1)%a.length]]);
+      if(r+1<grid.length) edges.push([a[i],grid[r+1][i]]);
+  }}};
+  wire(rows,true); wire(cbRows,true);
+  for(let k=0;k+1<STEM.length;k++) edges.push([STEM[k],STEM[k+1]]);
+  for(let k=0;k<40;k++){const a=(Math.random()*cerebN)|0,b=(Math.random()*cerebN)|0; if(a!==b) edges.push([a,b]);}  // association fibres
+  const lp=new Float32Array(edges.length*6); edges.forEach((e,i)=>{for(let c=0;c<3;c++){lp[i*6+c]=SP[e[0]*3+c];lp[i*6+3+c]=SP[e[1]*3+c];}});
   const lg=new THREE.BufferGeometry(); lg.setAttribute("position",new THREE.BufferAttribute(lp,3));
   const lMat=new THREE.LineBasicMaterial({color:0xf4f1ea,transparent:true,opacity:0,depthWrite:false});
   const lines=new THREE.LineSegments(lg,lMat);
+  const TOT=SP.length/3, NN=SMALL?150:230, pick=[]; {const step=Math.max(1,(TOT/NN)|0); for(let i=0;i<TOT;i+=step) pick.push(i);}
+  const bpos=new Float32Array(pick.length*3),bsh=new Float32Array(pick.length),bsz=new Float32Array(pick.length);
+  pick.forEach((idx,i)=>{bpos[i*3]=SP[idx*3];bpos[i*3+1]=SP[idx*3+1];bpos[i*3+2]=SP[idx*3+2];bsh[i]=0.45+Math.random()*0.55;bsz[i]=7+Math.random()*13;});
   const ng=new THREE.BufferGeometry(); ng.setAttribute("position",new THREE.BufferAttribute(bpos,3)); ng.setAttribute("aShade",new THREE.BufferAttribute(bsh,1)); ng.setAttribute("aSize",new THREE.BufferAttribute(bsz,1));
   const nUni={uFade:{value:0},uTex:{value:TEX},uTime:{value:0}};
   const nMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,uniforms:nUni,
-    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.8+0.2*sin(uTime*2.0+aShade*30.0);gl_PointSize=aSize*tw*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;}`,
-    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.7+0.3*vS),1.0)*t*uFade;}`});
+    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.78+0.22*sin(uTime*2.0+aShade*30.0);gl_PointSize=aSize*tw*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;}`,
+    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.72+0.28*vS),1.0)*t*uFade;}`});
   const nodes=new THREE.Points(ng,nMat);
-  const PN=Math.min(70,edges.length),pl=[]; for(let i=0;i<PN;i++) pl.push({e:(Math.random()*edges.length)|0,t:Math.random(),sp:0.004+Math.random()*0.008});
-  const pp=new Float32Array(PN*3),ps=new Float32Array(PN); for(let i=0;i<PN;i++) ps[i]=15+Math.random()*12;
+  const PN=Math.min(SMALL?48:80,edges.length),pl=[]; for(let i=0;i<PN;i++) pl.push({e:(Math.random()*edges.length)|0,t:Math.random(),sp:0.004+Math.random()*0.01});
+  const pp=new Float32Array(PN*3),ps=new Float32Array(PN); for(let i=0;i<PN;i++) ps[i]=13+Math.random()*12;
   const pgm=new THREE.BufferGeometry(); pgm.setAttribute("position",new THREE.BufferAttribute(pp,3)); pgm.setAttribute("aSize",new THREE.BufferAttribute(ps,1));
   const pUni={uFade:{value:0},uTex:{value:TEX}};
   const pMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,uniforms:pUni,
     vertexShader:`attribute float aSize;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);gl_PointSize=aSize*(300.0/-mv.z);gl_Position=projectionMatrix*mv;}`,
     fragmentShader:`uniform sampler2D uTex;uniform float uFade;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(1.0),1.0)*t*uFade;}`});
   const pulses=new THREE.Points(pgm,pMat);
-  const brainGroup=new THREE.Group(); brainGroup.add(lines,nodes,pulses); brainGroup.rotation.x=-0.28; brainGroup.visible=false; scene.add(brainGroup);
-  function updatePulses(){ for(let i=0;i<PN;i++){const p=pl[i];p.t+=p.sp;if(p.t>=1){p.t=0;p.e=(Math.random()*edges.length)|0;}const e=edges[p.e],a=e[0]*3,b=e[1]*3,tt=p.t;for(let c=0;c<3;c++)pp[i*3+c]=bpos[a+c]+(bpos[b+c]-bpos[a+c])*tt;} pgm.attributes.position.needsUpdate=true; }
+  const brainGroup=new THREE.Group(); brainGroup.add(lines,nodes,pulses); brainGroup.rotation.set(-0.18,0,0.05); brainGroup.visible=false; scene.add(brainGroup);
+  function updatePulses(){ for(let i=0;i<PN;i++){const p=pl[i];p.t+=p.sp;if(p.t>=1){p.t=0;p.e=(Math.random()*edges.length)|0;}const e=edges[p.e],a=e[0]*3,b=e[1]*3,tt=p.t;for(let c=0;c<3;c++)pp[i*3+c]=SP[a+c]+(SP[b+c]-SP[a+c])*tt;} pgm.attributes.position.needsUpdate=true; }
 
   addEventListener("resize",()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight,false);});
   renderer.setSize(innerWidth,innerHeight,false);
-  window.__gx={galaxy,brain,galaxyGroup,brainGroup,bgStars,gUni,bgUni,lMat,nUni,pUni};
+  window.__gx={galaxy,brain,galaxyGroup,brainGroup,bgStars,gUni,bgUni,lMat,nUni,pUni,camera};
 
   gsap.ticker.add(()=>{ const t=clock.getElapsedTime();
     if(bgStars.visible){ bgUni.uFade.value=galaxy.fade*0.8; bgStars.rotation.z=t*0.01; }
     if(galaxyGroup.visible){ gUni.uTime.value=t; gUni.uFade.value=galaxy.fade; gUni.uOrder.value=galaxy.order; galaxyGroup.rotation.x=galaxy.tilt; galaxyGroup.rotation.z=galaxy.spin; }
-    if(brainGroup.visible){ nUni.uFade.value=brain.fade; nUni.uTime.value=t; pUni.uFade.value=brain.fade; lMat.opacity=0.17*brain.fade; brainGroup.rotation.y=t*0.17; updatePulses(); }
+    if(brainGroup.visible){ nUni.uFade.value=brain.fade; nUni.uTime.value=t; pUni.uFade.value=brain.fade; lMat.opacity=0.13*brain.fade; brainGroup.rotation.y=-0.5+t*0.14; updatePulses(); }
     renderer.render(scene,camera);
   });
 }
@@ -375,27 +407,31 @@ if(glOK){
 /* migration (beat 7) — sources → neuthek, flowing dashes */
 const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
 (function buildMigration(){
-  const svg=$("#migsvg"); const cx=640,cy=220;
-  const glyphs={ // simple monochrome marks
-    drive:"M14 30 L26 8 L38 30 Z",
-    icloud:"M10 28 a9 9 0 0 1 4 -17 a11 11 0 0 1 21 3 a7 7 0 0 1 -1 14 Z",
-    dropbox:"M24 6 L38 15 L24 24 L10 15 Z M10 27 L24 18 L38 27 L24 36 Z",
-    onedrive:"M12 30 a8 8 0 0 1 2 -15 a11 11 0 0 1 20 1 a7 7 0 0 1 0 14 Z"
+  const svg=$("#migsvg"); const cx=672,cy=220,NH=54;
+  // recognisable monochrome marks — trademarks of their respective owners (see on-screen disclaimer)
+  const glyphs={
+    drive:{d:"M24 5 L43 38 L5 38 Z M24 5 L24 26 M24 26 L8.5 35 M24 26 L39.5 35"},          // Google Drive trefoil
+    icloud:{d:"M14 33 a9 9 0 0 1 -2 -17.6 a12 12 0 0 1 22.5 -1.4 a8 8 0 0 1 -0.5 19 Z"},   // iCloud cloud
+    dropbox:{d:"M12 8 L24 15 L12 22 L0 15 Z M36 8 L48 15 L36 22 L24 15 Z M24 22 L36 29 L24 36 L12 29 Z",fill:true}, // Dropbox box
+    proton:{d:"M24 4 L39.6 13 L39.6 31 L24 40 L8.4 31 L8.4 13 Z M15 27 L24 17 L33 27"},     // Proton hexagon + chevron
+    mega:{d:"M6 22 a18 18 0 1 1 36 0 a18 18 0 1 1 -36 0 M14 31 L14 15 L24 25 L34 15 L34 31"} // MEGA circle + M
   };
-  const srcs=[["google drive","drive"],["icloud","icloud"],["dropbox","dropbox"],["onedrive","onedrive"]];
-  srcs.forEach((s,i)=>{ const y=70+i*100, gx=120;
+  const srcs=[["google drive","drive"],["icloud","icloud"],["dropbox","dropbox"],["proton drive","proton"],["mega","mega"]];
+  srcs.forEach((s,i)=>{ const y=44+i*88, gx=96, gl=glyphs[s[1]];
     const g=el("g",{class:"msrc"});
-    const gl2=el("path",{class:"mglyph",d:glyphs[s[1]],transform:`translate(${gx-24},${y-22})`}); g.appendChild(gl2);
-    const lab=el("text",{class:"mlabel",x:gx+16,y:y+5}); lab.textContent=s[0]; g.appendChild(lab);
+    g.appendChild(el("path",{class:"mglyph"+(gl.fill?" fill":""),d:gl.d,transform:`translate(${gx-24},${y-22})`}));
+    const lab=el("text",{class:"mlabel",x:gx+34,y:y+5}); lab.textContent=s[0]; g.appendChild(lab);
     svg.appendChild(g);
-    // base + flow path to centre
-    const sx=gx+150, sy=y, c1x=sx+150, mid=`M ${sx} ${sy} C ${c1x} ${sy}, ${cx-150} ${cy}, ${cx-46} ${cy}`;
+    const sx=300, c1x=sx+150, mid=`M ${sx} ${y} C ${c1x} ${y}, ${cx-160} ${cy}, ${cx-NH} ${cy}`;
     svg.appendChild(el("path",{class:"mbase",d:mid}));
-    const fp=el("path",{class:"mflow",d:mid}); svg.appendChild(fp);
+    svg.appendChild(el("path",{class:"mflow",d:mid}));
   });
-  // centre neuthek node
-  svg.appendChild(el("rect",{class:"mnode",x:cx-44,y:cy-44,width:88,height:88,rx:22}));
-  const tn=el("text",{class:"mn-text",x:cx,y:cy+2}); tn.textContent="n."; svg.appendChild(tn);
+  // centre neuthek node — the real constellation mark
+  svg.appendChild(el("rect",{class:"mnode",x:cx-NH,y:cy-NH,width:NH*2,height:NH*2,rx:26}));
+  const logo=el("g",{class:"mlogo",transform:`translate(${cx} ${cy}) scale(1.5) translate(-33 -31)`});
+  logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
+  [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
+  svg.appendChild(logo);
 })();
 
 const idxN=$("#idxN"),progress=$("#progress"),timecode=$("#timecode"),scrubfill=$("#scrubfill"),flare=$("#flare");
@@ -451,7 +487,7 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
 tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.add("run"));},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
   .to("#b7 .msrc",{opacity:1,duration:.8,stagger:.2},"b07+=.4")
   .fromTo("#b7 .mnode",{opacity:0,scale:.7,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"back.out(1.5)"},"b07+=1.0")
-  .fromTo("#b7 .mn-text",{opacity:0},{opacity:1,duration:.8},"b07+=1.4")
+  .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.8},"b07+=1.4")
   .add(capIn("#cap7"),"b07+=2.0").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.1")
   .call(()=>{hide("b7");$("#cap7").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.remove("run"));},null,"b07+=8");
 
