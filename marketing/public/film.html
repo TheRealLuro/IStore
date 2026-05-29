@@ -345,9 +345,9 @@ if(glOK){
   for(let vi=1;vi<VV;vi++){ const v=vi/VV*Math.PI, ring=[];                     // skip the exact poles → no longitude-convergence starburst at the crown
     for(let ui=0;ui<UU;ui++){ const u=ui/UU*Math.PI*2;
       const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
-      let r=1+0.07*fbm(nx,ny,nz);                                             // gyri / sulci
+      let r=1+0.11*fbm(nx,ny,nz);                                             // deeper gyri / sulci → more surface shape
       const gx=Math.exp(-(nx*nx)/0.02), top=smooth(-0.1,0.7,ny);
-      r*=1-0.18*gx*top;                                                       // longitudinal fissure groove
+      r*=1-0.24*gx*top;                                                       // deeper longitudinal fissure groove
       let x=nx*r*1.0*S, y=ny*r*0.78*S, z=nz*r*1.16*S;                         // proportionate: width≈length, both > height (real brain ~1.45:1.27:1)
       x+=Math.sign(nx||1)*gx*top*0.05*S;                                      // splay the two lobes
       if(ny<0) y*=0.6;                                                        // flatter underside (brains sit on a flat base)
@@ -360,10 +360,10 @@ if(glOK){
     for(let ui=0;ui<CU;ui++){ const u=ui/CU*Math.PI*2;
       const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
       const r=1+0.13*Math.sin(nx*15+nz*8)*Math.cos(ny*12);                    // fine cerebellar folds
-      const idx=spos.length/3; spos.push(nx*r*0.42*S, ny*r*0.32*S-0.30*S, nz*r*0.44*S-0.78*S); ring.push(idx); // tucked at the lower-back, under the occipital lobe
+      const idx=spos.length/3; spos.push(nx*r*0.32*S, ny*r*0.26*S-0.28*S, nz*r*0.34*S-0.74*S); ring.push(idx); // smaller, tucked at the lower-back under the occipital lobe
     } cbRows.push(ring); }
   const STEM=[], SR=[];                                                       // brain stem — round tube emerging from the underside, tapering to a point
-  for(let k=0;k<=6;k++){ const tk=k/6, ease=tk*tk, rr=(0.17-0.09*ease)*S, yy=-0.26*S-tk*0.32*S, zz=-0.34*S+(tk*0.2+ease*0.06)*S, ring=[];   // short, blunt stub (not a long cone)
+  for(let k=0;k<=7;k++){ const tk=k/7, ease=tk*tk, rr=(0.17-0.105*ease)*S, yy=-0.24*S-tk*0.5*S, zz=-0.34*S+(tk*0.24+ease*0.08)*S, ring=[];   // longer, gently curved + tapered stem
     for(let a=0;a<8;a++){ const an=a/8*Math.PI*2, idx=spos.length/3; spos.push(Math.cos(an)*rr, yy, zz+Math.sin(an)*rr); ring.push(idx); STEM.push(idx); }
     SR.push(ring); }
   const INT=[];                                                              // interior neurons — fill the volume so links run through the brain
@@ -401,12 +401,12 @@ if(glOK){
   const lines=new THREE.LineSegments(lg,lMat);
   const TOT=SP.length/3, NN=SMALL?210:320, pick=[]; {const step=Math.max(1,(TOT/NN)|0); for(let i=0;i<TOT;i+=step) pick.push(i);}
   const bpos=new Float32Array(pick.length*3),bsh=new Float32Array(pick.length),bsz=new Float32Array(pick.length);
-  pick.forEach((idx,i)=>{bpos[i*3]=SP[idx*3];bpos[i*3+1]=SP[idx*3+1];bpos[i*3+2]=SP[idx*3+2];bsh[i]=0.55+Math.random()*0.45;bsz[i]=12+Math.random()*16;});
+  pick.forEach((idx,i)=>{bpos[i*3]=SP[idx*3];bpos[i*3+1]=SP[idx*3+1];bpos[i*3+2]=SP[idx*3+2];bsh[i]=0.22+Math.random()*0.78;bsz[i]=10+Math.random()*20;});
   const ng=new THREE.BufferGeometry(); ng.setAttribute("position",new THREE.BufferAttribute(bpos,3)); ng.setAttribute("aShade",new THREE.BufferAttribute(bsh,1)); ng.setAttribute("aSize",new THREE.BufferAttribute(bsz,1));
   const nUni={uFade:{value:0},uTex:{value:TEX},uTime:{value:0}};
   const nMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,uniforms:nUni,
     vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;varying float vDim;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.84+0.16*sin(uTime*2.0+aShade*30.0);float depth=clamp((-mv.z-250.0)/360.0,0.0,1.0);float szf=mix(1.3,0.72,depth);gl_PointSize=aSize*tw*szf*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;vDim=mix(1.0,0.5,depth);}`,
-    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;varying float vDim;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.82+0.18*vS)*vDim,1.0)*t*uFade;}`});
+    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;varying float vDim;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.3+0.7*vS)*vDim,1.0)*t*uFade;}`});
   const nodes=new THREE.Points(ng,nMat);
   const PN=Math.min(SMALL?90:140,edges.length),pl=[]; for(let i=0;i<PN;i++) pl.push({e:(Math.random()*edges.length)|0,t:Math.random(),sp:0.004+Math.random()*0.011});
   const pp=new Float32Array(PN*3),ps=new Float32Array(PN); for(let i=0;i<PN;i++) ps[i]=13+Math.random()*12;
