@@ -27,7 +27,7 @@
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;background:#000;color:var(--paper);font-family:var(--sans);overflow:hidden}
 body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter-spacing:.01em}
-.stage{position:fixed;inset:0;background:var(--ink);overflow:hidden;isolation:isolate}
+.stage{position:fixed;inset:0;background:radial-gradient(58% 48% at 50% 43%, rgba(46,46,50,.34), rgba(20,20,22,0) 72%), var(--ink);overflow:hidden;isolation:isolate}
 .beat{position:absolute;inset:0;opacity:0;visibility:hidden;display:grid;place-items:center;z-index:10;will-change:opacity}
 .beat.live{visibility:visible}
 .beat .center{position:relative;width:100%;height:100%;display:grid;place-items:center;padding:0 var(--m)}
@@ -71,7 +71,17 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;min-height:1.2em}
 #b2 .car{display:inline-block;width:2px;height:1em;background:var(--white);vertical-align:-.12em;margin-left:3px;box-shadow:0 0 8px var(--white);animation:blink 1.05s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
-#b2 .hero{margin-top:46px;width:164px;height:164px;border-radius:14px;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.7);background:linear-gradient(140deg,#3c3c40,#161618);box-shadow:0 40px 100px rgba(0,0,0,.7),inset 0 0 0 1px rgba(244,241,234,.18)}
+#b2 .hero{margin-top:44px;width:196px;border-radius:16px;overflow:hidden;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.72);background:linear-gradient(160deg,#2a2a2d,#141416);box-shadow:0 40px 100px rgba(0,0,0,.7),inset 0 0 0 1px rgba(244,241,234,.16)}
+#b2 .hero .him{position:relative;height:136px;background:linear-gradient(155deg,#3a3a3e,#202022);overflow:hidden}
+#b2 .hero .him svg{position:absolute;left:50%;top:50%;width:78px;height:96px;transform:translate(-50%,-52%)}
+#b2 .hero .rcpt{stroke:rgba(244,241,234,.62);stroke-width:1.5;fill:none;stroke-linecap:round;stroke-linejoin:round}
+#b2 .hero .him::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 38%,rgba(255,255,255,.10) 50%,transparent 62%)}
+#b2 .hero .hmatch{position:absolute;top:11px;right:11px;font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:#0a0a0a;background:var(--white);padding:3px 8px;border-radius:20px;box-shadow:0 0 18px rgba(255,255,255,.45)}
+#b2 .hero .hmeta{display:flex;align-items:center;gap:9px;padding:13px 14px}
+#b2 .hero .hav{width:24px;height:24px;border-radius:7px;flex:0 0 auto;background:linear-gradient(140deg,#4a4a4e,#262628);box-shadow:inset 0 0 0 1px rgba(244,241,234,.12)}
+#b2 .hero .hlines{display:grid;gap:6px;flex:1}
+#b2 .hero .hlines i{display:block;height:5px;border-radius:3px;background:rgba(244,241,234,.55)}
+#b2 .hero .hlines i.dim{width:58%;background:rgba(244,241,234,.22)}
 
 /* BEAT 3 — brain on canvas */
 #b3 .lab{position:relative;width:100%;height:100%}
@@ -98,12 +108,16 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b5 .pole{display:grid;justify-items:center;gap:20px;opacity:0;color:var(--paper)}
 #b5 .pole svg{width:clamp(72px,10vw,128px);height:auto;overflow:visible}
 #b5 .pole .t{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--mist);text-align:center}
-#b5 .gal{position:relative;display:grid;grid-template-columns:repeat(5,1fr);gap:7px;width:min(290px,44vw);justify-self:center;opacity:0;transform:scale(.86)}
-#b5 .gal i{aspect-ratio:1;border-radius:6px;background:linear-gradient(140deg,#262629,#141416);box-shadow:inset 0 0 0 1px rgba(244,241,234,.05);display:grid;place-items:center}
-#b5 .gal i.hot{background:linear-gradient(140deg,#f3f0e8,#cfccc4);box-shadow:0 0 30px rgba(255,255,255,.3),inset 0 0 0 1px rgba(255,255,255,.5)}
-#b5 .gal i.hot svg{width:64%;height:64%;overflow:visible}
-#b5 .biz{position:absolute;left:0;right:0;bottom:-36px;text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.16)}
-#b5 .stream{position:absolute;top:50%;height:1px;background:linear-gradient(90deg,rgba(244,241,234,0),rgba(244,241,234,.55));transform:translateY(-50%);opacity:0}
+#b5 .hub{justify-self:center;width:min(320px,40vw);aspect-ratio:1;opacity:0}            /* spacer reserving the centre column */
+#b5 #weave{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+#b5 .wbase{stroke:rgba(244,241,234,.1);stroke-width:1;fill:none}
+#b5 .wflow{stroke:var(--white);stroke-width:1.5;fill:none;stroke-linecap:round;stroke-dasharray:2 14;opacity:0}
+#b5 .wflow.run{animation:flow 1.15s linear infinite;opacity:.82}
+#b5 .wcirc{fill:rgba(244,241,234,.03);stroke:var(--white);stroke-width:2;opacity:0}
+#b5 .wlogo{opacity:0}
+#b5 .wlogo path{stroke:var(--white);stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+#b5 .wlogo circle{fill:var(--white)}
+#b5 .biz{position:absolute;left:0;right:0;bottom:clamp(-46px,-5vh,-30px);text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.34);opacity:0}
 
 /* BEAT 6 — compression */
 #b6 .flow{position:absolute;inset:0;overflow:hidden}
@@ -168,7 +182,13 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
     <div class="center"><div class="col">
       <div class="scrim"></div>
       <div class="field"><svg class="mag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10.5" cy="10.5" r="7"/><line x1="15.8" y1="15.8" x2="21" y2="21" stroke-linecap="round"/></svg><div class="q"><span id="qtext"></span><span class="car"></span></div></div>
-      <div class="hero" id="hero"></div>
+      <div class="hero" id="hero">
+        <div class="him">
+          <svg viewBox="0 0 78 96" aria-hidden="true"><g class="rcpt"><path d="M14 6 H64 V90 L56 84 L48 90 L40 84 L32 90 L24 84 L14 90 Z"/><path d="M24 22 H54 M24 33 H50 M24 44 H56 M24 55 H44"/><path d="M24 70 H40 M48 70 H54" stroke-width="2.4"/></g></svg>
+          <div class="hmatch">98% match</div>
+        </div>
+        <div class="hmeta"><span class="hav"></span><div class="hlines"><i></i><i class="dim"></i></div></div>
+      </div>
     </div></div>
     <div class="caption" id="cap2">search by <span class="ac">meaning</span>, not metadata.</div>
   </section>
@@ -214,10 +234,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
         </svg>
         <div class="t">self-host · open source · free</div>
       </div>
-      <div class="gal">
-        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="hot"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20" fill="none" stroke="#0a0a0a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><g fill="#0a0a0a"><circle cx="18" cy="44" r="3.6"/><circle cx="22" cy="18" r="3.6"/><circle cx="44" cy="44" r="3.6"/><circle cx="18" cy="28" r="2.8"/><circle cx="34" cy="30" r="2.8"/><circle cx="48" cy="20" r="5"/></g></svg></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-        <div class="biz">free open-source funnel → managed saas</div>
-      </div>
+      <div class="hub"></div>
       <div class="pole" id="poleR">
         <svg viewBox="0 0 130 134" fill="none">
           <path d="M65 12 L112 39 V93 L65 120 L18 93 V39 Z" stroke="currentColor" stroke-width="2"/>
@@ -227,8 +244,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
         </svg>
         <div class="t">managed · hosted for you</div>
       </div>
-      <div class="stream" id="streamL" style="left:24%;width:14%"></div>
-      <div class="stream" id="streamR" style="right:24%;width:14%;transform:translateY(-50%) scaleX(-1)"></div>
+      <svg id="weave" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+      <div class="biz">free open-source funnel → managed saas</div>
     </div></div>
     <div class="caption" id="cap5">same engine. <span class="ac">no feature lock-in.</span></div>
   </section>
@@ -293,8 +310,8 @@ if(glOK){
   const gauss=()=>(Math.random()+Math.random()+Math.random()-1.5)*0.9;
 
   /* ---- faint far-background starfield (depth) ---- */
-  const BG=900, bgp=new Float32Array(BG*3), bgs=new Float32Array(BG), bgz=new Float32Array(BG);
-  for(let i=0;i<BG;i++){ bgp[i*3]=(Math.random()-.5)*2600; bgp[i*3+1]=(Math.random()-.5)*1700; bgp[i*3+2]=-300-Math.random()*1400; bgs[i]=0.18+Math.random()*0.4; bgz[i]=1.5+Math.random()*4.5; }
+  const BG=Math.min(innerWidth,innerHeight)<760?1500:2600, bgp=new Float32Array(BG*3), bgs=new Float32Array(BG), bgz=new Float32Array(BG);
+  for(let i=0;i<BG;i++){ bgp[i*3]=(Math.random()-.5)*3000; bgp[i*3+1]=(Math.random()-.5)*2000; bgp[i*3+2]=-200-Math.random()*1600; bgs[i]=0.16+Math.random()*0.5; bgz[i]=1.2+Math.random()*4.8; }
   const bgg=new THREE.BufferGeometry(); bgg.setAttribute("position",new THREE.BufferAttribute(bgp,3)); bgg.setAttribute("aShade",new THREE.BufferAttribute(bgs,1)); bgg.setAttribute("aSize",new THREE.BufferAttribute(bgz,1));
   const starVert=`attribute float aShade,aSize;uniform float uSizeMul;varying float vS;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);gl_PointSize=aSize*uSizeMul*(330.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade;}`;
   const starFrag=`uniform sampler2D uTex;uniform float uFade;varying float vS;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.7+0.3*vS),1.0)*t*uFade*vS;}`;
@@ -329,7 +346,7 @@ if(glOK){
      fissure) with a cerebellum and brain stem. A faint wireframe surface gives
      the unmistakable brain silhouette; bright neuron nodes + travelling signal
      pulses ride that surface for the neural-network read. ── */
-  const SMALL=Math.min(innerWidth,innerHeight)<760, S=160;
+  const SMALL=Math.min(innerWidth,innerHeight)<760, S=148;
   const fbm=(a,b,c)=>0.58*Math.sin(a*3.1+b*2.3)*Math.cos(c*2.7)               // deterministic fold field
                     +0.30*Math.sin(a*6.7-c*5.1)*Math.sin(b*4.3+1.7)
                     +0.16*Math.sin((a+c)*9.6+2.0)*Math.cos(b*7.4);
@@ -339,32 +356,41 @@ if(glOK){
   for(let vi=0;vi<=VV;vi++){ const v=vi/VV*Math.PI, ring=[];
     for(let ui=0;ui<UU;ui++){ const u=ui/UU*Math.PI*2;
       const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
-      let r=1+0.072*fbm(nx,ny,nz);                                            // gyri / sulci
-      const gx=Math.exp(-(nx*nx)/0.02), top=smooth(-0.15,0.6,ny);
-      r*=1-0.20*gx*top;                                                       // longitudinal fissure groove
-      let x=nx*r*0.94*S, y=ny*r*0.86*S, z=nz*r*1.10*S;
-      x+=Math.sign(nx||1)*gx*top*0.07*S;                                      // splay the two lobes apart
-      if(ny<0) y*=0.74;                                                       // flatter underside
-      y-=0.05*S; z*=(nz>0?1.04:0.97);                                         // fuller frontal lobe
+      let r=1+0.07*fbm(nx,ny,nz);                                             // gyri / sulci
+      const gx=Math.exp(-(nx*nx)/0.02), top=smooth(-0.1,0.7,ny);
+      r*=1-0.18*gx*top;                                                       // longitudinal fissure groove
+      let x=nx*r*0.92*S, y=ny*r*0.84*S, z=nz*r*1.14*S;
+      x+=Math.sign(nx||1)*gx*top*0.06*S;                                      // splay the two lobes
+      if(ny<0) y*=0.70;                                                       // flat underside
+      if(nz>0) z*=1.05+0.06*smooth(0.2,1,ny); else z*=0.98;                   // fuller frontal lobe (front+top)
+      y+=0.14*S;                                                             // lift cerebrum so the stem hangs below it
       const idx=spos.length/3; spos.push(x,y,z); ring.push(idx);
     } rows.push(ring); }
-  const cerebN=spos.length/3, CU=SMALL?22:30, CV=SMALL?11:15, cbRows=[];      // cerebellum
+  const cerebN=spos.length/3, CU=SMALL?20:26, CV=SMALL?10:13, cbRows=[];      // cerebellum — small, tucked under the occipital lobe
   for(let vi=0;vi<=CV;vi++){ const v=vi/CV*Math.PI, ring=[];
     for(let ui=0;ui<CU;ui++){ const u=ui/CU*Math.PI*2;
       const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
-      const r=1+0.11*Math.sin(nx*16+nz*9)*Math.cos(ny*13);                    // fine cerebellar folds
-      const idx=spos.length/3; spos.push(nx*r*0.46*S, ny*r*0.34*S-0.55*S, nz*r*0.5*S-0.92*S); ring.push(idx);
+      const r=1+0.13*Math.sin(nx*15+nz*8)*Math.cos(ny*12);                    // fine cerebellar folds
+      const idx=spos.length/3; spos.push(nx*r*0.36*S, ny*r*0.30*S-0.32*S, nz*r*0.40*S-0.78*S); ring.push(idx);
     } cbRows.push(ring); }
-  const STEM=[];                                                              // brain stem
-  for(let k=0;k<=7;k++){const tk=k/7,idx=spos.length/3; spos.push((Math.random()-.5)*6,-0.5*S-tk*0.42*S,-0.55*S+tk*0.18*S); STEM.push(idx);}
+  const STEM=[], SR=[];                                                       // brain stem — tapered tube hanging below, angled slightly forward
+  for(let k=0;k<=9;k++){ const tk=k/9, rr=(0.17-0.085*tk)*S, yy=-0.42*S-tk*0.6*S, zz=-0.22*S+tk*0.34*S, ring=[];
+    for(let a=0;a<6;a++){ const an=a/6*Math.PI*2, idx=spos.length/3; spos.push(Math.cos(an)*rr, yy, zz+Math.sin(an)*rr); ring.push(idx); STEM.push(idx); }
+    SR.push(ring); }
+  const INT=[];                                                              // interior neurons — fill the volume so links run through the brain
+  for(let k=0;k<(SMALL?44:72);k++){ const v=Math.acos(Math.random()*2-1), u=Math.random()*Math.PI*2, rr=0.28+Math.random()*0.56;
+    const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u), idx=spos.length/3;
+    spos.push(nx*rr*0.92*S, ny*rr*0.84*S+0.14*S, nz*rr*1.14*S); INT.push(idx); }
   const SP=new Float32Array(spos);
   const edges=[], wire=(grid,wrap)=>{for(let r=0;r<grid.length;r++){const a=grid[r];for(let i=0;i<a.length;i++){
       if(i+1<a.length||wrap) edges.push([a[i],a[(i+1)%a.length]]);
       if(r+1<grid.length) edges.push([a[i],grid[r+1][i]]);
   }}};
-  wire(rows,true); wire(cbRows,true);
-  for(let k=0;k+1<STEM.length;k++) edges.push([STEM[k],STEM[k+1]]);
-  for(let k=0;k<40;k++){const a=(Math.random()*cerebN)|0,b=(Math.random()*cerebN)|0; if(a!==b) edges.push([a,b]);}  // association fibres
+  wire(rows,true); wire(cbRows,true); wire(SR,true);
+  const near=(i,pool,k)=>{const d=[];for(const j of pool){if(j===i)continue;const dx=SP[i*3]-SP[j*3],dy=SP[i*3+1]-SP[j*3+1],dz=SP[i*3+2]-SP[j*3+2];d.push([dx*dx+dy*dy+dz*dz,j]);}d.sort((a,b)=>a[0]-b[0]);return d.slice(0,k).map(x=>x[1]);};
+  const surfPool=[]; for(let i=0;i<cerebN;i+=3) surfPool.push(i);
+  INT.forEach(i=>{ near(i,INT,3).forEach(j=>edges.push([i,j])); near(i,surfPool,2).forEach(j=>edges.push([i,j])); }); // internal wiring through the volume
+  for(let k=0;k<22;k++){const a=(Math.random()*cerebN)|0,b=(Math.random()*cerebN)|0; if(a!==b) edges.push([a,b]);}    // long association fibres
   const lp=new Float32Array(edges.length*6); edges.forEach((e,i)=>{for(let c=0;c<3;c++){lp[i*6+c]=SP[e[0]*3+c];lp[i*6+3+c]=SP[e[1]*3+c];}});
   const lg=new THREE.BufferGeometry(); lg.setAttribute("position",new THREE.BufferAttribute(lp,3));
   const lMat=new THREE.LineBasicMaterial({color:0xf4f1ea,transparent:true,opacity:0,depthWrite:false});
@@ -410,10 +436,10 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   const svg=$("#migsvg"); const cx=672,cy=220,NH=54;
   // recognisable monochrome marks — trademarks of their respective owners (see on-screen disclaimer)
   const glyphs={
-    drive:{d:"M24 5 L43 38 L5 38 Z M24 5 L24 26 M24 26 L8.5 35 M24 26 L39.5 35"},          // Google Drive trefoil
+    drive:{d:"M41 24 H25 M41 24 A17 17 0 1 1 32.5 9.2"},                                    // Google iconic G
     icloud:{d:"M14 33 a9 9 0 0 1 -2 -17.6 a12 12 0 0 1 22.5 -1.4 a8 8 0 0 1 -0.5 19 Z"},   // iCloud cloud
     dropbox:{d:"M12 8 L24 15 L12 22 L0 15 Z M36 8 L48 15 L36 22 L24 15 Z M24 22 L36 29 L24 36 L12 29 Z",fill:true}, // Dropbox box
-    proton:{d:"M24 4 L39.6 13 L39.6 31 L24 40 L8.4 31 L8.4 13 Z M15 27 L24 17 L33 27"},     // Proton hexagon + chevron
+    proton:{d:"M9 15 H20 L24 19 H39 A3 3 0 0 1 42 22 V39 A3 3 0 0 1 39 42 H9 A3 3 0 0 1 6 39 V18 A3 3 0 0 1 9 15 Z M6 26 H42"}, // Proton Drive folder
     mega:{d:"M6 22 a18 18 0 1 1 36 0 a18 18 0 1 1 -36 0 M14 31 L14 15 L24 25 L34 15 L34 31"} // MEGA circle + M
   };
   const srcs=[["google drive","drive"],["icloud","icloud"],["dropbox","dropbox"],["proton drive","proton"],["mega","mega"]];
@@ -434,13 +460,32 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   svg.appendChild(logo);
 })();
 
+/* hosted / self-hosted weave (beat 5) — intertwining strands from both sides → centre hub */
+(function buildWeave(){
+  const svg=$("#weave"); if(!svg) return;
+  const cx=500,cy=150,R=60, ring=a=>[cx+R*Math.cos(a),cy+R*Math.sin(a)];
+  const strand=(sx,sy,a,bow,delay)=>{ const e=ring(a);
+    const d=`M ${sx} ${sy} C ${sx+(e[0]-sx)*0.34} ${cy+bow}, ${sx+(e[0]-sx)*0.72} ${cy-bow}, ${e[0]} ${e[1]}`;
+    svg.appendChild(el("path",{class:"wbase",d}));
+    const f=el("path",{class:"wflow",d}); f.style.animationDelay=delay+"s"; svg.appendChild(f);
+  };
+  const P=Math.PI;
+  [[160,108,P*0.86,-50],[150,150,P,6],[160,192,P*1.14,50]].forEach((s,i)=>strand(s[0],s[1],s[2],s[3],i*0.22));        // left → hub
+  [[840,108,P*0.14,-50],[850,150,0,6],[840,192,-P*0.14,50]].forEach((s,i)=>strand(s[0],s[1],s[2],s[3],0.33+i*0.22));  // right → hub
+  svg.appendChild(el("circle",{class:"wcirc",cx,cy,r:R}));
+  const logo=el("g",{class:"wlogo",transform:`translate(${cx} ${cy}) scale(1.7) translate(-33 -31)`});
+  logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
+  [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
+  svg.appendChild(logo);
+})();
+
 const idxN=$("#idxN"),progress=$("#progress"),timecode=$("#timecode"),scrubfill=$("#scrubfill"),flare=$("#flare");
 const setIndex=n=>idxN.textContent=("0"+n).slice(-2);
 const fmt=t=>{const s=Math.floor(t);return ("0"+Math.floor(s/60)).slice(-2)+":"+("0"+(s%60)).slice(-2);};
 const sweep=()=>gsap.fromTo(flare,{opacity:0,x:"-40%"},{opacity:.85,x:"30%",duration:1.1,ease:"power2.inOut",onComplete:()=>gsap.to(flare,{opacity:0,duration:.4})});
 const show=id=>{const b=$("#"+id);b.classList.add("live");b.setAttribute("aria-hidden","false");};
 const hide=id=>{const b=$("#"+id);b.classList.remove("live");b.setAttribute("aria-hidden","true");};
-const capIn=sel=>gsap.to(sel,{clipPath:"inset(0 0% 0 0)",duration:1.1,ease:"power3.out"});
+const capIn=sel=>gsap.to(sel,{clipPath:"inset(0 0% 0 0)",duration:1.25,ease:"expo.out"});
 const G=glOK?window.__gx:null;
 
 const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){progress.style.width=scrubfill.style.width=(tl.progress()*100)+"%";timecode.textContent=fmt(tl.time());}});
@@ -472,10 +517,13 @@ tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();},null,"b04").to("#b4"
   .to("#b4",{opacity:0,duration:.9},"b04+=8.1").call(()=>hide("b4"),null,"b04+=9");
 
 // 05 — cloud (31–39)
-tl.add("b05",31).call(()=>{setIndex(5);show("b5");},null,"b05").to("#b5",{opacity:1,duration:1.0},"b05")
-  .to(["#poleL","#poleR"],{opacity:1,duration:1.0,stagger:.15},"b05+=.3").to(["#streamL","#streamR"],{opacity:1,duration:1.2},"b05+=1.2")
-  .to("#b5 .gal",{opacity:1,scale:1,duration:1.2,ease:"power3.out"},"b05+=1.6").add(capIn("#cap5"),"b05+=2.6")
-  .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";},null,"b05+=8");
+tl.add("b05",31).call(()=>{setIndex(5);show("b5");document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run"));},null,"b05").to("#b5",{opacity:1,duration:1.0},"b05")
+  .to(["#poleL","#poleR"],{opacity:1,duration:1.0,stagger:.15},"b05+=.3")
+  .fromTo("#b5 .wcirc",{opacity:0,scale:.55,transformOrigin:"500px 150px"},{opacity:1,scale:1,duration:1.1,ease:"expo.out"},"b05+=.9")
+  .fromTo("#b5 .wbase",{opacity:0},{opacity:1,duration:1.1},"b05+=1.0")
+  .fromTo("#b5 .wlogo",{opacity:0},{opacity:1,duration:.8},"b05+=1.4")
+  .to("#b5 .biz",{opacity:1,duration:1.0},"b05+=2.2").add(capIn("#cap5"),"b05+=2.6")
+  .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
 // 06 — compression (39–45)
 tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.8},"b06")
