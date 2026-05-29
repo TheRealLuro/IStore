@@ -136,12 +136,12 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .mrow{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px)}
 #b6 .bignum{display:block;width:clamp(150px,26vw,300px);height:auto;overflow:visible}
 #b6 .n85{font-family:var(--serif);font-weight:300;font-size:160px;text-anchor:middle;fill:rgba(255,255,255,0);stroke:#fff;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;paint-order:stroke;stroke-dasharray:1700;stroke-dashoffset:1700;filter:drop-shadow(0 0 24px rgba(255,255,255,.16))}
-#b6 .m2{display:flex;flex-direction:column;align-items:flex-start;line-height:1.04}
-#b6 .m2 .up{font-family:var(--sans);font-weight:500;font-size:clamp(13px,1.6vw,19px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist)}
+#b6 .leadin{fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-dasharray:320;stroke-dashoffset:320;filter:drop-shadow(0 0 12px rgba(255,255,255,.4))}
+#b6 .m2{position:relative;opacity:0}
+#b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .m2 .up{position:absolute;top:-.5em;right:-.45em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
 #b6 .m2 .up sup{font-size:.62em}
-#b6 .m2 .sm{font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
-#b6 .fineprint{font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4)}
-#b6 .fineprint{margin-top:12px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4)}
+#b6 .fineprint{margin-top:8px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
 #b7 .mig{position:relative;width:min(960px,100%);height:min(440px,58vh)}
@@ -233,9 +233,11 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
           <path class="sh-in" d="M100 22 C 134 43 161 49 175 50 L 175 148 C 175 188 145 215 100 223 C 55 215 25 188 25 148 L 25 50 C 39 49 66 43 100 22 Z"/>
         </svg>
         <svg viewBox="0 0 200 244" style="position:absolute;inset:0">
-          <g class="lk-shackle"><path class="lk" d="M86 128 v-15 a14 14 0 0 1 28 0 v15"/></g>
-          <path class="lk" d="M82 128 h36 a7 7 0 0 1 7 7 v26 a7 7 0 0 1 -7 7 h-36 a7 7 0 0 1 -7 -7 v-26 a7 7 0 0 1 7 -7 Z"/>
-          <path class="lk lk-key" d="M100 140 a4 4 0 1 1 0 8 a4 4 0 1 1 0 -8 M100 149 v8"/>
+          <g class="lkall">
+            <g class="lk-shackle"><path class="lk" d="M86 128 v-15 a14 14 0 0 1 28 0 v15"/></g>
+            <path class="lk" d="M82 128 h36 a7 7 0 0 1 7 7 v26 a7 7 0 0 1 -7 7 h-36 a7 7 0 0 1 -7 -7 v-26 a7 7 0 0 1 7 -7 Z"/>
+            <path class="lk lk-key" d="M100 140 a4 4 0 1 1 0 8 a4 4 0 1 1 0 -8 M100 149 v8"/>
+          </g>
         </svg>
       </div>
       <div class="pillars"><p>your files are <span class="d">yours alone</span></p><p>never trained on, never sold</p><p>your drive — <span class="d">encrypted</span> in transit &amp; at rest</p><p>your vault — <span class="d">zero-knowledge</span><sup>*</sup>, even we can't read it</p><div class="vn">* zero-knowledge encryption applies to your neuthek Vault; all drive files are encrypted in transit &amp; at rest</div></div>
@@ -256,7 +258,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
     <div class="ftline" id="ftline"></div>
-    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 320 210" aria-label="up to 85% smaller"><text class="n85" x="160" y="166">85%</text></svg><div class="m2"><span class="up">up to<sup>*</sup></span><span class="sm">smaller</span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 320 210" aria-label="up to 85% smaller"><path class="leadin" d="M 296 198 C 208 196, 96 122, 72 50"/><text class="n85" x="160" y="166">85%</text></svg><div class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -270,8 +272,6 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
     <div class="center"><div class="close">
       <div class="mark">neuthek<i>.</i></div><div class="ul"></div>
       <div class="tag">storage that thinks for you</div><div class="pos">the next best cloud storage solution</div>
-      <form id="wait" novalidate><label for="email" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Email address</label><input id="email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" required /><button type="submit">join the waitlist</button></form>
-      <div class="ok" id="ok"></div>
     </div></div>
   </section>
 
@@ -556,7 +556,9 @@ tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();},null,"b04").to("#b4"
   .to("#b4 .sh-out",{strokeDashoffset:0,duration:2.0,ease:"power2.inOut"},"b04+=.3").to("#b4 .sh-in",{strokeDashoffset:0,duration:1.6,ease:"power2.inOut"},"b04+=.8")
   .to("#b4 .sh-dots",{opacity:1,duration:1.2},"b04+=1.2").fromTo("#b4 .sweep",{opacity:1,x:0},{x:300,duration:1.6,ease:"power2.inOut",onComplete(){gsap.set("#b4 .sweep",{opacity:0});}},"b04+=1.6")
   .set("#b4 .lk-shackle",{y:-15},"b04+=1.5").to("#b4 .lk",{strokeDashoffset:0,duration:1.2,ease:"power2.inOut"},"b04+=1.7")   // body+shackle+keyhole draw as one
-  .to("#b4 .lk-shackle",{y:0,duration:.75,ease:"back.out(2.6)"},"b04+=3.0")                                                  // then it locks — shackle drops + click-settle
+  .to("#b4 .lk-shackle",{y:0,duration:.8,ease:"power4.out"},"b04+=3.1")                                                       // it locks: shackle seats down, firm decel (no spring)
+  .to("#b4 .lk-shackle",{y:1.3,duration:.07,ease:"power2.out"},"b04+=3.9").to("#b4 .lk-shackle",{y:0,duration:.2,ease:"power2.inOut"},"b04+=3.97") // a hair of recoil, then rest
+  .to("#b4 .lkall",{scale:.984,duration:.07,ease:"power2.out"},"b04+=3.9").to("#b4 .lkall",{scale:1,duration:.24,ease:"power2.out"},"b04+=3.97") // tight mechanical click — lock tightens ~1.5%
   .fromTo("#b4 .pillars p",{opacity:0,y:18,filter:"blur(7px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.05,stagger:.32,ease:"expo.out"},"b04+=2.4").to("#b4 .vn",{opacity:1,duration:.8},"b04+=4.9").to("#b4 .compliance",{opacity:1,duration:1.0},"b04+=5.4")
   .to("#b4",{opacity:0,duration:.9},"b04+=8.1").call(()=>hide("b4"),null,"b04+=9");
 
@@ -565,11 +567,11 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
   .from("#b5 .wL",{opacity:0,x:-26,duration:1.0,ease:"expo.out"},"b05+=.3")
   .from("#b5 .wR",{opacity:0,x:26,duration:1.0,ease:"expo.out"},"b05+=.3")
   .from("#b5 .wcirc",{opacity:0,duration:.7},"b05+=.7").from("#b5 .wlogo",{opacity:0,duration:.7},"b05+=.85")
-  .to("#b5 .wbase",{strokeDashoffset:0,duration:1.3,stagger:.09,ease:"power2.inOut"},"b05+=1.0")          // strands stroke-draw, staggered
-  .call(()=>document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run")),null,"b05+=1.0")  // dots flow from both sides into the hub
-  .fromTo("#b5 .wflow",{opacity:0},{opacity:.85,duration:1.0},"b05+=1.2")
-  .from("#b5 .worbit",{opacity:0,duration:1.2},"b05+=1.8")                                               // dots wrap into the ring around the logo
-  .to(["#b5 .lab-l","#b5 .lab-r","#b5 .biz"],{opacity:1,duration:1.0,stagger:.08},"b05+=2.2").add(capIn("#cap5"),"b05+=3.0")
+  .to("#b5 .wbase",{strokeDashoffset:0,duration:1.4,stagger:.12,ease:"power2.inOut"},"b05+=1.0")          // beat one: strands stroke-draw, one after another
+  .call(()=>document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run")),null,"b05+=2.6")  // beat two: dots flow only once the lines have connected
+  .fromTo("#b5 .wflow",{opacity:0},{opacity:.85,duration:.9},"b05+=2.6")
+  .from("#b5 .worbit",{opacity:0,duration:1.0},"b05+=2.7")                                               // ring dots arrive as the lines land — never before
+  .to(["#b5 .lab-l","#b5 .lab-r","#b5 .biz"],{opacity:1,duration:1.0,stagger:.08},"b05+=3.0").add(capIn("#cap5"),"b05+=3.7")
   .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
 // 06 — compression (39–45)
@@ -581,20 +583,22 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
   .to("#fttrack",{scaleY:.03,transformOrigin:"50% 50%",duration:1.0,ease:"power2.inOut"},"b06+=3.2")               // all pills squash to the centre row
   .fromTo("#ftline",{scaleX:0,opacity:1},{scaleX:1,duration:.8,ease:"power2.out"},"b06+=3.7")                      // → funnel into ONE white line
   .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.2")
-  .to("#b6 .meter",{opacity:1,duration:.3},"b06+=4.6")
-  .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:2.3,ease:"power1.inOut"},"b06+=4.7")     // the one stroke draws the 85%, pen-slow
-  .to("#ftline",{opacity:0,duration:.7},"b06+=4.9")
-  .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.8,ease:"power2.out"},"b06+=6.9")                            // …then fills + settles
-  .fromTo("#b6 .m2",{opacity:0,x:-12},{opacity:1,x:0,duration:.8,ease:"expo.out"},"b06+=7.1").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.5")
-  .add(capIn("#cap6"),"b06+=7.6").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.4").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);},null,"b06+=10.4");
+  .to("#b6 .meter",{opacity:1,duration:.3},"b06+=4.3")
+  .fromTo("#b6 .leadin",{strokeDashoffset:320},{strokeDashoffset:0,duration:.7,ease:"power1.in"},"b06+=4.5")      // the same stroke sweeps up to the 8…
+  .to("#ftline",{opacity:0,duration:.5},"b06+=4.7")
+  .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:2.1,ease:"power1.inOut"},"b06+=5.1")    // …and keeps going, writing 85% unbroken
+  .to("#b6 .leadin",{opacity:0,duration:.6},"b06+=5.7")
+  .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.8,ease:"power2.out"},"b06+=7.0")                            // fills + settles
+  .fromTo("#b6 .m2",{opacity:0},{opacity:1,duration:.9,ease:"power2.out"},"b06+=7.2").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.7")
+  .add(capIn("#cap6"),"b06+=7.9").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);document.querySelectorAll("#b6 .leadin").forEach(n=>n.style.strokeDashoffset=320);},null,"b06+=10.8");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
   .fromTo("#b7 .mnode",{opacity:0,scale:.72,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"expo.out"},"b07+=.3")  // hub + logos first
   .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.7},"b07+=.55")
   .to("#b7 .msrc",{opacity:1,duration:.7,stagger:.13},"b07+=.6")
-  .fromTo("#b7 .morbit",{opacity:0},{opacity:1,duration:1.0},"b07+=1.4")
   .to("#b7 .mbase",{strokeDashoffset:0,duration:1.7,stagger:.18,ease:"power2.inOut"},"b07+=1.6")                                    // beat one: connectors stroke-draw, one after another, edge → hub outline
+  .fromTo("#b7 .morbit",{opacity:0},{opacity:1,duration:1.0},"b07+=3.5")                                                            // ring dots appear only once the lines have connected
   .call(()=>document.querySelectorAll("#b7 .mflow").forEach(p=>{p.style.animationDelay="0s";p.classList.add("run");}),null,"b07+=3.6")
   .fromTo("#b7 .mflow",{opacity:0},{opacity:.85,duration:1.0,ease:"power2.out"},"b07+=3.6")                                         // beat two: the signal flows
   .add(capIn("#cap7"),"b07+=4.2").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.3")
@@ -604,7 +608,7 @@ tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b
 tl.add("b08",56.5).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
   .add(drawIn("#b8 .mark",1.5),"b08+=.6")
   .to("#b8 .ul",{scaleX:1,duration:1.0,ease:"power3.inOut"},"b08+=1.7").add(drawIn("#b8 .tag",1.1),"b08+=2.2")
-  .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to("#b8 form",{opacity:1,duration:1.0},"b08+=3.4").to({},{duration:3});
+  .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to({},{duration:3.5});
 
 window.__film=tl;
 const PHRASES=["snowy roof at sunset","whiteboard photos from last week","the receipt from amazon","golden retriever in the park"],qtext=$("#qtext");
