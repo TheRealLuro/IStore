@@ -131,12 +131,16 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,90vw);opacity:0;will-change:transform}
 #b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;will-change:transform}
 #b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
-#b6 .bignum{display:block;width:min(440px,74vw);height:auto;margin:0 auto;overflow:visible}
-#b6 .n85{font-family:var(--serif);font-weight:300;font-size:170px;text-anchor:middle;fill:rgba(255,255,255,0);stroke:#fff;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;paint-order:stroke;stroke-dasharray:1700;stroke-dashoffset:1700;filter:drop-shadow(0 0 26px rgba(255,255,255,.16))}
-#b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;text-align:center;opacity:0}
-#b6 .msub{margin-top:20px;font-family:var(--serif);font-style:italic;font-size:clamp(15px,1.9vw,22px);letter-spacing:-.01em;color:var(--paper);opacity:0}
-#b6 .msub i{font-style:normal;color:var(--mist);margin:0 .35em}
-#b6 .msub sup{font-size:.6em;color:var(--mist)}
+#b6 .ftline{position:absolute;left:50%;top:50%;width:min(380px,54vw);height:2px;transform:translate(-50%,-50%) scaleX(0);transform-origin:center;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.6);opacity:0;z-index:3}
+#b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;display:grid;justify-items:center;gap:16px;opacity:0}
+#b6 .mrow{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px)}
+#b6 .bignum{display:block;width:clamp(150px,26vw,300px);height:auto;overflow:visible}
+#b6 .n85{font-family:var(--serif);font-weight:300;font-size:160px;text-anchor:middle;fill:rgba(255,255,255,0);stroke:#fff;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;paint-order:stroke;stroke-dasharray:1700;stroke-dashoffset:1700;filter:drop-shadow(0 0 24px rgba(255,255,255,.16))}
+#b6 .m2{display:flex;flex-direction:column;align-items:flex-start;line-height:1.04}
+#b6 .m2 .up{font-family:var(--sans);font-weight:500;font-size:clamp(13px,1.6vw,19px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist)}
+#b6 .m2 .up sup{font-size:.62em}
+#b6 .m2 .sm{font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .fineprint{font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4)}
 #b6 .fineprint{margin-top:12px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4)}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
@@ -190,7 +194,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b1" aria-hidden="true"><div class="center">
     <div class="scrim"></div>
-    <div class="bigq"><span id="bign">0</span> files.<span class="two">zero idea where anything is.</span></div>
+    <div class="bigq">10,000 files.<span class="two">zero idea where anything is.</span></div>
   </div></section>
 
   <section class="beat" id="b2" aria-hidden="true">
@@ -251,7 +255,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="meter"><svg class="bignum" viewBox="0 0 480 210" aria-label="up to 85% smaller"><text class="n85" x="240" y="162">85%</text></svg><div class="msub">up to<sup>*</sup><i>·</i>smaller files<i>·</i>same quality<i>·</i>less space</div></div>
+    <div class="ftline" id="ftline"></div>
+    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 320 210" aria-label="up to 85% smaller"><text class="n85" x="160" y="166">85%</text></svg><div class="m2"><span class="up">up to<sup>*</sup></span><span class="sm">smaller</span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -300,7 +305,7 @@ if(reduce){ $("#poster").classList.add("show"); $("#stage").style.display="none"
 
 function starTexture(){ const c=document.createElement("canvas");c.width=c.height=64;const x=c.getContext("2d");const g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.22,"rgba(255,255,255,.75)");g.addColorStop(.5,"rgba(255,255,255,.18)");g.addColorStop(1,"rgba(255,255,255,0)");x.fillStyle=g;x.beginPath();x.arc(32,32,32,0,7);x.fill();return new THREE.CanvasTexture(c); }
 let glOK=true,renderer,scene,camera,clock,TEX; const gl=$("#gl");
-try{ renderer=new THREE.WebGLRenderer({canvas:gl,alpha:true,antialias:true}); renderer.setPixelRatio(Math.min(1.6,devicePixelRatio||1)); }catch(e){ glOK=false; }
+try{ renderer=new THREE.WebGLRenderer({canvas:gl,alpha:true,antialias:true}); renderer.setPixelRatio(Math.min(2,devicePixelRatio||1)); }catch(e){ glOK=false; }
 const galaxy={fade:0,order:0,spin:0,tilt:-0.6}; const brain={fade:0};
 
 if(glOK){
@@ -531,8 +536,7 @@ const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){prog
 tl.add("b01",0).call(()=>{setIndex(1);show("b1");if(G){G.galaxyGroup.visible=true;G.bgStars.visible=true;gsap.set(gl,{opacity:1});}},null,"b01")
   .to("#b1",{opacity:1,duration:1.2},"b01").to("#b1 .scrim",{opacity:1,duration:1.6},"b01+=.6");
 if(G){ tl.fromTo(galaxy,{fade:0,spin:0,order:0},{fade:1,duration:1.6},"b01").to(galaxy,{spin:0.55,duration:7,ease:"none"},"b01").fromTo(camera.position,{z:680},{z:430,duration:7,ease:"power1.inOut"},"b01"); }
-tl.add(drawIn("#b1 .bigq",1.6),"b01+=1.3")
-  .fromTo({v:0},{v:0},{v:10000,duration:1.8,ease:"power2.out",onUpdate(){$("#bign").textContent=Math.round(this.targets()[0].v).toLocaleString();}},"b01+=2.9")   // then count up to 10,000
+tl.add(drawIn("#b1 .bigq",1.8),"b01+=1.3")   // one clean draw-in, no ticking counter
   .to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
 
 // 02 — search → matrix (7–14)
@@ -569,33 +573,35 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
   .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
 // 06 — compression (39–45)
-tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.6},"b06")
-  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.5},"b06+=.2")
-  .to("#b6 .ftpill",{scale:.52,duration:1.2,stagger:{each:.018,from:"center",grid:[10,5]},ease:"power2.inOut"},"b06+=.5") // shrink, radial stagger
-  .to("#b6 .ftpill",{opacity:.3,duration:.28},"b06+=.9").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=1.18").to("#b6 .ftpill",{opacity:1,duration:.28},"b06+=1.2") // cross-dissolve to other types
-  .to("#b6 .ftpill",{height:2,paddingTop:0,paddingBottom:0,backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.7,stagger:{each:.012,from:"center",grid:[10,5]},ease:"power2.in"},"b06+=1.9") // collapse into white lines
-  .to("#fttrack",{gap:2,duration:.7,ease:"power2.in"},"b06+=2.0")
-  .to("#ftwrap",{scale:.08,opacity:0,duration:.7,ease:"power2.in"},"b06+=2.5")                                    // lines converge to centre
-  .to("#b6 .meter",{opacity:1,duration:.3},"b06+=2.9")
-  .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:1.5,ease:"power1.inOut"},"b06+=3.0")     // ink draws the 85%
-  .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.6,ease:"power2.out"},"b06+=4.1")                            // …then fills, faint settle
-  .to("#b6 .msub",{opacity:1,duration:.7},"b06+=4.2")
-  .add(capIn("#cap6"),"b06+=4.4").to(["#b6","#cap6"],{opacity:0,duration:.8},"b06+=5.2").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"transform,opacity"});gsap.set("#fttrack",{clearProps:"gap"});gsap.set("#b6 .n85",{clearProps:"fill"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);},null,"b06+=6");
+tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.7},"b06")
+  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.6},"b06+=.2")
+  .to("#b6 .ftpill",{scale:.5,duration:2.0,stagger:{each:.022,from:"center",grid:[10,5]},ease:"power2.inOut"},"b06+=.6")  // shrink, radial stagger — unhurried
+  .to("#b6 .ftpill",{opacity:.28,duration:.4},"b06+=1.7").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=2.1").to("#b6 .ftpill",{opacity:1,duration:.4},"b06+=2.15") // cross-dissolve
+  .to("#b6 .ftpill",{backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.6},"b06+=3.0")
+  .to("#fttrack",{scaleY:.03,transformOrigin:"50% 50%",duration:1.0,ease:"power2.inOut"},"b06+=3.2")               // all pills squash to the centre row
+  .fromTo("#ftline",{scaleX:0,opacity:1},{scaleX:1,duration:.8,ease:"power2.out"},"b06+=3.7")                      // → funnel into ONE white line
+  .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.2")
+  .to("#b6 .meter",{opacity:1,duration:.3},"b06+=4.6")
+  .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:2.3,ease:"power1.inOut"},"b06+=4.7")     // the one stroke draws the 85%, pen-slow
+  .to("#ftline",{opacity:0,duration:.7},"b06+=4.9")
+  .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.8,ease:"power2.out"},"b06+=6.9")                            // …then fills + settles
+  .fromTo("#b6 .m2",{opacity:0,x:-12},{opacity:1,x:0,duration:.8,ease:"expo.out"},"b06+=7.1").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.5")
+  .add(capIn("#cap6"),"b06+=7.6").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.4").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);},null,"b06+=10.4");
 
-// 07 — MIGRATION (45–53)
-tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
+// 07 — MIGRATION (relaxed)
+tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
   .fromTo("#b7 .mnode",{opacity:0,scale:.72,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"expo.out"},"b07+=.3")  // hub + logos first
   .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.7},"b07+=.55")
   .to("#b7 .msrc",{opacity:1,duration:.7,stagger:.13},"b07+=.6")
   .fromTo("#b7 .morbit",{opacity:0},{opacity:1,duration:1.0},"b07+=1.4")
-  .to("#b7 .mbase",{strokeDashoffset:0,duration:1.3,stagger:.12,ease:"power2.inOut"},"b07+=1.6")                                    // connectors stroke-draw from each origin → hub, staggered
-  .call(()=>document.querySelectorAll("#b7 .mflow").forEach(p=>{p.style.animationDelay="0s";p.classList.add("run");}),null,"b07+=1.7")
-  .fromTo("#b7 .mflow",{opacity:0},{opacity:.85,duration:1.1,ease:"power2.out"},"b07+=1.7")
-  .add(capIn("#cap7"),"b07+=2.6").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.1")
+  .to("#b7 .mbase",{strokeDashoffset:0,duration:1.7,stagger:.18,ease:"power2.inOut"},"b07+=1.6")                                    // beat one: connectors stroke-draw, one after another, edge → hub outline
+  .call(()=>document.querySelectorAll("#b7 .mflow").forEach(p=>{p.style.animationDelay="0s";p.classList.add("run");}),null,"b07+=3.6")
+  .fromTo("#b7 .mflow",{opacity:0},{opacity:.85,duration:1.0,ease:"power2.out"},"b07+=3.6")                                         // beat two: the signal flows
+  .add(capIn("#cap7"),"b07+=4.2").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.3")
   .call(()=>{hide("b7");$("#cap7").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.remove("run"));},null,"b07+=8");
 
 // 08 — close / CTA (53–63, hold)
-tl.add("b08",53).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
+tl.add("b08",56.5).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
   .add(drawIn("#b8 .mark",1.5),"b08+=.6")
   .to("#b8 .ul",{scaleX:1,duration:1.0,ease:"power3.inOut"},"b08+=1.7").add(drawIn("#b8 .tag",1.1),"b08+=2.2")
   .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to("#b8 form",{opacity:1,duration:1.0},"b08+=3.4").to({},{duration:3});
