@@ -172,7 +172,13 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 @media (max-width:720px){:root{--m:7vw}#b4 .scene4{grid-template-columns:1fr;gap:6vh;justify-items:center}#b4 .pillars{text-align:center;justify-items:center}#b5 .split{grid-template-columns:1fr;gap:5vh}
   /* beat 5: stack the two side labels onto their own centred lines so they don't collide */
   #b5 .lab{left:0;right:0;text-align:center;white-space:nowrap;font-size:9.5px;letter-spacing:.16em}
-  #b5 .lab-l{top:80%}#b5 .lab-r{top:88%}}
+  #b5 .lab-l{top:80%}#b5 .lab-r{top:88%}
+  /* beat 4: a smaller shield + a footer pinned to the very bottom so the "independently compliant with" line clears the vault footnote */
+  #b4 .shieldwrap{width:min(248px,42vw)}
+  #b4 .pillars .vn{font-size:10px;line-height:1.4}
+  #b4 .compliance{bottom:clamp(14px,3vh,34px)}
+  /* beat 7: lift the provider/hub graphic up off the caption below it */
+  #b7 .mig{transform:translateY(-7vh)}}
 </style>
 </head>
 <body>
