@@ -118,11 +118,13 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;will-change:transform}
 #b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
 #b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;opacity:0}
-#b6 .head85{position:absolute;left:0;right:0;bottom:50%;margin-bottom:20px;text-align:center}
-#b6 .ceil{font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.2em;text-transform:uppercase;color:var(--mist);margin-bottom:10px;opacity:0}
-#b6 .ceil sup{font-size:.62em}
-#b6 .m85{font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(40px,7.4vw,92px);letter-spacing:-.02em;line-height:1;color:var(--paper);opacity:0;padding-bottom:.1em}
-#b6 .m85 .sm{display:inline-block;padding-bottom:.12em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .head85{position:absolute;left:0;right:0;bottom:50%;margin-bottom:22px}
+#b6 .m85{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px);opacity:0}
+#b6 .big{font-family:var(--serif);font-weight:300;font-size:clamp(64px,13vw,168px);letter-spacing:-.03em;line-height:1;color:var(--paper);padding-bottom:.05em}
+#b6 .m2{position:relative}
+#b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(32px,5.4vw,70px);letter-spacing:-.02em;line-height:1;padding-bottom:.14em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .m2 .up{position:absolute;top:-1.15em;right:-.35em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
+#b6 .m2 .up sup{font-size:.62em}
 #b6 .cline{position:absolute;left:50%;top:50%;width:min(440px,60vw);height:2px;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.55);transform:translate(-50%,-50%) scaleX(0);transform-origin:center;opacity:0}
 #b6 .fineprint{position:absolute;left:0;right:0;top:50%;margin-top:36px;text-align:center;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
 
@@ -240,7 +242,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="meter"><div class="head85"><div class="ceil">up to<sup>*</sup></div><div class="m85">85% <em class="sm">smaller</em></div></div><div class="cline" id="cline"></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="head85"><div class="m85"><span class="big">85%</span><span class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></span></div></div><div class="cline" id="cline"></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -555,11 +557,10 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
   .to("#b6 .meter",{opacity:1,duration:.4},"b06+=3.2")
   .fromTo("#b6 .cline",{scaleX:0,opacity:1,y:-20},{scaleX:1,duration:.9,ease:"power2.out"},"b06+=3.6")            // the squashed pills funnel into ONE white line
   .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.3")
-  .fromTo("#b6 .ceil",{opacity:0,y:8},{opacity:1,y:0,duration:1.2,ease:"power2.out"},"b06+=4.9")                  // headline eases in, unhurried
-  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.5,ease:"power3.out"},"b06+=5.0")                  // "85% smaller" — typeset, italic serif
-  .to("#b6 .cline",{y:0,duration:1.3,ease:"power3.out"},"b06+=5.0")                                              // the line settles down into place as the underline beneath the text
+  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.5,ease:"power3.out"},"b06+=4.9")                  // "85%" big + "smaller" small + "up to*" — eases in, unhurried
+  .to("#b6 .cline",{y:0,duration:1.3,ease:"power3.out"},"b06+=4.9")                                              // the line settles down into place as the underline beneath the text
   .to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=6.4")
-  .add(capIn("#cap6"),"b06+=6.6").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .ceil",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});gsap.set("#b6 .cline",{clearProps:"all"});},null,"b06+=10.8");
+  .add(capIn("#cap6"),"b06+=6.6").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});gsap.set("#b6 .cline",{clearProps:"all"});},null,"b06+=10.8");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
