@@ -117,16 +117,16 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,90vw);opacity:0;will-change:transform}
 #b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;will-change:transform}
 #b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
-#b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;opacity:0}
-#b6 .head85{position:absolute;left:0;right:0;bottom:50%;margin-bottom:22px}
+#b6 .meter{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:4;opacity:0}
+#b6 .grp{position:relative;display:flex;flex-direction:column;align-items:center;gap:clamp(16px,2.6vh,26px)}
 #b6 .m85{display:flex;align-items:baseline;justify-content:center;gap:clamp(12px,2vw,24px);opacity:0}
 #b6 .big{font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(64px,13vw,168px);letter-spacing:-.035em;line-height:1;color:var(--paper)}
 #b6 .m2{position:relative}
 #b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(32px,5.4vw,70px);letter-spacing:-.02em;line-height:1;padding-bottom:.14em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
-#b6 .m2 .up{position:absolute;top:-1.15em;right:-.35em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
+#b6 .m2 .up{position:absolute;top:-1.25em;right:-.3em;font-family:var(--sans);font-weight:600;font-size:clamp(9px,1vw,12px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
 #b6 .m2 .up sup{font-size:.62em}
-#b6 .cline{position:absolute;left:50%;top:50%;width:min(440px,60vw);height:2px;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.55);transform:translate(-50%,-50%) scaleX(0);transform-origin:center;opacity:0}
-#b6 .fineprint{position:absolute;left:0;right:0;top:50%;margin-top:36px;text-align:center;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
+#b6 .cline{position:relative;width:min(440px,60vw);height:2px;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.55);transform:scaleX(0);transform-origin:center;opacity:0}
+#b6 .fineprint{position:absolute;left:0;right:0;top:50%;margin-top:clamp(78px,15vh,150px);text-align:center;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
 #b7 .mig{position:relative;width:min(960px,100%);height:min(440px,58vh)}
@@ -191,7 +191,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
           <svg viewBox="0 0 78 96" aria-hidden="true"><g class="rcpt"><path d="M14 6 H64 V90 L56 84 L48 90 L40 84 L32 90 L24 84 L14 90 Z"/><path d="M24 22 H54 M24 33 H50 M24 44 H56 M24 55 H44"/><path d="M24 70 H40 M48 70 H54" stroke-width="2.4"/></g></svg>
           <div class="hmatch">98% match</div>
         </div>
-        <div class="hmeta"><span class="hav"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M14 3v5h5"/></svg></span><div class="htext"><b>amazon-order.pdf</b><span>receipt · nov 2024</span></div></div>
+        <div class="hmeta"><span class="hav"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M14 3v5h5"/></svg></span><div class="htext"><b>L_A_4_SG.pdf</b><span>study guide · linear algebra</span></div></div>
       </div>
     </div></div>
     <div class="caption" id="cap2">search by <span class="ac">content</span>, not metadata.</div>
@@ -242,7 +242,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="meter"><div class="head85"><div class="m85"><span class="big">85%</span><span class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></span></div></div><div class="cline" id="cline"></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="grp"><div class="m85"><span class="big">85%</span><span class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></span></div><div class="cline" id="cline"></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -513,9 +513,9 @@ tl.add(drawIn("#b1 .bigq",1.8),"b01+=1.3")   // one clean draw-in, no ticking co
   .to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
 
 // 02 — search → matrix (7–14)
-tl.add("b02",7).call(()=>{setIndex(2);show("b2");sweep();},null,"b02").to("#b2",{opacity:1,duration:1.0},"b02").to("#b2 .scrim",{opacity:1,duration:1.1},"b02+=.1").fromTo("#b2 .field",{opacity:0,y:18},{opacity:1,y:0,duration:1.6,ease:"power3.out"},"b02+=.3");
+tl.add("b02",7).call(()=>{setIndex(2);show("b2");sweep();},null,"b02").to("#b2",{opacity:1,duration:1.0},"b02").to("#b2 .scrim",{opacity:1,duration:1.1},"b02+=.1").fromTo("#b2 .field",{opacity:0,y:18},{opacity:1,y:0,duration:1.9,ease:"power3.out"},"b02+=.3");
 if(G){ tl.to(galaxy,{order:1,duration:2.0,ease:"power3.inOut"},"b02+=2.6").to(galaxy,{fade:.3,duration:1.3},"b02+=4.4").to(G.bgUni.uFade,{value:0,duration:1.0},"b02+=4.4"); }
-tl.fromTo("#hero",{opacity:0,clipPath:"inset(0 0 100% 0)",scale:.7},{opacity:1,clipPath:"inset(0 0 0% 0)",scale:1,duration:1.3,ease:"power4.out"},"b02+=3.9").to("#cap2",{clipPath:"inset(0 0% 0 0)",duration:2.0,ease:"power3.out"},"b02+=3.5").to(["#b2","#cap2"],{opacity:0,duration:.8},"b02+=6.2").call(()=>{hide("b2");$("#cap2").style.clipPath="inset(0 100% 0 0)";if(G)G.bgStars.visible=false;},null,"b02+=7");
+tl.fromTo("#hero",{opacity:0,clipPath:"inset(0 0 100% 0)",scale:.7},{opacity:1,clipPath:"inset(0 0 0% 0)",scale:1,duration:1.4,ease:"power4.out"},"b02+=4.2").to("#cap2",{clipPath:"inset(0 0% 0 0)",duration:1.8,ease:"power2.out"},"b02+=4.0").to(["#b2","#cap2"],{opacity:0,duration:.8},"b02+=6.2").call(()=>{hide("b2");$("#cap2").style.clipPath="inset(0 100% 0 0)";if(G)G.bgStars.visible=false;},null,"b02+=7");
 
 // 03 — brain (14–22)
 tl.add("b03",14).call(()=>{setIndex(3);show("b3");sweep();if(G)G.brainGroup.visible=true;},null,"b03").to("#b3",{opacity:1,duration:1.0},"b03");
@@ -581,8 +581,8 @@ tl.add("b08",56.5).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b
   .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to({},{duration:3.5});
 
 window.__film=tl;
-const QUERY="amazon receipt",qtext=$("#qtext");
-tl.eventCallback("onUpdate",(prev=>function(){prev&&prev();const t=tl.time();if(t>=7&&t<14){const start=7.7,dur=2.6,lt=t-start,ch=lt<=0?0:(lt>=dur?QUERY.length:Math.round(lt/dur*QUERY.length));qtext.textContent=QUERY.slice(0,ch);}})(tl.eventCallback("onUpdate")));   // types out once, then holds on "amazon receipt"
+const QUERY="eigenvalue matrix math",qtext=$("#qtext");
+tl.eventCallback("onUpdate",(prev=>function(){prev&&prev();const t=tl.time();if(t>=7&&t<14){const start=7.8,dur=2.8,lt=t-start,ch=lt<=0?0:(lt>=dur?QUERY.length:Math.round(lt/dur*QUERY.length));qtext.textContent=QUERY.slice(0,ch);}})(tl.eventCallback("onUpdate")));   // types out once, then holds — the result (L_A_4_SG.pdf) surfaces after, though the filename contains none of the words
 
 addEventListener("keydown",e=>{if(e.code==="Space"){e.preventDefault();tl.paused()?tl.play():tl.pause();}else if(e.key==="r"||e.key==="R"){tl.restart();}});
 document.addEventListener("visibilitychange",()=>{if(document.hidden){tl.pause();gsap.ticker.sleep();}else{gsap.ticker.wake();if(tl.progress()<1)tl.play();}});
