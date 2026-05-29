@@ -86,8 +86,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b4 .lk-key{stroke-width:2.4}
 #b4 .lk-shackle{transform-box:fill-box}
 #b4 .pillars{display:grid;gap:clamp(12px,2vh,22px)}
-#b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.3;opacity:0}
-#b4 .pillars p .d{font-style:italic;display:inline-block;padding-bottom:.16em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.5;opacity:0}
+#b4 .pillars p .d{font-style:italic;display:inline;padding-bottom:.08em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #b4 .pillars p sup{font-size:.5em;vertical-align:super;color:var(--mist);-webkit-text-fill-color:var(--mist)}
 #b4 .pillars .vn{font-family:var(--sans);font-size:11px;letter-spacing:.02em;line-height:1.4;color:rgba(244,241,234,.42);margin-top:8px;opacity:0}
 #b4 .compliance{position:absolute;left:var(--m);right:var(--m);bottom:clamp(56px,11vh,112px);text-align:center;opacity:0}
@@ -429,7 +429,9 @@ window.__shuffleFt=()=>document.querySelectorAll("#b6 .ftpill").forEach(p=>{p.te
 /* migration (beat 7) — sources → neuthek, flowing dashes */
 const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
 (function buildMigration(){
-  const svg=$("#migsvg"); const cx=672,cy=220,NH=54;
+  const svg=$("#migsvg"); const MOBILE=innerWidth<innerHeight||innerWidth<=720;
+  const cx=MOBILE?180:672, cy=MOBILE?250:220, NH=MOBILE?46:54, chipR=MOBILE?30:26;
+  svg.setAttribute("viewBox",MOBILE?"0 0 360 500":"0 0 960 440");
   // recognisable monochrome marks — trademarks of their respective owners (see on-screen disclaimer)
   const glyphs={
     drive:{d:"M41 24 H25 M41 24 A17 17 0 1 1 32.5 9.2"},                                    // Google iconic G
@@ -439,23 +441,28 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
     mega:{d:"M6 22 a18 18 0 1 1 36 0 a18 18 0 1 1 -36 0 M14 31 L14 15 L24 25 L34 15 L34 31"} // MEGA circle + M
   };
   const srcs=[["google drive","drive"],["icloud","icloud"],["dropbox","dropbox"],["proton drive","proton"],["mega","mega"]];
-  srcs.forEach((s,i)=>{ const y=52+i*84, gx=150, gl=glyphs[s[1]];
+  // mobile: 2 chips on top, 3 on the bottom, each wired radially into the hub ring; desktop: a left column converging to one point
+  const POS=MOBILE?[[100,86,1],[260,86,1],[64,416,0],[180,416,0],[296,416,0]]:[[150,52,0],[150,136,0],[150,220,0],[150,304,0],[150,388,0]];
+  srcs.forEach((s,i)=>{ const gx=POS[i][0], gy=POS[i][1], top=POS[i][2]===1, gl=glyphs[s[1]];
     const g=el("g",{class:"msrc"});
-    g.appendChild(el("circle",{class:"mchip",cx:gx,cy:y,r:26}));
+    g.appendChild(el("circle",{class:"mchip",cx:gx,cy:gy,r:chipR}));
     const gp=el("path",{class:"mglyph"+(gl.fill?" fill":""),d:gl.d}); g.appendChild(gp);
-    const lab=el("text",{class:"mlabel",x:gx,y:y+44}); lab.textContent=s[0]; g.appendChild(lab);   // label centred under the chip
+    const ly=MOBILE?(top?gy-chipR-16:gy+chipR+20):gy+44;                                              // mobile: top labels above, bottom labels below
+    const lab=el("text",{class:"mlabel",x:gx,y:ly}); lab.textContent=s[0]; g.appendChild(lab);
     svg.appendChild(g);
-    const bb=gp.getBBox(), k=28/Math.max(bb.width,bb.height);                                        // proportion + centre each glyph in its chip
-    gp.setAttribute("transform",`translate(${gx} ${y}) scale(${k.toFixed(3)}) translate(${(-(bb.x+bb.width/2)).toFixed(1)} ${(-(bb.y+bb.height/2)).toFixed(1)})`);
-    const sx=gx+32, px=cx-NH-3, py=cy,                                                                // all strings pivot into ONE point on the ring's left
-      mid=`M ${sx} ${y} C ${sx+150} ${y}, ${px-150} ${py}, ${px} ${py}`;                              // chip edge → single convergence point
-    svg.appendChild(el("path",{class:"mbase",d:mid}));
-    svg.appendChild(el("path",{class:"mflow",d:mid}));
+    const bb=gp.getBBox(), k=(chipR+2)/Math.max(bb.width,bb.height);                                  // proportion + centre each glyph in its chip
+    gp.setAttribute("transform",`translate(${gx} ${gy}) scale(${k.toFixed(3)}) translate(${(-(bb.x+bb.width/2)).toFixed(1)} ${(-(bb.y+bb.height/2)).toFixed(1)})`);
+    let d;
+    if(MOBILE){ const vx=cx-gx,vy=cy-gy,L=Math.hypot(vx,vy),ux=vx/L,uy=vy/L,sx=gx+ux*chipR,sy=gy+uy*chipR,ex=cx-ux*NH,ey=cy-uy*NH;  // chip edge → point on the ring facing it
+      d=`M ${sx.toFixed(1)} ${sy.toFixed(1)} C ${(sx+(ex-sx)*0.42).toFixed(1)} ${(sy+(ey-sy)*0.16).toFixed(1)}, ${(sx+(ex-sx)*0.58).toFixed(1)} ${(ey-(ey-sy)*0.16).toFixed(1)}, ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+    } else { const sx=gx+32, px=cx-NH-3, py=cy; d=`M ${sx} ${gy} C ${sx+150} ${gy}, ${px-150} ${py}, ${px} ${py}`; }                 // desktop: pivot into one point on the ring's left
+    svg.appendChild(el("path",{class:"mbase",d}));
+    svg.appendChild(el("path",{class:"mflow",d}));
   });
   // centre neuthek node — circular, matching the hub mark
   svg.appendChild(el("circle",{class:"morbit",cx,cy,r:NH+9}));
   svg.appendChild(el("circle",{class:"mnode",cx,cy,r:NH}));
-  const logo=el("g",{class:"mlogo",transform:`translate(${cx} ${cy}) scale(1.5) translate(-33 -31)`});
+  const logo=el("g",{class:"mlogo",transform:`translate(${cx} ${cy}) scale(${MOBILE?1.3:1.5}) translate(-33 -31)`});
   logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
   [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
   svg.appendChild(logo);
