@@ -39,30 +39,22 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 @keyframes grain{0%{transform:translate(0,0)}25%{transform:translate(-3%,2%)}50%{transform:translate(2%,-3%)}75%{transform:translate(-2%,3%)}100%{transform:translate(0,0)}}
 .flare{display:none}
 
-.chrome{position:fixed;inset:0;z-index:45;pointer-events:none;font-family:var(--sans)}
-.toprule{position:absolute;top:0;left:0;right:0;height:1px;background:rgba(244,241,234,.16)}
-.head{position:absolute;top:clamp(16px,3.2vh,30px);left:var(--m);right:var(--m);display:flex;align-items:baseline;justify-content:space-between}
-.wm{font-family:var(--serif);font-weight:500;font-size:clamp(17px,1.9vw,23px);letter-spacing:-.01em;color:var(--paper)}
-.wm i{font-style:normal;color:var(--white)}
-.index{font-size:11px;letter-spacing:.34em;color:var(--mist);text-transform:uppercase;font-variant-numeric:tabular-nums}
-.index b{color:var(--paper);font-weight:600}
-.timecode{position:absolute;bottom:clamp(22px,3.6vh,32px);left:var(--m);font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--mist)}
 
-.caption{position:absolute;left:var(--m);right:var(--m);bottom:clamp(78px,15vh,150px);text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(22px,3.4vw,46px);line-height:1.12;letter-spacing:-.02em;color:var(--paper);clip-path:inset(0 100% 0 0);text-shadow:0 2px 30px rgba(0,0,0,.7)}
+.caption{position:absolute;left:var(--m);right:var(--m);bottom:clamp(78px,15vh,150px);text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(22px,3.4vw,46px);line-height:1.32;letter-spacing:-.02em;color:var(--paper);clip-path:inset(0 100% 0 0);text-shadow:0 2px 30px rgba(0,0,0,.7)}
 .caption .it{font-style:italic}
-.caption .em,.caption .ac{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;text-shadow:none}
+.caption .em,.caption .ac{font-style:italic;display:inline-block;padding-bottom:.18em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;text-shadow:none}
 
 /* BEAT 1 */
 #b1 .scrim{position:absolute;left:50%;top:50%;width:min(960px,92vw);height:min(420px,46vh);transform:translate(-50%,-50%);z-index:5;pointer-events:none;opacity:0;background:radial-gradient(ellipse at center, rgba(10,10,10,.92) 0%, rgba(10,10,10,.6) 42%, transparent 72%);filter:blur(12px)}
-#b1 .bigq{position:relative;z-index:6;text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(30px,6vw,84px);line-height:1.02;letter-spacing:-.03em;opacity:0;text-shadow:0 2px 50px rgba(0,0,0,.9)}
-#b1 .bigq .two{display:block;color:var(--mist);font-size:.62em;margin-top:.25em;font-style:italic}
+#b1 .bigq{position:relative;z-index:6;text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(30px,6vw,84px);line-height:1.16;letter-spacing:-.03em;opacity:0;text-shadow:0 2px 50px rgba(0,0,0,.9);padding-bottom:.12em}
+#b1 .bigq .two{display:block;color:var(--mist);font-size:.62em;margin-top:.25em;font-style:italic;line-height:1.3;padding-bottom:.1em}
 
 /* BEAT 2 — scrim behind the search bar */
 #b2 .col{position:relative;width:min(760px,100%);display:flex;flex-direction:column;align-items:center;z-index:6}
 #b2 .scrim{position:absolute;left:50%;top:18px;width:120%;height:150px;transform:translateX(-50%);z-index:-1;opacity:0;background:radial-gradient(ellipse at center, rgba(10,10,10,.94) 0%, rgba(10,10,10,.55) 55%, transparent 78%);filter:blur(14px)}
 #b2 .field{width:100%;display:flex;align-items:center;gap:16px;padding:18px 24px;border-radius:16px;background:rgba(13,13,15,.74);backdrop-filter:blur(20px) saturate(118%);-webkit-backdrop-filter:blur(20px) saturate(118%);border:1px solid rgba(244,241,234,.15);box-shadow:0 26px 72px rgba(0,0,0,.58),inset 0 1px 0 rgba(255,255,255,.06)}
 #b2 .mag{width:18px;height:18px;flex:0 0 auto;opacity:.85}
-#b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;min-height:1.2em;color:var(--white)}
+#b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:visible;line-height:1.35;min-height:1.35em;color:var(--white)}
 #b2 .car{display:inline-block;width:2px;height:1em;background:var(--white);vertical-align:-.12em;margin-left:3px;box-shadow:0 0 8px var(--white);animation:blink 1.05s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 #b2 .hero{margin-top:44px;width:222px;border-radius:18px;overflow:hidden;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.72);background:linear-gradient(165deg,#232327,#131315);box-shadow:0 32px 80px rgba(0,0,0,.62),inset 0 1px 0 rgba(255,255,255,.05),inset 0 0 0 1px rgba(244,241,234,.1)}
@@ -94,8 +86,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b4 .lk-key{stroke-width:2.4}
 #b4 .lk-shackle{transform-box:fill-box}
 #b4 .pillars{display:grid;gap:clamp(12px,2vh,22px)}
-#b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.1;opacity:0}
-#b4 .pillars p .d{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.3;opacity:0}
+#b4 .pillars p .d{font-style:italic;display:inline-block;padding-bottom:.16em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #b4 .pillars p sup{font-size:.5em;vertical-align:super;color:var(--mist);-webkit-text-fill-color:var(--mist)}
 #b4 .pillars .vn{font-family:var(--sans);font-size:11px;letter-spacing:.02em;line-height:1.4;color:rgba(244,241,234,.42);margin-top:8px;opacity:0}
 #b4 .compliance{position:absolute;left:var(--m);right:var(--m);bottom:clamp(56px,11vh,112px);text-align:center;opacity:0}
@@ -125,14 +117,12 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,90vw);opacity:0;will-change:transform}
 #b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;will-change:transform}
 #b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
-#b6 .ftline{position:absolute;left:50%;top:50%;width:min(380px,54vw);height:2px;transform:translate(-50%,-50%) scaleX(0);transform-origin:center;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.6);opacity:0;z-index:3}
 #b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;display:grid;justify-items:center;gap:16px;opacity:0}
 #b6 .mrow{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px)}
 #b6 .bignum{display:block;width:clamp(150px,26vw,300px);height:auto;overflow:visible}
-#b6 .n85{font-family:var(--serif);font-weight:300;font-size:160px;text-anchor:middle;fill:rgba(255,255,255,0);stroke:#fff;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;paint-order:stroke;stroke-dasharray:1700;stroke-dashoffset:1700;filter:drop-shadow(0 0 24px rgba(255,255,255,.16))}
-#b6 .leadin{fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-dasharray:1200;stroke-dashoffset:1200}
+#b6 .ink{fill:none;stroke:#fff;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 16px rgba(255,255,255,.22))}
 #b6 .m2{position:relative;opacity:0}
-#b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;padding-bottom:.12em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #b6 .m2 .up{position:absolute;top:-.5em;right:-.45em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
 #b6 .m2 .up sup{font-size:.62em}
 #b6 .fineprint{margin-top:8px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
@@ -251,8 +241,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="ftline" id="ftline"></div>
-    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 320 210" aria-label="up to 85% smaller"><path class="leadin" d="M 300 196 C 196 200, 92 170, 64 138"/><text class="n85" x="160" y="166">85%</text></svg><div class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 440 240" aria-label="up to 85% smaller"><path class="ink" d="M330 120 L110 120 C92 150 96 188 110 214 A32 32 0 0 1 110 150 A26 26 0 0 1 110 98 A26 26 0 0 1 110 150 A32 32 0 0 1 110 214 M248 102 L190 102 L190 148 C248 144 258 196 204 210 C188 214 178 210 172 200 M281 122 A17 17 0 1 1 315 122 A17 17 0 1 1 281 122 M276 212 L372 96 M333 188 A17 17 0 1 1 367 188 A17 17 0 1 1 333 188"/></svg><div class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -270,11 +259,6 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
   </section>
 
   <div class="flare" id="flare"></div><div class="vignette"></div><div class="grain"></div>
-  <div class="chrome">
-    <div class="toprule"></div>
-    <div class="head"><div class="wm">neuthek<i>.</i></div><div class="index"><b id="idxN">01</b> — 08</div></div>
-    <div class="timecode" id="timecode">00:00</div>
-  </div>
 </div>
 
 <div class="poster" id="poster"><div class="stack">
@@ -438,6 +422,16 @@ window.__shuffleFt=()=>document.querySelectorAll("#b6 .ftpill").forEach(p=>{p.te
 /* prime the lock (beat 4) for a real pen stroke-draw */
 (function(){ document.querySelectorAll("#b4 .lk").forEach(p=>{const L=p.getTotalLength()||200;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); })();
 
+/* prime the compression stroke (beat 6) — ONE continuous path: straight line → curve → 8 → 5 → %.
+   Measure the lead-in (line+curve) separately so it can retract behind the pen, leaving 85% inked. */
+(function(){ const p=document.querySelector("#b6 .ink"); if(!p) return;
+  const T=p.getTotalLength()||1700; p.style.strokeDasharray=T; p.style.strokeDashoffset=T;
+  const lead=document.createElementNS("http://www.w3.org/2000/svg","path");
+  lead.setAttribute("d","M330 120 L110 120 C92 150 96 188 110 214"); p.parentNode.appendChild(lead);
+  const L=lead.getTotalLength()||330; lead.remove();
+  window.__b6={total:T, lead:L, line:220};
+})();
+
 /* migration (beat 7) — sources → neuthek, flowing dashes */
 const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
 (function buildMigration(){
@@ -508,8 +502,7 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   svg.querySelectorAll(".wbase").forEach(p=>{const L=p.getTotalLength()||300;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime strands for stroke-draw
 })();
 
-const idxN=$("#idxN"),timecode=$("#timecode");
-const setIndex=n=>idxN.textContent=("0"+n).slice(-2);
+const setIndex=()=>{};   // overlay chrome removed — full-bleed, no counters
 const fmt=t=>{const s=Math.floor(t);return ("0"+Math.floor(s/60)).slice(-2)+":"+("0"+(s%60)).slice(-2);};
 const sweep=()=>{};   // flare/light-sweep removed — no stray horizontal line
 const show=id=>{const b=$("#"+id);b.classList.add("live");b.setAttribute("aria-hidden","false");};
@@ -519,7 +512,7 @@ const capIn=sel=>gsap.to(sel,{clipPath:"inset(0 0% 0 0)",duration:1.25,ease:"exp
 const drawIn=(sel,dur,stag)=>gsap.fromTo(sel,{opacity:1,clipPath:"inset(0 100% 0 0)"},{clipPath:"inset(0 0% 0 0)",duration:dur||1.05,stagger:stag||0,ease:"expo.out"});
 const G=glOK?window.__gx:null;
 
-const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){timecode.textContent=fmt(tl.time());}});
+const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"}});
 
 // 01 — galaxy (0–7)
 tl.add("b01",0).call(()=>{setIndex(1);show("b1");if(G){G.galaxyGroup.visible=true;G.bgStars.visible=true;gsap.set(gl,{opacity:1});}},null,"b01")
@@ -564,22 +557,20 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
   .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
 // 06 — compression (39–45)
+const B6=window.__b6||{total:1700,lead:330,line:220};
 tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.7},"b06")
   .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.6},"b06+=.2")
   .to("#b6 .ftpill",{scale:.5,duration:2.0,stagger:{each:.022,from:"center",grid:[10,5]},ease:"power2.inOut"},"b06+=.6")  // shrink, radial stagger — unhurried
   .to("#b6 .ftpill",{opacity:.28,duration:.4},"b06+=1.7").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=2.1").to("#b6 .ftpill",{opacity:1,duration:.4},"b06+=2.15") // cross-dissolve
   .to("#b6 .ftpill",{backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.6},"b06+=3.0")
   .to("#fttrack",{scaleY:.03,transformOrigin:"50% 50%",duration:1.0,ease:"power2.inOut"},"b06+=3.2")               // all pills squash to the centre row
-  .fromTo("#ftline",{scaleX:0,opacity:1},{scaleX:1,duration:.8,ease:"power2.out"},"b06+=3.7")                      // → funnel into ONE white line
+  .to("#b6 .meter",{opacity:1,duration:.4},"b06+=3.2")                                                            // numerals stage ready
+  .fromTo("#b6 .ink",{strokeDashoffset:B6.total},{strokeDashoffset:B6.total-B6.line,duration:.9,ease:"power2.out"},"b06+=3.5") // the squashed pills BECOME the straight line — the first stretch of the one stroke
   .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.2")
-  .to("#b6 .meter",{opacity:1,duration:.3},"b06+=4.3")
-  .fromTo("#b6 .leadin",{strokeDashoffset:1200},{strokeDashoffset:0,duration:.7,ease:"power1.inOut"},"b06+=4.5")   // the same stroke sweeps up to the 8…
-  .to("#ftline",{opacity:0,duration:.45},"b06+=4.7")
-  .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:2.1,ease:"power1.inOut"},"b06+=5.1")    // …and keeps going, writing 85% unbroken
-  .to("#b6 .leadin",{strokeDashoffset:1200,duration:1.0,ease:"power1.in"},"b06+=5.3")                              // ink trail erases the lead-in behind the pen — no leftover line
-  .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.8,ease:"power2.out"},"b06+=7.0")                            // fills + settles
-  .fromTo("#b6 .m2",{opacity:0},{opacity:1,duration:.9,ease:"power2.out"},"b06+=7.2").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.7")
-  .add(capIn("#cap6"),"b06+=7.9").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);document.querySelectorAll("#b6 .leadin").forEach(n=>n.style.strokeDashoffset=1200);},null,"b06+=10.8");
+  .to("#b6 .ink",{strokeDashoffset:0,duration:2.5,ease:"power1.inOut"},"b06+=4.6")                                 // …the same pen keeps moving, unbroken: tangent curve → 8 → 5 → %
+  .to("#b6 .ink",{strokeDashoffset:-B6.lead,duration:1.1,ease:"power1.in"},"b06+=7.1")                             // the straight lead-in retracts behind the tip — only 85% stays inked, no stray line
+  .fromTo("#b6 .m2",{opacity:0},{opacity:1,duration:.9,ease:"power2.out"},"b06+=7.3").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.9")
+  .add(capIn("#cap6"),"b06+=8.1").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .ink").forEach(n=>n.style.strokeDashoffset=B6.total);},null,"b06+=10.8");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
