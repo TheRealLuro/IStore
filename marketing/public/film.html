@@ -80,7 +80,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 @keyframes breathe{0%,100%{transform:scale(.95);opacity:.5}50%{transform:scale(1.06);opacity:1}}
 #b4 .shieldwrap svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 #b4 .sh-out{fill:none;stroke:var(--white);stroke-width:2.4;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
-#b4 .sh-in{fill:none;stroke:rgba(244,241,234,.28);stroke-width:1;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
+#b4 .sh-in{fill:none;stroke:rgba(244,241,234,.4);stroke-width:1.2;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
 #b4 .sh-dots{opacity:0}#b4 .sweep{opacity:0}
 #b4 .lk{stroke:var(--white);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 7px rgba(255,255,255,.35))}
 #b4 .lk-key{stroke-width:2.4}
@@ -117,15 +117,14 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,90vw);opacity:0;will-change:transform}
 #b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;will-change:transform}
 #b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
-#b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;display:grid;justify-items:center;gap:16px;opacity:0}
-#b6 .mrow{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px)}
-#b6 .bignum{display:block;width:clamp(150px,26vw,300px);height:auto;overflow:visible}
-#b6 .ink{fill:none;stroke:#fff;stroke-width:6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 16px rgba(255,255,255,.22))}
-#b6 .m2{position:relative;opacity:0}
-#b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;padding-bottom:.12em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
-#b6 .m2 .up{position:absolute;top:-.5em;right:-.45em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
-#b6 .m2 .up sup{font-size:.62em}
-#b6 .fineprint{margin-top:8px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
+#b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;opacity:0}
+#b6 .head85{position:absolute;left:0;right:0;bottom:50%;margin-bottom:20px;text-align:center}
+#b6 .ceil{font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.2em;text-transform:uppercase;color:var(--mist);margin-bottom:10px;opacity:0}
+#b6 .ceil sup{font-size:.62em}
+#b6 .m85{font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(40px,7.4vw,92px);letter-spacing:-.02em;line-height:1;color:var(--paper);opacity:0;padding-bottom:.1em}
+#b6 .m85 .sm{display:inline-block;padding-bottom:.12em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .cline{position:absolute;left:50%;top:50%;width:min(440px,60vw);height:2px;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.55);transform:translate(-50%,-50%) scaleX(0);transform-origin:center;opacity:0}
+#b6 .fineprint{position:absolute;left:0;right:0;top:50%;margin-top:36px;text-align:center;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
 #b7 .mig{position:relative;width:min(960px,100%);height:min(440px,58vh)}
@@ -193,7 +192,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
         <div class="hmeta"><span class="hav"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M14 3v5h5"/></svg></span><div class="htext"><b>amazon-order.pdf</b><span>receipt · nov 2024</span></div></div>
       </div>
     </div></div>
-    <div class="caption" id="cap2">search by <span class="ac">meaning</span>, not metadata.</div>
+    <div class="caption" id="cap2">search by <span class="ac">content</span>, not metadata.</div>
   </section>
 
   <section class="beat" id="b3" aria-hidden="true">
@@ -241,7 +240,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 440 240" aria-label="up to 85% smaller"><path class="ink" d="M330 120 L110 120 C92 150 96 188 110 214 A32 32 0 0 1 110 150 A26 26 0 0 1 110 98 A26 26 0 0 1 110 150 A32 32 0 0 1 110 214 M248 102 L190 102 L190 148 C248 144 258 196 204 210 C188 214 178 210 172 200 M281 122 A17 17 0 1 1 315 122 A17 17 0 1 1 281 122 M276 212 L372 96 M333 188 A17 17 0 1 1 367 188 A17 17 0 1 1 333 188"/></svg><div class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="head85"><div class="ceil">up to<sup>*</sup></div><div class="m85">85% <em class="sm">smaller</em></div></div><div class="cline" id="cline"></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -363,7 +362,7 @@ if(glOK){
       if((i+1<a.length||wrap)&&Math.random()<keep) edges.push([a[i],a[(i+1)%a.length]]);
       if(r+1<grid.length&&Math.random()<keep) edges.push([a[i],grid[r+1][i]]);
   }}};
-  wire(rows,true,0.56); wire(cbRows,true,0.62);                                // sparse keep → reads neural, not like a grid mesh
+  wire(rows,true,0.74); wire(cbRows,true,0.78);                                // denser keep → a defined, solid brain surface
   for(let r=0;r<SR.length;r++){ const a=SR[r];                                // stem: vertical rails + sparse rings (no ladder)
     for(let i=0;i<a.length;i++){ if(r+1<SR.length) edges.push([a[i],SR[r+1][i]]); }
     if(r%2===0) for(let i=0;i<a.length;i++) edges.push([a[i],a[(i+1)%a.length]]); }
@@ -376,18 +375,18 @@ if(glOK){
   cbFlat.forEach((i,n)=>{ if(n%2===0) near(i,surfPool,1).forEach(j=>edges.push([i,j])); });                          // cerebellum → cerebrum surface
   SR.slice(0,4).forEach(r=>r.forEach(i=>near(i,upPool,1).forEach(j=>edges.push([i,j]))));                            // stem crown → underside of the mass
   const lp=new Float32Array(edges.length*6), lcol=new Float32Array(edges.length*6), ZF=1.14*1.05*S; // per-vertex depth shading → 3D
-  edges.forEach((e,i)=>{for(let s=0;s<2;s++){const o=e[s]*3; for(let c=0;c<3;c++)lp[i*6+s*3+c]=SP[o+c]; const b=0.32+0.68*Math.max(0,Math.min(1,(SP[o+2]+ZF)/(2*ZF))); lcol[i*6+s*3]=lcol[i*6+s*3+1]=lcol[i*6+s*3+2]=b;}});
+  edges.forEach((e,i)=>{for(let s=0;s<2;s++){const o=e[s]*3; for(let c=0;c<3;c++)lp[i*6+s*3+c]=SP[o+c]; const b=0.5+0.5*Math.max(0,Math.min(1,(SP[o+2]+ZF)/(2*ZF))); lcol[i*6+s*3]=lcol[i*6+s*3+1]=lcol[i*6+s*3+2]=b;}});
   const lg=new THREE.BufferGeometry(); lg.setAttribute("position",new THREE.BufferAttribute(lp,3)); lg.setAttribute("color",new THREE.BufferAttribute(lcol,3));
   const lMat=new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0,depthWrite:false});
   const lines=new THREE.LineSegments(lg,lMat);
   const TOT=SP.length/3, NN=SMALL?210:320, pick=[]; {const step=Math.max(1,(TOT/NN)|0); for(let i=0;i<TOT;i+=step) pick.push(i);}
   const bpos=new Float32Array(pick.length*3),bsh=new Float32Array(pick.length),bsz=new Float32Array(pick.length);
-  pick.forEach((idx,i)=>{bpos[i*3]=SP[idx*3];bpos[i*3+1]=SP[idx*3+1];bpos[i*3+2]=SP[idx*3+2];bsh[i]=0.45+Math.random()*0.55;bsz[i]=7+Math.random()*13;});
+  pick.forEach((idx,i)=>{bpos[i*3]=SP[idx*3];bpos[i*3+1]=SP[idx*3+1];bpos[i*3+2]=SP[idx*3+2];bsh[i]=0.55+Math.random()*0.45;bsz[i]=12+Math.random()*16;});
   const ng=new THREE.BufferGeometry(); ng.setAttribute("position",new THREE.BufferAttribute(bpos,3)); ng.setAttribute("aShade",new THREE.BufferAttribute(bsh,1)); ng.setAttribute("aSize",new THREE.BufferAttribute(bsz,1));
   const nUni={uFade:{value:0},uTex:{value:TEX},uTime:{value:0}};
   const nMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,uniforms:nUni,
-    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;varying float vDim;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.80+0.20*sin(uTime*2.0+aShade*30.0);float depth=clamp((-mv.z-250.0)/360.0,0.0,1.0);float szf=mix(1.18,0.60,depth);gl_PointSize=aSize*tw*szf*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;vDim=mix(1.0,0.30,depth);}`,
-    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;varying float vDim;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.70+0.30*vS)*vDim,1.0)*t*uFade;}`});
+    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;varying float vDim;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.84+0.16*sin(uTime*2.0+aShade*30.0);float depth=clamp((-mv.z-250.0)/360.0,0.0,1.0);float szf=mix(1.3,0.72,depth);gl_PointSize=aSize*tw*szf*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;vDim=mix(1.0,0.5,depth);}`,
+    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;varying float vDim;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.82+0.18*vS)*vDim,1.0)*t*uFade;}`});
   const nodes=new THREE.Points(ng,nMat);
   const PN=Math.min(SMALL?90:140,edges.length),pl=[]; for(let i=0;i<PN;i++) pl.push({e:(Math.random()*edges.length)|0,t:Math.random(),sp:0.004+Math.random()*0.011});
   const pp=new Float32Array(PN*3),ps=new Float32Array(PN); for(let i=0;i<PN;i++) ps[i]=13+Math.random()*12;
@@ -407,7 +406,7 @@ if(glOK){
   gsap.ticker.add(()=>{ const t=clock.getElapsedTime();
     if(bgStars.visible){ bgUni.uFade.value=galaxy.fade*0.8; bgStars.rotation.z=t*0.01; }
     if(galaxyGroup.visible){ gUni.uTime.value=t; gUni.uFade.value=galaxy.fade; gUni.uOrder.value=galaxy.order; galaxyGroup.rotation.x=galaxy.tilt; galaxyGroup.rotation.z=galaxy.spin; }
-    if(brainGroup.visible){ nUni.uFade.value=brain.fade; nUni.uTime.value=t; pUni.uFade.value=brain.fade; lMat.opacity=0.13*brain.fade; brainGroup.rotation.y=-0.5+t*0.14; updatePulses(); }
+    if(brainGroup.visible){ nUni.uFade.value=brain.fade; nUni.uTime.value=t; pUni.uFade.value=brain.fade; lMat.opacity=0.34*brain.fade; brainGroup.rotation.y=-0.5+t*0.14; updatePulses(); }
     renderer.render(scene,camera);
   });
 }
@@ -420,17 +419,7 @@ const FT_TYPES=["JPG","PNG","HEIC","RAW","WEBP","GIF","TIFF","MP4","MOV","MKV","
 window.__shuffleFt=()=>document.querySelectorAll("#b6 .ftpill").forEach(p=>{p.textContent=FT_TYPES[(Math.random()*FT_TYPES.length)|0];});
 
 /* prime the lock (beat 4) for a real pen stroke-draw */
-(function(){ document.querySelectorAll("#b4 .lk").forEach(p=>{const L=p.getTotalLength()||200;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); })();
-
-/* prime the compression stroke (beat 6) — ONE continuous path: straight line → curve → 8 → 5 → %.
-   Measure the lead-in (line+curve) separately so it can retract behind the pen, leaving 85% inked. */
-(function(){ const p=document.querySelector("#b6 .ink"); if(!p) return;
-  const T=p.getTotalLength()||1700; p.style.strokeDasharray=T; p.style.strokeDashoffset=T;
-  const lead=document.createElementNS("http://www.w3.org/2000/svg","path");
-  lead.setAttribute("d","M330 120 L110 120 C92 150 96 188 110 214"); p.parentNode.appendChild(lead);
-  const L=lead.getTotalLength()||330; lead.remove();
-  window.__b6={total:T, lead:L, line:220};
-})();
+(function(){ document.querySelectorAll("#b4 .lk, #b4 .sh-out, #b4 .sh-in").forEach(p=>{const L=p.getTotalLength()||200;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); })();
 
 /* migration (beat 7) — sources → neuthek, flowing dashes */
 const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
@@ -522,9 +511,9 @@ tl.add(drawIn("#b1 .bigq",1.8),"b01+=1.3")   // one clean draw-in, no ticking co
   .to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
 
 // 02 — search → matrix (7–14)
-tl.add("b02",7).call(()=>{setIndex(2);show("b2");sweep();},null,"b02").to("#b2",{opacity:1,duration:1.0},"b02").to("#b2 .scrim",{opacity:1,duration:.9},"b02+=.1").fromTo("#b2 .field",{opacity:0,y:18},{opacity:1,y:0,duration:1.0},"b02+=.2");
+tl.add("b02",7).call(()=>{setIndex(2);show("b2");sweep();},null,"b02").to("#b2",{opacity:1,duration:1.0},"b02").to("#b2 .scrim",{opacity:1,duration:1.1},"b02+=.1").fromTo("#b2 .field",{opacity:0,y:18},{opacity:1,y:0,duration:1.6,ease:"power3.out"},"b02+=.3");
 if(G){ tl.to(galaxy,{order:1,duration:2.0,ease:"power3.inOut"},"b02+=2.6").to(galaxy,{fade:.3,duration:1.3},"b02+=4.4").to(G.bgUni.uFade,{value:0,duration:1.0},"b02+=4.4"); }
-tl.fromTo("#hero",{opacity:0,clipPath:"inset(0 0 100% 0)",scale:.7},{opacity:1,clipPath:"inset(0 0 0% 0)",scale:1,duration:1.3,ease:"power4.out"},"b02+=3.9").add(capIn("#cap2"),"b02+=4.4").to(["#b2","#cap2"],{opacity:0,duration:.8},"b02+=6.2").call(()=>{hide("b2");$("#cap2").style.clipPath="inset(0 100% 0 0)";if(G)G.bgStars.visible=false;},null,"b02+=7");
+tl.fromTo("#hero",{opacity:0,clipPath:"inset(0 0 100% 0)",scale:.7},{opacity:1,clipPath:"inset(0 0 0% 0)",scale:1,duration:1.3,ease:"power4.out"},"b02+=3.9").to("#cap2",{clipPath:"inset(0 0% 0 0)",duration:2.0,ease:"power3.out"},"b02+=3.5").to(["#b2","#cap2"],{opacity:0,duration:.8},"b02+=6.2").call(()=>{hide("b2");$("#cap2").style.clipPath="inset(0 100% 0 0)";if(G)G.bgStars.visible=false;},null,"b02+=7");
 
 // 03 — brain (14–22)
 tl.add("b03",14).call(()=>{setIndex(3);show("b3");sweep();if(G)G.brainGroup.visible=true;},null,"b03").to("#b3",{opacity:1,duration:1.0},"b03");
@@ -556,21 +545,21 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
   .to(["#b5 .lab-l","#b5 .lab-r","#b5 .biz"],{opacity:1,duration:1.0,stagger:.08},"b05+=3.0").add(capIn("#cap5"),"b05+=3.7")
   .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
-// 06 — compression (39–45)
-const B6=window.__b6||{total:1700,lead:330,line:220};
+// 06 — compression (39–45): file types squash into ONE line, which settles as the underline of a typeset "85% smaller"
 tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.7},"b06")
   .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.6},"b06+=.2")
   .to("#b6 .ftpill",{scale:.5,duration:2.0,stagger:{each:.022,from:"center",grid:[10,5]},ease:"power2.inOut"},"b06+=.6")  // shrink, radial stagger — unhurried
   .to("#b6 .ftpill",{opacity:.28,duration:.4},"b06+=1.7").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=2.1").to("#b6 .ftpill",{opacity:1,duration:.4},"b06+=2.15") // cross-dissolve
   .to("#b6 .ftpill",{backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.6},"b06+=3.0")
-  .to("#fttrack",{scaleY:.03,transformOrigin:"50% 50%",duration:1.0,ease:"power2.inOut"},"b06+=3.2")               // all pills squash to the centre row
-  .to("#b6 .meter",{opacity:1,duration:.4},"b06+=3.2")                                                            // numerals stage ready
-  .fromTo("#b6 .ink",{strokeDashoffset:B6.total},{strokeDashoffset:B6.total-B6.line,duration:.9,ease:"power2.out"},"b06+=3.5") // the squashed pills BECOME the straight line — the first stretch of the one stroke
-  .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.2")
-  .to("#b6 .ink",{strokeDashoffset:0,duration:2.5,ease:"power1.inOut"},"b06+=4.6")                                 // …the same pen keeps moving, unbroken: tangent curve → 8 → 5 → %
-  .to("#b6 .ink",{strokeDashoffset:-B6.lead,duration:1.1,ease:"power1.in"},"b06+=7.1")                             // the straight lead-in retracts behind the tip — only 85% stays inked, no stray line
-  .fromTo("#b6 .m2",{opacity:0},{opacity:1,duration:.9,ease:"power2.out"},"b06+=7.3").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.9")
-  .add(capIn("#cap6"),"b06+=8.1").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .ink").forEach(n=>n.style.strokeDashoffset=B6.total);},null,"b06+=10.8");
+  .to("#fttrack",{scaleY:.04,transformOrigin:"50% 50%",duration:1.0,ease:"power2.inOut"},"b06+=3.2")               // all pills squash to the centre row
+  .to("#b6 .meter",{opacity:1,duration:.4},"b06+=3.2")
+  .fromTo("#b6 .cline",{scaleX:0,opacity:1,y:-20},{scaleX:1,duration:.9,ease:"power2.out"},"b06+=3.6")            // the squashed pills funnel into ONE white line
+  .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.3")
+  .fromTo("#b6 .ceil",{opacity:0,y:8},{opacity:1,y:0,duration:1.2,ease:"power2.out"},"b06+=4.9")                  // headline eases in, unhurried
+  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.5,ease:"power3.out"},"b06+=5.0")                  // "85% smaller" — typeset, italic serif
+  .to("#b6 .cline",{y:0,duration:1.3,ease:"power3.out"},"b06+=5.0")                                              // the line settles down into place as the underline beneath the text
+  .to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=6.4")
+  .add(capIn("#cap6"),"b06+=6.6").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .ceil",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});gsap.set("#b6 .cline",{clearProps:"all"});},null,"b06+=10.8");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
