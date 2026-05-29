@@ -397,7 +397,7 @@ if(glOK){
   const lUni={uFade:{value:0},uReveal:{value:0}};
   const lMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:lUni,
     vertexShader:`attribute vec3 color;attribute float aR;varying vec3 vC;varying float vR;void main(){vC=color;vR=aR;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
-    fragmentShader:`uniform float uFade,uReveal;varying vec3 vC;varying float vR;void main(){float vis=1.0-smoothstep(uReveal-0.02,uReveal+0.03,vR);float a=0.34*uFade*vis;if(a<=0.002)discard;gl_FragColor=vec4(vC,a);}`});
+    fragmentShader:`uniform float uFade,uReveal;varying vec3 vC;varying float vR;void main(){float vis=smoothstep(vR-0.28,vR+0.02,uReveal);float a=0.34*uFade*vis;if(a<=0.002)discard;gl_FragColor=vec4(vC,a);}`});
   const lines=new THREE.LineSegments(lg,lMat);
   const TOT=SP.length/3, NN=SMALL?210:320, pick=[]; {const step=Math.max(1,(TOT/NN)|0); for(let i=0;i<TOT;i+=step) pick.push(i);}
   const bpos=new Float32Array(pick.length*3),bsh=new Float32Array(pick.length),bsz=new Float32Array(pick.length);
@@ -565,7 +565,7 @@ if(G){ tl
   .to(galaxy,{fade:1,duration:.7,ease:"power2.out"},"b02+=6.0")                                            // the dim grid brightens as the search UI leaves
   .to(galaxy,{morph:1,duration:3.0,ease:"power2.out"},"b02+=6.4")                                          // stars break the grid → fly to brain positions, staggered centre-out
   .to(brain,{fade:1,duration:1.1,ease:"power2.out"},"b03+=2.0")                                            // real nodes settle in over the arrived stars (identical positions)
-  .to(G.lUni.uReveal,{value:1,duration:2.6,ease:"power1.inOut"},"b03+=2.4")                                // hairline connections draw outward from the centre, one at a time
+  .fromTo(G.lUni.uReveal,{value:0},{value:1.05,duration:1.5,ease:"power2.out"},"b03+=2.2")                  // hairline connections draw outward from the centre — quick, soft trailing fade
   .to(galaxy,{fade:0,duration:1.1,ease:"power1.inOut"},"b03+=2.6")                                         // the forming stars hand off to the brain
   .call(()=>{G.galaxyGroup.visible=false;G.brain.idle=true;},null,"b03+=3.7")                              // clear the stars; brain begins its slow idle rotation (frozen at the reference pose until now → seamless)
   .fromTo(camera.position,{z:430},{z:478,duration:8,ease:"sine.inOut"},"b03"); }
