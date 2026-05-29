@@ -420,9 +420,9 @@ if(glOK){
   function updatePulses(){ for(let i=0;i<PN;i++){const p=pl[i];p.t+=p.sp;if(p.t>=1){p.t=0;p.e=(Math.random()*edges.length)|0;}const e=edges[p.e],a=e[0]*3,b=e[1]*3,tt=p.t;for(let c=0;c<3;c++)pp[i*3+c]=SP[a+c]+(SP[b+c]-SP[a+c])*tt;} pgm.attributes.position.needsUpdate=true; }
 
   /* ── search→brain transition: bake each galaxy star a target on the brain (in galaxy-local space, brain at its reference pose) so the stars can fly in and settle as nodes ── */
-  const BSCALE=(innerWidth<innerHeight)?0.56:(SMALL?0.8:1), REF_RY=-0.5, BRAIN_DX=(innerWidth<innerHeight)?22:90; brainGroup.scale.setScalar(BSCALE);   // BRAIN_DX → sit the brain toward the right of the frame
+  const BSCALE=(innerWidth<innerHeight)?0.56:(SMALL?0.8:1), REF_RY=-1.15; brainGroup.scale.setScalar(BSCALE);   // REF_RY → centred, turned to a side-on profile view
   (function bakeBrainTargets(){
-    brainGroup.rotation.set(-0.18,REF_RY,0.05); brainGroup.position.set(BRAIN_DX,0,0); brainGroup.updateMatrixWorld(true);
+    brainGroup.rotation.set(-0.18,REF_RY,0.05); brainGroup.position.set(0,0,0); brainGroup.updateMatrixWorld(true);
     galaxyGroup.rotation.set(galaxy.tilt,0,0.55); galaxyGroup.updateMatrixWorld(true);                 // galaxy orientation held during the morph
     const gInv=galaxyGroup.matrixWorld.clone().invert(), v=new THREE.Vector3(), TC=SP.length/3, mr=1.55*S;
     const aBrain=new Float32Array(N*3), aDelay=new Float32Array(N);
