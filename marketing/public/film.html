@@ -27,17 +27,17 @@
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;background:#000;color:var(--paper);font-family:var(--sans);overflow:hidden}
 body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter-spacing:.01em}
-.stage{position:fixed;inset:0;background:radial-gradient(58% 48% at 50% 43%, rgba(46,46,50,.34), rgba(20,20,22,0) 72%), var(--ink);overflow:hidden;isolation:isolate}
+.stage{position:fixed;inset:0;background:#000;overflow:hidden;isolation:isolate}
 .beat{position:absolute;inset:0;opacity:0;visibility:hidden;display:grid;place-items:center;z-index:10;will-change:opacity}
 .beat.live{visibility:visible}
 .beat .center{position:relative;width:100%;height:100%;display:grid;place-items:center;padding:0 var(--m)}
 #gl{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:5;opacity:0}
 
 .matrixbg{position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.5;background-image:radial-gradient(rgba(244,241,234,.07) 1px, transparent 1.4px);background-size:30px 30px;-webkit-mask-image:radial-gradient(120% 92% at 50% 46%, #000 36%, transparent 86%);mask-image:radial-gradient(120% 92% at 50% 46%, #000 36%, transparent 86%)}
-.vignette{position:fixed;inset:0;z-index:40;pointer-events:none;background:radial-gradient(130% 100% at 50% 42%,transparent 40%,rgba(0,0,0,.5) 78%,rgba(0,0,0,.85) 100%)}
+.vignette{display:none}
 .grain{position:fixed;inset:-60%;z-index:42;pointer-events:none;opacity:.055;mix-blend-mode:overlay;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");animation:grain 1.1s steps(5) infinite}
 @keyframes grain{0%{transform:translate(0,0)}25%{transform:translate(-3%,2%)}50%{transform:translate(2%,-3%)}75%{transform:translate(-2%,3%)}100%{transform:translate(0,0)}}
-.flare{position:fixed;top:50%;left:0;width:100%;height:2px;z-index:41;pointer-events:none;opacity:0;transform:translateY(-50%);background:linear-gradient(90deg,transparent 8%,rgba(255,255,255,0) 38%,rgba(255,255,255,.72) 50%,rgba(255,255,255,0) 62%,transparent 92%);filter:blur(1.4px)}
+.flare{display:none}
 
 .chrome{position:fixed;inset:0;z-index:45;pointer-events:none;font-family:var(--sans)}
 .toprule{position:absolute;top:0;left:0;right:0;height:1px;background:rgba(244,241,234,.16)}
@@ -56,7 +56,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
 .caption{position:absolute;left:var(--m);right:var(--m);bottom:clamp(78px,15vh,150px);text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(22px,3.4vw,46px);line-height:1.12;letter-spacing:-.02em;color:var(--paper);clip-path:inset(0 100% 0 0);text-shadow:0 2px 30px rgba(0,0,0,.7)}
 .caption .it{font-style:italic}
-.caption .em,.caption .ac{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 16px rgba(140,110,255,.32))}
+.caption .em,.caption .ac{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;text-shadow:none}
 
 /* BEAT 1 */
 #b1 .scrim{position:absolute;left:50%;top:50%;width:min(960px,92vw);height:min(420px,46vh);transform:translate(-50%,-50%);z-index:5;pointer-events:none;opacity:0;background:radial-gradient(ellipse at center, rgba(10,10,10,.92) 0%, rgba(10,10,10,.6) 42%, transparent 72%);filter:blur(12px)}
@@ -164,7 +164,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 /* BEAT 8 — close */
 #b8 .close{text-align:center;display:grid;justify-items:center}
 #b8 .mark{font-family:var(--serif);font-weight:400;font-size:clamp(46px,11vw,140px);letter-spacing:-.04em;line-height:.95;opacity:0}
-#b8 .mark i{font-style:normal;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 22px rgba(140,110,255,.4))}
+#b8 .mark i{font-style:normal;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;text-shadow:none}
 #b8 .ul{height:2px;background:var(--white);width:min(360px,52vw);margin:18px 0 0;box-shadow:0 0 14px rgba(255,255,255,.6);transform:scaleX(0);transform-origin:center}
 #b8 .tag{margin-top:30px;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(18px,2.4vw,32px);color:var(--paper);opacity:0}
 #b8 .pos{margin-top:8px;font-size:11px;letter-spacing:.3em;text-transform:uppercase;color:var(--mist);opacity:0}
@@ -258,7 +258,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
     <div class="ftline" id="ftline"></div>
-    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 320 210" aria-label="up to 85% smaller"><path class="leadin" d="M 296 198 C 208 196, 96 122, 72 50"/><text class="n85" x="160" y="166">85%</text></svg><div class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="mrow"><svg class="bignum" viewBox="0 0 320 210" aria-label="up to 85% smaller"><path class="leadin" d="M 300 196 C 196 200, 92 170, 64 138"/><text class="n85" x="160" y="166">85%</text></svg><div class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -305,11 +305,11 @@ if(reduce){ $("#poster").classList.add("show"); $("#stage").style.display="none"
 
 function starTexture(){ const c=document.createElement("canvas");c.width=c.height=64;const x=c.getContext("2d");const g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.22,"rgba(255,255,255,.75)");g.addColorStop(.5,"rgba(255,255,255,.18)");g.addColorStop(1,"rgba(255,255,255,0)");x.fillStyle=g;x.beginPath();x.arc(32,32,32,0,7);x.fill();return new THREE.CanvasTexture(c); }
 let glOK=true,renderer,scene,camera,clock,TEX; const gl=$("#gl");
-try{ renderer=new THREE.WebGLRenderer({canvas:gl,alpha:true,antialias:true}); renderer.setPixelRatio(Math.min(2,devicePixelRatio||1)); }catch(e){ glOK=false; }
+try{ renderer=new THREE.WebGLRenderer({canvas:gl,alpha:true,antialias:true}); renderer.setPixelRatio(Math.min(3,devicePixelRatio||1)); }catch(e){ glOK=false; }
 const galaxy={fade:0,order:0,spin:0,tilt:-0.6}; const brain={fade:0};
 
 if(glOK){
-  scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x0a0a0a,0.0014);
+  scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x000000,0.0014);
   camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.1,4000); camera.position.z=560; clock=new THREE.Clock(); TEX=starTexture();
   const gauss=()=>(Math.random()+Math.random()+Math.random()-1.5)*0.9;
 
@@ -522,7 +522,7 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
 const idxN=$("#idxN"),progress=$("#progress"),timecode=$("#timecode"),scrubfill=$("#scrubfill"),flare=$("#flare");
 const setIndex=n=>idxN.textContent=("0"+n).slice(-2);
 const fmt=t=>{const s=Math.floor(t);return ("0"+Math.floor(s/60)).slice(-2)+":"+("0"+(s%60)).slice(-2);};
-const sweep=()=>gsap.fromTo(flare,{opacity:0,x:"-40%"},{opacity:.85,x:"30%",duration:1.1,ease:"power2.inOut",onComplete:()=>gsap.to(flare,{opacity:0,duration:.4})});
+const sweep=()=>{};   // flare/light-sweep removed — no stray horizontal line
 const show=id=>{const b=$("#"+id);b.classList.add("live");b.setAttribute("aria-hidden","false");};
 const hide=id=>{const b=$("#"+id);b.classList.remove("live");b.setAttribute("aria-hidden","true");};
 const capIn=sel=>gsap.to(sel,{clipPath:"inset(0 0% 0 0)",duration:1.25,ease:"expo.out"});
@@ -584,10 +584,10 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
   .fromTo("#ftline",{scaleX:0,opacity:1},{scaleX:1,duration:.8,ease:"power2.out"},"b06+=3.7")                      // → funnel into ONE white line
   .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.2")
   .to("#b6 .meter",{opacity:1,duration:.3},"b06+=4.3")
-  .fromTo("#b6 .leadin",{strokeDashoffset:320},{strokeDashoffset:0,duration:.7,ease:"power1.in"},"b06+=4.5")      // the same stroke sweeps up to the 8…
-  .to("#ftline",{opacity:0,duration:.5},"b06+=4.7")
+  .fromTo("#b6 .leadin",{strokeDashoffset:320},{strokeDashoffset:0,duration:.7,ease:"power1.inOut"},"b06+=4.5")   // the same stroke sweeps up to the 8…
+  .to("#ftline",{opacity:0,duration:.45},"b06+=4.7")
   .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:2.1,ease:"power1.inOut"},"b06+=5.1")    // …and keeps going, writing 85% unbroken
-  .to("#b6 .leadin",{opacity:0,duration:.6},"b06+=5.7")
+  .to("#b6 .leadin",{strokeDashoffset:320,duration:1.0,ease:"power1.in"},"b06+=5.3")                              // ink trail erases the lead-in behind the pen — no leftover line
   .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.8,ease:"power2.out"},"b06+=7.0")                            // fills + settles
   .fromTo("#b6 .m2",{opacity:0},{opacity:1,duration:.9,ease:"power2.out"},"b06+=7.2").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.7")
   .add(capIn("#cap6"),"b06+=7.9").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);document.querySelectorAll("#b6 .leadin").forEach(n=>n.style.strokeDashoffset=320);},null,"b06+=10.8");
