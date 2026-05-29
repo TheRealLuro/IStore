@@ -37,7 +37,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 .vignette{position:fixed;inset:0;z-index:40;pointer-events:none;background:radial-gradient(130% 100% at 50% 42%,transparent 40%,rgba(0,0,0,.5) 78%,rgba(0,0,0,.85) 100%)}
 .grain{position:fixed;inset:-60%;z-index:42;pointer-events:none;opacity:.055;mix-blend-mode:overlay;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");animation:grain 1.1s steps(5) infinite}
 @keyframes grain{0%{transform:translate(0,0)}25%{transform:translate(-3%,2%)}50%{transform:translate(2%,-3%)}75%{transform:translate(-2%,3%)}100%{transform:translate(0,0)}}
-.flare{position:fixed;top:50%;left:0;width:100%;height:1px;z-index:41;pointer-events:none;opacity:0;transform:translateY(-50%);background:linear-gradient(90deg,transparent 12%,rgba(255,255,255,0) 42%,rgba(255,255,255,.5) 50%,rgba(255,255,255,0) 58%,transparent 88%);filter:blur(1px)}
+.flare{position:fixed;top:50%;left:0;width:100%;height:2px;z-index:41;pointer-events:none;opacity:0;transform:translateY(-50%);background:linear-gradient(90deg,transparent 8%,rgba(255,255,255,0) 38%,rgba(255,255,255,.72) 50%,rgba(255,255,255,0) 62%,transparent 92%);filter:blur(1.4px)}
 
 .chrome{position:fixed;inset:0;z-index:45;pointer-events:none;font-family:var(--sans)}
 .toprule{position:absolute;top:0;left:0;right:0;height:1px;background:rgba(244,241,234,.16)}
@@ -55,8 +55,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 .stage:hover .scrub{opacity:1}.scrub .rail{position:relative;width:100%;height:1px;background:rgba(244,241,234,.18);cursor:pointer}.scrub .fill{position:absolute;left:0;top:0;height:1px;background:var(--paper)}
 
 .caption{position:absolute;left:var(--m);right:var(--m);bottom:clamp(78px,15vh,150px);text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(22px,3.4vw,46px);line-height:1.12;letter-spacing:-.02em;color:var(--paper);clip-path:inset(0 100% 0 0);text-shadow:0 2px 30px rgba(0,0,0,.7)}
-.caption .em{font-style:italic}
-.caption .ac{color:var(--white);font-style:italic;text-shadow:0 0 24px rgba(255,255,255,.25)}
+.caption .em,.caption .ac{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 16px rgba(140,110,255,.32))}
 
 /* BEAT 1 */
 #b1 .scrim{position:absolute;left:50%;top:50%;width:min(960px,92vw);height:min(420px,46vh);transform:translate(-50%,-50%);z-index:5;pointer-events:none;opacity:0;background:radial-gradient(ellipse at center, rgba(10,10,10,.92) 0%, rgba(10,10,10,.6) 42%, transparent 72%);filter:blur(12px)}
@@ -88,7 +87,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
 /* BEAT 4 — shield + readable compliance footer */
 #b4 .scene4{position:relative;width:min(900px,100%);display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:6vw}
-#b4 .shieldwrap{position:relative;justify-self:center;width:min(310px,44vw);aspect-ratio:200/244}
+#b4 .shieldwrap{position:relative;justify-self:center;width:min(340px,46vw);aspect-ratio:200/244}
+#b4 .sh-aura{position:absolute;inset:-20%;border-radius:50%;pointer-events:none;opacity:0;background:radial-gradient(circle,rgba(255,255,255,.12),rgba(255,255,255,0) 62%);animation:breathe 4.6s ease-in-out infinite}
+@keyframes breathe{0%,100%{transform:scale(.95);opacity:.5}50%{transform:scale(1.06);opacity:1}}
 #b4 .shieldwrap svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 #b4 .sh-out{fill:none;stroke:var(--white);stroke-width:2.4;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
 #b4 .sh-in{fill:none;stroke:rgba(244,241,234,.28);stroke-width:1;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
@@ -103,21 +104,23 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b4 .compliance .seals{display:flex;gap:clamp(16px,3vw,40px);justify-content:center;flex-wrap:wrap}
 #b4 .compliance .seals b{font-family:var(--sans);font-weight:600;font-size:clamp(13px,1.5vw,17px);letter-spacing:.18em;color:var(--paper)}
 
-/* BEAT 5 — split, logo in centre cell */
-#b5 .split{position:relative;width:min(1000px,100%);display:grid;grid-template-columns:1fr 1.1fr 1fr;align-items:center;gap:3vw}
-#b5 .pole{display:grid;justify-items:center;gap:20px;opacity:0;color:var(--paper)}
-#b5 .pole svg{width:clamp(72px,10vw,128px);height:auto;overflow:visible}
-#b5 .pole .t{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--mist);text-align:center}
-#b5 .hub{justify-self:center;width:min(320px,40vw);aspect-ratio:1;opacity:0}            /* spacer reserving the centre column */
-#b5 #weave{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
-#b5 .wbase{stroke:rgba(244,241,234,.1);stroke-width:1;fill:none}
-#b5 .wflow{stroke:var(--white);stroke-width:1.5;fill:none;stroke-linecap:round;stroke-dasharray:2 14;opacity:0}
-#b5 .wflow.run{animation:flow 1.15s linear infinite;opacity:.82}
-#b5 .wcirc{fill:rgba(244,241,234,.03);stroke:var(--white);stroke-width:2;opacity:0}
-#b5 .wlogo{opacity:0}
+/* BEAT 5 — self-host ↔ managed, woven into the centre hub */
+#b5 .split{position:relative;width:min(1060px,100%);height:min(440px,54vh)}
+#b5 #weave{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+#b5 .lab{position:absolute;top:64%;font-family:var(--sans);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mist);opacity:0;white-space:nowrap}
+#b5 .lab-l{left:4%}
+#b5 .lab-r{right:4%}
+#b5 .wicon{fill:none;stroke:rgba(244,241,234,.55);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+#b5 .wicon-dim{fill:none;stroke:rgba(244,241,234,.28);stroke-width:1.4}
+#b5 .wbase{stroke:rgba(244,241,234,.5);stroke-width:1.4;fill:none;stroke-linecap:round}
+#b5 .wflow{stroke:var(--white);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-dasharray:2 13;opacity:0}
+#b5 .wflow.run{animation:flow 1.15s linear infinite;opacity:.85}
+#b5 .wcirc{fill:#0c0c0d;stroke:var(--white);stroke-width:2}
+#b5 .worbit{fill:none;stroke:rgba(244,241,234,.5);stroke-width:1.5;stroke-dasharray:1.6 11;transform-box:fill-box;transform-origin:center;animation:spin 16s linear infinite}
 #b5 .wlogo path{stroke:var(--white);stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
 #b5 .wlogo circle{fill:var(--white)}
-#b5 .biz{position:absolute;left:0;right:0;bottom:clamp(-46px,-5vh,-30px);text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.34);opacity:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+#b5 .biz{position:absolute;left:0;right:0;bottom:clamp(-30px,-3vh,-16px);text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.34);opacity:0}
 
 /* BEAT 6 — compression */
 #b6 .flow{position:absolute;inset:0;overflow:hidden}
@@ -136,7 +139,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b7 .mflow{stroke:var(--white);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-dasharray:2 16;opacity:0}
 #b7 .mflow.run{animation:flow 1.1s linear infinite;opacity:.85}
 @keyframes flow{to{stroke-dashoffset:-72}}
-#b7 .mnode{fill:rgba(244,241,234,.04);stroke:var(--white);stroke-width:2}
+#b7 .mchip{fill:none;stroke:rgba(244,241,234,.16);stroke-width:1}
+#b7 .mnode{fill:#0c0c0d;stroke:var(--white);stroke-width:2}
+#b7 .morbit{fill:none;stroke:rgba(244,241,234,.4);stroke-width:1.4;stroke-dasharray:1.6 11;transform-box:fill-box;transform-origin:center;animation:spin 16s linear infinite}
 #b7 .mlogo path{stroke:var(--white);stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
 #b7 .mlogo circle{fill:var(--white)}
 #b7 .msrc{opacity:0}
@@ -201,6 +206,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
   <section class="beat" id="b4" aria-hidden="true">
     <div class="center"><div class="scene4">
       <div class="shieldwrap">
+        <div class="sh-aura"></div>
         <svg viewBox="0 0 200 244">
           <defs>
             <clipPath id="shclip"><path d="M100 8 C 140 33 172 40 188 41 L 188 150 C 188 198 152 230 100 238 C 48 230 12 198 12 150 L 12 41 C 28 40 60 33 100 8 Z"/></clipPath>
@@ -225,26 +231,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b5" aria-hidden="true">
     <div class="center"><div class="split">
-      <div class="pole" id="poleL">
-        <svg viewBox="0 0 130 134" fill="none">
-          <rect x="20" y="14" width="90" height="106" rx="9" stroke="rgba(244,241,234,.18)" stroke-width="1.4" fill="rgba(244,241,234,.02)"/>
-          <g stroke="currentColor" stroke-width="2"><rect x="28" y="22" width="74" height="26" rx="6"/><rect x="28" y="54" width="74" height="26" rx="6"/><rect x="28" y="86" width="74" height="26" rx="6"/></g>
-          <g fill="currentColor"><circle cx="40" cy="35" r="2.6"/><circle cx="40" cy="67" r="2.6"/><circle cx="40" cy="99" r="2.6"/></g>
-          <g stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".45"><line x1="84" y1="32" x2="94" y2="32"/><line x1="84" y1="38" x2="94" y2="38"/><line x1="84" y1="64" x2="94" y2="64"/><line x1="84" y1="70" x2="94" y2="70"/><line x1="84" y1="96" x2="94" y2="96"/><line x1="84" y1="102" x2="94" y2="102"/></g>
-        </svg>
-        <div class="t">self-host · open source · free</div>
-      </div>
-      <div class="hub"></div>
-      <div class="pole" id="poleR">
-        <svg viewBox="0 0 130 134" fill="none">
-          <path d="M65 12 L112 39 V93 L65 120 L18 93 V39 Z" stroke="currentColor" stroke-width="2"/>
-          <path d="M65 30 L96 48 V84 L65 102 L34 84 V48 Z" stroke="rgba(244,241,234,.4)" stroke-width="1.4"/>
-          <circle cx="65" cy="66" r="22" stroke="rgba(244,241,234,.22)" stroke-width="1.2"/><circle cx="65" cy="66" r="4.2" fill="currentColor"/>
-          <g fill="rgba(244,241,234,.7)"><circle cx="65" cy="44" r="2.4"/><circle cx="84" cy="77" r="2.4"/><circle cx="46" cy="77" r="2.4"/></g>
-        </svg>
-        <div class="t">managed · hosted for you</div>
-      </div>
-      <svg id="weave" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+      <svg id="weave" viewBox="0 0 1000 320" preserveAspectRatio="xMidYMid meet" aria-hidden="true"></svg>
+      <div class="lab lab-l">self-host · open source · free</div>
+      <div class="lab lab-r">managed · hosted for you</div>
       <div class="biz">free open-source funnel → managed saas</div>
     </div></div>
     <div class="caption" id="cap5">same engine. <span class="ac">no feature lock-in.</span></div>
@@ -371,10 +360,10 @@ if(glOK){
     for(let ui=0;ui<CU;ui++){ const u=ui/CU*Math.PI*2;
       const nx=Math.sin(v)*Math.cos(u), ny=Math.cos(v), nz=Math.sin(v)*Math.sin(u);
       const r=1+0.13*Math.sin(nx*15+nz*8)*Math.cos(ny*12);                    // fine cerebellar folds
-      const idx=spos.length/3; spos.push(nx*r*0.36*S, ny*r*0.30*S-0.32*S, nz*r*0.40*S-0.78*S); ring.push(idx);
+      const idx=spos.length/3; spos.push(nx*r*0.38*S, ny*r*0.30*S-0.24*S, nz*r*0.42*S-0.66*S); ring.push(idx); // raised + forward → overlaps the occipital lobe
     } cbRows.push(ring); }
-  const STEM=[], SR=[];                                                       // brain stem — tapered tube hanging below, angled slightly forward
-  for(let k=0;k<=9;k++){ const tk=k/9, rr=(0.17-0.085*tk)*S, yy=-0.42*S-tk*0.6*S, zz=-0.22*S+tk*0.34*S, ring=[];
+  const STEM=[], SR=[];                                                       // brain stem — emerges from inside the underside, tapers down & forward
+  for(let k=0;k<=10;k++){ const tk=k/10, rr=(0.16-0.085*tk)*S, yy=-0.30*S-tk*0.62*S, zz=-0.30*S+tk*0.38*S, ring=[];
     for(let a=0;a<6;a++){ const an=a/6*Math.PI*2, idx=spos.length/3; spos.push(Math.cos(an)*rr, yy, zz+Math.sin(an)*rr); ring.push(idx); STEM.push(idx); }
     SR.push(ring); }
   const INT=[];                                                              // interior neurons — fill the volume so links run through the brain
@@ -391,6 +380,10 @@ if(glOK){
   const surfPool=[]; for(let i=0;i<cerebN;i+=3) surfPool.push(i);
   INT.forEach(i=>{ near(i,INT,3).forEach(j=>edges.push([i,j])); near(i,surfPool,2).forEach(j=>edges.push([i,j])); }); // internal wiring through the volume
   for(let k=0;k<22;k++){const a=(Math.random()*cerebN)|0,b=(Math.random()*cerebN)|0; if(a!==b) edges.push([a,b]);}    // long association fibres
+  // ── fuse the parts: bridge cerebellum + stem into the cerebrum so it reads as ONE organ ──
+  const cbFlat=cbRows.flat(), upPool=surfPool.concat(cbFlat);
+  cbFlat.forEach((i,n)=>{ if(n%2===0) near(i,surfPool,1).forEach(j=>edges.push([i,j])); });                          // cerebellum → cerebrum surface
+  SR.slice(0,4).forEach(r=>r.forEach(i=>near(i,upPool,1).forEach(j=>edges.push([i,j]))));                            // stem crown → underside of the mass
   const lp=new Float32Array(edges.length*6); edges.forEach((e,i)=>{for(let c=0;c<3;c++){lp[i*6+c]=SP[e[0]*3+c];lp[i*6+3+c]=SP[e[1]*3+c];}});
   const lg=new THREE.BufferGeometry(); lg.setAttribute("position",new THREE.BufferAttribute(lp,3));
   const lMat=new THREE.LineBasicMaterial({color:0xf4f1ea,transparent:true,opacity:0,depthWrite:false});
@@ -443,17 +436,19 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
     mega:{d:"M6 22 a18 18 0 1 1 36 0 a18 18 0 1 1 -36 0 M14 31 L14 15 L24 25 L34 15 L34 31"} // MEGA circle + M
   };
   const srcs=[["google drive","drive"],["icloud","icloud"],["dropbox","dropbox"],["proton drive","proton"],["mega","mega"]];
-  srcs.forEach((s,i)=>{ const y=44+i*88, gx=96, gl=glyphs[s[1]];
+  srcs.forEach((s,i)=>{ const y=44+i*88, gx=104, gl=glyphs[s[1]];
     const g=el("g",{class:"msrc"});
+    g.appendChild(el("circle",{class:"mchip",cx:gx,cy:y,r:27}));
     g.appendChild(el("path",{class:"mglyph"+(gl.fill?" fill":""),d:gl.d,transform:`translate(${gx-24},${y-22})`}));
-    const lab=el("text",{class:"mlabel",x:gx+34,y:y+5}); lab.textContent=s[0]; g.appendChild(lab);
+    const lab=el("text",{class:"mlabel",x:gx+44,y:y+5}); lab.textContent=s[0]; g.appendChild(lab);
     svg.appendChild(g);
     const sx=300, c1x=sx+150, mid=`M ${sx} ${y} C ${c1x} ${y}, ${cx-160} ${cy}, ${cx-NH} ${cy}`;
     svg.appendChild(el("path",{class:"mbase",d:mid}));
     svg.appendChild(el("path",{class:"mflow",d:mid}));
   });
-  // centre neuthek node — the real constellation mark
-  svg.appendChild(el("rect",{class:"mnode",x:cx-NH,y:cy-NH,width:NH*2,height:NH*2,rx:26}));
+  // centre neuthek node — circular, matching the hub mark
+  svg.appendChild(el("circle",{class:"morbit",cx,cy,r:NH+9}));
+  svg.appendChild(el("circle",{class:"mnode",cx,cy,r:NH}));
   const logo=el("g",{class:"mlogo",transform:`translate(${cx} ${cy}) scale(1.5) translate(-33 -31)`});
   logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
   [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
@@ -463,20 +458,37 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
 /* hosted / self-hosted weave (beat 5) — intertwining strands from both sides → centre hub */
 (function buildWeave(){
   const svg=$("#weave"); if(!svg) return;
-  const cx=500,cy=150,R=60, ring=a=>[cx+R*Math.cos(a),cy+R*Math.sin(a)];
-  const strand=(sx,sy,a,bow,delay)=>{ const e=ring(a);
-    const d=`M ${sx} ${sy} C ${sx+(e[0]-sx)*0.34} ${cy+bow}, ${sx+(e[0]-sx)*0.72} ${cy-bow}, ${e[0]} ${e[1]}`;
-    svg.appendChild(el("path",{class:"wbase",d}));
-    const f=el("path",{class:"wflow",d}); f.style.animationDelay=delay+"s"; svg.appendChild(f);
+  const cx=500,cy=160,R=58, P=Math.PI, ring=a=>[cx+R*Math.cos(a),cy+R*Math.sin(a)];
+  // ── left "self-host" mark: server rack outline ──
+  const Lx=150,Ly=160, lg=el("g",{class:"wL"});
+  lg.appendChild(el("rect",{class:"wicon-dim",x:Lx-46,y:Ly-58,width:92,height:116,rx:11}));
+  [-38,0,38].forEach(dy=>{ lg.appendChild(el("rect",{class:"wicon",x:Lx-34,y:Ly+dy-13,width:68,height:26,rx:6}));
+    lg.appendChild(el("circle",{cx:Lx-21,cy:Ly+dy,r:2.6,fill:"rgba(244,241,234,.6)",stroke:"none"})); });
+  svg.appendChild(lg);
+  // ── right "managed" mark: hexagon ──
+  const Rx=850,Ry=160, rg=el("g",{class:"wR"});
+  const hex=(c,r)=>{let p="";for(let i=0;i<6;i++){const a=P/6+i*P/3;p+=(i?"L":"M")+(c[0]+r*Math.cos(a)).toFixed(1)+" "+(c[1]+r*Math.sin(a)).toFixed(1)+" ";}return p+"Z";};
+  rg.appendChild(el("path",{class:"wicon",d:hex([Rx,Ry],56)}));
+  rg.appendChild(el("path",{class:"wicon-dim",d:hex([Rx,Ry],38)}));
+  rg.appendChild(el("circle",{class:"wicon-dim",cx:Rx,cy:Ry,r:19}));
+  rg.appendChild(el("circle",{cx:Rx,cy:Ry,r:4,fill:"var(--white)",stroke:"none"}));
+  svg.appendChild(rg);
+  // ── woven strands: icon outline → hub-circle outline ──
+  const strand=(sx,sy,a,bow)=>{ const e=ring(a);
+    const d=`M ${sx} ${sy} C ${sx+(e[0]-sx)*0.36} ${sy+bow}, ${sx+(e[0]-sx)*0.72} ${cy-bow}, ${e[0]} ${e[1]}`;
+    svg.appendChild(el("path",{class:"wbase",d})); svg.appendChild(el("path",{class:"wflow",d}));
   };
-  const P=Math.PI;
-  [[160,108,P*0.86,-50],[150,150,P,6],[160,192,P*1.14,50]].forEach((s,i)=>strand(s[0],s[1],s[2],s[3],i*0.22));        // left → hub
-  [[840,108,P*0.14,-50],[850,150,0,6],[840,192,-P*0.14,50]].forEach((s,i)=>strand(s[0],s[1],s[2],s[3],0.33+i*0.22));  // right → hub
+  [[Lx+46,Ly-30,P*0.82,-44],[Lx+46,Ly,P,4],[Lx+46,Ly+30,P*1.18,44]].forEach(s=>strand(s[0],s[1],s[2],s[3]));   // server edge → hub
+  [[Rx-48,Ry-30,P*0.18,-44],[Rx-48,Ry,0,4],[Rx-48,Ry+30,-P*0.18,44]].forEach(s=>strand(s[0],s[1],s[2],s[3])); // hexagon edge → hub
+  // ── centre hub (drawn last → on top): orbit ring, solid circle, logo ──
+  svg.appendChild(el("circle",{class:"worbit",cx,cy,r:R+9}));
   svg.appendChild(el("circle",{class:"wcirc",cx,cy,r:R}));
-  const logo=el("g",{class:"wlogo",transform:`translate(${cx} ${cy}) scale(1.7) translate(-33 -31)`});
+  const logo=el("g",{class:"wlogo",transform:`translate(${cx} ${cy}) scale(1.65) translate(-33 -31)`});
   logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
   [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
   svg.appendChild(logo);
+  // prime strands for the draw-on (hidden until the timeline reveals them)
+  svg.querySelectorAll(".wbase").forEach(p=>{const L=p.getTotalLength();p.style.strokeDasharray=L;p.style.strokeDashoffset=L;});
 })();
 
 const idxN=$("#idxN"),progress=$("#progress"),timecode=$("#timecode"),scrubfill=$("#scrubfill"),flare=$("#flare");
@@ -502,7 +514,7 @@ if(G){ tl.to(galaxy,{order:1,duration:2.0,ease:"power3.inOut"},"b02+=2.6").to(ga
 tl.fromTo("#hero",{opacity:0,clipPath:"inset(0 0 100% 0)",scale:.7},{opacity:1,clipPath:"inset(0 0 0% 0)",scale:1,duration:1.3,ease:"power4.out"},"b02+=3.9").add(capIn("#cap2"),"b02+=4.4").to(["#b2","#cap2"],{opacity:0,duration:.8},"b02+=6.2").call(()=>{hide("b2");$("#cap2").style.clipPath="inset(0 100% 0 0)";if(G)G.bgStars.visible=false;},null,"b02+=7");
 
 // 03 — brain (14–22)
-tl.add("b03",14).call(()=>{setIndex(3);show("b3");if(G)G.brainGroup.visible=true;},null,"b03").to("#b3",{opacity:1,duration:1.0},"b03");
+tl.add("b03",14).call(()=>{setIndex(3);show("b3");sweep();if(G)G.brainGroup.visible=true;},null,"b03").to("#b3",{opacity:1,duration:1.0},"b03");
 if(G){ tl.to(galaxy,{fade:0,duration:1.0},"b03").call(()=>{G.galaxyGroup.visible=false;},null,"b03+=1.1").fromTo(G.brainGroup.scale,{x:.82,y:.82,z:.82},{x:1,y:1,z:1,duration:2.0,ease:"power3.out"},"b03+=.2").fromTo(brain,{fade:0},{fade:1,duration:1.8,ease:"power2.out"},"b03+=.3").fromTo(camera.position,{z:430},{z:480,duration:7.5,ease:"sine.inOut"},"b03"); }
 tl.add(capIn("#cap3"),"b03+=3.6").to(["#b3","#cap3"],{opacity:0,duration:.8},"b03+=7.1");
 if(G){ tl.to(brain,{fade:0,duration:.8},"b03+=7.1"); }
@@ -513,16 +525,18 @@ tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();},null,"b04").to("#b4"
   .to("#b4 .sh-out",{strokeDashoffset:0,duration:2.0,ease:"power2.inOut"},"b04+=.3").to("#b4 .sh-in",{strokeDashoffset:0,duration:1.6,ease:"power2.inOut"},"b04+=.8")
   .to("#b4 .sh-dots",{opacity:1,duration:1.2},"b04+=1.2").fromTo("#b4 .sweep",{opacity:1,x:0},{x:300,duration:1.6,ease:"power2.inOut",onComplete(){gsap.set("#b4 .sweep",{opacity:0});}},"b04+=1.6")
   .to("#b4 .lk",{strokeDashoffset:0,duration:1.0,stagger:.15},"b04+=1.7").to("#b4 .lk-key",{opacity:1,duration:.6},"b04+=2.7")
-  .to("#b4 .pillars p",{opacity:1,y:0,duration:.9,stagger:.35},"b04+=2.3").to("#b4 .compliance",{opacity:1,duration:1.0},"b04+=4.8")
+  .fromTo("#b4 .pillars p",{opacity:0,y:20,filter:"blur(8px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,stagger:.34,ease:"expo.out"},"b04+=2.4").to("#b4 .compliance",{opacity:1,duration:1.0},"b04+=5.0")
   .to("#b4",{opacity:0,duration:.9},"b04+=8.1").call(()=>hide("b4"),null,"b04+=9");
 
 // 05 — cloud (31–39)
-tl.add("b05",31).call(()=>{setIndex(5);show("b5");document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run"));},null,"b05").to("#b5",{opacity:1,duration:1.0},"b05")
-  .to(["#poleL","#poleR"],{opacity:1,duration:1.0,stagger:.15},"b05+=.3")
-  .fromTo("#b5 .wcirc",{opacity:0,scale:.55,transformOrigin:"500px 150px"},{opacity:1,scale:1,duration:1.1,ease:"expo.out"},"b05+=.9")
-  .fromTo("#b5 .wbase",{opacity:0},{opacity:1,duration:1.1},"b05+=1.0")
-  .fromTo("#b5 .wlogo",{opacity:0},{opacity:1,duration:.8},"b05+=1.4")
-  .to("#b5 .biz",{opacity:1,duration:1.0},"b05+=2.2").add(capIn("#cap5"),"b05+=2.6")
+tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5",{opacity:1,duration:1.0},"b05")
+  .from("#b5 .wL",{opacity:0,x:-26,duration:1.0,ease:"expo.out"},"b05+=.3")
+  .from("#b5 .wR",{opacity:0,x:26,duration:1.0,ease:"expo.out"},"b05+=.3")
+  .from("#b5 .wcirc",{opacity:0,duration:.7},"b05+=.7").from("#b5 .wlogo",{opacity:0,duration:.7},"b05+=.85")
+  .to("#b5 .wbase",{strokeDashoffset:0,duration:1.5,stagger:.1,ease:"power2.inOut"},"b05+=1.1")          // strings draw out, connecting both sides into the hub
+  .from("#b5 .worbit",{opacity:0,duration:1.0},"b05+=2.3")                                               // ring closes around the logo
+  .call(()=>document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run")),null,"b05+=2.5")  // then signal keeps flowing
+  .to(["#b5 .lab-l","#b5 .lab-r","#b5 .biz"],{opacity:1,duration:1.0,stagger:.08},"b05+=2.2").add(capIn("#cap5"),"b05+=3.0")
   .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
 // 06 — compression (39–45)
@@ -534,13 +548,13 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
 // 07 — MIGRATION (45–53)
 tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.add("run"));},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
   .to("#b7 .msrc",{opacity:1,duration:.8,stagger:.2},"b07+=.4")
-  .fromTo("#b7 .mnode",{opacity:0,scale:.7,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"back.out(1.5)"},"b07+=1.0")
-  .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.8},"b07+=1.4")
+  .fromTo("#b7 .mnode",{opacity:0,scale:.7,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"expo.out"},"b07+=1.0")
+  .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.8},"b07+=1.4").fromTo("#b7 .morbit",{opacity:0},{opacity:1,duration:1.0},"b07+=1.6")
   .add(capIn("#cap7"),"b07+=2.0").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.1")
   .call(()=>{hide("b7");$("#cap7").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.remove("run"));},null,"b07+=8");
 
 // 08 — close / CTA (53–63, hold)
-tl.add("b08",53).call(()=>{setIndex(8);show("b8");},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
+tl.add("b08",53).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
   .fromTo("#b8 .mark",{opacity:0,y:20,filter:"blur(6px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.4},"b08+=.6")
   .to("#b8 .ul",{scaleX:1,duration:1.0,ease:"power3.inOut"},"b08+=1.6").to("#b8 .tag",{opacity:1,duration:1.0},"b08+=2.2")
   .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to("#b8 form",{opacity:1,duration:1.0},"b08+=3.4").to({},{duration:3});
