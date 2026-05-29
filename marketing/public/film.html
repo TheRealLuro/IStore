@@ -420,9 +420,9 @@ if(glOK){
   function updatePulses(){ for(let i=0;i<PN;i++){const p=pl[i];p.t+=p.sp;if(p.t>=1){p.t=0;p.e=(Math.random()*edges.length)|0;}const e=edges[p.e],a=e[0]*3,b=e[1]*3,tt=p.t;for(let c=0;c<3;c++)pp[i*3+c]=SP[a+c]+(SP[b+c]-SP[a+c])*tt;} pgm.attributes.position.needsUpdate=true; }
 
   /* ── search→brain transition: bake each galaxy star a target on the brain (in galaxy-local space, brain at its reference pose) so the stars can fly in and settle as nodes ── */
-  const BSCALE=(innerWidth<innerHeight)?0.56:(SMALL?0.8:1), REF_RY=-0.5; brainGroup.scale.setScalar(BSCALE);
+  const BSCALE=(innerWidth<innerHeight)?0.56:(SMALL?0.8:1), REF_RY=-0.5, BRAIN_DX=(innerWidth<innerHeight)?22:90; brainGroup.scale.setScalar(BSCALE);   // BRAIN_DX → sit the brain toward the right of the frame
   (function bakeBrainTargets(){
-    brainGroup.rotation.set(-0.18,REF_RY,0.05); brainGroup.position.set(0,0,0); brainGroup.updateMatrixWorld(true);
+    brainGroup.rotation.set(-0.18,REF_RY,0.05); brainGroup.position.set(BRAIN_DX,0,0); brainGroup.updateMatrixWorld(true);
     galaxyGroup.rotation.set(galaxy.tilt,0,0.55); galaxyGroup.updateMatrixWorld(true);                 // galaxy orientation held during the morph
     const gInv=galaxyGroup.matrixWorld.clone().invert(), v=new THREE.Vector3(), TC=SP.length/3, mr=1.55*S;
     const aBrain=new Float32Array(N*3), aDelay=new Float32Array(N);
@@ -564,9 +564,9 @@ tl.add("b03",14).call(()=>{setIndex(3);show("b3");sweep();if(G)G.brainGroup.visi
 if(G){ tl
   .to(galaxy,{fade:1,duration:.7,ease:"power2.out"},"b02+=6.0")                                            // the dim grid brightens as the search UI leaves
   .to(galaxy,{morph:1,duration:3.0,ease:"power2.out"},"b02+=6.4")                                          // stars break the grid → fly to brain positions, staggered centre-out
-  .to(brain,{fade:1,duration:1.1,ease:"power2.out"},"b03+=2.0")                                            // real nodes settle in over the arrived stars (identical positions)
-  .fromTo(G.lUni.uReveal,{value:0},{value:1.05,duration:1.5,ease:"power2.out"},"b03+=2.2")                  // hairline connections draw outward from the centre — quick, soft trailing fade
-  .to(galaxy,{fade:0,duration:1.1,ease:"power1.inOut"},"b03+=2.6")                                         // the forming stars hand off to the brain
+  .to(brain,{fade:1,duration:1.0,ease:"power2.out"},"b03+=1.4")                                            // real nodes settle in over the arrived stars (identical positions)
+  .fromTo(G.lUni.uReveal,{value:0},{value:1.05,duration:1.5,ease:"power2.out"},"b03+=1.5")                  // hairline connections draw outward from the centre — sooner, quick, soft trailing fade
+  .to(galaxy,{fade:0,duration:1.1,ease:"power1.inOut"},"b03+=2.2")                                         // the forming stars hand off to the brain
   .call(()=>{G.galaxyGroup.visible=false;G.brain.idle=true;},null,"b03+=3.7")                              // clear the stars; brain begins its slow idle rotation (frozen at the reference pose until now → seamless)
   .fromTo(camera.position,{z:430},{z:478,duration:8,ease:"sine.inOut"},"b03"); }
 tl.add(capIn("#cap3"),"b03+=3.6").to(["#b3","#cap3"],{opacity:0,duration:.8},"b03+=7.1");
