@@ -21,7 +21,7 @@
 :root{
   --ink:#0A0A0A; --ink-2:#141414; --paper:#F4F1EA; --white:#FFFFFF;
   --mist:#8C8C84; --line:rgba(244,241,234,.16);
-  --serif:"Fraunces",Georgia,serif; --sans:"Switzer","Helvetica Neue",Arial,sans-serif; --mono:"Space Mono",ui-monospace,monospace;
+  --serif:"Fraunces",Georgia,serif; --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Arial,sans-serif; --mono:"Space Mono",ui-monospace,monospace;
   --m:5.5vw;
 }
 *{margin:0;padding:0;box-sizing:border-box}
@@ -54,7 +54,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b2 .scrim{position:absolute;left:50%;top:18px;width:120%;height:150px;transform:translateX(-50%);z-index:-1;opacity:0;background:radial-gradient(ellipse at center, rgba(10,10,10,.94) 0%, rgba(10,10,10,.55) 55%, transparent 78%);filter:blur(14px)}
 #b2 .field{width:100%;display:flex;align-items:center;gap:16px;padding:18px 24px;border-radius:16px;background:rgba(13,13,15,.74);backdrop-filter:blur(20px) saturate(118%);-webkit-backdrop-filter:blur(20px) saturate(118%);border:1px solid rgba(244,241,234,.15);box-shadow:0 26px 72px rgba(0,0,0,.58),inset 0 1px 0 rgba(255,255,255,.06)}
 #b2 .mag{width:18px;height:18px;flex:0 0 auto;opacity:.85}
-#b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:visible;line-height:1.35;min-height:1.35em;color:var(--white)}
+#b2 .q{font-family:var(--sans);font-weight:400;font-size:clamp(19px,2.7vw,36px);letter-spacing:-.015em;white-space:nowrap;overflow:visible;line-height:1.35;min-height:1.35em;color:var(--white)}
 #b2 .car{display:inline-block;width:2px;height:1em;background:var(--white);vertical-align:-.12em;margin-left:3px;box-shadow:0 0 8px var(--white);animation:blink 1.05s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 #b2 .hero{margin-top:44px;width:222px;border-radius:18px;overflow:hidden;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.72);background:linear-gradient(165deg,#232327,#131315);box-shadow:0 32px 80px rgba(0,0,0,.62),inset 0 1px 0 rgba(255,255,255,.05),inset 0 0 0 1px rgba(244,241,234,.1)}
@@ -119,8 +119,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
 #b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;opacity:0}
 #b6 .head85{position:absolute;left:0;right:0;bottom:50%;margin-bottom:22px}
-#b6 .m85{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px);opacity:0}
-#b6 .big{font-family:var(--serif);font-weight:300;font-size:clamp(64px,13vw,168px);letter-spacing:-.03em;line-height:1;color:var(--paper);padding-bottom:.05em}
+#b6 .m85{display:flex;align-items:baseline;justify-content:center;gap:clamp(12px,2vw,24px);opacity:0}
+#b6 .big{font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(64px,13vw,168px);letter-spacing:-.035em;line-height:1;color:var(--paper)}
 #b6 .m2{position:relative}
 #b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(32px,5.4vw,70px);letter-spacing:-.02em;line-height:1;padding-bottom:.14em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #b6 .m2 .up{position:absolute;top:-1.15em;right:-.35em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
@@ -254,7 +254,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b8" aria-hidden="true">
     <div class="center"><div class="close">
-      <div class="mark">neuthek<i>.</i></div><div class="ul"></div>
+      <div class="mark">neuthek</div><div class="ul"></div>
       <div class="tag">storage that thinks for you</div><div class="pos">the next best cloud storage solution</div>
     </div></div>
   </section>
@@ -263,7 +263,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 </div>
 
 <div class="poster" id="poster"><div class="stack">
-  <div class="mark">neuthek<i>.</i></div><div class="ul"></div><div class="tag">storage that thinks for you</div>
+  <div class="mark">neuthek</div><div class="ul"></div><div class="tag">storage that thinks for you</div>
   <div class="caps"><p>search by meaning, not metadata.</p><p>ai embeddings. vector search. instant recall.</p><p>never trained on. never sold. you own your data.</p></div>
 </div></div>
 
@@ -581,8 +581,8 @@ tl.add("b08",56.5).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b
   .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to({},{duration:3.5});
 
 window.__film=tl;
-const PHRASES=["snowy roof at sunset","whiteboard photos from last week","the receipt from amazon","golden retriever in the park"],qtext=$("#qtext");
-tl.eventCallback("onUpdate",(prev=>function(){prev&&prev();const t=tl.time();if(t>=7&&t<14){const lc=t-7,per=7/PHRASES.length,i=Math.min(3,Math.floor(lc/per)),lt=lc-i*per,p=PHRASES[i],ty=per*.62,ch=lt<ty?Math.round(lt/ty*p.length):p.length;qtext.textContent=p.slice(0,ch);}})(tl.eventCallback("onUpdate")));
+const QUERY="amazon receipt",qtext=$("#qtext");
+tl.eventCallback("onUpdate",(prev=>function(){prev&&prev();const t=tl.time();if(t>=7&&t<14){const start=7.7,dur=2.6,lt=t-start,ch=lt<=0?0:(lt>=dur?QUERY.length:Math.round(lt/dur*QUERY.length));qtext.textContent=QUERY.slice(0,ch);}})(tl.eventCallback("onUpdate")));   // types out once, then holds on "amazon receipt"
 
 addEventListener("keydown",e=>{if(e.code==="Space"){e.preventDefault();tl.paused()?tl.play():tl.pause();}else if(e.key==="r"||e.key==="R"){tl.restart();}});
 document.addEventListener("visibilitychange",()=>{if(document.hidden){tl.pause();gsap.ticker.sleep();}else{gsap.ticker.wake();if(tl.progress()<1)tl.play();}});
