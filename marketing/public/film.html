@@ -97,8 +97,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b4 .lk{stroke:var(--white);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1;filter:drop-shadow(0 0 7px rgba(255,255,255,.35))}
 #b4 .lk-key{fill:var(--white);opacity:0}
 #b4 .pillars{display:grid;gap:clamp(12px,2vh,22px)}
-#b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.1;opacity:0;transform:translateY(14px)}
-#b4 .pillars p .d{color:var(--white);font-style:italic}
+#b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.1;opacity:0}
+#b4 .pillars p .d{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #b4 .compliance{position:absolute;left:var(--m);right:var(--m);bottom:clamp(56px,11vh,112px);text-align:center;opacity:0}
 #b4 .compliance .lab{font-size:10px;letter-spacing:.34em;text-transform:uppercase;color:var(--mist);margin-bottom:9px}
 #b4 .compliance .seals{display:flex;gap:clamp(16px,3vw,40px);justify-content:center;flex-wrap:wrap}
@@ -107,7 +107,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 /* BEAT 5 — self-host ↔ managed, woven into the centre hub */
 #b5 .split{position:relative;width:min(1060px,100%);height:min(440px,54vh)}
 #b5 #weave{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-#b5 .lab{position:absolute;top:64%;font-family:var(--sans);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mist);opacity:0;white-space:nowrap}
+#b5 .lab{position:absolute;top:75%;font-family:var(--sans);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mist);opacity:0;white-space:nowrap}
 #b5 .lab-l{left:4%}
 #b5 .lab-r{right:4%}
 #b5 .wicon{fill:none;stroke:rgba(244,241,234,.55);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
@@ -116,7 +116,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b5 .wflow{stroke:var(--white);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-dasharray:2 13;opacity:0}
 #b5 .wflow.run{animation:flow 1.15s linear infinite;opacity:.85}
 #b5 .wcirc{fill:#0c0c0d;stroke:var(--white);stroke-width:2}
-#b5 .worbit{fill:none;stroke:rgba(244,241,234,.5);stroke-width:1.5;stroke-dasharray:1.6 11;transform-box:fill-box;transform-origin:center;animation:spin 16s linear infinite}
+#b5 .worbit{fill:none;stroke:var(--white);stroke-width:1.6;stroke-dasharray:2 13;stroke-linecap:round;transform-box:fill-box;transform-origin:center;animation:spin 13s linear infinite;opacity:.8}
 #b5 .wlogo path{stroke:var(--white);stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
 #b5 .wlogo circle{fill:var(--white)}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -126,13 +126,16 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .flow{position:absolute;inset:0;overflow:hidden}
 #b6 .chip{position:absolute;padding:8px 15px;border-radius:8px;font-size:12px;letter-spacing:.14em;font-weight:500;border:1px solid rgba(244,241,234,.16);background:rgba(20,20,20,.7);color:var(--paper);white-space:nowrap;opacity:0;will-change:transform}
 #b6 .meter{position:relative;z-index:4;text-align:center}
+#b6 .uplabel{font-family:var(--sans);font-weight:500;font-size:clamp(12px,1.5vw,16px);letter-spacing:.32em;text-transform:uppercase;color:var(--mist);margin-bottom:6px;opacity:0}
+#b6 .uplabel sup{font-size:.7em;vertical-align:super}
 #b6 .num{font-family:var(--serif);font-weight:300;font-size:clamp(54px,11vw,150px);letter-spacing:-.04em;color:var(--white);line-height:.9;font-variant-numeric:tabular-nums;text-shadow:0 0 50px rgba(255,255,255,.18)}
-#b6 .num small{font-size:.32em;color:var(--paper);letter-spacing:-.02em}
+#b6 .num small{font-size:.32em;letter-spacing:-.02em;font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
+#b6 .fineprint{margin-top:14px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
 #b7 .mig{position:relative;width:min(960px,100%);height:min(440px,58vh)}
 #b7 svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
-#b7 .mlabel{font-family:var(--sans);font-weight:500;font-size:15px;fill:var(--paper);letter-spacing:.02em}
+#b7 .mlabel{font-family:var(--sans);font-weight:500;font-size:13px;fill:var(--paper);letter-spacing:.04em;text-anchor:middle}
 #b7 .mglyph{stroke:var(--paper);stroke-width:1.8;fill:none;stroke-linejoin:round;stroke-linecap:round}
 #b7 .mglyph.fill{fill:var(--paper);stroke:none}
 #b7 .mbase{stroke:rgba(244,241,234,.12);stroke-width:1;fill:none}
@@ -150,7 +153,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 /* BEAT 8 — close */
 #b8 .close{text-align:center;display:grid;justify-items:center}
 #b8 .mark{font-family:var(--serif);font-weight:400;font-size:clamp(46px,11vw,140px);letter-spacing:-.04em;line-height:.95;opacity:0}
-#b8 .mark i{font-style:normal;color:var(--white)}
+#b8 .mark i{font-style:normal;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 22px rgba(140,110,255,.4))}
 #b8 .ul{height:2px;background:var(--white);width:min(360px,52vw);margin:18px 0 0;box-shadow:0 0 14px rgba(255,255,255,.6);transform:scaleX(0);transform-origin:center}
 #b8 .tag{margin-top:30px;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(18px,2.4vw,32px);color:var(--paper);opacity:0}
 #b8 .pos{margin-top:8px;font-size:11px;letter-spacing:.3em;text-transform:uppercase;color:var(--mist);opacity:0}
@@ -224,7 +227,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
           <g class="lk-key"><circle cx="100" cy="146" r="4"/><rect x="98" y="148" width="4" height="11" rx="2"/></g>
         </svg>
       </div>
-      <div class="pillars"><p>never <span class="d">trained on</span>.</p><p>never sold.</p><p>you own your data.</p><p>encrypted in transit &amp; at rest.</p></div>
+      <div class="pillars"><p>your files are <span class="d">yours alone</span>.</p><p>never trained on. never sold.</p><p>encrypted in transit &amp; at rest.</p><p><span class="d">zero-knowledge</span> — even we can't read them.</p></div>
     </div></div>
     <div class="compliance"><div class="lab">independently compliant with</div><div class="seals"><b>GDPR</b><b>CCPA</b><b>BIPA</b><b>COPPA</b></div></div>
   </section>
@@ -241,7 +244,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="flow" id="flow"></div>
-    <div class="center"><div class="meter"><div class="num"><span id="counter">0</span>%&nbsp;<small>smaller</small></div></div></div>
+    <div class="center"><div class="meter"><div class="uplabel">up to<sup>*</sup></div><div class="num"><span id="counter">0</span>%&nbsp;<small class="pop">smaller</small></div><div class="fineprint">* varies by file type &amp; content</div></div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression.</span> raw, video, docs — all lighter.</div>
   </section>
 
@@ -362,9 +365,9 @@ if(glOK){
       const r=1+0.13*Math.sin(nx*15+nz*8)*Math.cos(ny*12);                    // fine cerebellar folds
       const idx=spos.length/3; spos.push(nx*r*0.38*S, ny*r*0.30*S-0.24*S, nz*r*0.42*S-0.66*S); ring.push(idx); // raised + forward → overlaps the occipital lobe
     } cbRows.push(ring); }
-  const STEM=[], SR=[];                                                       // brain stem — emerges from inside the underside, tapers down & forward
-  for(let k=0;k<=10;k++){ const tk=k/10, rr=(0.16-0.085*tk)*S, yy=-0.30*S-tk*0.62*S, zz=-0.30*S+tk*0.38*S, ring=[];
-    for(let a=0;a<6;a++){ const an=a/6*Math.PI*2, idx=spos.length/3; spos.push(Math.cos(an)*rr, yy, zz+Math.sin(an)*rr); ring.push(idx); STEM.push(idx); }
+  const STEM=[], SR=[];                                                       // brain stem — round tube emerging from the underside, tapering to a point
+  for(let k=0;k<=9;k++){ const tk=k/9, ease=tk*tk, rr=(0.15-0.128*ease)*S, yy=-0.30*S-tk*0.58*S, zz=-0.28*S+(tk*0.34+ease*0.1)*S, ring=[];
+    for(let a=0;a<8;a++){ const an=a/8*Math.PI*2, idx=spos.length/3; spos.push(Math.cos(an)*rr, yy, zz+Math.sin(an)*rr); ring.push(idx); STEM.push(idx); }
     SR.push(ring); }
   const INT=[];                                                              // interior neurons — fill the volume so links run through the brain
   for(let k=0;k<(SMALL?44:72);k++){ const v=Math.acos(Math.random()*2-1), u=Math.random()*Math.PI*2, rr=0.28+Math.random()*0.56;
@@ -375,7 +378,10 @@ if(glOK){
       if(i+1<a.length||wrap) edges.push([a[i],a[(i+1)%a.length]]);
       if(r+1<grid.length) edges.push([a[i],grid[r+1][i]]);
   }}};
-  wire(rows,true); wire(cbRows,true); wire(SR,true);
+  wire(rows,true); wire(cbRows,true);
+  for(let r=0;r<SR.length;r++){ const a=SR[r];                                // stem: vertical rails + sparse rings (no ladder)
+    for(let i=0;i<a.length;i++){ if(r+1<SR.length) edges.push([a[i],SR[r+1][i]]); }
+    if(r%2===0) for(let i=0;i<a.length;i++) edges.push([a[i],a[(i+1)%a.length]]); }
   const near=(i,pool,k)=>{const d=[];for(const j of pool){if(j===i)continue;const dx=SP[i*3]-SP[j*3],dy=SP[i*3+1]-SP[j*3+1],dz=SP[i*3+2]-SP[j*3+2];d.push([dx*dx+dy*dy+dz*dz,j]);}d.sort((a,b)=>a[0]-b[0]);return d.slice(0,k).map(x=>x[1]);};
   const surfPool=[]; for(let i=0;i<cerebN;i+=3) surfPool.push(i);
   INT.forEach(i=>{ near(i,INT,3).forEach(j=>edges.push([i,j])); near(i,surfPool,2).forEach(j=>edges.push([i,j])); }); // internal wiring through the volume
@@ -436,13 +442,13 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
     mega:{d:"M6 22 a18 18 0 1 1 36 0 a18 18 0 1 1 -36 0 M14 31 L14 15 L24 25 L34 15 L34 31"} // MEGA circle + M
   };
   const srcs=[["google drive","drive"],["icloud","icloud"],["dropbox","dropbox"],["proton drive","proton"],["mega","mega"]];
-  srcs.forEach((s,i)=>{ const y=44+i*88, gx=104, gl=glyphs[s[1]];
+  srcs.forEach((s,i)=>{ const y=52+i*84, gx=150, gl=glyphs[s[1]];
     const g=el("g",{class:"msrc"});
-    g.appendChild(el("circle",{class:"mchip",cx:gx,cy:y,r:27}));
+    g.appendChild(el("circle",{class:"mchip",cx:gx,cy:y,r:26}));
     g.appendChild(el("path",{class:"mglyph"+(gl.fill?" fill":""),d:gl.d,transform:`translate(${gx-24},${y-22})`}));
-    const lab=el("text",{class:"mlabel",x:gx+44,y:y+5}); lab.textContent=s[0]; g.appendChild(lab);
+    const lab=el("text",{class:"mlabel",x:gx,y:y+44}); lab.textContent=s[0]; g.appendChild(lab);   // label centred under the chip
     svg.appendChild(g);
-    const sx=300, c1x=sx+150, mid=`M ${sx} ${y} C ${c1x} ${y}, ${cx-160} ${cy}, ${cx-NH} ${cy}`;
+    const sx=gx+32, mid=`M ${sx} ${y} C ${sx+170} ${y}, ${cx-180} ${cy}, ${cx-NH} ${cy}`;            // flow starts at the chip edge
     svg.appendChild(el("path",{class:"mbase",d:mid}));
     svg.appendChild(el("path",{class:"mflow",d:mid}));
   });
@@ -464,7 +470,6 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   lg.appendChild(el("rect",{class:"wicon-dim",x:Lx-46,y:Ly-58,width:92,height:116,rx:11}));
   [-38,0,38].forEach(dy=>{ lg.appendChild(el("rect",{class:"wicon",x:Lx-34,y:Ly+dy-13,width:68,height:26,rx:6}));
     lg.appendChild(el("circle",{cx:Lx-21,cy:Ly+dy,r:2.6,fill:"rgba(244,241,234,.6)",stroke:"none"})); });
-  svg.appendChild(lg);
   // ── right "managed" mark: hexagon ──
   const Rx=850,Ry=160, rg=el("g",{class:"wR"});
   const hex=(c,r)=>{let p="";for(let i=0;i<6;i++){const a=P/6+i*P/3;p+=(i?"L":"M")+(c[0]+r*Math.cos(a)).toFixed(1)+" "+(c[1]+r*Math.sin(a)).toFixed(1)+" ";}return p+"Z";};
@@ -472,16 +477,16 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   rg.appendChild(el("path",{class:"wicon-dim",d:hex([Rx,Ry],38)}));
   rg.appendChild(el("circle",{class:"wicon-dim",cx:Rx,cy:Ry,r:19}));
   rg.appendChild(el("circle",{cx:Rx,cy:Ry,r:4,fill:"var(--white)",stroke:"none"}));
-  svg.appendChild(rg);
-  // ── woven strands: icon outline → hub-circle outline ──
+  // ── woven strands: icon outline → hub-circle outline (appended first → behind the icons) ──
   const strand=(sx,sy,a,bow)=>{ const e=ring(a);
     const d=`M ${sx} ${sy} C ${sx+(e[0]-sx)*0.36} ${sy+bow}, ${sx+(e[0]-sx)*0.72} ${cy-bow}, ${e[0]} ${e[1]}`;
     svg.appendChild(el("path",{class:"wbase",d})); svg.appendChild(el("path",{class:"wflow",d}));
   };
   [[Lx+46,Ly-30,P*0.82,-44],[Lx+46,Ly,P,4],[Lx+46,Ly+30,P*1.18,44]].forEach(s=>strand(s[0],s[1],s[2],s[3]));   // server edge → hub
   [[Rx-48,Ry-30,P*0.18,-44],[Rx-48,Ry,0,4],[Rx-48,Ry+30,-P*0.18,44]].forEach(s=>strand(s[0],s[1],s[2],s[3])); // hexagon edge → hub
-  // ── centre hub (drawn last → on top): orbit ring, solid circle, logo ──
-  svg.appendChild(el("circle",{class:"worbit",cx,cy,r:R+9}));
+  svg.appendChild(lg); svg.appendChild(rg);                                    // icons over the strand starts → clean join
+  // ── centre hub (drawn last → on top): orbit dots on the rim, solid circle, logo ──
+  svg.appendChild(el("circle",{class:"worbit",cx,cy,r:R+3}));
   svg.appendChild(el("circle",{class:"wcirc",cx,cy,r:R}));
   const logo=el("g",{class:"wlogo",transform:`translate(${cx} ${cy}) scale(1.65) translate(-33 -31)`});
   logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
@@ -498,6 +503,8 @@ const sweep=()=>gsap.fromTo(flare,{opacity:0,x:"-40%"},{opacity:.85,x:"30%",dura
 const show=id=>{const b=$("#"+id);b.classList.add("live");b.setAttribute("aria-hidden","false");};
 const hide=id=>{const b=$("#"+id);b.classList.remove("live");b.setAttribute("aria-hidden","true");};
 const capIn=sel=>gsap.to(sel,{clipPath:"inset(0 0% 0 0)",duration:1.25,ease:"expo.out"});
+// drawn-on reveal — wipes text in left→right like it's being written
+const drawIn=(sel,dur,stag)=>gsap.fromTo(sel,{opacity:1,clipPath:"inset(0 100% 0 0)"},{clipPath:"inset(0 0% 0 0)",duration:dur||1.05,stagger:stag||0,ease:"expo.out"});
 const G=glOK?window.__gx:null;
 
 const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){progress.style.width=scrubfill.style.width=(tl.progress()*100)+"%";timecode.textContent=fmt(tl.time());}});
@@ -506,7 +513,7 @@ const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){prog
 tl.add("b01",0).call(()=>{setIndex(1);show("b1");if(G){G.galaxyGroup.visible=true;G.bgStars.visible=true;gsap.set(gl,{opacity:1});}},null,"b01")
   .to("#b1",{opacity:1,duration:1.2},"b01").to("#b1 .scrim",{opacity:1,duration:1.6},"b01+=.6");
 if(G){ tl.fromTo(galaxy,{fade:0,spin:0,order:0},{fade:1,duration:1.6},"b01").to(galaxy,{spin:0.55,duration:7,ease:"none"},"b01").fromTo(camera.position,{z:680},{z:430,duration:7,ease:"power1.inOut"},"b01"); }
-tl.fromTo("#b1 .bigq",{opacity:0,y:24,filter:"blur(8px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.4},"b01+=1.3").to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
+tl.add(drawIn("#b1 .bigq",1.6),"b01+=1.3").to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
 
 // 02 — search → matrix (7–14)
 tl.add("b02",7).call(()=>{setIndex(2);show("b2");sweep();},null,"b02").to("#b2",{opacity:1,duration:1.0},"b02").to("#b2 .scrim",{opacity:1,duration:.9},"b02+=.1").fromTo("#b2 .field",{opacity:0,y:18},{opacity:1,y:0,duration:1.0},"b02+=.2");
@@ -525,7 +532,7 @@ tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();},null,"b04").to("#b4"
   .to("#b4 .sh-out",{strokeDashoffset:0,duration:2.0,ease:"power2.inOut"},"b04+=.3").to("#b4 .sh-in",{strokeDashoffset:0,duration:1.6,ease:"power2.inOut"},"b04+=.8")
   .to("#b4 .sh-dots",{opacity:1,duration:1.2},"b04+=1.2").fromTo("#b4 .sweep",{opacity:1,x:0},{x:300,duration:1.6,ease:"power2.inOut",onComplete(){gsap.set("#b4 .sweep",{opacity:0});}},"b04+=1.6")
   .to("#b4 .lk",{strokeDashoffset:0,duration:1.0,stagger:.15},"b04+=1.7").to("#b4 .lk-key",{opacity:1,duration:.6},"b04+=2.7")
-  .fromTo("#b4 .pillars p",{opacity:0,y:20,filter:"blur(8px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.1,stagger:.34,ease:"expo.out"},"b04+=2.4").to("#b4 .compliance",{opacity:1,duration:1.0},"b04+=5.0")
+  .add(drawIn("#b4 .pillars p",1.0,.34),"b04+=2.4").to("#b4 .compliance",{opacity:1,duration:1.0},"b04+=5.2")
   .to("#b4",{opacity:0,duration:.9},"b04+=8.1").call(()=>hide("b4"),null,"b04+=9");
 
 // 05 — cloud (31–39)
@@ -542,7 +549,9 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
 // 06 — compression (39–45)
 tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.8},"b06")
   .fromTo("#b6 .chip",{opacity:0},{opacity:1,duration:.4,stagger:.18},"b06+=.2").to("#b6 .chip",{x:"120vw",opacity:0,duration:3.2,stagger:.18,ease:"none"},"b06+=.3")
-  .fromTo({v:0},{v:0},{v:70,duration:2.2,ease:"power2.out",onUpdate(){$("#counter").textContent=Math.round(this.targets()[0].v);}},"b06+=.6")
+  .to("#b6 .uplabel",{opacity:1,duration:.7},"b06+=.4")
+  .fromTo({v:0},{v:0},{v:85,duration:2.4,ease:"power2.out",onUpdate(){$("#counter").textContent=Math.round(this.targets()[0].v);}},"b06+=.6")
+  .to("#b6 .fineprint",{opacity:1,duration:.8},"b06+=2.6")
   .add(capIn("#cap6"),"b06+=1.8").to(["#b6","#cap6"],{opacity:0,duration:.8},"b06+=5.2").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";},null,"b06+=6");
 
 // 07 — MIGRATION (45–53)
@@ -555,8 +564,8 @@ tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();document.querySelector
 
 // 08 — close / CTA (53–63, hold)
 tl.add("b08",53).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
-  .fromTo("#b8 .mark",{opacity:0,y:20,filter:"blur(6px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.4},"b08+=.6")
-  .to("#b8 .ul",{scaleX:1,duration:1.0,ease:"power3.inOut"},"b08+=1.6").to("#b8 .tag",{opacity:1,duration:1.0},"b08+=2.2")
+  .add(drawIn("#b8 .mark",1.5),"b08+=.6")
+  .to("#b8 .ul",{scaleX:1,duration:1.0,ease:"power3.inOut"},"b08+=1.7").add(drawIn("#b8 .tag",1.1),"b08+=2.2")
   .to("#b8 .pos",{opacity:1,duration:1.0},"b08+=2.7").to("#b8 form",{opacity:1,duration:1.0},"b08+=3.4").to({},{duration:3});
 
 window.__film=tl;
