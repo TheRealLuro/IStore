@@ -555,13 +555,14 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
   .to("#b6 .ftpill",{opacity:.28,duration:.4},"b06+=1.7").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=2.1").to("#b6 .ftpill",{opacity:1,duration:.4},"b06+=2.15") // cross-dissolve
   .to("#b6 .ftpill",{backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.6},"b06+=3.0")
   .to("#b6 .meter",{opacity:1,duration:.4},"b06+=3.0").call(()=>{const c=document.querySelector("#b6 .cline");if(c){gsap.set(c,{y:0});const r=c.getBoundingClientRect();clineRise=(innerHeight/2)-(r.top+r.height/2);}},null,"b06+=3.1")  // where the one line is born = where the pills collapse (screen centre)
-  .to("#fttrack",{scaleY:0.05,scaleX:0.6,transformOrigin:"50% 50%",duration:1.1,ease:"power2.inOut"},"b06+=3.2")  // every pill fuses down into one solid white band at the centre
-  .set("#b6 .cline",{opacity:1,scaleX:1,y:()=>clineRise},"b06+=4.1")                                             // THE line — one solid stroke, born exactly where the pills fused (no draw, no fade)
-  .to("#ftwrap",{opacity:0,duration:.4,ease:"power1.out"},"b06+=4.1")                                            // the pill layer is gone — only the single line remains
-  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.5,ease:"power3.out"},"b06+=4.8")                 // "85%" big + "smaller" small + "up to*" ease in above
-  .to("#b6 .cline",{y:0,duration:1.3,ease:"power3.out"},"b06+=4.8")                                              // the SAME line travels into place as the underline
-  .to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=6.4")
-  .add(capIn("#cap6"),"b06+=6.6").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});gsap.set("#b6 .cline",{clearProps:"all"});},null,"b06+=10.8");
+  .to("#fttrack",{scaleY:0.012,scaleX:0.62,transformOrigin:"50% 50%",duration:1.4,ease:"power2.inOut"},"b06+=3.2") // every pill fuses down to a single hairline at the centre
+  .set("#b6 .cline",{scaleX:1,y:()=>clineRise},"b06+=4.2")                                                        // the one line, placed exactly where the pills fused (still invisible)
+  .to("#b6 .cline",{opacity:1,duration:.8,ease:"sine.inOut"},"b06+=4.3")                                         // crossfade: the line takes over from the fusing band — coincident, so it reads as one continuous line, no pop
+  .to("#ftwrap",{opacity:0,duration:.8,ease:"sine.inOut"},"b06+=4.3")                                            // the pill band dissolves as the line rises in its place
+  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.5,ease:"power3.out"},"b06+=5.2")                 // "85%" big + "smaller" small + "up to*" ease in above
+  .to("#b6 .cline",{y:0,duration:1.3,ease:"power3.out"},"b06+=5.2")                                              // the SAME line travels into place as the underline
+  .to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=6.8")
+  .add(capIn("#cap6"),"b06+=7.0").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});gsap.set("#b6 .cline",{clearProps:"all"});},null,"b06+=10.8");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
