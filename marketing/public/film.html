@@ -41,18 +41,12 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
 .chrome{position:fixed;inset:0;z-index:45;pointer-events:none;font-family:var(--sans)}
 .toprule{position:absolute;top:0;left:0;right:0;height:1px;background:rgba(244,241,234,.16)}
-.progress{position:absolute;top:0;left:0;height:1px;width:0;background:var(--paper);box-shadow:0 0 8px rgba(244,241,234,.5)}
 .head{position:absolute;top:clamp(16px,3.2vh,30px);left:var(--m);right:var(--m);display:flex;align-items:baseline;justify-content:space-between}
 .wm{font-family:var(--serif);font-weight:500;font-size:clamp(17px,1.9vw,23px);letter-spacing:-.01em;color:var(--paper)}
 .wm i{font-style:normal;color:var(--white)}
 .index{font-size:11px;letter-spacing:.34em;color:var(--mist);text-transform:uppercase;font-variant-numeric:tabular-nums}
 .index b{color:var(--paper);font-weight:600}
 .timecode{position:absolute;bottom:clamp(22px,3.6vh,32px);left:var(--m);font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--mist)}
-.credit{position:absolute;bottom:clamp(22px,3.6vh,32px);right:var(--m);font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:var(--mist)}
-.replay{position:absolute;bottom:clamp(46px,7.5vh,70px);right:var(--m);pointer-events:auto;display:inline-flex;align-items:center;gap:8px;background:none;border:none;color:var(--mist);font-family:var(--sans);font-size:10px;letter-spacing:.28em;text-transform:uppercase;cursor:pointer;opacity:0;transition:color .25s,opacity .4s}
-.stage:hover .replay{opacity:1}.replay:hover{color:var(--paper)}.replay svg{width:13px;height:13px}
-.scrub{position:absolute;bottom:0;left:var(--m);right:var(--m);height:22px;pointer-events:auto;opacity:0;transition:opacity .3s;display:flex;align-items:flex-end}
-.stage:hover .scrub{opacity:1}.scrub .rail{position:relative;width:100%;height:1px;background:rgba(244,241,234,.18);cursor:pointer}.scrub .fill{position:absolute;left:0;top:0;height:1px;background:var(--paper)}
 
 .caption{position:absolute;left:var(--m);right:var(--m);bottom:clamp(78px,15vh,150px);text-align:center;font-family:var(--serif);font-weight:300;font-size:clamp(22px,3.4vw,46px);line-height:1.12;letter-spacing:-.02em;color:var(--paper);clip-path:inset(0 100% 0 0);text-shadow:0 2px 30px rgba(0,0,0,.7)}
 .caption .it{font-style:italic}
@@ -66,9 +60,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 /* BEAT 2 — scrim behind the search bar */
 #b2 .col{position:relative;width:min(760px,100%);display:flex;flex-direction:column;align-items:center;z-index:6}
 #b2 .scrim{position:absolute;left:50%;top:18px;width:120%;height:150px;transform:translateX(-50%);z-index:-1;opacity:0;background:radial-gradient(ellipse at center, rgba(10,10,10,.94) 0%, rgba(10,10,10,.55) 55%, transparent 78%);filter:blur(14px)}
-#b2 .field{width:100%;display:flex;align-items:center;gap:16px;border-bottom:1px solid rgba(244,241,234,.22);padding:0 4px 18px}
-#b2 .mag{width:18px;height:18px;flex:0 0 auto;opacity:.7}
-#b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;min-height:1.2em}
+#b2 .field{width:100%;display:flex;align-items:center;gap:16px;padding:18px 24px;border-radius:16px;background:rgba(13,13,15,.74);backdrop-filter:blur(20px) saturate(118%);-webkit-backdrop-filter:blur(20px) saturate(118%);border:1px solid rgba(244,241,234,.15);box-shadow:0 26px 72px rgba(0,0,0,.58),inset 0 1px 0 rgba(255,255,255,.06)}
+#b2 .mag{width:18px;height:18px;flex:0 0 auto;opacity:.85}
+#b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;min-height:1.2em;color:var(--white)}
 #b2 .car{display:inline-block;width:2px;height:1em;background:var(--white);vertical-align:-.12em;margin-left:3px;box-shadow:0 0 8px var(--white);animation:blink 1.05s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 #b2 .hero{margin-top:44px;width:222px;border-radius:18px;overflow:hidden;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.72);background:linear-gradient(165deg,#232327,#131315);box-shadow:0 32px 80px rgba(0,0,0,.62),inset 0 1px 0 rgba(255,255,255,.05),inset 0 0 0 1px rgba(244,241,234,.1)}
@@ -136,7 +130,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .mrow{display:flex;align-items:center;justify-content:center;gap:clamp(14px,2.4vw,30px)}
 #b6 .bignum{display:block;width:clamp(150px,26vw,300px);height:auto;overflow:visible}
 #b6 .n85{font-family:var(--serif);font-weight:300;font-size:160px;text-anchor:middle;fill:rgba(255,255,255,0);stroke:#fff;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;paint-order:stroke;stroke-dasharray:1700;stroke-dashoffset:1700;filter:drop-shadow(0 0 24px rgba(255,255,255,.16))}
-#b6 .leadin{fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-dasharray:320;stroke-dashoffset:320;filter:drop-shadow(0 0 12px rgba(255,255,255,.4))}
+#b6 .leadin{fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-dasharray:1200;stroke-dashoffset:1200}
 #b6 .m2{position:relative;opacity:0}
 #b6 .m2 .sm{display:block;font-family:var(--serif);font-style:italic;font-weight:300;font-size:clamp(34px,5.6vw,72px);letter-spacing:-.02em;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
 #b6 .m2 .up{position:absolute;top:-.5em;right:-.45em;font-family:var(--sans);font-weight:500;font-size:clamp(11px,1.3vw,15px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
@@ -277,18 +271,15 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <div class="flare" id="flare"></div><div class="vignette"></div><div class="grain"></div>
   <div class="chrome">
-    <div class="toprule"></div><div class="progress" id="progress"></div>
+    <div class="toprule"></div>
     <div class="head"><div class="wm">neuthek<i>.</i></div><div class="index"><b id="idxN">01</b> — 08</div></div>
-    <div class="timecode" id="timecode">00:00</div><div class="credit">a film for neuthek</div>
-    <button class="replay" id="replay" aria-label="replay the film"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7" stroke-linecap="round"/><path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round"/></svg> replay</button>
-    <div class="scrub"><div class="rail" id="rail"><div class="fill" id="scrubfill"></div></div></div>
+    <div class="timecode" id="timecode">00:00</div>
   </div>
 </div>
 
 <div class="poster" id="poster"><div class="stack">
   <div class="mark">neuthek<i>.</i></div><div class="ul"></div><div class="tag">storage that thinks for you</div>
   <div class="caps"><p>search by meaning, not metadata.</p><p>ai embeddings. vector search. instant recall.</p><p>never trained on. never sold. you own your data.</p></div>
-  <form id="waitP" novalidate><label for="emailP" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Email address</label><input id="emailP" type="email" autocomplete="email" placeholder="you@email.com" required /><button type="submit">join the waitlist</button></form>
 </div></div>
 
 <script>window.__filmBoot=false;setTimeout(function(){ if(!window.__filmBoot){ document.getElementById('poster').classList.add('show'); document.getElementById('stage').style.display='none'; } },4500);</script>
@@ -298,8 +289,6 @@ import * as THREE from "three";
 import gsap from "gsap";
 const $=(s,r)=>(r||document).querySelector(s);
 const reduce = matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
-function wire(form,input,okEl){ if(!form) return; form.addEventListener("submit",e=>{ e.preventDefault(); const em=(input.value||"").trim(); if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){input.focus();return;} fetch("/api/waitlist/signup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:em})}).catch(()=>{}); if(okEl){okEl.textContent="you're on the list — check your inbox.";gsap.fromTo(okEl,{opacity:0,y:6},{opacity:1,y:0,duration:.6});} form.reset(); }); }
-wire($("#wait"),$("#email"),$("#ok")); wire($("#waitP"),$("#emailP"),null);
 window.__filmBoot=true;
 if(reduce){ $("#poster").classList.add("show"); $("#stage").style.display="none"; throw new Error("reduced-motion"); }
 
@@ -397,7 +386,7 @@ if(glOK){
   const near=(i,pool,k)=>{const d=[];for(const j of pool){if(j===i)continue;const dx=SP[i*3]-SP[j*3],dy=SP[i*3+1]-SP[j*3+1],dz=SP[i*3+2]-SP[j*3+2];d.push([dx*dx+dy*dy+dz*dz,j]);}d.sort((a,b)=>a[0]-b[0]);return d.slice(0,k).map(x=>x[1]);};
   const surfPool=[]; for(let i=0;i<cerebN;i+=3) surfPool.push(i);
   INT.forEach(i=>{ near(i,INT,2).forEach(j=>edges.push([i,j])); near(i,surfPool,2).forEach(j=>edges.push([i,j])); }); // internal wiring through the volume
-  for(let k=0;k<9;k++){const a=(Math.random()*cerebN)|0,b=(Math.random()*cerebN)|0; if(a!==b) edges.push([a,b]);}     // a few long association fibres
+  for(let k=0;k<16;k++){const a=(Math.random()*cerebN)|0; near(a,surfPool,1).forEach(j=>edges.push([a,j]));}            // short associative fibres only — never long crossing lines
   // ── fuse the parts: bridge cerebellum + stem into the cerebrum so it reads as ONE organ ──
   const cbFlat=cbRows.flat(), upPool=surfPool.concat(cbFlat);
   cbFlat.forEach((i,n)=>{ if(n%2===0) near(i,surfPool,1).forEach(j=>edges.push([i,j])); });                          // cerebellum → cerebrum surface
@@ -413,8 +402,8 @@ if(glOK){
   const ng=new THREE.BufferGeometry(); ng.setAttribute("position",new THREE.BufferAttribute(bpos,3)); ng.setAttribute("aShade",new THREE.BufferAttribute(bsh,1)); ng.setAttribute("aSize",new THREE.BufferAttribute(bsz,1));
   const nUni={uFade:{value:0},uTex:{value:TEX},uTime:{value:0}};
   const nMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,uniforms:nUni,
-    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.78+0.22*sin(uTime*2.0+aShade*30.0);gl_PointSize=aSize*tw*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;}`,
-    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.72+0.28*vS),1.0)*t*uFade;}`});
+    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;varying float vDim;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.80+0.20*sin(uTime*2.0+aShade*30.0);float depth=clamp((-mv.z-250.0)/360.0,0.0,1.0);float szf=mix(1.18,0.60,depth);gl_PointSize=aSize*tw*szf*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;vDim=mix(1.0,0.30,depth);}`,
+    fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;varying float vDim;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.70+0.30*vS)*vDim,1.0)*t*uFade;}`});
   const nodes=new THREE.Points(ng,nMat);
   const PN=Math.min(SMALL?90:140,edges.length),pl=[]; for(let i=0;i<PN;i++) pl.push({e:(Math.random()*edges.length)|0,t:Math.random(),sp:0.004+Math.random()*0.011});
   const pp=new Float32Array(PN*3),ps=new Float32Array(PN); for(let i=0;i<PN;i++) ps[i]=13+Math.random()*12;
@@ -519,7 +508,7 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   svg.querySelectorAll(".wbase").forEach(p=>{const L=p.getTotalLength()||300;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime strands for stroke-draw
 })();
 
-const idxN=$("#idxN"),progress=$("#progress"),timecode=$("#timecode"),scrubfill=$("#scrubfill"),flare=$("#flare");
+const idxN=$("#idxN"),timecode=$("#timecode");
 const setIndex=n=>idxN.textContent=("0"+n).slice(-2);
 const fmt=t=>{const s=Math.floor(t);return ("0"+Math.floor(s/60)).slice(-2)+":"+("0"+(s%60)).slice(-2);};
 const sweep=()=>{};   // flare/light-sweep removed — no stray horizontal line
@@ -530,7 +519,7 @@ const capIn=sel=>gsap.to(sel,{clipPath:"inset(0 0% 0 0)",duration:1.25,ease:"exp
 const drawIn=(sel,dur,stag)=>gsap.fromTo(sel,{opacity:1,clipPath:"inset(0 100% 0 0)"},{clipPath:"inset(0 0% 0 0)",duration:dur||1.05,stagger:stag||0,ease:"expo.out"});
 const G=glOK?window.__gx:null;
 
-const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){progress.style.width=scrubfill.style.width=(tl.progress()*100)+"%";timecode.textContent=fmt(tl.time());}});
+const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){timecode.textContent=fmt(tl.time());}});
 
 // 01 — galaxy (0–7)
 tl.add("b01",0).call(()=>{setIndex(1);show("b1");if(G){G.galaxyGroup.visible=true;G.bgStars.visible=true;gsap.set(gl,{opacity:1});}},null,"b01")
@@ -584,13 +573,13 @@ tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6"
   .fromTo("#ftline",{scaleX:0,opacity:1},{scaleX:1,duration:.8,ease:"power2.out"},"b06+=3.7")                      // → funnel into ONE white line
   .to("#ftwrap",{opacity:0,duration:.5},"b06+=4.2")
   .to("#b6 .meter",{opacity:1,duration:.3},"b06+=4.3")
-  .fromTo("#b6 .leadin",{strokeDashoffset:320},{strokeDashoffset:0,duration:.7,ease:"power1.inOut"},"b06+=4.5")   // the same stroke sweeps up to the 8…
+  .fromTo("#b6 .leadin",{strokeDashoffset:1200},{strokeDashoffset:0,duration:.7,ease:"power1.inOut"},"b06+=4.5")   // the same stroke sweeps up to the 8…
   .to("#ftline",{opacity:0,duration:.45},"b06+=4.7")
   .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:2.1,ease:"power1.inOut"},"b06+=5.1")    // …and keeps going, writing 85% unbroken
-  .to("#b6 .leadin",{strokeDashoffset:320,duration:1.0,ease:"power1.in"},"b06+=5.3")                              // ink trail erases the lead-in behind the pen — no leftover line
+  .to("#b6 .leadin",{strokeDashoffset:1200,duration:1.0,ease:"power1.in"},"b06+=5.3")                              // ink trail erases the lead-in behind the pen — no leftover line
   .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.8,ease:"power2.out"},"b06+=7.0")                            // fills + settles
   .fromTo("#b6 .m2",{opacity:0},{opacity:1,duration:.9,ease:"power2.out"},"b06+=7.2").to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=7.7")
-  .add(capIn("#cap6"),"b06+=7.9").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);document.querySelectorAll("#b6 .leadin").forEach(n=>n.style.strokeDashoffset=320);},null,"b06+=10.8");
+  .add(capIn("#cap6"),"b06+=7.9").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#ftline",{clearProps:"all"});gsap.set("#b6 .n85",{clearProps:"fill"});gsap.set("#b6 .m2",{clearProps:"all"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);document.querySelectorAll("#b6 .leadin").forEach(n=>n.style.strokeDashoffset=1200);},null,"b06+=10.8");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
@@ -614,8 +603,6 @@ window.__film=tl;
 const PHRASES=["snowy roof at sunset","whiteboard photos from last week","the receipt from amazon","golden retriever in the park"],qtext=$("#qtext");
 tl.eventCallback("onUpdate",(prev=>function(){prev&&prev();const t=tl.time();if(t>=7&&t<14){const lc=t-7,per=7/PHRASES.length,i=Math.min(3,Math.floor(lc/per)),lt=lc-i*per,p=PHRASES[i],ty=per*.62,ch=lt<ty?Math.round(lt/ty*p.length):p.length;qtext.textContent=p.slice(0,ch);}})(tl.eventCallback("onUpdate")));
 
-$("#replay").addEventListener("click",()=>tl.restart());
-const rail=$("#rail"); rail.addEventListener("click",e=>{const r=rail.getBoundingClientRect();tl.pause();tl.progress(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)));tl.play();});
 addEventListener("keydown",e=>{if(e.code==="Space"){e.preventDefault();tl.paused()?tl.play():tl.pause();}else if(e.key==="r"||e.key==="R"){tl.restart();}});
 document.addEventListener("visibilitychange",()=>{if(document.hidden){tl.pause();gsap.ticker.sleep();}else{gsap.ticker.wake();if(tl.progress()<1)tl.play();}});
 const start=()=>tl.play(0);
