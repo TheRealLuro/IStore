@@ -71,17 +71,18 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b2 .q{font-family:var(--serif);font-weight:300;font-size:clamp(20px,3vw,40px);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;min-height:1.2em}
 #b2 .car{display:inline-block;width:2px;height:1em;background:var(--white);vertical-align:-.12em;margin-left:3px;box-shadow:0 0 8px var(--white);animation:blink 1.05s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
-#b2 .hero{margin-top:44px;width:196px;border-radius:16px;overflow:hidden;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.72);background:linear-gradient(160deg,#2a2a2d,#141416);box-shadow:0 40px 100px rgba(0,0,0,.7),inset 0 0 0 1px rgba(244,241,234,.16)}
-#b2 .hero .him{position:relative;height:136px;background:linear-gradient(155deg,#3a3a3e,#202022);overflow:hidden}
-#b2 .hero .him svg{position:absolute;left:50%;top:50%;width:78px;height:96px;transform:translate(-50%,-52%)}
-#b2 .hero .rcpt{stroke:rgba(244,241,234,.62);stroke-width:1.5;fill:none;stroke-linecap:round;stroke-linejoin:round}
-#b2 .hero .him::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 38%,rgba(255,255,255,.10) 50%,transparent 62%)}
-#b2 .hero .hmatch{position:absolute;top:11px;right:11px;font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:#0a0a0a;background:var(--white);padding:3px 8px;border-radius:20px;box-shadow:0 0 18px rgba(255,255,255,.45)}
-#b2 .hero .hmeta{display:flex;align-items:center;gap:9px;padding:13px 14px}
-#b2 .hero .hav{width:24px;height:24px;border-radius:7px;flex:0 0 auto;background:linear-gradient(140deg,#4a4a4e,#262628);box-shadow:inset 0 0 0 1px rgba(244,241,234,.12)}
-#b2 .hero .hlines{display:grid;gap:6px;flex:1}
-#b2 .hero .hlines i{display:block;height:5px;border-radius:3px;background:rgba(244,241,234,.55)}
-#b2 .hero .hlines i.dim{width:58%;background:rgba(244,241,234,.22)}
+#b2 .hero{margin-top:44px;width:222px;border-radius:18px;overflow:hidden;opacity:0;clip-path:inset(0 0 100% 0);transform:scale(.72);background:linear-gradient(165deg,#232327,#131315);box-shadow:0 32px 80px rgba(0,0,0,.62),inset 0 1px 0 rgba(255,255,255,.05),inset 0 0 0 1px rgba(244,241,234,.1)}
+#b2 .hero .him{position:relative;height:138px;background:radial-gradient(125% 120% at 32% 18%,#34343b,#191a1d);overflow:hidden}
+#b2 .hero .him svg{position:absolute;left:50%;top:50%;width:52px;height:64px;transform:translate(-50%,-54%)}
+#b2 .hero .rcpt{stroke:rgba(244,241,234,.72);stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+#b2 .hero .him::after{content:"";position:absolute;inset:0;background:linear-gradient(118deg,transparent 40%,rgba(255,255,255,.09) 50%,transparent 60%)}
+#b2 .hero .hmatch{position:absolute;top:12px;right:12px;font-family:var(--mono);font-size:9px;letter-spacing:.02em;color:#0a0a0a;background:var(--white);padding:3px 9px;border-radius:20px;box-shadow:0 0 16px rgba(255,255,255,.4)}
+#b2 .hero .hmeta{display:flex;align-items:center;gap:11px;padding:13px 15px;border-top:1px solid rgba(244,241,234,.07)}
+#b2 .hero .hav{width:30px;height:30px;border-radius:8px;flex:0 0 auto;display:grid;place-items:center;background:linear-gradient(150deg,#3a3a40,#222226);box-shadow:inset 0 0 0 1px rgba(244,241,234,.12)}
+#b2 .hero .hav svg{width:15px;height:15px;stroke:var(--paper);stroke-width:1.7;fill:none}
+#b2 .hero .htext{display:grid;gap:3px;min-width:0;text-align:left}
+#b2 .hero .htext b{font-family:var(--sans);font-weight:600;font-size:12.5px;letter-spacing:-.01em;color:var(--paper);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#b2 .hero .htext span{font-family:var(--sans);font-size:10.5px;letter-spacing:.02em;color:var(--mist)}
 
 /* BEAT 3 — brain on canvas */
 #b3 .lab{position:relative;width:100%;height:100%}
@@ -108,7 +109,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b4 .compliance .seals b{font-family:var(--sans);font-weight:600;font-size:clamp(13px,1.5vw,17px);letter-spacing:.18em;color:var(--paper)}
 
 /* BEAT 5 — self-host ↔ managed, woven into the centre hub */
-#b5 .split{position:relative;width:min(1060px,100%);height:min(440px,54vh)}
+#b5 .split{position:relative;width:min(1060px,100%);height:min(320px,40vh)}
 #b5 #weave{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 #b5 .lab{position:absolute;top:66%;font-family:var(--sans);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--mist);opacity:0;white-space:nowrap}
 #b5 .lab-l{left:4%}
@@ -126,9 +127,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b5 .biz{position:absolute;left:0;right:0;bottom:clamp(-30px,-3vh,-16px);text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.34);opacity:0}
 
 /* BEAT 6 — compression: a scrolling grid of supported file types → the savings */
-#b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(640px,88vw);height:min(440px,56vh);overflow:hidden;opacity:0;-webkit-mask:linear-gradient(180deg,transparent,#000 16%,#000 84%,transparent);mask:linear-gradient(180deg,transparent,#000 16%,#000 84%,transparent)}
-#b6 .fttrack{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;will-change:transform}
-#b6 .ftpill{padding:14px 0;border-radius:11px;border:1px solid rgba(244,241,234,.14);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:var(--paper)}
+#b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(960px,96vw);height:min(640px,82vh);overflow:visible;opacity:0;perspective:1150px;perspective-origin:50% 40%}
+#b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;transform-style:preserve-3d;will-change:transform;-webkit-mask:radial-gradient(125% 92% at 50% 40%,#000 42%,transparent 80%);mask:radial-gradient(125% 92% at 50% 40%,#000 42%,transparent 80%)}
+#b6 .ftpill{padding:17px 0;border-radius:13px;border:1px solid rgba(244,241,234,.14);background:rgba(22,22,24,.5);text-align:center;font-family:var(--mono);font-size:13px;letter-spacing:.12em;color:var(--paper)}
 #b6 .meter{position:relative;z-index:4;text-align:center;opacity:0}
 #b6 .num{position:relative;font-family:var(--serif);font-weight:300;font-size:clamp(54px,11vw,150px);letter-spacing:-.04em;color:var(--white);line-height:.9;font-variant-numeric:tabular-nums;text-shadow:0 0 50px rgba(255,255,255,.18)}
 #b6 .num small{position:relative;font-size:.32em;letter-spacing:-.02em;font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
@@ -200,7 +201,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
           <svg viewBox="0 0 78 96" aria-hidden="true"><g class="rcpt"><path d="M14 6 H64 V90 L56 84 L48 90 L40 84 L32 90 L24 84 L14 90 Z"/><path d="M24 22 H54 M24 33 H50 M24 44 H56 M24 55 H44"/><path d="M24 70 H40 M48 70 H54" stroke-width="2.4"/></g></svg>
           <div class="hmatch">98% match</div>
         </div>
-        <div class="hmeta"><span class="hav"></span><div class="hlines"><i></i><i class="dim"></i></div></div>
+        <div class="hmeta"><span class="hav"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><path d="M14 3v5h5"/></svg></span><div class="htext"><b>amazon-order.pdf</b><span>receipt · nov 2024</span></div></div>
       </div>
     </div></div>
     <div class="caption" id="cap2">search by <span class="ac">meaning</span>, not metadata.</div>
@@ -208,7 +209,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b3" aria-hidden="true">
     <div class="lab"></div>
-    <div class="caption" id="cap3"><span class="em">ai embeddings.</span> vector search. instant recall.</div>
+    <div class="caption" id="cap3"><span class="em">ai that understands your files</span> — photos described, docs read, video summarised</div>
   </section>
 
   <section class="beat" id="b4" aria-hidden="true">
@@ -232,7 +233,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
           <g class="lk-key"><circle cx="100" cy="146" r="4"/><rect x="98" y="148" width="4" height="11" rx="2"/></g>
         </svg>
       </div>
-      <div class="pillars"><p>your files are <span class="d">yours alone</span></p><p>never trained on, never sold</p><p>encrypted in transit &amp; at rest</p><p><span class="d">zero-knowledge</span><sup>*</sup> — even we can't read them</p><div class="vn">* zero-knowledge encryption applies to your neuthek Vault</div></div>
+      <div class="pillars"><p>your files are <span class="d">yours alone</span></p><p>never trained on, never sold</p><p>your drive — <span class="d">encrypted</span> in transit &amp; at rest</p><p>your vault — <span class="d">zero-knowledge</span><sup>*</sup>, even we can't read it</p><div class="vn">* zero-knowledge encryption applies to your neuthek Vault; all drive files are encrypted in transit &amp; at rest</div></div>
     </div></div>
     <div class="compliance"><div class="lab">independently compliant with</div><div class="seals"><b>GDPR</b><b>CCPA</b><b>BIPA</b><b>COPPA</b></div></div>
   </section>
@@ -434,7 +435,7 @@ if(glOK){
 /* file-type grid (beat 6) — every supported type, scrolled through */
 (function(){const t=$("#fttrack"); if(!t) return;
   const types=["JPG","PNG","HEIC","RAW","WEBP","GIF","MP4","MOV","MKV","AVI","PDF","DOCX","XLSX","PPTX","TXT","MD","MP3","WAV","FLAC","AAC","ZIP","SVG","PSD","AI","CSV","JSON","EPUB","DNG"];
-  types.concat(types.slice(0,12)).forEach(x=>{const p=document.createElement("div");p.className="ftpill";p.textContent=x;t.appendChild(p);});
+  types.concat(types).slice(0,55).forEach(x=>{const p=document.createElement("div");p.className="ftpill";p.textContent=x;t.appendChild(p);});
 })();
 
 /* migration (beat 7) — sources → neuthek, flowing dashes */
@@ -458,9 +459,8 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
     svg.appendChild(g);
     const bb=gp.getBBox(), k=28/Math.max(bb.width,bb.height);                                        // proportion + centre each glyph in its chip
     gp.setAttribute("transform",`translate(${gx} ${y}) scale(${k.toFixed(3)}) translate(${(-(bb.x+bb.width/2)).toFixed(1)} ${(-(bb.y+bb.height/2)).toFixed(1)})`);
-    const sx=gx+32, OR=NH+9, th=Math.PI+(2-i)*0.108,                                                 // land on a distinct point of the orbit ring
-      ex=cx+OR*Math.cos(th), ey=cy+OR*Math.sin(th),
-      mid=`M ${sx} ${y} C ${sx+170} ${y}, ${ex-130} ${ey}, ${ex.toFixed(1)} ${ey.toFixed(1)}`;        // flow: chip edge → ring (dots feed the outline)
+    const sx=gx+32, px=cx-NH-3, py=cy,                                                                // all strings pivot into ONE point on the ring's left
+      mid=`M ${sx} ${y} C ${sx+150} ${y}, ${px-150} ${py}, ${px} ${py}`;                              // chip edge → single convergence point
     svg.appendChild(el("path",{class:"mbase",d:mid}));
     svg.appendChild(el("path",{class:"mflow",d:mid}));
   });
@@ -559,12 +559,13 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
 
 // 06 — compression (39–45)
 tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.8},"b06")
-  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.8},"b06+=.2")
-  .fromTo("#fttrack",{y:46},{y:-210,duration:2.6,ease:"none"},"b06+=.4")                                  // scroll through every supported file type
-  .to("#ftwrap",{opacity:0,filter:"blur(7px)",duration:.8},"b06+=2.5")                                    // then dissolve into the savings
-  .to("#b6 .meter",{opacity:1,duration:.8},"b06+=2.7")
-  .fromTo({v:0},{v:0},{v:85,duration:1.7,ease:"power2.out",onUpdate(){$("#counter").textContent=Math.round(this.targets()[0].v);}},"b06+=2.9")
-  .add(capIn("#cap6"),"b06+=3.6").to(["#b6","#cap6"],{opacity:0,duration:.8},"b06+=5.2").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#ftwrap",{filter:"none"});},null,"b06+=6");
+  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.7},"b06+=.2")
+  .fromTo("#fttrack",{rotationX:0,z:240,y:70},{rotationX:52,z:-560,y:-150,duration:2.5,ease:"power1.in"},"b06+=.3") // scroll the grid back into 3D depth
+  .to("#fttrack",{rotation:230,scale:.04,z:-1100,opacity:0,duration:1.0,ease:"power2.in"},"b06+=2.6")              // boxes swirl into the centre
+  .to("#ftwrap",{opacity:0,duration:.4},"b06+=3.5")
+  .fromTo("#b6 .meter",{opacity:0,scale:.18},{opacity:1,scale:1,duration:.95,ease:"back.out(1.5)"},"b06+=3.4")     // 85% bursts out of the swirl
+  .fromTo({v:0},{v:0},{v:85,duration:1.4,ease:"power2.out",onUpdate(){$("#counter").textContent=Math.round(this.targets()[0].v);}},"b06+=3.7")
+  .add(capIn("#cap6"),"b06+=4.2").to(["#b6","#cap6"],{opacity:0,duration:.8},"b06+=5.2").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#fttrack",{clearProps:"transform,opacity"});gsap.set("#b6 .meter",{clearProps:"transform"});},null,"b06+=6");
 
 // 07 — MIGRATION (45–53)
 tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.add("run"));},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
