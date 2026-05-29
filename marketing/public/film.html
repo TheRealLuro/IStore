@@ -96,8 +96,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b4 .sh-out{fill:none;stroke:var(--white);stroke-width:2.4;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
 #b4 .sh-in{fill:none;stroke:rgba(244,241,234,.28);stroke-width:1;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1}
 #b4 .sh-dots{opacity:0}#b4 .sweep{opacity:0}
-#b4 .lk{stroke:var(--white);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:1;stroke-dashoffset:1;filter:drop-shadow(0 0 7px rgba(255,255,255,.35))}
-#b4 .lk-key{fill:var(--white);opacity:0}
+#b4 .lk{stroke:var(--white);stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 7px rgba(255,255,255,.35))}
+#b4 .lk-key{stroke-width:2.4}
+#b4 .lk-shackle{transform-box:fill-box}
 #b4 .pillars{display:grid;gap:clamp(12px,2vh,22px)}
 #b4 .pillars p{font-family:var(--serif);font-weight:300;font-size:clamp(18px,2.3vw,30px);letter-spacing:-.01em;line-height:1.1;opacity:0}
 #b4 .pillars p .d{font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
@@ -127,17 +128,15 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b5 .biz{position:absolute;left:0;right:0;bottom:clamp(-30px,-3vh,-16px);text-align:center;font-size:10px;letter-spacing:.22em;color:rgba(244,241,234,.34);opacity:0}
 
 /* BEAT 6 — compression: a scrolling grid of supported file types → the savings */
-#b6 .ftwrap{position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:min(860px,92vw);height:min(660px,84vh);overflow:visible;opacity:0;perspective:760px;perspective-origin:50% 50%}
-#b6 .fttrack{display:flex;gap:16px;justify-content:center;transform-style:preserve-3d;will-change:transform;-webkit-mask:linear-gradient(180deg,transparent,#000 20%,#000 92%);mask:linear-gradient(180deg,transparent,#000 20%,#000 92%)}
-#b6 .ftcol{flex:1;display:grid;gap:14px;transform-style:preserve-3d;will-change:transform}
-#b6 .ftpill{padding:16px 0;border-radius:13px;border:1px solid rgba(244,241,234,.14);background:rgba(22,22,24,.5);text-align:center;font-family:var(--mono);font-size:13px;letter-spacing:.12em;color:var(--paper)}
-#b6 .ftline{position:absolute;left:50%;top:50%;width:min(440px,62vw);height:2px;transform:translate(-50%,-50%) scaleX(0);background:linear-gradient(90deg,transparent,var(--white),transparent);box-shadow:0 0 20px rgba(255,255,255,.5);opacity:0;z-index:3}
-#b6 .meter{position:relative;z-index:4;text-align:center;opacity:0}
-#b6 .num{position:relative;font-family:var(--serif);font-weight:300;font-size:clamp(54px,11vw,150px);letter-spacing:-.04em;color:var(--white);line-height:.9;font-variant-numeric:tabular-nums;text-shadow:0 0 50px rgba(255,255,255,.18)}
-#b6 .num small{position:relative;font-size:.32em;letter-spacing:-.02em;font-style:italic;background:linear-gradient(100deg,#4d9fff,#a06bff,#ff5e8a);-webkit-background-clip:text;background-clip:text;color:transparent;-webkit-text-fill-color:transparent}
-#b6 .num .upto{position:absolute;right:.04em;top:-1.15em;font-family:var(--sans);font-style:normal;font-weight:500;font-size:.34em;letter-spacing:.22em;text-transform:uppercase;color:var(--mist);-webkit-text-fill-color:var(--mist);white-space:nowrap}
-#b6 .msub{margin-top:18px;font-family:var(--serif);font-style:italic;font-size:clamp(15px,1.9vw,22px);letter-spacing:-.01em;color:var(--paper)}
-#b6 .msub i{font-style:normal;color:var(--mist)}
+#b6 .ftwrap{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,90vw);opacity:0;will-change:transform}
+#b6 .fttrack{display:grid;grid-template-columns:repeat(5,1fr);gap:13px;will-change:transform}
+#b6 .ftpill{padding:15px 0;border-radius:11px;border:1px solid rgba(244,241,234,.16);background:rgba(22,22,24,.55);text-align:center;font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;color:var(--paper);overflow:hidden;will-change:transform,height}
+#b6 .bignum{display:block;width:min(440px,74vw);height:auto;margin:0 auto;overflow:visible}
+#b6 .n85{font-family:var(--serif);font-weight:300;font-size:170px;text-anchor:middle;fill:rgba(255,255,255,0);stroke:#fff;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round;paint-order:stroke;stroke-dasharray:1700;stroke-dashoffset:1700;filter:drop-shadow(0 0 26px rgba(255,255,255,.16))}
+#b6 .meter{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);z-index:4;text-align:center;opacity:0}
+#b6 .msub{margin-top:20px;font-family:var(--serif);font-style:italic;font-size:clamp(15px,1.9vw,22px);letter-spacing:-.01em;color:var(--paper);opacity:0}
+#b6 .msub i{font-style:normal;color:var(--mist);margin:0 .35em}
+#b6 .msub sup{font-size:.6em;color:var(--mist)}
 #b6 .fineprint{margin-top:12px;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4)}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
@@ -146,7 +145,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b7 .mlabel{font-family:var(--sans);font-weight:500;font-size:13px;fill:var(--paper);letter-spacing:.04em;text-anchor:middle}
 #b7 .mglyph{stroke:var(--paper);stroke-width:1.8;fill:none;stroke-linejoin:round;stroke-linecap:round}
 #b7 .mglyph.fill{fill:var(--paper);stroke:none}
-#b7 .mbase{stroke:rgba(244,241,234,.12);stroke-width:1;fill:none}
+#b7 .mbase{stroke:rgba(244,241,234,.42);stroke-width:1.3;fill:none;stroke-linecap:round}
 #b7 .mflow{stroke:var(--white);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-dasharray:2 16;opacity:0}
 #b7 .mflow.run{animation:flow 1.1s linear infinite;opacity:.85}
 @keyframes flow{to{stroke-dashoffset:-72}}
@@ -191,7 +190,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b1" aria-hidden="true"><div class="center">
     <div class="scrim"></div>
-    <div class="bigq">10,000 photos.<span class="two">zero idea where anything is.</span></div>
+    <div class="bigq"><span id="bign">0</span> files.<span class="two">zero idea where anything is.</span></div>
   </div></section>
 
   <section class="beat" id="b2" aria-hidden="true">
@@ -230,9 +229,9 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
           <path class="sh-in" d="M100 22 C 134 43 161 49 175 50 L 175 148 C 175 188 145 215 100 223 C 55 215 25 188 25 148 L 25 50 C 39 49 66 43 100 22 Z"/>
         </svg>
         <svg viewBox="0 0 200 244" style="position:absolute;inset:0">
+          <g class="lk-shackle"><path class="lk" d="M86 128 v-15 a14 14 0 0 1 28 0 v15"/></g>
           <path class="lk" d="M82 128 h36 a7 7 0 0 1 7 7 v26 a7 7 0 0 1 -7 7 h-36 a7 7 0 0 1 -7 -7 v-26 a7 7 0 0 1 7 -7 Z"/>
-          <path class="lk" d="M86 128 v-15 a14 14 0 0 1 28 0 v15"/>
-          <g class="lk-key"><circle cx="100" cy="146" r="4"/><rect x="98" y="148" width="4" height="11" rx="2"/></g>
+          <path class="lk lk-key" d="M100 140 a4 4 0 1 1 0 8 a4 4 0 1 1 0 -8 M100 149 v8"/>
         </svg>
       </div>
       <div class="pillars"><p>your files are <span class="d">yours alone</span></p><p>never trained on, never sold</p><p>your drive — <span class="d">encrypted</span> in transit &amp; at rest</p><p>your vault — <span class="d">zero-knowledge</span><sup>*</sup>, even we can't read it</p><div class="vn">* zero-knowledge encryption applies to your neuthek Vault; all drive files are encrypted in transit &amp; at rest</div></div>
@@ -252,9 +251,8 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="ftline" id="ftline"></div>
-    <div class="center"><div class="meter"><div class="num"><span id="counter">0</span>% <small class="pop">smaller<span class="upto">up to<sup>*</sup></span></small></div><div class="msub">same quality<i>.</i> less space</div><div class="fineprint">* varies by file type &amp; content</div></div></div>
-    <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter.</div>
+    <div class="meter"><svg class="bignum" viewBox="0 0 480 210" aria-label="up to 85% smaller"><text class="n85" x="240" y="162">85%</text></svg><div class="msub">up to<sup>*</sup><i>·</i>smaller files<i>·</i>same quality<i>·</i>less space</div></div>
+    <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
   <section class="beat" id="b7" aria-hidden="true">
@@ -436,14 +434,15 @@ if(glOK){
   });
 }
 
-/* file-type columns (beat 6) — every supported type, in 5 columns for the crawl + per-column swirl */
+/* file-type grid (beat 6) — every supported type; shrink + cross-fade → collapse → draw 85% */
+const FT_TYPES=["JPG","PNG","HEIC","RAW","WEBP","GIF","TIFF","MP4","MOV","MKV","AVI","HEVC","PDF","DOCX","XLSX","PPTX","TXT","MD","RTF","MP3","WAV","FLAC","AAC","M4A","ZIP","SVG","PSD","AI","CSV","JSON","EPUB","DNG"];
 (function(){const t=$("#fttrack"); if(!t) return;
-  const types=["JPG","PNG","HEIC","RAW","WEBP","GIF","MP4","MOV","MKV","AVI","PDF","DOCX","XLSX","PPTX","TXT","MD","MP3","WAV","FLAC","AAC","ZIP","SVG","PSD","AI","CSV","JSON","EPUB","DNG"];
-  const all=types.concat(types).slice(0,55);
-  for(let c=0;c<5;c++){ const col=document.createElement("div"); col.className="ftcol";
-    for(let r=0;r<11;r++){ const p=document.createElement("div"); p.className="ftpill"; p.textContent=all[(c*11+r)%all.length]; col.appendChild(p); }
-    t.appendChild(col); }
+  for(let i=0;i<50;i++){ const p=document.createElement("div"); p.className="ftpill"; p.textContent=FT_TYPES[i%FT_TYPES.length]; t.appendChild(p); }
 })();
+window.__shuffleFt=()=>document.querySelectorAll("#b6 .ftpill").forEach(p=>{p.textContent=FT_TYPES[(Math.random()*FT_TYPES.length)|0];});
+
+/* prime the lock (beat 4) for a real pen stroke-draw */
+(function(){ document.querySelectorAll("#b4 .lk").forEach(p=>{const L=p.getTotalLength()||200;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); })();
 
 /* migration (beat 7) — sources → neuthek, flowing dashes */
 const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
@@ -478,6 +477,7 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
   [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
   svg.appendChild(logo);
+  svg.querySelectorAll(".mbase").forEach(p=>{const L=p.getTotalLength()||320;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime connectors for stroke-draw
 })();
 
 /* hosted / self-hosted weave (beat 5) — intertwining strands from both sides → centre hub */
@@ -511,6 +511,7 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
   [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
   svg.appendChild(logo);
+  svg.querySelectorAll(".wbase").forEach(p=>{const L=p.getTotalLength()||300;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime strands for stroke-draw
 })();
 
 const idxN=$("#idxN"),progress=$("#progress"),timecode=$("#timecode"),scrubfill=$("#scrubfill"),flare=$("#flare");
@@ -530,7 +531,9 @@ const tl=gsap.timeline({paused:true,defaults:{ease:"power3.out"},onUpdate(){prog
 tl.add("b01",0).call(()=>{setIndex(1);show("b1");if(G){G.galaxyGroup.visible=true;G.bgStars.visible=true;gsap.set(gl,{opacity:1});}},null,"b01")
   .to("#b1",{opacity:1,duration:1.2},"b01").to("#b1 .scrim",{opacity:1,duration:1.6},"b01+=.6");
 if(G){ tl.fromTo(galaxy,{fade:0,spin:0,order:0},{fade:1,duration:1.6},"b01").to(galaxy,{spin:0.55,duration:7,ease:"none"},"b01").fromTo(camera.position,{z:680},{z:430,duration:7,ease:"power1.inOut"},"b01"); }
-tl.add(drawIn("#b1 .bigq",1.6),"b01+=1.3").to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
+tl.add(drawIn("#b1 .bigq",1.6),"b01+=1.3")
+  .fromTo({v:0},{v:0},{v:10000,duration:1.8,ease:"power2.out",onUpdate(){$("#bign").textContent=Math.round(this.targets()[0].v).toLocaleString();}},"b01+=2.9")   // then count up to 10,000
+  .to(["#b1 .bigq","#b1 .scrim"],{opacity:0,duration:.8},"b01+=6.0").to("#b1",{opacity:0,duration:.9},"b01+=6.1").call(()=>hide("b1"),null,"b01+=7");
 
 // 02 — search → matrix (7–14)
 tl.add("b02",7).call(()=>{setIndex(2);show("b2");sweep();},null,"b02").to("#b2",{opacity:1,duration:1.0},"b02").to("#b2 .scrim",{opacity:1,duration:.9},"b02+=.1").fromTo("#b2 .field",{opacity:0,y:18},{opacity:1,y:0,duration:1.0},"b02+=.2");
@@ -548,7 +551,8 @@ tl.call(()=>{hide("b3");$("#cap3").style.clipPath="inset(0 100% 0 0)";if(G){G.br
 tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();},null,"b04").to("#b4",{opacity:1,duration:1.0},"b04")
   .to("#b4 .sh-out",{strokeDashoffset:0,duration:2.0,ease:"power2.inOut"},"b04+=.3").to("#b4 .sh-in",{strokeDashoffset:0,duration:1.6,ease:"power2.inOut"},"b04+=.8")
   .to("#b4 .sh-dots",{opacity:1,duration:1.2},"b04+=1.2").fromTo("#b4 .sweep",{opacity:1,x:0},{x:300,duration:1.6,ease:"power2.inOut",onComplete(){gsap.set("#b4 .sweep",{opacity:0});}},"b04+=1.6")
-  .to("#b4 .lk",{strokeDashoffset:0,duration:1.0,stagger:.15},"b04+=1.7").to("#b4 .lk-key",{opacity:1,duration:.6},"b04+=2.7")
+  .set("#b4 .lk-shackle",{y:-15},"b04+=1.5").to("#b4 .lk",{strokeDashoffset:0,duration:1.2,ease:"power2.inOut"},"b04+=1.7")   // body+shackle+keyhole draw as one
+  .to("#b4 .lk-shackle",{y:0,duration:.75,ease:"back.out(2.6)"},"b04+=3.0")                                                  // then it locks — shackle drops + click-settle
   .fromTo("#b4 .pillars p",{opacity:0,y:18,filter:"blur(7px)"},{opacity:1,y:0,filter:"blur(0px)",duration:1.05,stagger:.32,ease:"expo.out"},"b04+=2.4").to("#b4 .vn",{opacity:1,duration:.8},"b04+=4.9").to("#b4 .compliance",{opacity:1,duration:1.0},"b04+=5.4")
   .to("#b4",{opacity:0,duration:.9},"b04+=8.1").call(()=>hide("b4"),null,"b04+=9");
 
@@ -557,7 +561,7 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
   .from("#b5 .wL",{opacity:0,x:-26,duration:1.0,ease:"expo.out"},"b05+=.3")
   .from("#b5 .wR",{opacity:0,x:26,duration:1.0,ease:"expo.out"},"b05+=.3")
   .from("#b5 .wcirc",{opacity:0,duration:.7},"b05+=.7").from("#b5 .wlogo",{opacity:0,duration:.7},"b05+=.85")
-  .from("#b5 .wbase",{opacity:0,duration:1.1,ease:"power2.out"},"b05+=1.0")                              // faint guides fade in
+  .to("#b5 .wbase",{strokeDashoffset:0,duration:1.3,stagger:.09,ease:"power2.inOut"},"b05+=1.0")          // strands stroke-draw, staggered
   .call(()=>document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run")),null,"b05+=1.0")  // dots flow from both sides into the hub
   .fromTo("#b5 .wflow",{opacity:0},{opacity:.85,duration:1.0},"b05+=1.2")
   .from("#b5 .worbit",{opacity:0,duration:1.2},"b05+=1.8")                                               // dots wrap into the ring around the logo
@@ -565,17 +569,18 @@ tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5"
   .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
 
 // 06 — compression (39–45)
-tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.7},"b06")
-  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.6},"b06+=.2")
-  .fromTo("#fttrack",{rotationX:60,y:380,z:-40},{y:-300,z:-360,duration:2.3,ease:"none"},"b06+=.3")               // star-wars crawl: bottom → 3D back-top
-  .to("#b6 .ftcol",{rotationZ:i=>(i-2)*30,duration:.7,stagger:.05,ease:"power1.inOut"},"b06+=2.2")               // each column twists…
-  .to("#fttrack",{rotation:240,scale:.03,opacity:0,duration:.9,ease:"power2.in"},"b06+=2.6")                      // …then swirls into the centre
-  .to("#ftwrap",{opacity:0,duration:.3},"b06+=3.4")
-  .fromTo("#ftline",{opacity:0,scaleX:0},{opacity:1,scaleX:1,duration:.55,ease:"power3.out"},"b06+=3.2")          // remnants merge into one line
-  .fromTo("#b6 .meter",{opacity:0,clipPath:"inset(0 100% 0 0)"},{opacity:1,clipPath:"inset(0 0% 0 0)",duration:.9,ease:"expo.out"},"b06+=3.7") // line draws the 85%
-  .to("#ftline",{opacity:0,duration:.6},"b06+=4.1")
-  .fromTo({v:0},{v:0},{v:85,duration:1.3,ease:"power2.out",onUpdate(){$("#counter").textContent=Math.round(this.targets()[0].v);}},"b06+=3.8")
-  .add(capIn("#cap6"),"b06+=4.3").to(["#b6","#cap6"],{opacity:0,duration:.8},"b06+=5.2").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set(["#fttrack","#b6 .ftcol"],{clearProps:"transform,opacity"});gsap.set("#b6 .meter",{clearProps:"clipPath"});},null,"b06+=6");
+tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.6},"b06")
+  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.5},"b06+=.2")
+  .to("#b6 .ftpill",{scale:.52,duration:1.2,stagger:{each:.018,from:"center",grid:[10,5]},ease:"power2.inOut"},"b06+=.5") // shrink, radial stagger
+  .to("#b6 .ftpill",{opacity:.3,duration:.28},"b06+=.9").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=1.18").to("#b6 .ftpill",{opacity:1,duration:.28},"b06+=1.2") // cross-dissolve to other types
+  .to("#b6 .ftpill",{height:2,paddingTop:0,paddingBottom:0,backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.7,stagger:{each:.012,from:"center",grid:[10,5]},ease:"power2.in"},"b06+=1.9") // collapse into white lines
+  .to("#fttrack",{gap:2,duration:.7,ease:"power2.in"},"b06+=2.0")
+  .to("#ftwrap",{scale:.08,opacity:0,duration:.7,ease:"power2.in"},"b06+=2.5")                                    // lines converge to centre
+  .to("#b6 .meter",{opacity:1,duration:.3},"b06+=2.9")
+  .fromTo("#b6 .n85",{strokeDashoffset:1700},{strokeDashoffset:0,duration:1.5,ease:"power1.inOut"},"b06+=3.0")     // ink draws the 85%
+  .to("#b6 .n85",{fill:"rgba(255,255,255,1)",duration:.6,ease:"power2.out"},"b06+=4.1")                            // …then fills, faint settle
+  .to("#b6 .msub",{opacity:1,duration:.7},"b06+=4.2")
+  .add(capIn("#cap6"),"b06+=4.4").to(["#b6","#cap6"],{opacity:0,duration:.8},"b06+=5.2").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"transform,opacity"});gsap.set("#fttrack",{clearProps:"gap"});gsap.set("#b6 .n85",{clearProps:"fill"});document.querySelectorAll("#b6 .n85").forEach(n=>n.style.strokeDashoffset=1700);},null,"b06+=6");
 
 // 07 — MIGRATION (45–53)
 tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
@@ -583,7 +588,7 @@ tl.add("b07",45).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7"
   .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.7},"b07+=.55")
   .to("#b7 .msrc",{opacity:1,duration:.7,stagger:.13},"b07+=.6")
   .fromTo("#b7 .morbit",{opacity:0},{opacity:1,duration:1.0},"b07+=1.4")
-  .fromTo("#b7 .mbase",{opacity:0},{opacity:1,duration:1.0},"b07+=1.6")                                                            // then the connectors intertwine in
+  .to("#b7 .mbase",{strokeDashoffset:0,duration:1.3,stagger:.12,ease:"power2.inOut"},"b07+=1.6")                                    // connectors stroke-draw from each origin → hub, staggered
   .call(()=>document.querySelectorAll("#b7 .mflow").forEach(p=>{p.style.animationDelay="0s";p.classList.add("run");}),null,"b07+=1.7")
   .fromTo("#b7 .mflow",{opacity:0},{opacity:.85,duration:1.1,ease:"power2.out"},"b07+=1.7")
   .add(capIn("#cap7"),"b07+=2.6").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.1")
