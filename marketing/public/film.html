@@ -126,6 +126,10 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b6 .m2 .up{position:absolute;top:-1.25em;right:-.3em;font-family:var(--sans);font-weight:600;font-size:clamp(9px,1vw,12px);letter-spacing:.18em;text-transform:uppercase;color:var(--mist);white-space:nowrap}
 #b6 .m2 .up sup{font-size:.62em}
 #b6 .cline{position:relative;width:min(440px,60vw);height:2px;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.55);transform:scaleX(1);transform-origin:center;opacity:0}
+#b6 .grp{position:relative}
+#b6 .pen{position:absolute;left:50%;bottom:-22px;transform:translateX(-50%);width:min(456px,62vw);height:auto;overflow:visible;pointer-events:none;opacity:0}
+#b6 .pen-ink{fill:none;stroke:#fff;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 5px rgba(255,255,255,.45))}
+#b6 .pen-nib{fill:#fff;filter:drop-shadow(0 0 7px rgba(255,255,255,.95)) drop-shadow(0 0 14px rgba(255,255,255,.6))}
 #b6 .fineprint{position:absolute;left:0;right:0;top:50%;margin-top:clamp(78px,15vh,150px);text-align:center;font-family:var(--sans);font-size:11px;letter-spacing:.04em;color:rgba(244,241,234,.4);opacity:0}
 
 /* BEAT 7 — migration ("switching over has never been easier") */
@@ -143,6 +147,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 #b7 .morbit{fill:none;stroke:var(--white);stroke-width:1.6;stroke-linecap:round;stroke-dasharray:2 16;opacity:.8;transform-box:fill-box;transform-origin:center;animation:spin 14s linear infinite}
 #b7 .mlogo path{stroke:var(--white);stroke-width:2.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
 #b7 .mlogo circle{fill:var(--white)}
+#b7 .mlogo-nib{fill:#fff;filter:drop-shadow(0 0 3px #fff) drop-shadow(0 0 6px #fff)}
 #b7 .msrc{opacity:0}
 #b7 .disc{position:absolute;left:0;right:0;bottom:clamp(28px,6vh,68px);margin:0 auto;max-width:min(660px,86vw);text-align:center;font-family:var(--sans);font-size:11px;line-height:1.55;letter-spacing:.01em;color:rgba(244,241,234,.42)}
 
@@ -251,7 +256,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
 
   <section class="beat" id="b6" aria-hidden="true">
     <div class="ftwrap" id="ftwrap"><div class="fttrack" id="fttrack"></div></div>
-    <div class="meter"><div class="grp"><div class="m85"><span class="big">85%</span><span class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></span></div><div class="cline" id="cline"></div></div><div class="fineprint">* varies by file type &amp; content</div></div>
+    <div class="meter"><div class="grp"><div class="m85"><span class="big">85%</span><span class="m2"><span class="sm">smaller</span><span class="up">up to<sup>*</sup></span></span></div><svg class="pen" id="pen" viewBox="0 0 480 70" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><path class="pen-ink" id="pen-ink" d="M 20 44 C 38 56 66 55 104 50 C 210 41 300 43 392 50 C 432 53 456 49 466 35"/><circle class="pen-nib" id="pen-nib" cx="20" cy="44" r="0"/></svg></div><div class="fineprint">* varies by file type &amp; content</div></div>
     <div class="caption" id="cap6"><span class="em">content-aware compression</span> — every file, lighter</div>
   </section>
 
@@ -268,6 +273,7 @@ body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter
     </div></div>
   </section>
 
+  <svg id="xfx" aria-hidden="true" style="position:absolute;inset:0;width:100%;height:100%;z-index:30;pointer-events:none;overflow:visible"><circle id="xnib" cx="0" cy="0" r="0" fill="#fff" style="filter:drop-shadow(0 0 7px #fff) drop-shadow(0 0 14px rgba(255,255,255,.7))"/></svg>
   <div class="flare" id="flare"></div><div class="vignette"></div><div class="grain"></div>
 </div>
 
@@ -289,7 +295,8 @@ if(reduce){ $("#poster").classList.add("show"); $("#stage").style.display="none"
 function starTexture(){ const c=document.createElement("canvas");c.width=c.height=64;const x=c.getContext("2d");const g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,"rgba(255,255,255,1)");g.addColorStop(.22,"rgba(255,255,255,.75)");g.addColorStop(.5,"rgba(255,255,255,.18)");g.addColorStop(1,"rgba(255,255,255,0)");x.fillStyle=g;x.beginPath();x.arc(32,32,32,0,7);x.fill();return new THREE.CanvasTexture(c); }
 let glOK=true,renderer,scene,camera,clock,TEX; const gl=$("#gl");
 try{ renderer=new THREE.WebGLRenderer({canvas:gl,alpha:true,antialias:true}); renderer.setPixelRatio(Math.min(3,devicePixelRatio||1)); }catch(e){ glOK=false; }
-const galaxy={fade:0,order:0,spin:0,tilt:-0.6,morph:0}; const brain={fade:0,idle:false};
+const galaxy={fade:0,order:0,spin:0,tilt:-0.6,morph:0}; const brain={fade:0,idle:false,lfade:0,pfade:0,shield:0,hub:0};
+const shield={fade:0,reveal:0};
 
 if(glOK){
   scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x000000,0.0014);
@@ -403,9 +410,17 @@ if(glOK){
   const bpos=new Float32Array(pick.length*3),bsh=new Float32Array(pick.length),bsz=new Float32Array(pick.length);
   pick.forEach((idx,i)=>{bpos[i*3]=SP[idx*3];bpos[i*3+1]=SP[idx*3+1];bpos[i*3+2]=SP[idx*3+2];bsh[i]=0.22+Math.random()*0.78;bsz[i]=10+Math.random()*20;});
   const ng=new THREE.BufferGeometry(); ng.setAttribute("position",new THREE.BufferAttribute(bpos,3)); ng.setAttribute("aShade",new THREE.BufferAttribute(bsh,1)); ng.setAttribute("aSize",new THREE.BufferAttribute(bsz,1));
-  const nUni={uFade:{value:0},uTex:{value:TEX},uTime:{value:0}};
+  const bshield=new Float32Array(pick.length*3), bsdelay=new Float32Array(pick.length), bhub=new Float32Array(pick.length*3);   // shield targets + per-node wave delay + hub-ring targets
+  ng.setAttribute("aShield",new THREE.BufferAttribute(bshield,3)); ng.setAttribute("aSDelay",new THREE.BufferAttribute(bsdelay,1)); ng.setAttribute("aHub",new THREE.BufferAttribute(bhub,3));
+  const nUni={uFade:{value:0},uTex:{value:TEX},uTime:{value:0},uShield:{value:0},uHub:{value:0},uCore:{value:new THREE.Vector3(0,0,0)},uSCen:{value:new THREE.Vector3(0,0,0)}};
   const nMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,uniforms:nUni,
-    vertexShader:`attribute float aShade,aSize;uniform float uTime;varying float vS;varying float vDim;void main(){vec4 mv=modelViewMatrix*vec4(position,1.0);float tw=0.84+0.16*sin(uTime*2.0+aShade*30.0);float depth=clamp((-mv.z-250.0)/360.0,0.0,1.0);float szf=mix(1.3,0.72,depth);gl_PointSize=aSize*tw*szf*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;vDim=mix(1.0,0.5,depth);}`,
+    vertexShader:`attribute float aShade,aSize,aSDelay;attribute vec3 aShield,aHub;uniform float uTime,uShield,uHub;varying float vS;varying float vDim;
+      void main(){float m=clamp((uShield-aSDelay*0.55)/0.45,0.0,1.0);m=m*m*(3.0-2.0*m);   // staggered ease-out waves: dots arrive at the shield in sequence
+        vec3 P=mix(position,aShield,m);
+        float hm=clamp((uHub-aSDelay*0.25)/0.75,0.0,1.0);hm=hm*hm*(3.0-2.0*hm);            // dots sweep inward and settle into a clean ring — the hub circle
+        P=mix(P,aHub,hm);
+        vec4 mv=modelViewMatrix*vec4(P,1.0);
+        float tw=0.84+0.16*sin(uTime*2.0+aShade*30.0);float depth=clamp((-mv.z-250.0)/360.0,0.0,1.0);float szf=mix(1.3,0.72,depth);gl_PointSize=aSize*tw*szf*(300.0/-mv.z);gl_Position=projectionMatrix*mv;vS=aShade*tw;vDim=mix(1.0,0.5,depth);}`,
     fragmentShader:`uniform sampler2D uTex;uniform float uFade;varying float vS;varying float vDim;void main(){vec4 t=texture2D(uTex,gl_PointCoord);gl_FragColor=vec4(vec3(0.3+0.7*vS)*vDim,1.0)*t*uFade;}`});
   const nodes=new THREE.Points(ng,nMat);
   const PN=Math.min(SMALL?90:140,edges.length),pl=[]; for(let i=0;i<PN;i++) pl.push({e:(Math.random()*edges.length)|0,t:Math.random(),sp:0.004+Math.random()*0.011});
@@ -434,15 +449,75 @@ if(glOK){
     gg.setAttribute("aDelay",new THREE.BufferAttribute(aDelay,1));
   })();
 
+  /* ── brain-dots → SHIELD: bake each node a target on a front-facing shield (sampled from the
+     security-section silhouette). Outer dots fly to the outline; the rest fill an even interior
+     field. A hairline mesh (outline + interior links) draws in top-down once the dots settle. ── */
+  const SHN=pick.length, shVB={w:200,h:244};                                     // one shield slot per brain dot; matches the beat-4 SVG shield viewBox
+  const _svg=document.createElementNS("http://www.w3.org/2000/svg","svg"), _p=document.createElementNS("http://www.w3.org/2000/svg","path");
+  _p.setAttribute("d","M100 8 C 140 33 172 40 188 41 L 188 150 C 188 198 152 230 100 238 C 48 230 12 198 12 150 L 12 41 C 28 40 60 33 100 8 Z");
+  _svg.appendChild(_p); _svg.setAttribute("style","position:absolute;width:0;height:0;overflow:hidden"); document.body.appendChild(_svg);
+  const _plen=_p.getTotalLength(), poly=[]; for(let i=0;i<160;i++){const pt=_p.getPointAtLength(i/160*_plen); poly.push([pt.x,pt.y]);}
+  const inShield=(x,y)=>{let c=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const xi=poly[i][0],yi=poly[i][1],xj=poly[j][0],yj=poly[j][1];if(((yi>y)!=(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi))c=!c;}return c;};
+  const NP=Math.max(28,Math.round(SHN*0.22)), NI=SHN-NP, shvPts=[];             // ~22% perimeter, rest fill the body
+  for(let i=0;i<NP;i++){const pt=_p.getPointAtLength((i/NP)*_plen); shvPts.push([pt.x,pt.y,1]);}   // evenly spaced around the outline
+  const cand=[]; for(let gy=26;gy<=232;gy+=11){ for(let gx=18;gx<=182;gx+=11){ const x=gx+(Math.random()-.5)*3,y=gy+(Math.random()-.5)*3; if(inShield(x,y)&&inShield(x-6,y)&&inShield(x+6,y)&&inShield(x,y-6)&&inShield(x,y+6)) cand.push([x,y]); }}   // near-even grid fill, like the original dot pattern
+  for(let i=cand.length-1;i>0;i--){const j=(Math.random()*(i+1))|0;const tmp=cand[i];cand[i]=cand[j];cand[j]=tmp;}
+  for(let i=0;i<NI;i++){const c=cand[i%cand.length]; shvPts.push([c[0],c[1],0]);}
+  document.body.removeChild(_svg);
+  const slotXY=shvPts.map(p=>[p[0],p[1]]);
+  const perimSlots=shvPts.map((p,k)=>k).filter(k=>shvPts[k][2]===1), innerSlots=shvPts.map((p,k)=>k).filter(k=>shvPts[k][2]===0);
+  const order=pick.map((idx,i)=>({i,r:Math.hypot(SP[idx*3],SP[idx*3+1]-0.14*S,SP[idx*3+2])})).sort((a,b)=>b.r-a.r);   // outermost brain dots first
+  const node2slot=new Int32Array(SHN);
+  order.forEach((o,rank)=>{ node2slot[o.i]= rank<perimSlots.length ? perimSlots[rank] : innerSlots[(rank-perimSlots.length)%innerSlots.length]; });
+  const shEdges=[], seenE=new Set(), ek=(a,b)=>a<b?a+"_"+b:b+"_"+a;
+  for(let i=0;i<perimSlots.length;i++){ const a=perimSlots[i],b=perimSlots[(i+1)%perimSlots.length]; seenE.add(ek(a,b)); shEdges.push([a,b]); }   // outline loop
+  const nearV=(k,pool,kk)=>{const d=[];for(const j of pool){if(j===k)continue;const dx=slotXY[k][0]-slotXY[j][0],dy=slotXY[k][1]-slotXY[j][1];d.push([dx*dx+dy*dy,j]);}d.sort((a,b)=>a[0]-b[0]);return d.slice(0,kk).map(x=>x[1]);};
+  innerSlots.forEach(k=>{ nearV(k,innerSlots,3).forEach(j=>{const key=ek(k,j),dd=Math.hypot(slotXY[k][0]-slotXY[j][0],slotXY[k][1]-slotXY[j][1]); if(dd<26&&!seenE.has(key)){seenE.add(key);shEdges.push([k,j]);}}); });   // interior mesh, short links only
+  innerSlots.forEach((k,n)=>{ if(n%3===0) nearV(k,perimSlots,1).forEach(j=>{const dd=Math.hypot(slotXY[k][0]-slotXY[j][0],slotXY[k][1]-slotXY[j][1]),key=ek(k,j);if(dd<30&&!seenE.has(key)){seenE.add(key);shEdges.push([k,j]);}}); });   // tie only near-edge field dots to the outline — no long slicing lines
+  const slp=new Float32Array(shEdges.length*6), slt=new Float32Array(shEdges.length*2);   // aT: 0(top point)→1(bottom tip) drives the top-down draw
+  shEdges.forEach((e,i)=>{ for(let s=0;s<2;s++){ slt[i*2+s]=Math.min(1,Math.max(0,(slotXY[e[s]][1]-8)/(238-8))); }});
+  const slg=new THREE.BufferGeometry(); slg.setAttribute("position",new THREE.BufferAttribute(slp,3)); slg.setAttribute("aT",new THREE.BufferAttribute(slt,1));
+  const sUni={uFade:{value:0},uReveal:{value:0}};
+  const sMat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:sUni,
+    vertexShader:`attribute float aT;varying float vT;void main(){vT=aT;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+    fragmentShader:`uniform float uFade,uReveal;varying float vT;void main(){float vis=smoothstep(vT-0.12,vT+0.02,uReveal);float a=0.5*uFade*vis;if(a<=0.002)discard;gl_FragColor=vec4(vec3(0.86,0.90,1.0),a);}`});
+  const shieldLines=new THREE.LineSegments(slg,sMat); shieldLines.visible=false; shieldLines.frustumCulled=false; scene.add(shieldLines);
+  function formShield(){                                                          // map the shield onto the live #b4 .shieldwrap rect → world, then bake node targets + line positions
+    const wrap=document.querySelector("#b4 .shieldwrap"); let rect=wrap&&wrap.getBoundingClientRect();
+    if(!rect||rect.width<10){ const w=Math.min(innerWidth,innerHeight)*0.42, h=w*shVB.h/shVB.w; rect={left:innerWidth*0.5-w/2,top:innerHeight*0.5-h/2,width:w,height:h}; }
+    const camZ=camera.position.z, vh=2*Math.tan(camera.fov*Math.PI/360)*camZ, vw=vh*(innerWidth/innerHeight);
+    const toWorld=(vx,vy)=>{ const px=rect.left+vx/shVB.w*rect.width, py=rect.top+vy/shVB.h*rect.height, ndcx=px/innerWidth*2-1, ndcy=-(py/innerHeight*2-1); return [ndcx*vw/2, ndcy*vh/2, 0]; };
+    const worldSlot=slotXY.map(v=>toWorld(v[0],v[1]));
+    brainGroup.updateMatrixWorld(true); const inv=brainGroup.matrixWorld.clone().invert(), vv=new THREE.Vector3();
+    const wv=document.getElementById("weave"), wr=wv&&wv.getBoundingClientRect();   // the shield collapses into the HUB CIRCLE: dots form a clean ring at the hub (weave 500,160, r58) → map via #weave rect + its xMidYMid-meet fit → world → brain-local
+    if(wr&&wr.width>10){ const scl=Math.min(wr.width/1000,wr.height/320), oX=(wr.width-1000*scl)/2, oY=(wr.height-320*scl)/2;
+      const toW=(vx,vy)=>{ const sx=wr.left+oX+vx*scl, sy=wr.top+oY+vy*scl, ndx=sx/innerWidth*2-1, ndy=-(sy/innerHeight*2-1); return new THREE.Vector3(ndx*vw/2,ndy*vh/2,0); };
+      const cW=toW(500,160), Rw=cW.distanceTo(toW(558,160)), tv=new THREE.Vector3();
+      for(let i=0;i<SHN;i++){ const a=(i/SHN)*Math.PI*2, rr=Rw*(0.97+Math.random()*0.05);
+        tv.set(cW.x+Math.cos(a)*rr, cW.y+Math.sin(a)*rr, 0).applyMatrix4(inv); bhub[i*3]=tv.x; bhub[i*3+1]=tv.y; bhub[i*3+2]=tv.z; }
+      ng.attributes.aHub.needsUpdate=true; }
+    const sc=[0,0]; worldSlot.forEach(w=>{sc[0]+=w[0];sc[1]+=w[1];}); sc[0]/=worldSlot.length; sc[1]/=worldSlot.length;
+    let rmaxS=1e-3; worldSlot.forEach(w=>{const d=Math.hypot(w[0]-sc[0],w[1]-sc[1]); if(d>rmaxS)rmaxS=d;});
+    for(let i=0;i<SHN;i++){ const w=worldSlot[node2slot[i]];
+      vv.set(w[0],w[1],w[2]).applyMatrix4(inv); bshield[i*3]=vv.x; bshield[i*3+1]=vv.y; bshield[i*3+2]=vv.z;
+      bsdelay[i]=Math.min(1,Math.hypot(w[0]-sc[0],w[1]-sc[1])/rmaxS*0.9)+Math.random()*0.08; }   // outer dots (perimeter) arrive in later waves
+    ng.attributes.aShield.needsUpdate=true; ng.attributes.aSDelay.needsUpdate=true;
+    let mx=0,my=0,mz=0; for(let i=0;i<SHN;i++){mx+=bshield[i*3];my+=bshield[i*3+1];mz+=bshield[i*3+2];} nUni.uSCen.value.set(mx/SHN,my/SHN,mz/SHN);   // shield centroid → the gather cluster stays centred exactly on the node
+
+    shEdges.forEach((e,i)=>{ for(let s=0;s<2;s++){ const w=worldSlot[e[s]]; slp[i*6+s*3]=w[0]; slp[i*6+s*3+1]=w[1]; slp[i*6+s*3+2]=w[2]; }});
+    slg.attributes.position.needsUpdate=true;   // the shield's own smooth SVG outline (sh-out/sh-in) provides the edge — the dot mesh stays hidden
+  }
+
   addEventListener("resize",()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight,false);});
   renderer.setSize(innerWidth,innerHeight,false);
-  window.__gx={galaxy,brain,galaxyGroup,brainGroup,bgStars,gUni,bgUni,lUni,nUni,pUni,camera};
+  window.__gx={galaxy,brain,shield,galaxyGroup,brainGroup,shieldLines,bgStars,gUni,bgUni,lUni,nUni,pUni,sUni,camera,formShield};
 
   let lastT=0, bRY=REF_RY;
   gsap.ticker.add(()=>{ const t=clock.getElapsedTime(), dt=Math.min(0.05,t-lastT); lastT=t;
     if(bgStars.visible){ bgUni.uFade.value=galaxy.fade*0.8; bgStars.rotation.z=t*0.01; }
     if(galaxyGroup.visible){ gUni.uTime.value=t; gUni.uFade.value=galaxy.fade; gUni.uOrder.value=galaxy.order; gUni.uMorph.value=galaxy.morph; galaxyGroup.rotation.x=galaxy.tilt; galaxyGroup.rotation.z=galaxy.spin; }
-    if(brainGroup.visible){ nUni.uFade.value=brain.fade; nUni.uTime.value=t; pUni.uFade.value=brain.fade; lUni.uFade.value=brain.fade; if(brain.idle) bRY+=dt*0.14; brainGroup.rotation.y=bRY; updatePulses(); }
+    if(brainGroup.visible){ nUni.uFade.value=brain.fade; nUni.uTime.value=t; nUni.uShield.value=brain.shield; nUni.uHub.value=brain.hub; pUni.uFade.value=brain.pfade; lUni.uFade.value=brain.lfade; if(brain.idle) bRY+=dt*0.14; brainGroup.rotation.y=bRY; if(brain.shield<0.02) updatePulses(); }
+    if(shieldLines.visible){ sUni.uFade.value=shield.fade; sUni.uReveal.value=shield.reveal; }
     renderer.render(scene,camera);
   });
 }
@@ -457,8 +532,27 @@ window.__shuffleFt=()=>document.querySelectorAll("#b6 .ftpill").forEach(p=>{p.te
 /* prime the lock (beat 4) for a real pen stroke-draw */
 (function(){ document.querySelectorAll("#b4 .lk, #b4 .sh-out, #b4 .sh-in").forEach(p=>{const L=p.getTotalLength()||200;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); })();
 
+/* beat 6 underline — a real calligraphic pen stroke that draws on, with a glowing nib riding the leading edge */
+let penInk=null, penNib=null, penLen=320; const penDraw={d:320};
+(function primePen(){ penInk=$("#pen-ink"); penNib=$("#pen-nib"); if(penInk){ penLen=penInk.getTotalLength()||320; penInk.style.strokeDasharray=penLen; penInk.style.strokeDashoffset=penLen; penDraw.d=penLen; } })();
+const penOnUpdate=()=>{ if(!penInk) return; penInk.style.strokeDashoffset=penDraw.d; const pt=penInk.getPointAtLength(Math.max(0,penLen-penDraw.d)); penNib.setAttribute("cx",pt.x.toFixed(2)); penNib.setAttribute("cy",pt.y.toFixed(2)); };
+const penReset=()=>{ if(!penInk) return; penDraw.d=penLen; penInk.style.strokeDashoffset=penLen; gsap.set("#b6 .pen",{opacity:0}); penNib.setAttribute("r",0); };
+
 /* migration (beat 7) — sources → neuthek, flowing dashes */
 const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
+/* beat-6 underline → beat-7 logo: the same pen carries over and draws the neuthek mark's outline */
+let mLogoPath=null, mLogoNib=null, mLogoLen=130; const mLogoDraw={d:130};
+const mlogoOnUpdate=()=>{ if(!mLogoPath) return; mLogoPath.style.strokeDashoffset=mLogoDraw.d; const pt=mLogoPath.getPointAtLength(Math.max(0,mLogoLen-mLogoDraw.d)); mLogoNib.setAttribute("cx",pt.x.toFixed(2)); mLogoNib.setAttribute("cy",pt.y.toFixed(2)); };
+/* the pen tip flies (overlay #xnib) along an arc from the compression underline to the migration hub, then hands off to the logo nib */
+const xfly={p:0,ux:0,uy:0,hx:0,hy:0};
+const xflyArm=()=>{ const pen=document.querySelector("#b6 .pen"), mig=document.getElementById("migsvg"), xfx=document.getElementById("xfx"); if(!pen||!mig||!xfx) return;
+  xfx.setAttribute("viewBox","0 0 "+innerWidth+" "+innerHeight);
+  const pr=pen.getBoundingClientRect(); xfly.ux=pr.right-12; xfly.uy=pr.top+pr.height*0.55;
+  const MOBILE=innerWidth<innerHeight||innerWidth<=720, vbw=MOBILE?360:960, vbh=MOBILE?500:440, hvx=MOBILE?180:672, hvy=MOBILE?250:220;
+  const mr=mig.getBoundingClientRect(), scl=Math.min(mr.width/vbw,mr.height/vbh), oX=(mr.width-vbw*scl)/2, oY=(mr.height-vbh*scl)/2;
+  xfly.hx=mr.left+oX+hvx*scl; xfly.hy=mr.top+oY+hvy*scl;
+  const n=document.getElementById("xnib"); n.setAttribute("cx",xfly.ux); n.setAttribute("cy",xfly.uy); };
+const xflyUpdate=()=>{ const p=xfly.p, m=1-p, cx=(xfly.ux+xfly.hx)/2, cy=Math.min(xfly.uy,xfly.hy)-130, x=m*m*xfly.ux+2*m*p*cx+p*p*xfly.hx, y=m*m*xfly.uy+2*m*p*cy+p*p*xfly.hy, n=document.getElementById("xnib"); if(n){n.setAttribute("cx",x.toFixed(1));n.setAttribute("cy",y.toFixed(1));} };
 (function buildMigration(){
   const svg=$("#migsvg"); const MOBILE=innerWidth<innerHeight||innerWidth<=720;
   const cx=MOBILE?180:672, cy=MOBILE?250:220, NH=MOBILE?46:54, chipR=MOBILE?30:26;
@@ -494,9 +588,11 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   svg.appendChild(el("circle",{class:"morbit",cx,cy,r:NH+9}));
   svg.appendChild(el("circle",{class:"mnode",cx,cy,r:NH}));
   const logo=el("g",{class:"mlogo",transform:`translate(${cx} ${cy}) scale(${MOBILE?1.3:1.5}) translate(-33 -31)`});
-  logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
-  [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
+  logo.appendChild(el("path",{class:"mlogo-ink",d:"M48 20 L44 44 L22 18 L18 44 M48 20 L34 30 L18 28"}));   // re-ordered to draw out from the top-right node — the pen draws the mark's outline
+  [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>{const c=el("circle",{cx:d[0],cy:d[1],r:d[2]});c.style.opacity="0";logo.appendChild(c);});   // nodes primed hidden — they pop in as the pen draws the outline
+  const mnib=el("circle",{class:"mlogo-nib",id:"mlogo-nib",cx:48,cy:20,r:0}); logo.appendChild(mnib);
   svg.appendChild(logo);
+  mLogoPath=logo.querySelector(".mlogo-ink"); mLogoNib=mnib; mLogoLen=mLogoPath.getTotalLength()||130; mLogoPath.style.strokeDasharray=mLogoLen; mLogoPath.style.strokeDashoffset=mLogoLen; mLogoDraw.d=mLogoLen;
   svg.querySelectorAll(".mbase").forEach(p=>{const L=p.getTotalLength()||320;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime connectors for stroke-draw
 })();
 
@@ -528,10 +624,11 @@ const NS="http://www.w3.org/2000/svg", el=(n,a)=>{const e=document.createElement
   svg.appendChild(el("circle",{class:"worbit",cx,cy,r:R+3}));
   svg.appendChild(el("circle",{class:"wcirc",cx,cy,r:R}));
   const logo=el("g",{class:"wlogo",transform:`translate(${cx} ${cy}) scale(1.65) translate(-33 -31)`});
-  logo.appendChild(el("path",{d:"M18 44 L22 18 L44 44 L48 20 M18 28 L34 30 L48 20"}));
-  [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>logo.appendChild(el("circle",{cx:d[0],cy:d[1],r:d[2]})));
+  logo.appendChild(el("path",{d:"M48 20 L44 44 L22 18 L18 44 M48 20 L34 30 L18 28"}));   // same mark, re-ordered so it draws out from the top-right node (where the dots gather)
+  [[18,44,3.6],[22,18,3.6],[44,44,3.6],[18,28,2.8],[34,30,2.8],[48,20,5]].forEach(d=>{const c=el("circle",{cx:d[0],cy:d[1],r:d[2]});if(d[2]===5)c.id="wlogo-core";logo.appendChild(c);});
   svg.appendChild(logo);
   svg.querySelectorAll(".wbase").forEach(p=>{const L=p.getTotalLength()||300;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime strands for stroke-draw
+  svg.querySelectorAll(".wlogo path").forEach(p=>{const L=p.getTotalLength()||260;p.style.strokeDasharray=L;p.style.strokeDashoffset=L;}); // prime the neuthek mark so it can draw itself out of the collapsed core node
 })();
 
 const setIndex=()=>{};   // overlay chrome removed — full-bleed, no counters
@@ -564,66 +661,90 @@ tl.add("b03",14).call(()=>{setIndex(3);show("b3");sweep();if(G)G.brainGroup.visi
 if(G){ tl
   .to(galaxy,{fade:1,duration:.7,ease:"power2.out"},"b02+=6.0")                                            // the dim grid brightens as the search UI leaves
   .to(galaxy,{morph:1,duration:3.0,ease:"power2.out"},"b02+=6.4")                                          // stars break the grid → fly to brain positions, staggered centre-out
-  .to(brain,{fade:1,duration:1.0,ease:"power2.out"},"b03+=1.4")                                            // real nodes settle in over the arrived stars (identical positions)
+  .to(brain,{fade:1,lfade:1,pfade:1,duration:1.0,ease:"power2.out"},"b03+=1.4")                            // real nodes + web + pulses settle in over the arrived stars (identical positions)
   .fromTo(G.lUni.uReveal,{value:0},{value:1.05,duration:1.5,ease:"power2.out"},"b03+=1.5")                  // hairline connections draw outward from the centre — sooner, quick, soft trailing fade
   .to(galaxy,{fade:0,duration:1.1,ease:"power1.inOut"},"b03+=2.2")                                         // the forming stars hand off to the brain
   .call(()=>{G.galaxyGroup.visible=false;G.brain.idle=true;},null,"b03+=3.7")                              // clear the stars; brain begins its slow idle rotation (frozen at the reference pose until now → seamless)
-  .fromTo(camera.position,{z:430},{z:478,duration:8,ease:"sine.inOut"},"b03"); }
-tl.add(capIn("#cap3"),"b03+=3.6").to(["#b3","#cap3"],{opacity:0,duration:.8},"b03+=7.1");
-if(G){ tl.to(brain,{fade:0,duration:.8},"b03+=7.1"); }
-tl.call(()=>{hide("b3");$("#cap3").style.clipPath="inset(0 100% 0 0)";if(G){G.brainGroup.visible=false;G.brain.idle=false;G.galaxy.morph=0;G.lUni.uReveal.value=0;gsap.set(gl,{opacity:0});}},null,"b03+=8");
+  .fromTo(camera.position,{z:430},{z:478,duration:4.6,ease:"sine.inOut"},"b03"); }   // settle the push-in before the shield bakes its screen-space mapping
+tl.add(capIn("#cap3"),"b03+=3.3").to(["#b3","#cap3"],{opacity:0,duration:.8},"b03+=4.9").call(()=>{hide("b3");$("#cap3").style.clipPath="inset(0 100% 0 0)";},null,"b03+=5.8");
+// transition → security: the brain's dots break formation and flow outward into a shield, then hairline lines draw in from the top point down
+if(G){ tl
+  .call(()=>{G.brain.idle=false;G.formShield();},null,"b03+=5.0")                                          // freeze the idle spin; bake shield targets onto the beat-4 shield's screen position
+  .to(brain,{lfade:0,pfade:0,duration:.7,ease:"power2.inOut"},"b03+=5.0")                                  // the brain's own web + pulses dissolve as the dots leave
+  .to(brain,{shield:1,duration:2.4,ease:"power2.out"},"b03+=5.2"); }                                       // dots fly outward into the shield — inner field settles first, outer dots lock onto the perimeter in later waves
 
 // 04 — trust (22–31)
-tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();},null,"b04").to("#b4",{opacity:1,duration:1.0},"b04")
-  .to("#b4 .sh-out",{strokeDashoffset:0,duration:2.0,ease:"power2.inOut"},"b04+=.3").to("#b4 .sh-in",{strokeDashoffset:0,duration:1.6,ease:"power2.inOut"},"b04+=.8")
-  .to("#b4 .sh-dots",{opacity:1,duration:1.2},"b04+=1.2").fromTo("#b4 .sweep",{opacity:1,x:0},{x:300,duration:1.6,ease:"power2.inOut",onComplete(){gsap.set("#b4 .sweep",{opacity:0});}},"b04+=1.6")
-  .set("#b4 .lk-shackle",{y:-15},"b04+=1.5").to("#b4 .lk",{strokeDashoffset:0,duration:1.2,ease:"power2.inOut"},"b04+=1.7")   // body+shackle+keyhole draw as one
+tl.add("b04",22).call(()=>{setIndex(4);show("b4");sweep();if(G)G.formShield();},null,"b04").to("#b4",{opacity:1,duration:1.0},"b04")   // re-bake against the now-shown shieldwrap rect so the dots land exactly under the SVG outline + lock
+  .to("#b4 .sh-out",{strokeDashoffset:0,duration:1.8,ease:"power2.inOut"},"b04+=.1").to("#b4 .sh-in",{strokeDashoffset:0,duration:1.5,ease:"power2.inOut"},"b04+=.6")  // the shield's own smooth outline draws on over the settled dots — same crisp silhouette as before
+  .fromTo("#b4 .sweep",{opacity:1,x:0},{x:300,duration:1.6,ease:"power2.inOut",onComplete(){gsap.set("#b4 .sweep",{opacity:0});}},"b04+=1.4")
+  .set("#b4 .lk-shackle",{y:-15},"b04+=1.4").to("#b4 .lk",{strokeDashoffset:0,duration:1.2,ease:"power2.inOut"},"b04+=1.7")   // the dots formed the shield; its outline drew in — now the lock seats over it
   .to("#b4 .lk-shackle",{y:0,duration:.8,ease:"power4.out"},"b04+=3.1")                                                       // it locks: shackle seats down, firm decel (no spring)
   .to("#b4 .lk-shackle",{y:1.3,duration:.07,ease:"power2.out"},"b04+=3.9").to("#b4 .lk-shackle",{y:0,duration:.2,ease:"power2.inOut"},"b04+=3.97") // a hair of recoil, then rest
   .to("#b4 .lkall",{scale:.984,duration:.07,ease:"power2.out"},"b04+=3.9").to("#b4 .lkall",{scale:1,duration:.24,ease:"power2.out"},"b04+=3.97") // tight mechanical click — lock tightens ~1.5%
-  .fromTo("#b4 .pillars p",{opacity:0,y:22},{opacity:1,y:0,duration:1.1,stagger:.3,ease:"power3.out"},"b04+=2.4").to("#b4 .vn",{opacity:1,duration:.9,ease:"power2.out"},"b04+=4.9").to("#b4 .compliance",{opacity:1,duration:1.0,ease:"power2.out"},"b04+=5.4")
-  .to("#b4",{opacity:0,duration:.9},"b04+=8.1").call(()=>hide("b4"),null,"b04+=9");
+  .fromTo("#b4 .pillars p",{opacity:0,y:22},{opacity:1,y:0,duration:1.1,stagger:.3,ease:"power3.out"},"b04+=2.6").to("#b4 .vn",{opacity:1,duration:.9,ease:"power2.out"},"b04+=5.1").to("#b4 .compliance",{opacity:1,duration:1.0,ease:"power2.out"},"b04+=5.6")
+  .to("#b4",{opacity:0,duration:1.0,ease:"power2.inOut"},"b04+=7.2").call(()=>hide("b4"),null,"b04+=9");   // outline + lock + text dissolve, leaving only the dots
+if(G){ tl
+  .to(brain,{hub:1,duration:1.2,ease:"power2.out"},"b04+=8.0")                                             // ONLY after the security content has faded do the dots sweep inward and settle into the hub ring
+  .to(brain,{fade:0,duration:0.8,ease:"power2.inOut"},"b04+=9.5")                                          // the dot-ring hands off to the real disc, then fades
+  .call(()=>{G.brainGroup.visible=false;G.shieldLines.visible=false;G.brain.idle=false;G.brain.shield=0;G.brain.hub=0;G.brain.lfade=0;G.brain.pfade=0;G.galaxy.morph=0;G.lUni.uReveal.value=0;G.shield.reveal=0;G.shield.fade=0;gsap.set(gl,{opacity:0});},null,"b04+=10.6"); }
 
 // 05 — cloud (31–39)
 tl.add("b05",31).call(()=>{setIndex(5);show("b5");sweep();},null,"b05").to("#b5",{opacity:1,duration:1.0},"b05")
-  .from("#b5 .wL",{opacity:0,x:-26,duration:1.0,ease:"expo.out"},"b05+=.3")
-  .from("#b5 .wR",{opacity:0,x:26,duration:1.0,ease:"expo.out"},"b05+=.3")
-  .from("#b5 .wcirc",{opacity:0,duration:.7},"b05+=.7").from("#b5 .wlogo",{opacity:0,duration:.7},"b05+=.85")
-  .to("#b5 .wbase",{strokeDashoffset:0,duration:1.4,stagger:.12,ease:"power2.inOut"},"b05+=1.0")          // beat one: strands stroke-draw, one after another
-  .call(()=>document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run")),null,"b05+=2.6")  // beat two: dots flow only once the lines have connected
-  .fromTo("#b5 .wflow",{opacity:0},{opacity:.85,duration:.9},"b05+=2.6")
-  .from("#b5 .worbit",{opacity:0,duration:1.0},"b05+=2.7")                                               // ring dots arrive as the lines land — never before
-  .to(["#b5 .lab-l","#b5 .lab-r","#b5 .biz"],{opacity:1,duration:1.0,stagger:.08},"b05+=3.0").add(capIn("#cap5"),"b05+=3.7")
-  .to(["#b5","#cap5"],{opacity:0,duration:.9},"b05+=7.1").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8");
+  // the shield's dots have formed the hub circle — the real disc fades in cleanly over that ring (no bloom), then the mark draws inside it
+  .from("#b5 .wcirc",{opacity:0,duration:.7,ease:"power2.out"},"b05+=.35")                                // real hub circle takes over the dot-ring: a clean coincident fade, no scale-in
+  .from("#b5 .wlogo circle",{opacity:0,scale:0,transformBox:"fill-box",transformOrigin:"center",duration:.5,stagger:.07,ease:"back.out(1.6)"},"b05+=.55")   // the mark's nodes pop in
+  .to("#b5 .wlogo path",{strokeDashoffset:0,duration:1.2,ease:"power2.inOut"},"b05+=.65")                 // its lines draw on inside the circle
+  .from("#b5 .wL",{opacity:0,x:-26,duration:1.0,ease:"expo.out"},"b05+=1.9")
+  .from("#b5 .wR",{opacity:0,x:26,duration:1.0,ease:"expo.out"},"b05+=1.9")
+  .to("#b5 .wbase",{strokeDashoffset:0,duration:1.4,stagger:.12,ease:"power2.inOut"},"b05+=2.2")          // strands stroke-draw, one after another
+  .call(()=>document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.add("run")),null,"b05+=4.0")  // dots flow only once the lines have connected
+  .fromTo("#b5 .wflow",{opacity:0},{opacity:.85,duration:.9},"b05+=4.0")
+  .from("#b5 .worbit",{opacity:0,duration:1.0},"b05+=4.1")
+  .to(["#b5 .lab-l","#b5 .lab-r","#b5 .biz"],{opacity:1,duration:1.0,stagger:.08},"b05+=4.4").add(capIn("#cap5"),"b05+=4.9")
+  .to("#b5 .split",{scale:1.5,duration:1.2,transformOrigin:"50% 50%",ease:"power2.in"},"b05+=7.0").to(["#b5","#cap5"],{opacity:0,duration:.9,ease:"power2.in"},"b05+=7.4").call(()=>{hide("b5");$("#cap5").style.clipPath="inset(0 100% 0 0)";gsap.set("#b5 .split",{clearProps:"transform"});document.querySelectorAll("#b5 .wflow").forEach(p=>p.classList.remove("run"));},null,"b05+=8.8");   // beat 5 zooms toward the viewer and fades — we push THROUGH the hub — and beat 6 comes forward from depth on the far side: a clean dolly-through, not a cut
 
 // 06 — compression (39–45): file types fuse into ONE solid line; that same line becomes the underline of "85% smaller"
 let clineRise=0;   // measured offset (cline's underline slot → screen centre) so the one line is born where the pills collapse
 tl.add("b06",39).call(()=>{setIndex(6);show("b6");sweep();},null,"b06").to("#b6",{opacity:1,duration:.7},"b06")
-  .fromTo("#ftwrap",{opacity:0},{opacity:1,duration:.6},"b06+=.2")
-  .to("#b6 .ftpill",{scale:.5,duration:2.0,stagger:{each:.022,from:"center",grid:[10,5]},ease:"power2.inOut"},"b06+=.6")  // shrink, radial stagger — unhurried
-  .to("#b6 .ftpill",{opacity:.28,duration:.4},"b06+=1.7").call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=2.1").to("#b6 .ftpill",{opacity:1,duration:.4},"b06+=2.15") // cross-dissolve
-  .to("#b6 .ftpill",{backgroundColor:"#ffffff",borderColor:"rgba(255,255,255,0)",color:"rgba(255,255,255,0)",duration:.6},"b06+=3.0")
-  .to("#b6 .meter",{opacity:1,duration:.4},"b06+=3.0").call(()=>{const c=document.querySelector("#b6 .cline");if(c){gsap.set(c,{y:0});const r=c.getBoundingClientRect();clineRise=(innerHeight/2)-(r.top+r.height/2);}},null,"b06+=3.1")  // where the one line is born = where the pills collapse (screen centre)
-  .to("#fttrack",{scaleY:0.012,scaleX:0.62,transformOrigin:"50% 50%",duration:1.4,ease:"power2.inOut"},"b06+=3.2") // every pill fuses down to a single hairline at the centre
-  .set("#b6 .cline",{scaleX:1,y:()=>clineRise},"b06+=4.2")                                                        // the one line, placed exactly where the pills fused (still invisible)
-  .to("#b6 .cline",{opacity:1,duration:.8,ease:"sine.inOut"},"b06+=4.3")                                         // crossfade: the line takes over from the fusing band — coincident, so it reads as one continuous line, no pop
-  .to("#ftwrap",{opacity:0,duration:.8,ease:"sine.inOut"},"b06+=4.3")                                            // the pill band dissolves as the line rises in its place
-  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.5,ease:"power3.out"},"b06+=5.2")                 // "85%" big + "smaller" small + "up to*" ease in above
-  .to("#b6 .cline",{y:0,duration:1.3,ease:"power3.out"},"b06+=5.2")                                              // the SAME line travels into place as the underline
+  .fromTo("#ftwrap",{opacity:0,scale:1.18},{opacity:1,scale:1,duration:.9,ease:"power2.out"},"b06").from("#b6 .ftpill",{opacity:0,scale:.78,duration:.9,stagger:{each:.016,from:"center",grid:[10,5]},ease:"power2.out"},"b06+=.12")   // the file grid comes FORWARD from depth (whole grid eases down from large) and the tiles materialise centre-first — arriving on the far side of the dolly-through
+  // one calm crossfade-shuffle to imply "every supported type" — smooth, no flicker
+  .to("#b6 .ftpill",{opacity:.42,duration:.8,stagger:{each:.009,from:"center",grid:[10,5]},ease:"sine.inOut"},"b06+=1.5")
+  .call(()=>window.__shuffleFt&&window.__shuffleFt(),null,"b06+=2.2")
+  .to("#b6 .ftpill",{opacity:1,duration:.8,stagger:{each:.009,from:"center",grid:[10,5]},ease:"sine.inOut"},"b06+=2.25")
+  .to("#b6 .meter",{opacity:1,duration:.5},"b06+=3.5")
+  // CLEAN COMPRESS — the grid compresses straight down AND fades; in its place ONE calligraphic pen stroke draws itself on as the underline beneath "85% smaller" (the grid's compressed essence — a single line, no second line)
+  .to("#fttrack",{scaleY:0.05,scaleX:0.74,transformOrigin:"50% 55%",duration:1.35,ease:"power2.in"},"b06+=3.6")   // the grid compresses down toward the line
+  .to("#ftwrap",{opacity:0,duration:1.25,ease:"power2.in"},"b06+=3.6")                                            // …fading as it compresses — no barcode, no flicker
+  .fromTo("#b6 .m85",{opacity:0,y:16},{opacity:1,y:0,duration:1.4,ease:"power3.out"},"b06+=4.7")                  // "85%" + "smaller" + "up to*" ease in
+  .set("#b6 .pen",{opacity:1},"b06+=4.85")
+  .fromTo("#b6 .pen-nib",{attr:{r:0}},{attr:{r:3.4},duration:.22,ease:"power2.out"},"b06+=4.9")                   // the nib touches down
+  .fromTo(penDraw,{d:()=>penLen},{d:0,duration:1.6,ease:"power2.inOut",onUpdate:penOnUpdate},"b06+=4.95")         // the ONE line bends and draws itself on, the glowing nib riding the leading edge
+  .to("#b6 .pen-nib",{attr:{r:0},duration:.3,ease:"power2.in"},"b06+=6.45")                                       // the nib lifts off as the underline completes
   .to("#b6 .fineprint",{opacity:1,duration:.7},"b06+=6.8")
-  .add(capIn("#cap6"),"b06+=7.0").to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.8").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});gsap.set("#b6 .cline",{clearProps:"all"});},null,"b06+=10.8");
+  .add(capIn("#cap6"),"b06+=7.0")
+  // the SAME pen lifts off the underline and flies (glowing nib, overlay) along an arc to the migration hub — to draw the neuthek mark's outline there
+  .call(xflyArm,null,"b06+=8.5")
+  .fromTo("#xnib",{attr:{r:0}},{attr:{r:3.6},duration:.25,ease:"power2.out"},"b06+=8.6")
+  .fromTo(xfly,{p:0},{p:1,duration:1.35,ease:"power2.inOut",onUpdate:xflyUpdate},"b06+=8.7")
+  .to(["#b6","#cap6"],{opacity:0,duration:.9},"b06+=9.0").call(()=>{hide("b6");$("#cap6").style.clipPath="inset(0 100% 0 0)";gsap.set("#b6 .ftpill",{clearProps:"all"});gsap.set("#ftwrap",{clearProps:"all"});gsap.set("#fttrack",{clearProps:"all"});gsap.set("#b6 .m85",{clearProps:"all"});penReset();document.getElementById("xnib").setAttribute("r",0);},null,"b06+=10.2");
 
 // 07 — MIGRATION (relaxed)
 tl.add("b07",48.8).call(()=>{setIndex(7);show("b7");sweep();},null,"b07").to("#b7",{opacity:1,duration:1.0},"b07")
-  .fromTo("#b7 .mnode",{opacity:0,scale:.72,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"expo.out"},"b07+=.3")  // hub + logos first
-  .fromTo("#b7 .mlogo",{opacity:0},{opacity:1,duration:.7},"b07+=.55")
+  .fromTo("#b7 .mnode",{opacity:0,scale:.72,transformOrigin:"center"},{opacity:1,scale:1,duration:1.0,ease:"expo.out"},"b07+=.3")  // the hub disc forms
+  // the flying pen arrives at the hub and DRAWS the neuthek mark's outline on (handoff from the overlay nib)
+  .set("#b7 .mlogo",{opacity:1},"b07+=.4")
+  .fromTo("#b7 .mlogo-nib",{attr:{r:0}},{attr:{r:3},duration:.2,ease:"power2.out"},"b07+=.45")
+  .to("#xnib",{attr:{r:0},duration:.3,ease:"power2.in"},"b07+=.45")                                                  // the overlay nib hands off to the logo nib at the hub
+  .fromTo(mLogoDraw,{d:()=>mLogoLen},{d:0,duration:1.05,ease:"power2.inOut",onUpdate:mlogoOnUpdate},"b07+=.5")        // the mark's outline draws on, nib leading
+  .fromTo("#b7 .mlogo circle:not(#mlogo-nib)",{opacity:0,scale:0,transformBox:"fill-box",transformOrigin:"center"},{opacity:1,scale:1,duration:.4,stagger:.06,ease:"back.out(1.6)"},"b07+=.7")  // its nodes pop in as the lines reach them
+  .to("#b7 .mlogo-nib",{attr:{r:0},duration:.25,ease:"power2.in"},"b07+=1.55")
   .to("#b7 .msrc",{opacity:1,duration:.7,stagger:.13},"b07+=.6")
   .to("#b7 .mbase",{strokeDashoffset:0,duration:1.7,stagger:.18,ease:"power2.inOut"},"b07+=1.6")                                    // beat one: connectors stroke-draw, one after another, edge → hub outline
   .fromTo("#b7 .morbit",{opacity:0},{opacity:1,duration:1.0},"b07+=3.5")                                                            // ring dots appear only once the lines have connected
   .call(()=>document.querySelectorAll("#b7 .mflow").forEach(p=>{p.style.animationDelay="0s";p.classList.add("run");}),null,"b07+=3.6")
   .fromTo("#b7 .mflow",{opacity:0},{opacity:.85,duration:1.0,ease:"power2.out"},"b07+=3.6")                                         // beat two: the signal flows
   .add(capIn("#cap7"),"b07+=4.2").to(["#b7","#cap7"],{opacity:0,duration:.9},"b07+=7.3")
-  .call(()=>{hide("b7");$("#cap7").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.remove("run"));},null,"b07+=8");
+  .call(()=>{hide("b7");$("#cap7").style.clipPath="inset(0 100% 0 0)";document.querySelectorAll("#b7 .mflow").forEach(p=>p.classList.remove("run"));if(mLogoPath){mLogoDraw.d=mLogoLen;mLogoPath.style.strokeDashoffset=mLogoLen;mLogoNib.setAttribute("r",0);gsap.set("#b7 .mlogo circle:not(#mlogo-nib)",{opacity:0,scale:0,transformBox:"fill-box",transformOrigin:"center"});gsap.set("#b7 .mlogo",{opacity:0});}},null,"b07+=8");
 
 // 08 — close / CTA (53–63, hold)
 tl.add("b08",56.5).call(()=>{setIndex(8);show("b8");sweep();},null,"b08").to("#b8",{opacity:1,duration:1.2},"b08")
