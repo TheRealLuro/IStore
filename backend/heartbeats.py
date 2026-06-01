@@ -122,6 +122,39 @@ async def heartbeat_loop(
         logger.info("heartbeat: stopped for worker_id=%s", wid)
 
 
+# Dedicated NullPool sessionmaker for best-effort telemetry writes.
+#
+# record_model_state is fired from model loaders that run in a thread with
+# NO running event loop (torch loads inside the inference-pool thread), so
+# record_model_state_sync falls to `asyncio.run(...)` which spins a fresh,
+# throwaway loop. The shared `backend.db` asyncpg engine pools connections
+# bound to the app's MAIN loop — touching that pool from the throwaway loop
+# corrupted connections ("got Future attached to a different loop" /
+# "unknown protocol state"), which then 500'd unrelated requests (login,
+# gallery) and spewed "connection is closed" rollbacks.
+#
+# NullPool opens a brand-new connection on whatever loop is current and
+# closes it immediately, so it is always loop-correct and never shares
+# state with the request-serving pool. Model-state writes are rare
+# (load/loaded/unloaded/error) so the per-call connect cost is irrelevant.
+_telemetry_sessionmaker = None
+
+
+def _get_telemetry_sessionmaker():
+    global _telemetry_sessionmaker
+    if _telemetry_sessionmaker is None:
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        from backend.config import settings
+
+        _telemetry_sessionmaker = async_sessionmaker(
+            create_async_engine(settings.database_url, poolclass=NullPool),
+            expire_on_commit=False,
+        )
+    return _telemetry_sessionmaker
+
+
 async def record_model_state(
     *,
     model_id: str,
@@ -136,18 +169,19 @@ async def record_model_state(
     'unloaded' | 'error'. The admin Models tab reads the latest row
     per (model_id, worker_id) for current device + memory.
 
-    Called from `backend.vision.runtime` at model load time (and from
-    the worker shutdown path if we ever wire unload). Failures are
+    Called from `backend.vision.runtime` at model load time. Uses a
+    NullPool engine (see above) so it is safe to invoke from a throwaway
+    event loop without poisoning the shared connection pool. Failures are
     swallowed — we never want a transient DB hiccup to mask the real
     problem with the model itself."""
     try:
-        from backend.db import SessionLocal
         from backend.models import ModelRun
     except Exception:
         return
     wid = worker_id or _build_worker_id(kind)
     try:
-        async with SessionLocal() as session:
+        Session = _get_telemetry_sessionmaker()
+        async with Session() as session:
             session.add(ModelRun(
                 model_id=model_id,
                 worker_id=wid,

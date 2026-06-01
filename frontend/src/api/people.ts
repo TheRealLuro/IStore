@@ -24,11 +24,64 @@ export const listPeople = () => api.get<PeopleResponse>("/people/");
 export const nameCluster = (clusterId: number, display_name: string) =>
   api.post<PersonRead>(`/people/clusters/${clusterId}`, { display_name });
 
+// Delete an UNNAMED face cluster (junk detection — mask, cartoon, false
+// positive). Removes the user's unlabeled Face rows in that cluster
+// (their FaceDetection rows + crop blobs are cleaned up server-side).
+// 404s for a named or other-user cluster. Mirrors the People-tab named
+// `deletePerson` affordance but keys off the cluster id.
+export const deleteCluster = (clusterId: number) =>
+  api.delete<void>(`/people/clusters/${clusterId}`);
+
+// Shape returned by both "not a person" endpoints. `rejected` = how many
+// real face embeddings were written into the user's rejection memory (so
+// the next scan suppresses them); `faces_deleted` = how many Face rows
+// were removed. The underlying photos are never touched.
+export interface NotAPersonResponse {
+  rejected: number;
+  faces_deleted: number;
+}
+
+// Mark an UNNAMED cluster as a false positive ("not a person"). Records
+// each face's embedding into the user's rejection memory, then deletes
+// the cluster's Face rows (+ detections + crops) — same removal as
+// `deleteCluster`, but the face model REMEMBERS the rejection so a later
+// re-scan won't re-create the same bogus detection. Photos are untouched.
+// 404s for a named or other-user cluster. This is the primary People-tab
+// hover affordance.
+export const markNotAPerson = (clusterId: number) =>
+  api.post<NotAPersonResponse>(
+    `/people/clusters/${clusterId}/not-a-person`,
+  );
+
+// Mark a SINGLE detected face as a false positive ("not a person"). Used
+// by the face-chip menu. Records that face's embedding into the rejection
+// memory, deletes the one Face row (+ its detection + crop), and — if the
+// face was attached to a named person — recomputes that person's centroid
+// (the person + name survive). The underlying photo is untouched. 404s
+// for an unknown / other-user face.
+export const markFaceNotAPerson = (faceId: number) =>
+  api.post<NotAPersonResponse>(
+    `/people/faces/${faceId}/not-a-person`,
+  );
+
 export const renamePerson = (personId: number, display_name: string) =>
   api.patch<PersonRead>(`/people/${personId}`, { display_name });
 
 export const deletePerson = (personId: number) =>
   api.delete<void>(`/people/${personId}`);
+
+// Per-face correction — re-targets a single Face row to a different
+// Person, or detaches it entirely. `personId: null` removes the face
+// from whatever person it's currently under (fixing a bad cluster
+// match); a number moves it to that person. Distinct from
+// `reassignDetection` above: this keys off the *face* id and is the
+// contract the People-tab / preview "Not this person" + "Move to…"
+// controls build against. Endpoint added by the backend in parallel.
+export const reassignFace = (faceId: number, personId: number | null) =>
+  api.patch<{ face_id: number; person_id: number | null }>(
+    `/people/faces/${faceId}`,
+    { person_id: personId },
+  );
 
 export const faceCropUrl = (faceId: number): string =>
   `${API_BASE_URL}/faces/${faceId}/crop`;

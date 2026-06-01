@@ -1,10 +1,11 @@
 // File preview panel — slides in from the right when a file is selected.
-import React, { useState as useStateP2, useEffect as useEffectP2 } from "react";
+import React, { useState as useStateP2, useEffect as useEffectP2, useRef as useRefP2 } from "react";
+import { createPortal as createPortalP2 } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
 import { AuthedThumb, AuthedImg, useAuthedBlobUrl } from "./auth-image.jsx";
-import { getImagePeople, faceCropUrl, redetectFaces } from "@/api/people";
+import { getImagePeople, faceCropUrl, redetectFaces, reassignFace } from "@/api/people";
 import { EditableName } from "./nameable-chip.jsx";
 import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
 import { attachImageTag, detachImageTag } from "@/api/tags";
@@ -17,8 +18,18 @@ import { CodePreview, isCodeMime } from "./code-preview.jsx";
 import { VideoPlayer } from "./video-player.jsx";
 import { AudioPlayer } from "./audio-player.jsx";
 import { CsvViewer } from "./csv-viewer.jsx";
+import { SpreadsheetViewer } from "./spreadsheet-viewer.jsx";
 import { IcsViewer } from "./ics-viewer.jsx";
 import { VcfViewer } from "./vcf-viewer.jsx";
+import { MarkdownViewer } from "./markdown-viewer.jsx";
+import { HtmlViewer } from "./html-viewer.jsx";
+import { DataTreeViewer } from "./data-tree-viewer.jsx";
+import { NotebookViewer } from "./notebook-viewer.jsx";
+import { Model3dViewer } from "./model3d-viewer.jsx";
+import { FontViewer } from "./font-viewer.jsx";
+import { EbookViewer } from "./ebook-viewer.jsx";
+import { ArchiveViewer } from "./archive-viewer.jsx";
+import { languageIcon, LanguageIcon } from "./language-icons.jsx";
 import { fileTypeInfo } from "./file-types.js";
 
 function fmtBytes(n) {
@@ -34,7 +45,254 @@ const TAG_SUGGESTIONS = [
   "Work", "Personal", "Travel", "Family", "Reference", "Receipt",
 ];
 
-export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
+// Per-face correction chip for the preview's "People in this photo"
+// section. Displays the existing avatar + inline-rename name, and adds
+// a "fix" affordance (kebab) that opens a small menu:
+//   - "Not this person"  → reassignFace(face_id, null)  (detaches the
+//      face so a bad cluster match stops mislabeling this photo)
+//   - "Move to <name>"   → reassignFace(face_id, personId)  (one entry
+//      per other known person, so the user can re-home a face that
+//      landed under the wrong person)
+//   - "Delete <person>"  → bubbles up to the parent's onDeletePerson so
+//      the whole person can be removed straight from the chip.
+// The menu is portaled + position:fixed (same pattern as the gallery's
+// FolderCard menu) so the horizontally-scrolling `.preview__faces`
+// container doesn't clip it.
+function FaceChip({ face, file, people, onDeletePerson }) {
+  const qc = useQueryClient();
+  // Auto-focus target for the "Move to" search input — focused when the
+  // modal opens so the user can start filtering names immediately.
+  const searchRef = useRefP2(null);
+  // Was a popover (position:fixed, anchored to the ⋯ button). Per user
+  // feedback ("cant scroll in the mini pop up", "make it its own big
+  // modal card") this is now a centered MODAL — so it only needs an
+  // open/closed boolean, no anchor geometry.
+  const [open, setOpen] = useStateP2(false);
+  const [busy, setBusy] = useStateP2(false);
+  // Live filter for the "Move to <name>" list. Reset every time the
+  // modal opens so a stale query never hides the full list.
+  const [moveQuery, setMoveQuery] = useStateP2("");
+  const labelled = !!face.person_display_name;
+
+  // Esc closes the modal. Capture phase + stopPropagation so it fires
+  // even while the search input has focus, and so it doesn't fall through
+  // to the PreviewPanel's own Esc handler (which would close the whole
+  // preview). Mirrors the per-modal Esc handlers elsewhere in this file.
+  useEffectP2(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [open]);
+
+  // Auto-focus the search box when the modal opens. A 0ms defer lets the
+  // portaled node mount before we reach for it.
+  useEffectP2(() => {
+    if (!open) return undefined;
+    const t = setTimeout(() => searchRef.current?.focus(), 0);
+    return () => clearTimeout(t);
+  }, [open]);
+
+  const openModal = (e) => {
+    e.stopPropagation();
+    setMoveQuery("");
+    setOpen(true);
+  };
+
+  // reassignFace(face_id, personId|null). null detaches; a number moves
+  // the face to that person. We invalidate this image's people AND the
+  // global people list so both the chip here and the People tab update.
+  const runReassign = async (personId, label) => {
+    if (busy || face.face_id == null) return;
+    setBusy(true);
+    setOpen(false);
+    try {
+      await reassignFace(face.face_id, personId);
+      toast.success(
+        personId == null
+          ? "Removed this face from the person"
+          : `Moved this face to ${label}`,
+      );
+      qc.invalidateQueries({ queryKey: ["image-people", file.id] });
+      qc.invalidateQueries({ queryKey: ["people"] });
+      qc.invalidateQueries({ queryKey: ["files"] });
+      qc.invalidateQueries({ queryKey: ["facets"] });
+    } catch (err) {
+      toast.error(err?.detail || "Could not update this face");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // "Move to…" candidates — every named person OTHER than the one this
+  // face is currently under. Sourced from the people prop the parent
+  // passes from the ["people"] query. The full set drives the search
+  // box; the live query filters by name (case-insensitive). We don't
+  // pre-slice — with a search field the user can reach any name, and the
+  // list scrolls within the modal's max-height.
+  const allTargets = (people?.persons || [])
+    .filter((p) => p.display_name && p.id !== face.person_id);
+  const q = moveQuery.trim().toLowerCase();
+  const filteredTargets = q
+    ? allTargets.filter((p) => p.display_name.toLowerCase().includes(q))
+    : allTargets;
+
+  return (
+    <div className="face-chip" style={busy ? { opacity: 0.6 } : undefined}>
+      <AuthedThumb
+        url={faceCropUrl(face.face_id)}
+        className="face-chip__avatar"
+        placeholder={{ background: "var(--surface-2)" }}
+      />
+      <EditableName
+        name={face.person_display_name}
+        // Per-detection relabel so correcting one misdetection doesn't
+        // drag every photo of the originally-grouped person along.
+        detectionId={face.detection_id}
+        clusterId={face.face_id ? null : face.cluster_id}
+        className={"face-chip__name" + (labelled ? "" : " face-chip__name--unnamed")}
+        invalidate={[["image-people", file.id], ["people"]]}
+      />
+      {/* Correction affordance — only meaningful once there's a face
+          row to retarget. Unnamed faces still get it so the user can
+          push a stray detection out of an auto-cluster. */}
+      {face.face_id != null && (
+        <button
+          type="button"
+          className="face-chip__fix"
+          aria-label="Fix this face"
+          title="Wrong person? Fix this face"
+          onClick={openModal}
+          disabled={busy}
+        >
+          <Icon name="moreH" size={13}/>
+        </button>
+      )}
+      {open && createPortalP2(
+        // Centered MODAL (overlay + card), modeled on ShareModal so it
+        // feels native: dim backdrop, click-backdrop-to-close, Esc-to-
+        // close, comfortable width with a scrollable people list. All
+        // styling lives in styles-face-modal.css under `.facefix-*`.
+        <div
+          className="facefix-modal__overlay"
+          onClick={() => setOpen(false)}
+          data-no-marquee="true"
+        >
+          <div
+            className="facefix-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="facefix-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="facefix-modal__head">
+              <div className="facefix-modal__head-text">
+                <div className="facefix-modal__kicker">FIX THIS FACE</div>
+                <div id="facefix-modal-title" className="facefix-modal__title">
+                  {labelled
+                    ? `Move this face from ${face.person_display_name}`
+                    : "Move this face to…"}
+                </div>
+              </div>
+              <button
+                className="btn-icon"
+                onClick={() => setOpen(false)}
+                aria-label="Close"
+              >
+                <Icon name="x" size={15}/>
+              </button>
+            </header>
+
+            {/* Per-face detach — "Not <person>". Pushes this single
+                detection out of the (possibly wrong) cluster. */}
+            <button
+              type="button"
+              className="facefix-modal__not"
+              onClick={() => runReassign(null, null)}
+            >
+              <span className="facefix-modal__not-icon"><Icon name="x" size={14}/></span>
+              <span className="facefix-modal__not-label">
+                Not {labelled ? face.person_display_name : "this person"}
+              </span>
+            </button>
+
+            {allTargets.length > 0 ? (
+              <>
+                <div className="facefix-modal__kicker facefix-modal__kicker--move">MOVE TO</div>
+                {/* Live name filter — auto-focused on open (searchRef).
+                    Single clean focus ring (see styles-face-modal.css).
+                    Esc is handled by the capture listener above; stop
+                    other keys from bubbling to the preview. */}
+                <div className="facefix-modal__search">
+                  <Icon name="search" size={14}/>
+                  <input
+                    ref={searchRef}
+                    type="text"
+                    className="facefix-modal__search-input"
+                    placeholder="Search people…"
+                    value={moveQuery}
+                    onChange={(e) => setMoveQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key !== "Escape") e.stopPropagation(); }}
+                    aria-label="Search people to move this face to"
+                  />
+                </div>
+                <div className="facefix-modal__list">
+                  {filteredTargets.length > 0 ? (
+                    filteredTargets.map((p) => {
+                      // Per-person face avatar — same source the People
+                      // tab uses: the person's representative crop via
+                      // faceCropUrl(sample_face_id). Falls back to the
+                      // user glyph when a person has no sample face id.
+                      const avatarUrl = p.sample_face_id ? faceCropUrl(p.sample_face_id) : null;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="facefix-modal__row"
+                          onClick={() => runReassign(p.id, p.display_name)}
+                        >
+                          {avatarUrl ? (
+                            <AuthedThumb
+                              url={avatarUrl}
+                              className="facefix-modal__avatar"
+                              placeholder={{ background: "var(--surface-2)" }}
+                            />
+                          ) : (
+                            <span className="facefix-modal__avatar facefix-modal__avatar--fallback">
+                              <Icon name="user" size={15}/>
+                            </span>
+                          )}
+                          <span className="facefix-modal__row-name">{p.display_name}</span>
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div className="facefix-modal__empty">No matching people</div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="facefix-modal__empty facefix-modal__empty--none">
+                No other people yet. Name a face elsewhere first, then you can
+                move this one to them.
+              </div>
+            )}
+            {/* Intentionally NO whole-person delete here. This is a quick
+                per-FACE fix (relabel / "Not this person" / move one
+                detection); a "Delete {person}" — which wipes that person
+                across EVERY photo — would sit one misclick from "Not this
+                person" and be too destructive. User: "in quick preview we
+                dont want the full delete that will be bad." Whole-person
+                deletion lives in the People tab + person drill-in header. */}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
+export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, activePerson, people, onDeletePerson }) {
   const qc = useQueryClient();
   const [tags, setTags] = useStateP2([]);
   const [draft, setDraft] = useStateP2("");
@@ -42,6 +300,22 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   const [lightbox, setLightbox] = useStateP2(false);
   const [starred, setStarred] = useStateP2(false);
   const [shareModalOpen, setShareModalOpen] = useStateP2(false);
+  // Tags disclosure — collapsible per user request ("tags should be a
+  // colapsable"). Remembers the last open/closed choice across files and
+  // sessions in localStorage; defaults to open so tags are visible the
+  // first time. Hook stays unconditional (declared before the early
+  // `if (!file)` return below).
+  const TAGS_OPEN_KEY = "neuthek.preview.tagsOpen";
+  const [tagsOpen, setTagsOpen] = useStateP2(() => {
+    try { return localStorage.getItem(TAGS_OPEN_KEY) !== "0"; } catch { return true; }
+  });
+  const toggleTagsOpen = () => {
+    setTagsOpen((v) => {
+      const next = !v;
+      try { localStorage.setItem(TAGS_OPEN_KEY, next ? "1" : "0"); } catch { /* private browsing */ }
+      return next;
+    });
+  };
 
   // Esc closes lightbox first, then preview
   useEffectP2(() => {
@@ -166,7 +440,12 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
 
   const isImage = file?.type === "image";
   const isVideo = file?.type === "video";
-  const isDoc = file?.type === "doc";
+  // "doc" covers PDFs/Office; "code" is the app.jsx type for code/text
+  // files (.py, .txt, .json, …) — both are the `document` category
+  // upstream. isCode/isPdf gate on isDoc, so code files MUST be included
+  // here or the code viewer never opens (the file falls to the generic
+  // hero with the plain `< >` icon and a no-op click).
+  const isDoc = file?.type === "doc" || file?.type === "code";
   // Hook call must stay unconditional — pass null when the file isn't
   // a PDF so the underlying fetch is skipped. PDF preview UX:
   //   - hero pane shows a non-scrolling page-1 render (the raster
@@ -175,25 +454,59 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   //     in an iframe, where the browser handles scroll/zoom/text-select.
   // The blob URL is only needed once the modal opens, so we gate the
   // fetch behind `pdfModal`.
-  const isPdf = !!(file && isDoc && (
+  // Real PDFs AND converted Office docs both flow through the existing
+  // PDF modal / PdfPageStack. The backend sets `pdf_viewable` →
+  // `file.pdfViewable` true for native PDFs and for Office files whose
+  // LibreOffice→PDF conversion has landed, so checking that flag routes
+  // docx/xlsx/pptx/odt/… through the rasterized page viewer with no new
+  // viewer. We still keep the mime/ext check as a belt-and-suspenders
+  // path for native PDFs.
+  const isPdf = !!(file && (file.pdfViewable || (isDoc && (
     (file.mime_type_original || "").toLowerCase() === "application/pdf"
     || (file.ext || "").toLowerCase() === "pdf"
-  ));
-  // Code / text files (`.py`, `.js`, `Dockerfile`, …). The backend
-  // returns `text/x-<lang>` for these; CodePreview picks the right
-  // Prism grammar from that mime. Falls back to plain monospace if
-  // the language isn't in the loader table.
-  const isCode = !!(file && isDoc && !isPdf && isCodeMime(file.mime_type_original));
-  // Batch 1 — themed full-display viewers for video, audio, CSV/TSV,
-  // ICS, VCF. The kind tag comes from the catalog in file-types.js;
-  // each kind gets its own modal state so Esc-handlers can target the
-  // right one, mirroring the pdfModal / codeModal pattern.
+  ))));
+  // Themed full-display viewers. The kind tag comes from the catalog in
+  // file-types.js; each kind gets its own modal state so Esc-handlers can
+  // target the right one, mirroring the pdfModal / codeModal pattern.
+  // NOTE: these MUST be computed before `isCode` below — `isCode` gates
+  // itself off the rich kinds (markdown / datatree / notebook) so a
+  // `.md` / `.json` / `.ipynb` opens its dedicated viewer instead of the
+  // raw CodePreview.
   const ftKind = fileTypeInfo(file?.ext).kind;
   const isVideoFile = !!file && ftKind === "video";
   const isAudioFile = !!file && ftKind === "audio";
   const isCsvFile   = !!file && ftKind === "csv";
   const isIcsFile   = !!file && ftKind === "ics";
   const isVcfFile   = !!file && ftKind === "vcf";
+  const isMarkdownFile = !!file && ftKind === "markdown";
+  const isDataTreeFile = !!file && ftKind === "datatree";
+  const isNotebookFile = !!file && ftKind === "notebook";
+  const isModel3dFile  = !!file && ftKind === "model3d";
+  const isSpreadsheetFile = !!file && ftKind === "spreadsheet";
+  const isFontFile     = !!file && ftKind === "font";
+  const isEbookFile    = !!file && ftKind === "ebook";
+  const isArchiveFile  = !!file && ftKind === "archive";
+  // HTML/HTM — rendered as a STATIC, scripts-disabled sandboxed iframe by
+  // HtmlViewer (NOT executed). Its own kind so it routes here instead of
+  // the raw CodePreview; `isCode` below excludes it for the same reason.
+  const isHtmlFile     = !!file && ftKind === "html";
+  // SVG — categorized `image` upstream, so it already flows through the
+  // image hero/lightbox; but a served raster thumb may not exist for it.
+  // We render SVG from the AUTHED ORIGINAL bytes as an <img> (browsers
+  // never execute scripts in an img-loaded SVG, so this is inherently
+  // safe — the backend also sanitizes on upload). Detected by extension
+  // since `svg` is unambiguous.
+  const isSvgFile = !!file && (file.ext || "").toLowerCase() === "svg";
+  // Code / text files (`.py`, `.js`, `Dockerfile`, …). The backend
+  // returns `text/x-<lang>` for these; CodePreview picks the right
+  // Prism grammar from that mime. Falls back to plain monospace if
+  // the language isn't in the loader table. Excludes the rich kinds so
+  // markdown/JSON/notebook flow to their dedicated viewers.
+  // `isModel3dFile`/`isSpreadsheetFile` are excluded so an `.stl` (mime
+  // `text/x-stl` — starts with `text/`, so isCodeMime is true) reaches the
+  // 3D viewer instead of being captured by the code viewer, and so `.xlsx`
+  // reaches the spreadsheet viewer.
+  const isCode = !!(file && isDoc && !isPdf && !isMarkdownFile && !isDataTreeFile && !isNotebookFile && !isHtmlFile && !isModel3dFile && !isSpreadsheetFile && !isCsvFile && !isIcsFile && !isVcfFile && isCodeMime(file.mime_type_original));
   const [pdfModal, setPdfModal] = useStateP2(false);
   const [codeModal, setCodeModal] = useStateP2(false);
   const [videoModal, setVideoModal] = useStateP2(false);
@@ -201,6 +514,15 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
   const [csvModal, setCsvModal] = useStateP2(false);
   const [icsModal, setIcsModal] = useStateP2(false);
   const [vcfModal, setVcfModal] = useStateP2(false);
+  const [markdownModal, setMarkdownModal] = useStateP2(false);
+  const [dataTreeModal, setDataTreeModal] = useStateP2(false);
+  const [notebookModal, setNotebookModal] = useStateP2(false);
+  const [model3dModal, setModel3dModal] = useStateP2(false);
+  const [spreadsheetModal, setSpreadsheetModal] = useStateP2(false);
+  const [fontModal, setFontModal] = useStateP2(false);
+  const [ebookModal, setEbookModal] = useStateP2(false);
+  const [archiveModal, setArchiveModal] = useStateP2(false);
+  const [htmlModal, setHtmlModal] = useStateP2(false);
   // Comments panel state — expanded by default whenever a
   // full-display surface opens. Auto-collapses to the bubble during
   // video playback (see videoFocusMode below); the user can click
@@ -219,8 +541,16 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     setPdfModal(false); setCodeModal(false);
     setVideoModal(false); setAudioModal(false);
     setCsvModal(false); setIcsModal(false); setVcfModal(false);
+    setMarkdownModal(false); setDataTreeModal(false); setNotebookModal(false);
+    setModel3dModal(false); setFontModal(false); setEbookModal(false); setArchiveModal(false);
+    setHtmlModal(false); setSpreadsheetModal(false);
     setCommentsExpanded(true);
     setVideoFocusMode(false);
+    // Reset the "mark as containing a person" control to idle on every
+    // file change. Without this, an "empty" result (a manual detect that
+    // found no faces) from one file leaked onto the NEXT file, so the
+    // prompt appeared even on files that already have a detected face.
+    setRedetectState("idle");
   }, [file?.id]);
   // When the video modal closes (Esc, click-outside, X), drop focus
   // mode so re-opening another surface starts at "normal lightbox."
@@ -282,6 +612,60 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [vcfModal]);
+  useEffectP2(() => {
+    if (!markdownModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setMarkdownModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [markdownModal]);
+  useEffectP2(() => {
+    if (!dataTreeModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setDataTreeModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [dataTreeModal]);
+  useEffectP2(() => {
+    if (!notebookModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setNotebookModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [notebookModal]);
+  useEffectP2(() => {
+    if (!model3dModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setModel3dModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [model3dModal]);
+  useEffectP2(() => {
+    if (!spreadsheetModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setSpreadsheetModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [spreadsheetModal]);
+  useEffectP2(() => {
+    if (!fontModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setFontModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [fontModal]);
+  useEffectP2(() => {
+    if (!ebookModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setEbookModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [ebookModal]);
+  useEffectP2(() => {
+    if (!archiveModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setArchiveModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [archiveModal]);
+  useEffectP2(() => {
+    if (!htmlModal) return;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setHtmlModal(false); } };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [htmlModal]);
   if (!file) return null;
 
   // Tag changes here persist to the backend via /images/{id}/tags so
@@ -358,16 +742,24 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
       fileId={file.id}
       currentUserId={user?.id}
       ownerUserId={file.user_id || user?.id}
-      open={lightbox || pdfModal || codeModal || videoModal || audioModal || csvModal || icsModal || vcfModal}
+      open={lightbox || pdfModal || codeModal || videoModal || audioModal || csvModal || icsModal || vcfModal || markdownModal || dataTreeModal || notebookModal || model3dModal || fontModal || ebookModal || archiveModal || htmlModal || spreadsheetModal}
       expanded={commentsExpanded}
       onToggleExpanded={setCommentsExpanded}
     />
-    {lightbox && file.thumb && (
+    {lightbox && (file.thumb || isSvgFile) && (
       <div className={lightboxClass} onClick={() => setLightbox(false)}>
         <button className="lightbox__close" aria-label="Close" onClick={(e) => { e.stopPropagation(); setLightbox(false); }}>
           <Icon name="x" size={18}/>
         </button>
-        <AuthedImg url={file.thumbFull || file.thumb} className="lightbox__img" alt={file.name} onClick={(e) => e.stopPropagation()}/>
+        {/* SVG loads the original vector (inert <img>); raster images use
+            the full-res served variant. */}
+        <AuthedImg
+          url={isSvgFile ? originalUrl(file.id) : (file.thumbFull || file.thumb)}
+          className="lightbox__img"
+          alt={file.name}
+          onClick={(e) => e.stopPropagation()}
+          style={isSvgFile ? { background: "#fff" } : undefined}
+        />
       </div>
     )}
     {pdfModal && isPdf && (
@@ -411,7 +803,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
     )}
     {codeModal && isCode && (
       <div className={lightboxClass} onClick={() => setCodeModal(false)}>
-        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="pdf-modal pdf-modal--code" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">
               <Icon name="code" size={14}/>
@@ -464,6 +856,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
           fileId={file.id}
           fileName={file.name}
           fileExt={file.ext}
+          onClose={() => setAudioModal(false)}
         />
       </div>
     )}
@@ -527,6 +920,186 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         </div>
       </div>
     )}
+    {markdownModal && isMarkdownFile && (
+      <div className={lightboxClass} onClick={() => setMarkdownModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="document" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setMarkdownModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <MarkdownViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {dataTreeModal && isDataTreeFile && (
+      <div className={lightboxClass} onClick={() => setDataTreeModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="code" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setDataTreeModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <DataTreeViewer fileId={file.id} fileName={file.name} ext={file.ext}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {notebookModal && isNotebookFile && (
+      <div className={lightboxClass} onClick={() => setNotebookModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="code" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setNotebookModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <NotebookViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {model3dModal && isModel3dFile && (
+      <div className={lightboxClass} onClick={() => setModel3dModal(false)}>
+        <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="cube" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setModel3dModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <Model3dViewer fileId={file.id} fileName={file.name} fileExt={file.ext}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {spreadsheetModal && isSpreadsheetFile && (
+      <div className={lightboxClass} onClick={() => setSpreadsheetModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="spreadsheet" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setSpreadsheetModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <SpreadsheetViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {fontModal && isFontFile && (
+      <div className={lightboxClass} onClick={() => setFontModal(false)}>
+        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="type" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setFontModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <FontViewer fileId={file.id} fileName={file.name} fileExt={file.ext} byteSize={file.byteSize}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {ebookModal && isEbookFile && (
+      <div className={lightboxClass} onClick={() => setEbookModal(false)}>
+        <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="book" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setEbookModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <EbookViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {archiveModal && isArchiveFile && (
+      <div className={lightboxClass} onClick={() => setArchiveModal(false)}>
+        <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="archive" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setArchiveModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <ArchiveViewer fileId={file.id} fileName={file.name} onClose={() => setArchiveModal(false)}/>
+          </div>
+        </div>
+      </div>
+    )}
+    {htmlModal && isHtmlFile && (
+      <div className={lightboxClass} onClick={() => setHtmlModal(false)}>
+        <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
+          <div className="pdf-modal__head">
+            <span className="pdf-modal__icon"><Icon name="code" size={14}/></span>
+            <div className="pdf-modal__name">{file.name}</div>
+            <span className="pdf-modal__size">{file.size}</span>
+            <button type="button" className="btn-icon" onClick={handleDownload} aria-label="Download" title="Download">
+              <Icon name="download" size={14}/>
+            </button>
+            <button type="button" className="btn-icon" onClick={() => setHtmlModal(false)} aria-label="Close" title="Close">
+              <Icon name="x" size={14}/>
+            </button>
+          </div>
+          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+            <HtmlViewer fileId={file.id} fileName={file.name}/>
+          </div>
+        </div>
+      </div>
+    )}
     <aside className="preview" aria-label="File details" onClick={(e) => e.stopPropagation()}>
       <div className="preview__head">
         <div className="preview__head-title mono">DETAILS</div>
@@ -548,7 +1121,21 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         </div>
       </div>
 
-      {isPdf ? (
+      {isSpreadsheetFile ? (
+        <button
+          type="button"
+          onClick={() => setSpreadsheetModal(true)}
+          className="preview__hero"
+          aria-label="Open spreadsheet"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="spreadsheet" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isPdf ? (
         // Hero shows the non-scrolling first-page raster (the same
         // image used on the gallery card thumb). Clicking opens a full
         // scrollable browser-native PDF modal. When the raster isn't
@@ -608,7 +1195,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
           style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
         >
           <div className="thumb-icon">
-            <Icon name="code" size={42} strokeWidth={1.3}/>
+            <LanguageIcon name={languageIcon(file.ext)} size={42} strokeWidth={1.3}/>
             <span className="mono">{file.ext}</span>
           </div>
         </button>
@@ -699,6 +1286,136 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             <span className="mono">{file.ext}</span>
           </div>
         </button>
+      ) : isMarkdownFile ? (
+        <button
+          type="button"
+          onClick={() => setMarkdownModal(true)}
+          className="preview__hero"
+          aria-label="Open document"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="document" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isDataTreeFile ? (
+        <button
+          type="button"
+          onClick={() => setDataTreeModal(true)}
+          className="preview__hero"
+          aria-label="Open data viewer"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <LanguageIcon name={languageIcon(file.ext)} size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isNotebookFile ? (
+        <button
+          type="button"
+          onClick={() => setNotebookModal(true)}
+          className="preview__hero"
+          aria-label="Open notebook"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <LanguageIcon name={languageIcon(file.ext)} size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isModel3dFile ? (
+        <button
+          type="button"
+          onClick={() => setModel3dModal(true)}
+          className="preview__hero"
+          aria-label="Open 3D model"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="cube" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isFontFile ? (
+        <button
+          type="button"
+          onClick={() => setFontModal(true)}
+          className="preview__hero"
+          aria-label="Open font specimen"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="type" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isEbookFile ? (
+        <button
+          type="button"
+          onClick={() => setEbookModal(true)}
+          className="preview__hero"
+          aria-label="Open book"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="book" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isArchiveFile ? (
+        <button
+          type="button"
+          onClick={() => setArchiveModal(true)}
+          className="preview__hero"
+          aria-label="Open archive"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="archive" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isHtmlFile ? (
+        // HTML hero: a code glyph that opens the sandboxed static preview.
+        // The page itself renders inside HtmlViewer's locked-down iframe
+        // (no scripts) — never in the hero.
+        <button
+          type="button"
+          onClick={() => setHtmlModal(true)}
+          className="preview__hero"
+          aria-label="Open HTML preview"
+          title="Click to open"
+          style={{ display: "grid", placeItems: "center", color: "var(--ink-3)", background: "var(--surface-2)", border: 0, cursor: "pointer" }}
+        >
+          <div className="thumb-icon">
+            <Icon name="code" size={42} strokeWidth={1.3}/>
+            <span className="mono">{file.ext}</span>
+          </div>
+        </button>
+      ) : isSvgFile ? (
+        // SVG hero — render the authed ORIGINAL bytes as an <img> (inert:
+        // browsers don't run scripts in img-loaded SVG). Click opens the
+        // same lightbox, which also loads the original for SVG. Works even
+        // when no served raster thumb exists. White matte so a
+        // transparent SVG stays legible against the dark theme.
+        <AuthedImg
+          url={originalUrl(file.id)}
+          className="preview__hero"
+          alt={file.name}
+          onClick={() => setLightbox(true)}
+          role="button"
+          aria-label="View full size"
+          style={{ cursor: "pointer", width: "100%", height: "100%", objectFit: "contain", background: "#fff" }}
+        />
       ) : file.thumb ? (
         <AuthedThumb
           url={file.thumb}
@@ -721,15 +1438,18 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
 
       <div className="preview__body">
         <div className="preview__title">{file.name}</div>
-        {file.topic ? (
+        {/* Pending wins over `file.topic`: during a re-summarize the
+            topic may still be the OLD value, so show the shimmer instead
+            of stale AI text. */}
+        {file.pendingSummary ? (
+          <div className="preview__topic">
+            <span className="kicker" style={{ marginRight: 8 }}><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px" }}/> AI</span>
+            <span className="skel skel--text" style={{ width: "60%", display: "inline-block" }} aria-label="Generating summary" title="Generating summary…"/>
+          </div>
+        ) : file.topic ? (
           <div className="preview__topic">
             <span className="kicker" style={{ marginRight: 8 }}><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px" }}/> AI</span>
             {file.topic}
-          </div>
-        ) : file.pendingSummary ? (
-          <div className="preview__topic">
-            <span className="kicker" style={{ marginRight: 8 }}><Icon name="sparkles" size={10} style={{ verticalAlign: "-1px" }}/> AI</span>
-            <span className="skel skel--text" style={{ width: "60%", display: "inline-block" }} aria-label="Generating summary"/>
           </div>
         ) : null}
         <div className="preview__meta">
@@ -748,7 +1468,25 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
             backfill in flight), render a shimmer placeholder instead
             of an empty slot — the user can see the pipeline is still
             working rather than wondering why nothing's there. */}
-        {file.aiContent ? (
+        {/* Pending wins over `file.aiContent`: while the summarizer is
+            (re)running, `aiContent` may still carry the OLD long-form
+            text. Show the "Generating summary…" skeleton instead so we
+            never present stale AI output as current — it swaps to the
+            real description live once the worker commits (driven by the
+            gated summarize-progress poll in app.jsx). */}
+        {file.pendingSummary ? (
+          <div className="preview__section">
+            <div className="preview__section-label">
+              Description
+              <span className="kicker" style={{ marginLeft: 8, color: "var(--ink-3)" }}>Generating summary…</span>
+            </div>
+            <div style={{ padding: "0 12px" }} aria-label="Generating summary">
+              <div className="skel skel--text" style={{ width: "92%" }}/>
+              <div className="skel skel--text" style={{ width: "84%", marginTop: 6 }}/>
+              <div className="skel skel--text" style={{ width: "67%", marginTop: 6 }}/>
+            </div>
+          </div>
+        ) : file.aiContent ? (
           <div className="preview__section">
             <div className="preview__section-label">Description</div>
             <div style={{
@@ -765,49 +1503,45 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
               </div>
             )}
           </div>
-        ) : file.pendingSummary ? (
-          <div className="preview__section">
-            <div className="preview__section-label">
-              Description
-              <span className="kicker" style={{ marginLeft: 8, color: "var(--ink-3)" }}>generating…</span>
-            </div>
-            <div style={{ padding: "0 12px" }}>
-              <div className="skel skel--text" style={{ width: "92%" }}/>
-              <div className="skel skel--text" style={{ width: "84%", marginTop: 6 }}/>
-              <div className="skel skel--text" style={{ width: "67%", marginTop: 6 }}/>
-            </div>
-          </div>
         ) : null}
 
         {isFaceCapable && imagePeople.length > 0 && (
           <div className="preview__section">
-            <div className="preview__section-label">{isVideo ? "People in this video" : "People in this photo"}</div>
+            <div className="preview__section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span>{isVideo ? "People in this video" : "People in this photo"}</span>
+              {/* Delete-this-person affordance — surfaced when the
+                  gallery is drilled into a specific person (a person-
+                  filtered set), satisfying "delete a person from the
+                  mini preview". Removes the whole Person via the
+                  parent's confirm + cache invalidation. */}
+              {activePerson?.personId && onDeletePerson && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  style={{ padding: "2px 8px", fontSize: 11, color: "var(--danger)" }}
+                  onClick={() => onDeletePerson({ personId: activePerson.personId, name: activePerson.name })}
+                  title={`Delete ${activePerson.name || "this person"}`}
+                >
+                  <Icon name="trash" size={11}/> Delete person
+                </button>
+              )}
+            </div>
             <div className="preview__faces">
-              {imagePeople.map((p) => {
-                const labelled = !!p.person_display_name;
-                return (
-                  <div className="face-chip" key={p.face_id}>
-                    <AuthedThumb
-                      url={faceCropUrl(p.face_id)}
-                      className="face-chip__avatar"
-                      placeholder={{ background: "var(--surface-2)" }}
-                    />
-                    <EditableName
-                      name={p.person_display_name}
-                      // Per-detection relabel so correcting one
-                      // misdetection doesn't drag every photo of the
-                      // originally-grouped person along with it.
-                      detectionId={p.detection_id}
-                      // Pass clusterId as a fallback for the rare
-                      // case where the detection has no Face row yet —
-                      // the cluster path creates the Person fresh.
-                      clusterId={p.face_id ? null : p.cluster_id}
-                      className={"face-chip__name" + (labelled ? "" : " face-chip__name--unnamed")}
-                      invalidate={[["image-people", file.id], ["people"]]}
-                    />
-                  </div>
-                );
-              })}
+              {imagePeople.map((p) => (
+                <FaceChip
+                  key={p.face_id ?? `c${p.cluster_id}`}
+                  face={p}
+                  file={file}
+                  people={people}
+                  onDeletePerson={onDeletePerson}
+                />
+              ))}
+            </div>
+            {/* One-line hint so the user knows the chips are correctable
+                — addresses "opening a person shows images that don't
+                contain them" by pointing at the fix affordance. */}
+            <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 6, lineHeight: 1.45 }}>
+              Wrong match? Use the ⋯ on a face to remove it or move it to the right person.
             </div>
           </div>
         )}
@@ -848,51 +1582,81 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user }) {
         )}
 
         <div className="preview__section">
-          <div className="preview__section-label">Tags</div>
-          <div className="ptags">
-            {tags.map(t => {
-              const tone =
-                /favorite|fav/i.test(t) ? "ink" :
-                /review/i.test(t) ? "warn" :
-                /shared/i.test(t) ? "info" :
-                /private|archived/i.test(t) ? "muted" :
-                /wip|work/i.test(t) ? "ok" : undefined;
-              return (
-                <span key={t} className="ptag" data-tone={tone}>
-                  {t}
-                  <button className="ptag__x" onClick={() => removeTag(t)} aria-label={`Remove ${t}`}>
-                    <Icon name="x" size={9} strokeWidth={2.4}/>
-                  </button>
-                </span>
-              );
-            })}
-            <div className="ptag-add">
-              <input
-                value={draft}
-                placeholder={tags.length ? "Add tag" : "Add a tag…"}
-                onFocus={() => setShowSuggest(true)}
-                onBlur={() => setTimeout(() => setShowSuggest(false), 160)}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && draft.trim()) addTag(draft);
-                  if (e.key === "Backspace" && !draft && tags.length) removeTag(tags[tags.length - 1]);
-                }}
-              />
-              {showSuggest && (
-                <div className="ptag-pop" onMouseDown={(e) => e.preventDefault()}>
-                  {TAG_SUGGESTIONS.filter(s => !tags.includes(s) && s.toLowerCase().includes(draft.toLowerCase())).slice(0, 8).map(s => (
-                    <button key={s} className="ptag-pop__item" onClick={() => addTag(s)}>
-                      <Icon name="plus" size={10}/> {s}
+          {/* Collapsible Tags disclosure. The header is a real <button>
+              (aria-expanded) with a chevron that rotates open/closed; the
+              chip list + add-field live in the animated region below.
+              Only the tag CHIPS collapse — the "Shared with" block stays
+              visible underneath. */}
+          <button
+            type="button"
+            className="preview__disclosure"
+            aria-expanded={tagsOpen}
+            aria-controls="preview-tags-region"
+            onClick={toggleTagsOpen}
+          >
+            <Icon
+              name="chevronRight"
+              size={13}
+              className="preview__disclosure-chev"
+              data-open={tagsOpen ? "true" : "false"}
+            />
+            <span className="preview__disclosure-label">Tags</span>
+            {tags.length > 0 && (
+              <span className="preview__disclosure-count">{tags.length}</span>
+            )}
+          </button>
+          <div
+            id="preview-tags-region"
+            className="preview-collapse"
+            data-open={tagsOpen ? "true" : "false"}
+          >
+           <div className="preview-collapse__inner">
+            <div className="ptags">
+              {tags.map(t => {
+                const tone =
+                  /favorite|fav/i.test(t) ? "ink" :
+                  /review/i.test(t) ? "warn" :
+                  /shared/i.test(t) ? "info" :
+                  /private|archived/i.test(t) ? "muted" :
+                  /wip|work/i.test(t) ? "ok" : undefined;
+                return (
+                  <span key={t} className="ptag" data-tone={tone}>
+                    {t}
+                    <button className="ptag__x" onClick={() => removeTag(t)} aria-label={`Remove ${t}`}>
+                      <Icon name="x" size={9} strokeWidth={2.4}/>
                     </button>
-                  ))}
-                  {draft.trim() && !TAG_SUGGESTIONS.includes(draft.trim()) && (
-                    <button className="ptag-pop__item ptag-pop__item--new" onClick={() => addTag(draft)}>
-                      <Icon name="sparkles" size={10}/> Create "{draft.trim()}"
-                    </button>
-                  )}
-                </div>
-              )}
+                  </span>
+                );
+              })}
+              <div className="ptag-add">
+                <input
+                  value={draft}
+                  placeholder={tags.length ? "Add tag" : "Add a tag…"}
+                  onFocus={() => setShowSuggest(true)}
+                  onBlur={() => setTimeout(() => setShowSuggest(false), 160)}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && draft.trim()) addTag(draft);
+                    if (e.key === "Backspace" && !draft && tags.length) removeTag(tags[tags.length - 1]);
+                  }}
+                />
+                {showSuggest && (
+                  <div className="ptag-pop" onMouseDown={(e) => e.preventDefault()}>
+                    {TAG_SUGGESTIONS.filter(s => !tags.includes(s) && s.toLowerCase().includes(draft.toLowerCase())).slice(0, 8).map(s => (
+                      <button key={s} className="ptag-pop__item" onClick={() => addTag(s)}>
+                        <Icon name="plus" size={10}/> {s}
+                      </button>
+                    ))}
+                    {draft.trim() && !TAG_SUGGESTIONS.includes(draft.trim()) && (
+                      <button className="ptag-pop__item ptag-pop__item--new" onClick={() => addTag(draft)}>
+                        <Icon name="sparkles" size={10}/> Create "{draft.trim()}"
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
+           </div>
           </div>
 
           {/* Shared with — live data from /images/{id}/shares (todo §1.1 / G1).

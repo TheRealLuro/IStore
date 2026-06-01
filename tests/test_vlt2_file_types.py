@@ -63,8 +63,26 @@ def test_scriptable_text_under_weird_ext_rejected():
 
 
 def test_plain_text_under_weird_ext_accepted_as_document():
+    # ANY UTF-8-clean text file is now made VIEWABLE rather than
+    # download-only: an unrecognized-but-textual extension earns a
+    # viewable `text/x-<token>` MIME (derived from the extension) so the
+    # FE renders it through the code preview, with a graceful
+    # plain-monospace fallback when there's no Prism grammar. A clean
+    # identifier extension like `weirdext` yields `text/x-weirdext`.
     payload = b"just some plain notes\nwith multiple lines\n" * 10
     mime, category = detect_magic(payload, "notes.weirdext")
+    assert category == "document"
+    assert mime == "text/x-weirdext"
+    # The key invariant either way: it's a viewable text MIME, never the
+    # download-only octet-stream.
+    assert mime.startswith("text/")
+
+
+def test_no_extension_text_still_plain_text():
+    # A text file with NO usable extension still falls back to the
+    # generic viewable `text/plain` (no language token to derive).
+    payload = b"plain notes, no extension at all\n" * 10
+    mime, category = detect_magic(payload, "NOTES")
     assert category == "document"
     assert mime == "text/plain"
 

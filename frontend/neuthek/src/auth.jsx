@@ -496,6 +496,19 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
       );
       const u = await login(email, pwd);
       setUser(u);
+      // Marketing-site newsletter opt-in collected in the consents
+      // modal. Fire it AFTER login (the endpoint needs the session) and
+      // best-effort — a failure here must never block the user landing
+      // in their freshly-created account, so we swallow errors. The
+      // user can always re-toggle it in Settings → Privacy.
+      if (payload.newsletter) {
+        try {
+          const { optInNewsletter } = await import("@/api/consent");
+          await optInNewsletter();
+        } catch {
+          /* non-fatal — newsletter opt-in is best-effort at signup */
+        }
+      }
       if (redirectIfNext()) return;
       onSignedIn?.({ name: name.trim() || "You", email });
     } catch (e) {

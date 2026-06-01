@@ -948,6 +948,24 @@ def _icloud_extract_trusted_phone(svc) -> dict | None:
     return phone if isinstance(phone, dict) else None
 
 
+def _redact_label(label: object) -> str:
+    """Mask a trusted-device label before it hits the logs.
+
+    The label is built from Apple's raw device dict and may be a full
+    phone number (`numberWithDialCode` / `phoneNumber`) or a personal
+    device name — both PII / clear-text-sensitive (CWE-312) if logged
+    verbatim. We keep only the last 2 characters visible so an operator
+    can still tell device A from device B across log lines, and replace
+    the rest with `***`. User-facing surfaces (HTTP responses) keep the
+    full label intentionally — the user owns the device — but logs do
+    not need it.
+    """
+    s = str(label) if label is not None else ""
+    if len(s) <= 2:
+        return "***"
+    return "***" + s[-2:]
+
+
 async def _icloud_trigger_sms(svc) -> str | None:
     """Ask Apple to SMS a verification code to the trusted phone. Used
     as the fallback when trusted-device verification is account-
@@ -1477,7 +1495,8 @@ async def icloud_resend_code(
         await asyncio.to_thread(svc.send_verification_code, pick)
     except Exception:
         logger.exception(
-            "icloud_resend: send_verification_code failed on %r", label
+            "icloud_resend: send_verification_code failed on %s",
+            _redact_label(label),
         )
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,

@@ -588,6 +588,18 @@ html[data-theme="dark"] summary:focus-visible { outline-color: rgba(255,255,255,
   box-shadow: var(--shadow-2);
   display: flex; flex-direction: column;
 }
+/* Right-aligned variant — anchor the panel's right edge to the
+ * trigger's right edge so it opens leftward. Used by controls that
+ * sit flush against the right side of their container (e.g. the
+ * People-tab view dropdown), where the default left-anchored panel
+ * would extend past the viewport edge and force a horizontal
+ * scrollbar. `max-width` keeps it from spilling off-screen on very
+ * narrow viewports. */
+.sort-dd__panel--right {
+  left: auto;
+  right: 0;
+  max-width: calc(100vw - 24px);
+}
 .sort-dd__opt {
   display: flex; align-items: center; justify-content: space-between;
   padding: 7px 10px;
@@ -1246,10 +1258,87 @@ mark {
 }
 .face-chip__name { color: var(--ink); }
 .face-chip__name--unnamed { color: var(--ink-3); font-style: italic; }
+/* Per-face correction trigger (the ⋯ on each face chip). Subtle until
+ * the chip is hovered so the row stays calm; full-contrast on its own
+ * hover. Sits flush against the right edge of the pill. */
+.face-chip__fix {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  margin-left: -2px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 999px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 120ms var(--ease), background 120ms var(--ease), color 120ms var(--ease);
+}
+.face-chip:hover .face-chip__fix { opacity: 1; }
+.face-chip__fix:hover { background: var(--surface-2); color: var(--ink); }
+.face-chip__fix:disabled { cursor: default; opacity: 0.4; }
 .face-chip__avatar--me {
   background: var(--ink); color: var(--surface);
   display: grid; place-items: center;
   font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+}
+
+/* Live name filter at the top of the FaceChip menu's "Move to" section.
+ * A search glyph + borderless input housed in a soft pill so it reads
+ * as part of the portaled `.cardmenu` rather than a standalone field.
+ * Auto-focused when the menu opens (see FaceChip in preview.jsx). */
+.cardmenu__search {
+  display: flex; align-items: center; gap: 7px;
+  margin: 2px 6px 4px;
+  padding: 0 9px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+}
+.cardmenu__search:focus-within {
+  border-color: var(--ink-3);
+  color: var(--ink-2);
+}
+.cardmenu__search-input {
+  flex: 1; min-width: 0;
+  background: transparent; border: none; outline: none;
+  font: inherit; font-size: 13px; color: var(--ink);
+}
+.cardmenu__search-input::placeholder { color: var(--ink-3); }
+/* "No matching people" line shown when the filter excludes everyone. */
+.cardmenu__empty {
+  padding: 8px 12px;
+  font-size: 12.5px; color: var(--ink-3); font-style: italic;
+}
+
+/* People-tab card delete affordance — hover-revealed pill in the
+ * top-right of the face tile. Hidden until the user hovers the card
+ * (or focuses the button via keyboard) so the grid stays calm; turns
+ * danger-red on its own hover so the destructive intent is clear. */
+.person-card__del {
+  position: absolute;
+  top: 8px; right: 8px;
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 999px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 120ms var(--ease), transform 120ms var(--ease), background 120ms var(--ease);
+}
+.person-card:hover .person-card__del,
+.person-card__del:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+.person-card__del:hover { background: var(--danger); }
+/* Touch / coarse-pointer devices have no hover — keep the button
+ * visible (but subtle) so it's reachable without a hover state. */
+@media (hover: none) {
+  .person-card__del { opacity: 0.85; transform: scale(1); }
 }
 
 .preview__retry {
@@ -2632,6 +2721,40 @@ html[data-theme="dark"] .cat-iot {
 }
 .typechip__count { font-size: 11px; opacity: 0.7; font-variant-numeric: tabular-nums; }
 
+/* Numbered page navigation under the gallery grid. Prev / 1 2 3 … N /
+   Next, with a right-aligned "21–40 of 573" summary. */
+.pager {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 22px 0 6px; padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.pager__pages { display: inline-flex; align-items: center; gap: 4px; }
+.pager__btn,
+.pager__page {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  min-width: 32px; height: 32px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--ink-2);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: all 0.16s var(--ease);
+}
+.pager__page { padding: 0 6px; }
+.pager__btn:hover:not(:disabled),
+.pager__page:hover:not([data-active="true"]) {
+  border-color: var(--ink-4); color: var(--ink);
+}
+.pager__page[data-active="true"] {
+  background: var(--ink); color: var(--surface);
+  border-color: var(--ink); cursor: default; font-weight: 600;
+}
+.pager__btn:disabled { opacity: 0.45; cursor: default; }
+.pager__ellipsis {
+  min-width: 20px; text-align: center;
+  color: var(--ink-3); font-size: 13px; user-select: none;
+}
+.pager__summary { margin-left: auto; font-size: 11.5px; color: var(--ink-3); }
+
 /* status tags on cards */
 .tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .tag {
@@ -3047,19 +3170,35 @@ html[data-theme="dark"] .cat-iot {
 .modal__body::-webkit-scrollbar,
 .preview__body::-webkit-scrollbar,
 .cs-prose::-webkit-scrollbar,
-.gallery::-webkit-scrollbar {
+.gallery::-webkit-scrollbar,
+.pdf-modal__body::-webkit-scrollbar,
+.code-preview__body::-webkit-scrollbar {
   width: 10px; height: 10px;
+}
+/* Code/doc viewers: match the app's thin scrollbar (Firefox) + a
+   skinnier code modal so long lines read better. */
+.pdf-modal__body, .code-preview__body {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+.pdf-modal.pdf-modal--code {
+  width: fit-content;
+  max-width: min(840px, 94vw);
 }
 .modal__body::-webkit-scrollbar-track,
 .preview__body::-webkit-scrollbar-track,
 .cs-prose::-webkit-scrollbar-track,
-.gallery::-webkit-scrollbar-track {
+.gallery::-webkit-scrollbar-track,
+.pdf-modal__body::-webkit-scrollbar-track,
+.code-preview__body::-webkit-scrollbar-track {
   background: transparent;
 }
 .modal__body::-webkit-scrollbar-thumb,
 .preview__body::-webkit-scrollbar-thumb,
 .cs-prose::-webkit-scrollbar-thumb,
-.gallery::-webkit-scrollbar-thumb {
+.gallery::-webkit-scrollbar-thumb,
+.pdf-modal__body::-webkit-scrollbar-thumb,
+.code-preview__body::-webkit-scrollbar-thumb {
   background: var(--line-2);
   border-radius: 999px;
   border: 2px solid var(--surface);
@@ -3073,6 +3212,528 @@ html[data-theme="dark"] .cat-iot {
   background-clip: padding-box;
   border: 2px solid var(--surface);
 }
+/* code body wasn't in the shared :hover group above — give it the same
+   brighten on hover so the thumb matches the rest of the app. */
+.code-preview__body::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
+  background-clip: padding-box;
+  border: 2px solid var(--surface);
+}
+
+/* ============================================================
+   Code viewer (CodePreview) — VS-Code/GitHub-flavored source view.
+   Lives inside .pdf-modal--code; renders its own toolbar, a sticky
+   line-number gutter, find-in-file highlights, and a tuned Prism
+   dark token theme. Stays monochrome/minimal to match neuthek.
+   ============================================================ */
+.code-preview {
+  --cv-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+             Consolas, "Liberation Mono", monospace;
+  --cv-fs: 12.75px;
+  --cv-lh: 1.6;
+  --cv-gutter-fg: var(--ink-3);
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* min-width:0 so a single very long unbroken line (white-space:pre) can't
+     force the root past the modal's max-width before the body's overflow
+     scroll engages — the body clamps + scrolls instead of widening the box. */
+  min-width: 0;
+  background: var(--surface);
+  color: var(--ink);
+  outline: none;            /* focusable for keyboard shortcuts, no ring */
+  font-feature-settings: "liga" 0, "calt" 0;  /* no ligatures in code */
+}
+.code-preview--msg {
+  padding: 16px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+/* ---- header toolbar ---- */
+.code-preview__toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 8px 0 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.code-preview__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+.code-preview__metaitem { white-space: nowrap; }
+.code-preview__lang {
+  font-family: var(--cv-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-2);
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  white-space: nowrap;
+}
+.code-preview__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ---- toolbar buttons ---- */
+.code-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 160ms var(--ease), color 160ms var(--ease),
+              border-color 160ms var(--ease);
+}
+.code-tool:hover { background: var(--surface-3); color: var(--ink); }
+.code-tool:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+.code-tool__label { line-height: 1; }
+.code-tool[data-active="true"] {
+  background: var(--surface-4);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.code-tool[data-ok="true"] { color: var(--success); }
+.code-tool[data-ok="true"]:hover { color: var(--success); background: var(--success-soft); }
+
+/* ---- find-in-file field ---- */
+.code-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: var(--shadow-1);
+}
+.code-find:focus-within { border-color: var(--ink-3); }
+.code-find__icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.code-find__input {
+  width: 150px;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 0 4px;
+}
+.code-find__input::placeholder { color: var(--ink-3); }
+.code-find__count {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 0 4px;
+  min-width: 34px;
+  text-align: right;
+}
+.code-find__nav {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease);
+}
+.code-find__nav:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+.code-find__nav:disabled { color: var(--ink-4); cursor: default; }
+
+/* ---- truncation banner ---- */
+.code-preview__banner {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  font-size: 11.5px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- scroll body + table ---- */
+.code-preview__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--cv-mono);
+  font-size: var(--cv-fs);
+  line-height: var(--cv-lh);
+  tab-size: 4;
+  -moz-tab-size: 4;
+}
+.code-preview__table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  width: 100%;
+}
+
+/* line-number gutter — sticky, right-aligned, non-selectable */
+.code-preview__ln {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 1%;
+  white-space: nowrap;
+  vertical-align: top;
+  text-align: right;
+  padding: 0 12px 0 16px;
+  color: var(--cv-gutter-fg);
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: color 120ms var(--ease);
+}
+.code-preview__ln:hover { color: var(--ink); }
+
+/* code column — pre by default, soft-wrap when data-wrap="wrap" */
+.code-preview__code {
+  padding: 0 16px 0 16px;
+  vertical-align: top;
+  white-space: pre;
+  width: 100%;
+}
+.code-preview[data-wrap="wrap"] .code-preview__code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.code-preview__code > span { display: inline; }
+
+/* current line (clicked gutter / #Lnn anchor) */
+.code-preview__table tr.is-active .code-preview__code {
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--ink-3);
+}
+.code-preview__table tr.is-active .code-preview__ln {
+  color: var(--ink);
+  background: color-mix(in oklab, var(--ink) 7%, var(--surface));
+}
+/* row hover — a barely-there tint to track the eye across long lines */
+.code-preview__table tr:hover .code-preview__code {
+  background: color-mix(in oklab, var(--ink) 3.5%, transparent);
+}
+.code-preview__table tr.is-active:hover .code-preview__code {
+  background: color-mix(in oklab, var(--ink) 8%, transparent);
+}
+
+/* ---- find-in-file match highlight ---- */
+.code-preview .cv-hit {
+  background: color-mix(in oklab, var(--warning) 38%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--warning) 55%, transparent);
+}
+.code-preview .cv-hit--current {
+  background: var(--warning);
+  color: #0a0a0a;
+  box-shadow: 0 0 0 1px var(--warning);
+}
+
+/* ============================================================
+   Prism token theme — tuned for the dark surface (#161616).
+   Scoped to .code-preview so it never leaks into other Prism use.
+   Goal: keywords / strings / comments / numbers clearly distinct
+   but calm, not a rainbow. Light theme gets a muted variant.
+   ============================================================ */
+.code-preview .token.comment,
+.code-preview .token.prolog,
+.code-preview .token.cdata {
+  color: var(--ink-3);
+  font-style: italic;
+}
+.code-preview .token.doctype,
+.code-preview .token.punctuation { color: var(--ink-2); }
+.code-preview .token.namespace { opacity: 0.7; }
+
+html[data-theme="dark"] .code-preview .token.keyword,
+html[data-theme="dark"] .code-preview .token.rule,
+html[data-theme="dark"] .code-preview .token.important,
+html[data-theme="dark"] .code-preview .token.atrule { color: #c4a0ff; }
+html[data-theme="dark"] .code-preview .token.boolean,
+html[data-theme="dark"] .code-preview .token.constant,
+html[data-theme="dark"] .code-preview .token.number,
+html[data-theme="dark"] .code-preview .token.symbol { color: #f2b27a; }
+html[data-theme="dark"] .code-preview .token.string,
+html[data-theme="dark"] .code-preview .token.char,
+html[data-theme="dark"] .code-preview .token.attr-value,
+html[data-theme="dark"] .code-preview .token.regex,
+html[data-theme="dark"] .code-preview .token.inserted { color: #9ed98a; }
+html[data-theme="dark"] .code-preview .token.function,
+html[data-theme="dark"] .code-preview .token.method,
+html[data-theme="dark"] .code-preview .token.class-name,
+html[data-theme="dark"] .code-preview .token.maybe-class-name { color: #6cc6ff; }
+html[data-theme="dark"] .code-preview .token.tag,
+html[data-theme="dark"] .code-preview .token.selector,
+html[data-theme="dark"] .code-preview .token.deleted { color: #f08fa8; }
+html[data-theme="dark"] .code-preview .token.attr-name,
+html[data-theme="dark"] .code-preview .token.property,
+html[data-theme="dark"] .code-preview .token.variable,
+html[data-theme="dark"] .code-preview .token.parameter { color: #e6c06a; }
+html[data-theme="dark"] .code-preview .token.operator,
+html[data-theme="dark"] .code-preview .token.entity,
+html[data-theme="dark"] .code-preview .token.url { color: #8fd0c8; }
+html[data-theme="dark"] .code-preview .token.builtin { color: #6cc6ff; }
+
+/* Light theme — muted, ink-leaning so it stays on-brand on white. */
+html:not([data-theme="dark"]) .code-preview .token.keyword,
+html:not([data-theme="dark"]) .code-preview .token.atrule,
+html:not([data-theme="dark"]) .code-preview .token.rule,
+html:not([data-theme="dark"]) .code-preview .token.important { color: #7c3aed; }
+html:not([data-theme="dark"]) .code-preview .token.boolean,
+html:not([data-theme="dark"]) .code-preview .token.constant,
+html:not([data-theme="dark"]) .code-preview .token.number,
+html:not([data-theme="dark"]) .code-preview .token.symbol { color: #b45309; }
+html:not([data-theme="dark"]) .code-preview .token.string,
+html:not([data-theme="dark"]) .code-preview .token.char,
+html:not([data-theme="dark"]) .code-preview .token.attr-value,
+html:not([data-theme="dark"]) .code-preview .token.regex,
+html:not([data-theme="dark"]) .code-preview .token.inserted { color: #15803d; }
+html:not([data-theme="dark"]) .code-preview .token.function,
+html:not([data-theme="dark"]) .code-preview .token.method,
+html:not([data-theme="dark"]) .code-preview .token.class-name,
+html:not([data-theme="dark"]) .code-preview .token.builtin,
+html:not([data-theme="dark"]) .code-preview .token.maybe-class-name { color: #2563eb; }
+html:not([data-theme="dark"]) .code-preview .token.tag,
+html:not([data-theme="dark"]) .code-preview .token.selector,
+html:not([data-theme="dark"]) .code-preview .token.deleted { color: #be185d; }
+html:not([data-theme="dark"]) .code-preview .token.attr-name,
+html:not([data-theme="dark"]) .code-preview .token.property,
+html:not([data-theme="dark"]) .code-preview .token.variable { color: #a16207; }
+html:not([data-theme="dark"]) .code-preview .token.operator,
+html:not([data-theme="dark"]) .code-preview .token.entity,
+html:not([data-theme="dark"]) .code-preview .token.url { color: #0f766e; }
+
+.code-preview .token.bold { font-weight: 600; }
+.code-preview .token.italic { font-style: italic; }
+
+/* ============================================================
+   Log mode — severity-colored `.log` rendering.
+   The viewer drops Prism and runs a line classifier: each row gets
+   a subtle left accent bar keyed to its level, the level keyword is
+   tinted, and timestamps are dimmed. A legend in the toolbar shows
+   per-level counts and toggles line visibility. Level colors are
+   defined as local tokens so they theme correctly (light/dark) and
+   reuse the app's danger/warning palette; INFO/DEBUG get calm tones.
+   ============================================================ */
+.code-preview {
+  --cv-log-error: var(--danger);
+  --cv-log-warn:  var(--warning);
+  --cv-log-info:  #2563eb;   /* cool blue — matches the Prism light blue */
+  --cv-log-debug: var(--ink-3);
+}
+html[data-theme="dark"] .code-preview {
+  --cv-log-info:  #6cc6ff;   /* brighter blue for the dark surface */
+}
+
+/* timestamp + level keyword tints inside a log line */
+.code-preview .cv-log-ts {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.code-preview .cv-log-kw {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.code-preview .cv-log-kw--error { color: var(--cv-log-error); }
+.code-preview .cv-log-kw--warn  { color: var(--cv-log-warn); }
+.code-preview .cv-log-kw--info  { color: var(--cv-log-info); }
+.code-preview .cv-log-kw--debug { color: var(--cv-log-debug); }
+
+/* per-row left accent bar + faint row tint, keyed off data-level.
+   The accent sits on the gutter cell so it reads as a continuous
+   rail down the left edge; the body tint is kept very subtle so it's
+   a calm classification, not a garish full-row fill. */
+.code-preview[data-logmode="true"] .code-preview__ln {
+  box-shadow: inset 3px 0 0 transparent;
+}
+.code-preview__table tr[data-level="error"] .code-preview__ln { box-shadow: inset 3px 0 0 var(--cv-log-error); }
+.code-preview__table tr[data-level="warn"]  .code-preview__ln { box-shadow: inset 3px 0 0 var(--cv-log-warn); }
+.code-preview__table tr[data-level="info"]  .code-preview__ln { box-shadow: inset 3px 0 0 var(--cv-log-info); }
+.code-preview__table tr[data-level="debug"] .code-preview__ln { box-shadow: inset 3px 0 0 var(--cv-log-debug); }
+
+.code-preview__table tr[data-level="error"] .code-preview__code {
+  background: color-mix(in oklab, var(--cv-log-error) 6%, transparent);
+}
+.code-preview__table tr[data-level="warn"] .code-preview__code {
+  background: color-mix(in oklab, var(--cv-log-warn) 6%, transparent);
+}
+/* info/debug get no body fill — only the rail + keyword tint — so the
+   page stays calm and errors/warnings pop. debug text is also dimmed. */
+.code-preview__table tr[data-level="debug"] .code-preview__code { color: var(--ink-2); }
+
+/* keep the active-line + hover tints winning over the level fill so the
+   row you clicked / point at still reads as "current". */
+.code-preview__table tr[data-level] .code-preview__code { transition: background 120ms var(--ease); }
+.code-preview__table tr[data-level].is-active .code-preview__code {
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+}
+.code-preview__table tr[data-level]:hover .code-preview__code {
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+}
+
+/* a level chip can collapse its lines; the row stays in the DOM (line
+   numbers keep their real values) but takes no height. */
+.code-preview__table tr.is-filtered { display: none; }
+
+/* the LOG badge variant of the lang pill */
+.code-preview__lang--log {
+  color: var(--ink-2);
+  border-color: var(--line);
+}
+
+/* ---- log level legend / filter (toolbar) ---- */
+.code-loglegend {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-left: 4px;
+  margin-left: 2px;
+  border-left: 1px solid var(--line);
+}
+.code-loglegend__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: background 140ms var(--ease), color 140ms var(--ease),
+              border-color 140ms var(--ease), opacity 140ms var(--ease);
+}
+.code-loglegend__chip:hover { background: var(--surface-3); color: var(--ink); }
+.code-loglegend__chip:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.code-loglegend__dot {
+  width: 7px; height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--lvl, var(--ink-3));
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--lvl, var(--ink-3)) 18%, transparent);
+}
+.code-loglegend__chip[data-level="error"] { --lvl: var(--cv-log-error); }
+.code-loglegend__chip[data-level="warn"]  { --lvl: var(--cv-log-warn); }
+.code-loglegend__chip[data-level="info"]  { --lvl: var(--cv-log-info); }
+.code-loglegend__chip[data-level="debug"] { --lvl: var(--cv-log-debug); }
+.code-loglegend__count { color: var(--ink-3); font-weight: 600; }
+.code-loglegend__chip:hover .code-loglegend__count { color: var(--ink-2); }
+/* a toggled-off level dims to read as "hidden", keeps its accent dot
+   so it's still identifiable, and strikes the count. */
+.code-loglegend__chip[data-off="true"] {
+  opacity: 0.5;
+  background: transparent;
+  border-style: dashed;
+}
+.code-loglegend__chip[data-off="true"] .code-loglegend__dot { background: var(--ink-4); box-shadow: none; }
+.code-loglegend__chip[data-off="true"] .code-loglegend__label { text-decoration: line-through; }
+
+/* ============================================================
+   Premium finish — refined gutter, current-line, find UI, and
+   loading / empty states for the code + log viewer. These layer on
+   top of the base rules above without disturbing them.
+   ============================================================ */
+
+/* the message placeholder (loading / error / empty) gets a centered,
+   breathing layout with a soft spinner instead of bare left text. The
+   modal shrink-wraps, so give it a sensible min footprint without
+   forcing blank space onto short real content. */
+.code-preview--msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 88px;
+  min-width: 220px;
+  padding: 22px 24px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  text-align: center;
+}
+.code-preview--msg::before {
+  content: "";
+  width: 13px; height: 13px;
+  border-radius: 999px;
+  border: 2px solid var(--line);
+  border-top-color: var(--ink-3);
+  animation: cv-spin 0.7s linear infinite;
+}
+/* error/empty variants: no spinner, just the message. */
+.code-preview--msg.code-preview--err::before,
+.code-preview--msg.code-preview--empty::before { content: none; }
+@keyframes cv-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .code-preview--msg::before { animation: none; }
+}
+
+/* tabular, evenly-tracked line numbers + a crisper hairline. */
+.code-preview__ln {
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: 0.02em;
+  font-size: 11.5px;
+  opacity: 0.9;
+}
+.code-preview[data-logmode="true"] .code-preview__ln { padding-left: 14px; }
+
+/* gentle inner top/bottom padding so the first line isn't jammed to the
+   toolbar and the last clears the scrollbar. Applied to the scroll body
+   (tables don't honor padding under border-collapse). */
+.code-preview__body { padding-block: 4px; }
 
 /* legacy section retained */
 .bestof-criteria { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -3645,6 +4306,7 @@ html[data-theme="dark"] .cat-iot {
 
 /* ----------- Audio player ---------------------------------- */
 .audio-player {
+  position: relative;
   width: min(560px, 92vw);
   background: var(--surface);
   border: 1px solid var(--line);
@@ -3653,6 +4315,12 @@ html[data-theme="dark"] .cat-iot {
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   display: flex; flex-direction: column; gap: 14px;
   color: var(--ink);
+}
+.audio-player__close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
 }
 .audio-player__art {
   display: flex; flex-direction: column; align-items: center; gap: 8px;

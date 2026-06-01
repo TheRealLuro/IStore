@@ -184,6 +184,57 @@ async def compute_used_bytes_fast(
 
     return served + originals + trash + vault
 
+
+async def enforce_storage_quota(
+    session: AsyncSession, user: User, incoming_bytes: int,
+) -> None:
+    """Reject an upload that would push the account over its storage
+    quota. Raises HTTP 413 with a clear message when over.
+
+    This is the cumulative-footprint gate the main `POST /images/` and
+    folder-archive upload routes were MISSING — `enforce_upload_limits`
+    in security.py only caps per-file size + uploads-per-hour +
+    bytes-per-DAY (a rate limit), not total bytes on disk. Without this,
+    a user uploading within their daily rate limit day after day could
+    fill the host disk unbounded. The Vault (`api/vault.py`) and
+    cloud-sync (`cloud_sync.py`) paths already enforce the quota via
+    `compute_used_bytes_fast`; this brings the primary upload paths to
+    parity using the same fast SQL estimate.
+
+    The estimate is intentionally the cheap variant (no per-video MinIO
+    stat walk) so it adds one set of indexed SUM queries per upload, not
+    O(videos) network round-trips. It slightly under-counts video
+    variants, which only makes the gate marginally permissive at the
+    boundary — acceptable for a guardrail whose job is to stop runaway
+    disk growth, not to bill to the byte.
+
+    Best-effort by design: if the usage query itself fails we log and
+    allow the upload rather than block ingestion on a transient DB
+    hiccup (the per-file + daily-byte limits still apply, and the next
+    upload re-checks).
+    """
+    try:
+        used = await compute_used_bytes_fast(session, user.id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "enforce_storage_quota: usage probe failed for %s — allowing upload",
+            user.id,
+        )
+        return
+    quota = effective_quota_bytes(user)
+    if used + incoming_bytes > quota:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                "Storage quota exceeded. This upload needs "
+                f"{incoming_bytes:,} bytes but only "
+                f"{max(0, quota - used):,} of your "
+                f"{quota:,}-byte quota remains. Free up space "
+                "(empty Trash, drop retained originals) or upgrade your plan."
+            ),
+        )
+
 # Video variant labels the transcoder emits. The DEFAULT served tier
 # is what `served_blob_key` already points at — typically 1080p — and
 # its size lives in `byte_size_served`, so we exclude it from the

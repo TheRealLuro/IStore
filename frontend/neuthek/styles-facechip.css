@@ -1,0 +1,281 @@
+/* ============================================================
+   FaceChip "quick preview" correction popover
+   ------------------------------------------------------------
+   Visual refinement for the ⋯ menu on a face chip in the file
+   preview (FaceChip in src/preview.jsx). The popover's root
+   carries BOTH `cardmenu` (shared surface/shadow base) and
+   `face-menu` (its own class). Everything here is scoped to
+   `.face-menu` / `[data-face-menu]` so the folder/file card
+   menus that also use `.cardmenu` are completely unaffected.
+
+   Behavior is unchanged — this file is style only. The app is
+   monochrome, so the "accent" is var(--ink); focus rings follow
+   the app convention (box-shadow: 0 0 0 4px rgba(10,10,10,0.05)).
+   ============================================================ */
+
+/* ---- Popover shell ----------------------------------------
+   Elevate over the base .cardmenu: a touch more width for
+   legibility, slightly larger radius, comfortable padding, a
+   clean 1px border + a softer layered shadow. */
+.face-menu {
+  min-width: 232px;
+  max-width: 288px;
+  padding: 7px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.02) inset,
+    0 2px 6px -2px rgba(0, 0, 0, 0.16),
+    0 20px 48px -16px rgba(0, 0, 0, 0.34);
+}
+html[data-theme="dark"] .face-menu {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 24px 56px -18px rgba(0, 0, 0, 0.66);
+}
+
+/* ---- "Not <person>" destructive/secondary row -------------
+   Reads as the destructive action without screaming full-red:
+   a calm row by default with a danger-tinted leading icon
+   chip, tipping into a soft danger wash only on hover/focus. */
+.face-menu .face-menu__not {
+  height: 38px;
+  padding: 0 10px 0 8px;
+  border-radius: 11px;
+  color: var(--ink);
+  font-weight: 460;
+}
+.face-menu .face-menu__not:hover,
+.face-menu .face-menu__not:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.face-menu .face-menu__not-icon {
+  width: 24px; height: 24px;
+  flex-shrink: 0;
+  display: grid; place-items: center;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  transition: background 120ms var(--ease);
+}
+.face-menu .face-menu__not:hover .face-menu__not-icon,
+.face-menu .face-menu__not:focus-visible .face-menu__not-icon {
+  background: color-mix(in oklab, var(--danger) 16%, transparent);
+}
+.face-menu__not-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Separator + "MOVE TO" kicker -------------------------
+   Refined small-caps kicker with comfortable spacing above the
+   search field; the separator is hairline-soft. */
+.face-menu .face-menu__sep {
+  height: 1px;
+  margin: 6px 8px 2px;
+  background: var(--line-2);
+}
+.face-menu__kicker {
+  padding: 4px 12px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* ---- Search input -----------------------------------------
+   Rounded inset pill with the search glyph aligned, and a clear
+   accent focus ring matching the app convention. */
+.face-menu .face-menu__search {
+  margin: 0 6px 6px;
+  padding: 0 11px;
+  height: 36px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  gap: 8px;
+  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease), background 120ms var(--ease);
+}
+.face-menu .face-menu__search:focus-within {
+  background: var(--surface);
+  border-color: var(--ink);
+  color: var(--ink-2);
+  box-shadow: 0 0 0 4px rgba(10, 10, 10, 0.05);
+}
+html[data-theme="dark"] .face-menu .face-menu__search:focus-within {
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.06);
+}
+.face-menu .face-menu__search .cardmenu__search-input {
+  font-size: 13px;
+}
+
+/* ---- Scrollable name list ---------------------------------
+   Comfortable max-height with a thin scrollbar that matches the
+   rest of the app's treatment (see styles.css scrollbar group). */
+.face-menu .face-menu__list {
+  max-height: 248px;
+  overflow-y: auto;
+  padding-right: 2px;
+  gap: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+.face-menu .face-menu__list::-webkit-scrollbar { width: 10px; height: 10px; }
+.face-menu .face-menu__list::-webkit-scrollbar-track { background: transparent; }
+.face-menu .face-menu__list::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.face-menu .face-menu__list::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
+  background-clip: padding-box;
+}
+
+/* ---- Name rows --------------------------------------------
+   A round face-thumbnail avatar (or a refined fallback glyph)
+   plus the name. Comfortable row height, clear hover/active. */
+.face-menu .face-menu__row {
+  height: 40px;
+  padding: 0 10px 0 7px;
+  border-radius: 11px;
+  gap: 11px;
+  color: var(--ink);
+}
+.face-menu .face-menu__row:hover {
+  background: var(--surface-2);
+}
+.face-menu .face-menu__row:active {
+  background: color-mix(in oklab, var(--ink) 7%, var(--surface));
+}
+.face-menu .face-menu__row:focus-visible {
+  background: var(--surface-2);
+}
+
+.face-menu__avatar {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 999px;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.face-menu__avatar--fallback {
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  background: var(--surface-2);
+}
+.face-menu__row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+/* ---- Empty state ------------------------------------------
+   "No matching people" — calm, centered, with breathing room. */
+.face-menu .face-menu__empty {
+  padding: 14px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-3);
+}
+
+/* ============================================================
+   Preview disclosure (collapsible Tags section)
+   ------------------------------------------------------------
+   The preview's Tags section is collapsible (user: "tags should
+   be a colapsable"). The header is a button styled like the
+   `.preview__section-label` kicker, with a chevron that rotates
+   90° when open; the chip list lives in an animated region that
+   transitions height + opacity. Lives here (already-imported)
+   so no extra @import is needed. Generic `.preview__disclosure`
+   / `.preview-collapse` names so the pattern can be reused for
+   other preview sections later.
+   ============================================================ */
+.preview__disclosure {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* Match .preview__section-label's kicker treatment. */
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  transition: color 120ms var(--ease);
+}
+.preview__disclosure:hover { color: var(--ink-2); }
+.preview__disclosure:focus-visible {
+  outline: none;
+  color: var(--ink);
+}
+.preview__disclosure-chev {
+  flex-shrink: 0;
+  color: var(--ink-3);
+  transition: transform 180ms var(--ease), color 120ms var(--ease);
+  transform: rotate(0deg);
+}
+.preview__disclosure-chev[data-open="true"] { transform: rotate(90deg); }
+.preview__disclosure:hover .preview__disclosure-chev { color: var(--ink-2); }
+.preview__disclosure-label { line-height: 1; }
+.preview__disclosure-count {
+  /* Small pill with the tag count — like a chip counter. */
+  letter-spacing: 0;
+  font-weight: 600;
+  font-size: 10px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Animated collapse region. Uses a grid-rows 0fr→1fr transition
+   (smooth, content-height-agnostic) plus opacity. The inner
+   wrapper clips while collapsed; once open we let overflow show
+   so the absolutely-positioned tag-suggestion popover
+   (`.ptag-pop`) isn't clipped. */
+.preview-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 200ms var(--ease), opacity 180ms var(--ease);
+}
+.preview-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.preview-collapse__inner {
+  min-height: 0;
+  overflow: hidden;
+}
+/* After the open transition, reveal overflow so the suggestion
+   popover can escape the region. (Delay keeps it hidden during
+   the collapse-in so nothing flashes.) */
+.preview-collapse[data-open="true"] > .preview-collapse__inner {
+  overflow: visible;
+  transition: overflow 0s linear 200ms;
+}

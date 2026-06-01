@@ -839,3 +839,49 @@
   display: flex;
   gap: 2px;
 }
+
+/* ---- card / id / ssh_key (structured secret kinds) ---- */
+
+/* Brand badge shown inside the card-number field while typing + in detail. */
+.vault-card-brand {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  background: var(--surface-3, var(--surface-2));
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* When two detail rows sit side by side (expiry/CVV, issued/expires), don't
+   let either keep a divider that would clash with the row gap. */
+.vault-field-row > .vault-detail-row {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+  padding-top: 0;
+}
+
+/* A multiline secret block (SSH private/public key): a label + actions bar
+   over a scrollable monospace pre. */
+.vault-secretblock__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.vault-secretblock__pre {
+  max-height: 240px;
+  overflow: auto;
+  padding: 11px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink);
+}

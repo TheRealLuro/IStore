@@ -32,8 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.audit import add_audit
 from backend.auth.users import current_active_user
 from backend.db import get_session
-from backend.models import Face, FaceDetection, Image, ImagePerson, Person, User
-from backend.schemas import ImageRead, ImageSearchHit
+from backend.models import Face, FaceDetection, Folder, Image, ImagePerson, Person, User
+from backend.schemas import FolderSearchHit, ImageRead, ImageSearchHit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["search"])
@@ -392,6 +392,27 @@ async def semantic_search(
     q_clean = q.strip()
     if len(q_clean) < 2:
         return []
+
+    # Per-user rate limit. Every non-trivial query runs a CLIP text
+    # encode through the SINGLE-THREAD inference pool that ALSO serves
+    # Florence summarize + face detection (backend.vision.inference_pool).
+    # Without a cap, one authenticated account hammering /search can
+    # serialize the whole ML pipeline and starve upload-time
+    # summarization for every user. 120/min is far above any human
+    # type-ahead burst (the FE debounces) yet blocks a scripted flood.
+    # Wrapped so a Redis hiccup never breaks search itself.
+    try:
+        from backend.security import enforce_rate_limit
+        await enforce_rate_limit(
+            key=f"search:q:{user.id}",
+            limit=120,
+            window_seconds=60,
+            detail="Too many searches. Slow down for a moment.",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("search: rate-limit check failed (allowing query)")
 
     # --- person-aware rewrite ------------------------------------------
     # "photo of me" used to land on whatever image happened to contain
@@ -841,3 +862,196 @@ async def _text_search(
         image.id: (image, min(1.0, float(r) / max_rank))
         for image, r in rows
     }
+
+
+# ============================================================================
+# D4 — semantic folder search.
+#
+# Folders carry an aggregate embedding (folder name + the centroid of their
+# descendant images' summary embeddings — see backend/folder_embed.py).
+# `GET /search/folders` scores the query against that embedding (CLIP
+# cosine) plus a folder-name token match, using the same CLIP-led hybrid
+# blend the image search uses. It's returned as its own list so the image
+# `GET /search` contract is untouched; the FE renders folder hits above the
+# photo grid.
+# ============================================================================
+
+
+async def _folder_clip_search(
+    session: AsyncSession, user_id, query_vec, limit: int
+) -> dict:
+    """Top-k folders by CLIP cosine against their aggregate embedding.
+    Returns {folder_id: (folder, sim)}; walks folders_summary_clip_emb_idx."""
+    qv = query_vec.tolist()
+    dist = Folder.summary_clip_embedding.cosine_distance(qv)
+    stmt = (
+        select(Folder, dist.label("distance"))
+        .where(
+            Folder.user_id == user_id,
+            Folder.deleted_at.is_(None),
+            Folder.summary_clip_embedding.is_not(None),
+        )
+        .order_by(dist.asc())
+        .limit(limit)
+    )
+    out: dict = {}
+    for folder, d in (await session.execute(stmt)).all():
+        sim = 1.0 - float(d)
+        if sim > 0:
+            out[folder.id] = (folder, sim)
+    return out
+
+
+async def _folder_text_search(
+    session: AsyncSession, user_id, q: str, limit: int
+) -> dict:
+    """Folder-name token match. Score = fraction of query tokens that
+    appear in the folder name, so "trip to Mexico" matching a folder
+    literally named "Mexico" gets 1/3 from text and leans on CLIP for the
+    rest. Returns {folder_id: (folder, score)}."""
+    toks = [t for t in re.split(r"\W+", q.lower()) if len(t) >= 2]
+    if not toks:
+        return {}
+    conds = [func.lower(Folder.name).like(f"%{t}%") for t in toks]
+    stmt = (
+        select(Folder)
+        .where(
+            Folder.user_id == user_id,
+            Folder.deleted_at.is_(None),
+            or_(*conds),
+        )
+        .limit(limit * 2)
+    )
+    out: dict = {}
+    for folder in (await session.execute(stmt)).scalars().all():
+        name = (folder.name or "").lower()
+        hit = sum(1 for t in toks if t in name)
+        if hit:
+            out[folder.id] = (folder, hit / len(toks))
+    return out
+
+
+@router.get("/folders", response_model=list[FolderSearchHit])
+async def semantic_search_folders(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: Annotated[str, Query(min_length=1, max_length=200)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 12,
+) -> list[dict]:
+    """Semantic folder search (D4). Scores the query against each folder's
+    aggregate embedding + name, ranked by the same CLIP-led hybrid blend
+    the image search uses and narrowed by a relative margin so only
+    genuinely-relevant folders surface."""
+    q_clean = q.strip()
+    if len(q_clean) < 2:
+        return []
+
+    # Same shared-inference-pool DoS surface as /search/ — folder search
+    # also runs a CLIP text encode through the single ML thread. Share
+    # the per-user budget key with image search so the two endpoints
+    # can't be used in tandem to double the effective rate.
+    try:
+        from backend.security import enforce_rate_limit
+        await enforce_rate_limit(
+            key=f"search:q:{user.id}",
+            limit=120,
+            window_seconds=60,
+            detail="Too many searches. Slow down for a moment.",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("search/folders: rate-limit check failed (allowing query)")
+
+    text_hits = await _folder_text_search(session, user.id, q_clean, limit=limit)
+
+    clip_hits: dict = {}
+    try:
+        from backend.vision.inference_pool import run_in_inference_pool
+        query_vec = await run_in_inference_pool(_encode_text_sync, q_clean)
+        clip_hits = await _folder_clip_search(session, user.id, query_vec, limit=limit)
+    except ImportError:
+        pass  # no [ml] extras — fall back to name matches only
+
+    merged: dict = {}
+    for fid, (folder, clip_score) in clip_hits.items():
+        if clip_score < _CLIP_MIN_SIM_KEEP:
+            continue
+        merged[fid] = (folder, _W_CLIP * clip_score)
+    for fid, (folder, text_score) in text_hits.items():
+        if fid in merged:
+            f, prev = merged[fid]
+            merged[fid] = (f, prev + _W_TEXT * text_score)
+        else:
+            merged[fid] = (folder, _W_TEXT * text_score)
+
+    ranked = sorted(merged.values(), key=lambda r: r[1], reverse=True)[:limit]
+
+    # Relative-margin gate — keep #1, then require results within ~12 % of
+    # the top AND above an absolute floor. Folder centroids of mixed
+    # content (cloud roots, "Downloads", "Assets") sit ~0.54 cosine to
+    # almost any query, so a loose gate floods every search with the same
+    # generic folders. A tight relative cut keeps only folders genuinely
+    # competitive with the best match; the absolute floor drops the rest.
+    if ranked:
+        top_score = ranked[0][1]
+        rel_cut, abs_cut = top_score * 0.88, 0.42
+        ranked = [
+            (f, s) for (i, (f, s)) in enumerate(ranked)
+            if i == 0 or (s >= rel_cut and s >= abs_cut)
+        ]
+
+    # Direct-child item counts for the surviving folders (one grouped query).
+    fids = [f.id for f, _ in ranked]
+    counts: dict = {}
+    if fids:
+        rows = (
+            await session.execute(
+                select(Image.folder_id, func.count())
+                .where(Image.folder_id.in_(fids), Image.deleted_at.is_(None))
+                .group_by(Image.folder_id)
+            )
+        ).all()
+        counts = {r[0]: int(r[1]) for r in rows}
+
+    return [
+        FolderSearchHit(
+            id=f.id,
+            name=f.name,
+            parent_folder_id=f.parent_folder_id,
+            status=f.status,
+            status_color=f.status_color,
+            item_count=counts.get(f.id, 0),
+            score=round(score, 4),
+        )
+        for f, score in ranked
+    ]
+
+
+@router.post("/folders/reindex")
+async def reindex_folder_embeddings(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Recompute every (non-deleted) folder's aggregate embedding for the
+    calling user. Backfills after the D4 migration and doubles as a manual
+    'rebuild folder index'; day-to-day freshness is handled by the
+    incremental recompute hooks on folder/child mutations."""
+    from backend.folder_embed import recompute_folder_embedding
+
+    folder_ids = (
+        await session.execute(
+            select(Folder.id).where(
+                Folder.user_id == user.id, Folder.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    done = 0
+    for fid in folder_ids:
+        try:
+            if await recompute_folder_embedding(session, fid, commit=False):
+                done += 1
+        except Exception:
+            logger.exception("reindex: folder %s failed", fid)
+    await session.commit()
+    return {"folders": len(folder_ids), "reindexed": done}

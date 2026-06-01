@@ -31,7 +31,7 @@ from uuid import UUID
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import delete as sa_delete, func as sa_func, select, text
@@ -40,9 +40,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.audit import add_audit
 from backend.auth.users import COOKIE_NAME, current_active_user, get_jwt_strategy
 from backend.config import settings
+from backend.consent import (
+    POLICY_VERSION,
+    _latest_consent,
+    _policy_sha256,
+)
 from backend.db import get_session
 from backend.deletion import delete_user_vault_blobs, hard_delete_images
 from backend.email_send import send_recovery_codes_email
+from backend.marketing import is_configured as marketing_is_configured
+from backend.marketing import subscribe_to_marketing_newsletter
+from backend.security import client_ip
 from backend.models import (
     AuditLog,
     ConsentRecord,
@@ -1271,3 +1279,125 @@ async def update_notification_prefs(
         ))
         await session.commit()
     return await get_notification_prefs(user=user, session=session)
+
+
+# ---------- Marketing-site newsletter opt-in ----------
+#
+# Separate from the in-app `notification_prefs` matrix above
+# (product_updates / security_alerts / …, which are this app's own
+# transactional/in-app messages). THIS endpoint records consent to the
+# EXTERNAL marketing-site newsletter and, on grant, forwards the user's
+# (already-authenticated, hence proven) email to the marketing
+# subscriber list via backend.marketing.
+#
+# Consent is recorded in the same append-only `consent_records` ledger
+# every other privacy scope uses, under the `newsletter` scope (see
+# backend.consent.SUPPORTED_SCOPES). That gives us: the grant/withdraw
+# timestamp the Settings UI renders, inclusion in the GDPR export, and
+# an audit-log entry — all for free.
+#
+# Idempotent: re-checking the box when already GRANTED does NOT append a
+# duplicate consent row (first-grant-wins) but DOES re-push to the
+# marketing side, which is itself idempotent (upsert on email), so a
+# previously-failed forward self-heals on the next tick.
+
+NEWSLETTER_CONSENT_KIND = "newsletter"
+
+
+class NewsletterStatus(BaseModel):
+    opted_in: bool
+    granted_at: datetime | None = None
+    # Whether this deployment is wired to the marketing site at all. The
+    # FE can use this to hide/disable the toggle on a self-host build
+    # that doesn't run the marketing newsletter, OR to surface a
+    # "saved locally; not yet pushed" note when False.
+    marketing_configured: bool = False
+    # True only on a POST when the marketing forward actually confirmed.
+    # None on GET (no forward attempted).
+    marketing_synced: bool | None = None
+
+
+@router.get("/newsletter", response_model=NewsletterStatus)
+async def get_newsletter_status(
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> NewsletterStatus:
+    """Current newsletter opt-in state for the calling user, read from
+    the latest `newsletter` consent record."""
+    rec = await _latest_consent(session, user.id, kind=NEWSLETTER_CONSENT_KIND)
+    opted_in = rec is not None and rec.state == "GRANTED"
+    return NewsletterStatus(
+        opted_in=opted_in,
+        granted_at=rec.granted_at if opted_in else None,
+        marketing_configured=marketing_is_configured(),
+    )
+
+
+@router.post("/newsletter", response_model=NewsletterStatus)
+async def opt_in_newsletter(
+    request: Request,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> NewsletterStatus:
+    """Opt the signed-in user into the marketing-site newsletter.
+
+    Records the consent locally (append-only ledger + audit) and then
+    forwards the email to the marketing subscriber list. The forward is
+    best-effort: a marketing-side failure is logged + reflected in the
+    response's `marketing_synced=false` but never fails this request —
+    the local consent record is the source of truth and a later retry
+    can reconcile.
+    """
+    rec = await _latest_consent(session, user.id, kind=NEWSLETTER_CONSENT_KIND)
+    already_granted = rec is not None and rec.state == "GRANTED"
+
+    now = datetime.now(timezone.utc)
+    granted_at = rec.granted_at if already_granted else now
+
+    # Append a GRANTED consent row only when not already opted in, so the
+    # ledger doesn't accumulate a row per re-tick (idempotent state). We
+    # still re-push to marketing below regardless, so a prior failed
+    # forward heals.
+    if not already_granted:
+        new_rec = ConsentRecord(
+            user_id=user.id,
+            consent_kind=NEWSLETTER_CONSENT_KIND,
+            state="GRANTED",
+            policy_version=POLICY_VERSION,
+            policy_text_sha256=_policy_sha256(),
+            signature_text=None,
+            ip=client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            granted_at=now,
+            # Marketing consent has no fixed auto-expiry (unlike the
+            # 3-year biometric horizon); leave NULL — withdrawal is the
+            # user-driven off switch via /consent/newsletter/withdraw.
+            expires_at=None,
+        )
+        session.add(new_rec)
+        granted_at = now
+
+    # Forward to the marketing newsletter list (best-effort). We do this
+    # BEFORE commit so the audit row can record the sync outcome in the
+    # same transaction; the call never raises.
+    sync = await subscribe_to_marketing_newsletter(user.email, source="neuthek-app")
+
+    await add_audit(
+        session,
+        user_id=user.id,
+        action="consent.newsletter.grant",
+        details={
+            "scope": NEWSLETTER_CONSENT_KIND,
+            "state": "GRANTED",
+            # Non-PII booleans only — the email is never put in details.
+            "marketing_synced": sync.ok,
+        },
+    )
+    await session.commit()
+
+    return NewsletterStatus(
+        opted_in=True,
+        granted_at=granted_at,
+        marketing_configured=marketing_is_configured(),
+        marketing_synced=sync.ok,
+    )

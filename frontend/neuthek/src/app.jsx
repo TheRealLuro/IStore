@@ -10,7 +10,7 @@ import React, {
   useRef as useRefApp,
   useMemo as useMemoApp,
 } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Icon } from "./icons.jsx";
 import {
   TermsModal,
@@ -49,8 +49,8 @@ import {
 } from "@/api/files";
 import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
 import { eraseImageCaches } from "./cache-eraser.js";
-import { listFolders } from "@/api/folders";
-import { listPeople, faceCropUrl, detectAndLabel } from "@/api/people";
+import { listFolders, searchFolders } from "@/api/folders";
+import { listPeople, faceCropUrl, detectAndLabel, deletePerson, markNotAPerson } from "@/api/people";
 import { AuthedThumb } from "./auth-image.jsx";
 import { EditableName } from "./nameable-chip.jsx";
 import { getConsentScopes, grantConsent } from "@/api/consent";
@@ -368,6 +368,14 @@ function fileItemToNeuthek(f) {
     quality: f.quality,
     mime_type_original: f.mime_type_original,
     mime_type_served: f.mime_type_served,
+    // True when this file can open in the server-rasterized PDF page
+    // viewer (PdfPageStack): native PDFs, plus Office docs
+    // (docx/xlsx/pptx/odt/ods/odp/rtf/doc) whose LibreOffice→PDF
+    // conversion has landed on the backend. Office docs whose conversion
+    // is still pending come back false, so the preview falls back to the
+    // download-only card until the worker finishes and a refetch flips
+    // this true. Derived server-side in ImageRead.pdf_viewable.
+    pdfViewable: !!f.pdf_viewable,
     original_expires_at: f.original_expires_at,
     scene_label: f.scene_label,
     indoor_outdoor: f.indoor_outdoor,
@@ -962,6 +970,91 @@ function BulkActionBar({ selectedIds, selectedAreAllImages, onClear, onPickBestO
   );
 }
 
+// TrashHeaderActions — "Restore all" + "Empty trash" affordances that
+// live in the subbar of the Trash view (not the selection-gated
+// BulkActionBar). They operate on EVERY trashed row, not just the
+// current selection, so the user can clear or recover the whole bin in
+// one click without first selecting anything.
+//
+// No dedicated "restore all" / "empty all" endpoint exists; the
+// existing per-id bulk machinery already accepts an array, so we pass
+// the full set of trashed ids through `bulkRestore` / `bulkDelete(
+// {purge:true})` — one request each. Invalidation mirrors BulkActionBar:
+// `["files"]` (prefix-covers the `["files","TRASHED"]` slice),
+// `["facets"]`, and `["account-trash"]` so the sidebar badge + counts
+// refresh. Purge also erases per-id caches since the rows are gone.
+function TrashHeaderActions({ trashedIds, onDone }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useStateApp(null); // "restore" | "empty"
+
+  const count = trashedIds.length;
+  if (count === 0) return null;
+
+  const invalidateTrash = () => {
+    qc.invalidateQueries({ queryKey: ["files"] });
+    qc.invalidateQueries({ queryKey: ["facets"] });
+    qc.invalidateQueries({ queryKey: ["account-trash"] });
+  };
+
+  const doRestoreAll = async () => {
+    if (busy) return;
+    setBusy("restore");
+    try {
+      const r = await bulkRestore(trashedIds);
+      toast.success(`Restored ${r.count}`);
+      invalidateTrash();
+      onDone?.();
+    } catch (e) {
+      toast.error(e?.detail || "Restore failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doEmptyTrash = async () => {
+    if (busy) return;
+    if (!window.confirm(
+      `Permanently delete all ${count} item${count === 1 ? "" : "s"} in the trash? This can't be undone.`
+    )) return;
+    setBusy("empty");
+    try {
+      const r = await bulkDelete(trashedIds, { purge: true });
+      const skipNote = r.skipped_count > 0 ? ` (${r.skipped_count} skipped)` : "";
+      toast.success(`Permanently deleted ${r.count}${skipNote}`);
+      await eraseImageCaches(qc, trashedIds);
+      invalidateTrash();
+      onDone?.();
+    } catch (e) {
+      toast.error(e?.detail || "Empty trash failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="trash-actions" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm"
+        onClick={doRestoreAll}
+        disabled={!!busy}
+        title="Restore every item from the trash"
+      >
+        <Icon name="refresh" size={12}/> {busy === "restore" ? "Restoring…" : "Restore all"}
+      </button>
+      <button
+        type="button"
+        className="btn btn--ghost btn--sm bulk-bar__danger"
+        onClick={doEmptyTrash}
+        disabled={!!busy}
+        title="Permanently delete every item in the trash — can't be undone"
+      >
+        <Icon name="trash" size={12}/> {busy === "empty" ? "Emptying…" : "Empty trash"}
+      </button>
+    </div>
+  );
+}
+
 // Shared "click outside to close" hook for `<details>`-based popovers.
 // Native `<details>` doesn't dismiss on outside click — that was a
 // real UX bug in earlier builds (operator saw the Sort + Filters
@@ -991,28 +1084,48 @@ function useDetailsAutoClose(detailsRef) {
   }, [detailsRef]);
 }
 
-// SortDropdown — collapses the three sort tabs (Recent / Name / Size)
-// into one compact subbar control. The inline direction arrow lets
-// the user flip asc/desc without leaving the popover. Built on the
-// same `<details>` primitive as `FiltersDropdown` + the shared
-// `useDetailsAutoClose` hook for outside-click dismissal.
+// SortDropdown — the topbar's library-wide sort control. Every option
+// is now explicit (Recent / Oldest / Name A→Z / Name Z→A / Largest /
+// Smallest) instead of three keys + a direction toggle, because the
+// sort is applied SERVER-SIDE across the whole library now (see
+// `serverSort` in filesQueryFilters) — a single named choice maps 1:1
+// to a backend `sort` value and reads clearer than a key + a hidden
+// arrow. Built on the same `<details>` primitive + `useDetailsAutoClose`
+// hook as `FiltersDropdown`; styling (`.sort-dd*`) is unchanged.
+//
+// State shape is preserved for back-compat: each option still drives the
+// existing `sort` ("recent" | "name" | "size") + `sortDir`
+// ("asc" | "desc") pair that the gallery + the backend mapping both
+// read. `key` is what we show as active; `dir` is the arrow we render
+// next to it (purely decorative now — the option name already says the
+// direction).
 const SORT_OPTIONS = [
-  { id: "recent", label: "Recent",  defaultDir: "desc" },
-  { id: "name",   label: "Name",    defaultDir: "asc"  },
-  { id: "size",   label: "Size",    defaultDir: "asc"  },
+  { key: "recent", dir: "desc", label: "Recent" },
+  { key: "recent", dir: "asc",  label: "Oldest" },
+  { key: "name",   dir: "asc",  label: "Name A→Z" },
+  { key: "name",   dir: "desc", label: "Name Z→A" },
+  { key: "size",   dir: "desc", label: "Largest" },
+  { key: "size",   dir: "asc",  label: "Smallest" },
 ];
+
+// (sort key, direction) → backend `?sort=` value. Kept beside
+// SORT_OPTIONS so the two never drift. Used by filesQueryFilters to
+// build the server-side sort param.
+function serverSortParam(sort, sortDir) {
+  if (sort === "name") return sortDir === "asc" ? "name_asc" : "name_desc";
+  if (sort === "size") return sortDir === "asc" ? "size_asc" : "size_desc";
+  return sortDir === "asc" ? "oldest" : "recent";
+}
+
 function SortDropdown({ sort, sortDir, setSort, setSortDir }) {
   const detailsRef = useRefApp(null);
   useDetailsAutoClose(detailsRef);
-  const active = SORT_OPTIONS.find(o => o.id === sort) || SORT_OPTIONS[0];
-  const onPick = (id) => {
-    if (id === sort) {
-      setSortDir(d => d === "asc" ? "desc" : "asc");
-    } else {
-      setSort(id);
-      const def = SORT_OPTIONS.find(o => o.id === id)?.defaultDir || "desc";
-      setSortDir(def);
-    }
+  const active =
+    SORT_OPTIONS.find(o => o.key === sort && o.dir === sortDir) ||
+    SORT_OPTIONS[0];
+  const onPick = (o) => {
+    setSort(o.key);
+    setSortDir(o.dir);
     if (detailsRef.current) detailsRef.current.open = false;
   };
   return (
@@ -1021,29 +1134,32 @@ function SortDropdown({ sort, sortDir, setSort, setSortDir }) {
         <Icon name="sort" size={12}/>
         {active.label}
         <Icon
-          name={sortDir === "asc" ? "chevronUp" : "chevronDown"}
+          name={active.dir === "asc" ? "chevronUp" : "chevronDown"}
           size={11}
           style={{ marginLeft: 2, opacity: 0.7 }}
         />
       </summary>
       <div className="sort-dd__panel">
-        {SORT_OPTIONS.map(o => (
-          <button
-            key={o.id}
-            type="button"
-            className="sort-dd__opt"
-            data-active={sort === o.id}
-            onClick={() => onPick(o.id)}
-          >
-            <span>{o.label}</span>
-            {sort === o.id && (
-              <Icon
-                name={sortDir === "asc" ? "chevronUp" : "chevronDown"}
-                size={11}
-              />
-            )}
-          </button>
-        ))}
+        {SORT_OPTIONS.map(o => {
+          const isActive = o.key === active.key && o.dir === active.dir;
+          return (
+            <button
+              key={o.label}
+              type="button"
+              className="sort-dd__opt"
+              data-active={isActive}
+              onClick={() => onPick(o)}
+            >
+              <span>{o.label}</span>
+              {isActive && (
+                <Icon
+                  name={o.dir === "asc" ? "chevronUp" : "chevronDown"}
+                  size={11}
+                />
+              )}
+            </button>
+          );
+        })}
       </div>
     </details>
   );
@@ -1383,12 +1499,121 @@ function FiltersDropdown({
   );
 }
 
+// Persisted view prefs for the People tab. Density (large/compact tiles)
+// + sort key/direction live in localStorage so the user's chosen layout
+// survives reloads — same pattern the gallery's recent-search list uses.
+const PEOPLE_VIEW_KEY = "neuthek.peopleView";
+function loadPeopleView() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PEOPLE_VIEW_KEY) || "{}");
+    return {
+      density: raw.density === "compact" ? "compact" : "large",
+      sort: raw.sort === "name" ? "name" : "count",
+      // asc/desc; default desc = "most photos first" for count, which
+      // is what the user almost always wants when scanning their people.
+      dir: raw.dir === "asc" ? "asc" : "desc",
+    };
+  } catch {
+    return { density: "large", sort: "count", dir: "desc" };
+  }
+}
+function savePeopleView(v) {
+  try { localStorage.setItem(PEOPLE_VIEW_KEY, JSON.stringify(v)); } catch {}
+}
+
+// Compact view-control dropdown for the People tab — density toggle
+// (Large ↔ Compact tiles) + sort (Most photos ↔ Name) with an inline
+// direction flip. Built on the same `<details>` + `.sort-dd` primitives
+// as the gallery's SortDropdown so it inherits the outside-click +
+// Escape dismissal and the minimal dark styling.
+const PEOPLE_SORT_OPTIONS = [
+  { id: "count", label: "Most photos", defaultDir: "desc" },
+  { id: "name",  label: "Name",        defaultDir: "asc"  },
+];
+function PeopleViewControl({ view, setView }) {
+  const detailsRef = useRefApp(null);
+  useDetailsAutoClose(detailsRef);
+  const activeSort = PEOPLE_SORT_OPTIONS.find(o => o.id === view.sort) || PEOPLE_SORT_OPTIONS[0];
+  const pickSort = (id) => {
+    if (id === view.sort) {
+      setView({ ...view, dir: view.dir === "asc" ? "desc" : "asc" });
+    } else {
+      const def = PEOPLE_SORT_OPTIONS.find(o => o.id === id)?.defaultDir || "desc";
+      setView({ ...view, sort: id, dir: def });
+    }
+  };
+  return (
+    <details className="sort-dd" ref={detailsRef}>
+      <summary className="btn btn--ghost btn--sm sort-dd__btn">
+        <Icon name="sort" size={12}/>
+        {activeSort.label}
+        <Icon
+          name={view.dir === "asc" ? "chevronUp" : "chevronDown"}
+          size={11}
+          style={{ marginLeft: 2, opacity: 0.7 }}
+        />
+      </summary>
+      <div className="sort-dd__panel sort-dd__panel--right" style={{ minWidth: 184 }}>
+        <div style={{ padding: "2px 8px 6px", fontSize: 10.5, letterSpacing: "0.09em", textTransform: "uppercase", color: "var(--ink-3)" }}>
+          Sort
+        </div>
+        {PEOPLE_SORT_OPTIONS.map(o => (
+          <button
+            key={o.id}
+            type="button"
+            className="sort-dd__opt"
+            data-active={view.sort === o.id}
+            onClick={() => pickSort(o.id)}
+          >
+            <span>{o.label}</span>
+            {view.sort === o.id && (
+              <Icon name={view.dir === "asc" ? "chevronUp" : "chevronDown"} size={11}/>
+            )}
+          </button>
+        ))}
+        <div style={{ height: 1, background: "var(--line)", margin: "6px 4px" }}/>
+        <div style={{ padding: "2px 8px 6px", fontSize: 10.5, letterSpacing: "0.09em", textTransform: "uppercase", color: "var(--ink-3)" }}>
+          Density
+        </div>
+        <button
+          type="button"
+          className="sort-dd__opt"
+          data-active={view.density === "large"}
+          onClick={() => setView({ ...view, density: "large" })}
+        >
+          <span><Icon name="grid" size={11} style={{ marginRight: 6, verticalAlign: "-1px" }}/>Large tiles</span>
+          {view.density === "large" && <Icon name="check" size={12}/>}
+        </button>
+        <button
+          type="button"
+          className="sort-dd__opt"
+          data-active={view.density === "compact"}
+          onClick={() => setView({ ...view, density: "compact" })}
+        >
+          <span><Icon name="library" size={11} style={{ marginRight: 6, verticalAlign: "-1px" }}/>Compact</span>
+          {view.density === "compact" && <Icon name="check" size={12}/>}
+        </button>
+      </div>
+    </details>
+  );
+}
+
 // People view picker — grid of every person + unlabeled cluster, sized
 // for the page (not a strip). Clicking a card drills into that person's
 // photos via the parent's `peopleFilter` state. Unlabeled clusters get
 // an inline rename affordance so the user can name people without
 // having to open an image first.
-function PeoplePicker({ people, onPick }) {
+//
+// The whole picker is its own scroll container (`.people-grid-scroll`):
+// the parent `.main` is `overflow:hidden`, so without `flex:1 + min-
+// height:0 + overflow-y:auto` here a library with dozens of faces simply
+// clipped off the bottom of the viewport with no way to reach it. A
+// view-control dropdown (sort + density) sits in a sticky header so it
+// stays reachable while scrolling a long list.
+function PeoplePicker({ people, onPick, onDeletePerson, onNotAPerson }) {
+  const [view, setViewState] = useStateApp(loadPeopleView);
+  const setView = (v) => { setViewState(v); savePeopleView(v); };
+
   const named = (people?.persons || []).map((p) => ({
     id: "p" + p.id,
     personId: p.id,
@@ -1405,7 +1630,20 @@ function PeoplePicker({ people, onPick }) {
     img: faceCropUrl(c.sample_face_id),
     count: c.face_count,
   }));
-  const everyone = [...named, ...unnamed];
+
+  // Sort each bucket by the chosen key/direction, then concat with
+  // named people above unnamed clusters. Clusters are the "to triage"
+  // pile, so they always read best as a trailing group regardless of
+  // sort — and sorting the buckets independently keeps the direction
+  // flip clean (no null-name edge cases leaking across the boundary).
+  const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+  const sortFn = (a, b) => {
+    const cmp = view.sort === "name"
+      ? collator.compare(a.name || "", b.name || "")
+      : a.count - b.count;
+    return view.dir === "asc" ? cmp : -cmp;
+  };
+  const everyone = [...[...named].sort(sortFn), ...[...unnamed].sort(sortFn)];
 
   if (everyone.length === 0) {
     return (
@@ -1417,35 +1655,77 @@ function PeoplePicker({ people, onPick }) {
     );
   }
 
+  const compact = view.density === "compact";
+  const minTile = compact ? 132 : 200;
+  const gridGap = compact ? 12 : 18;
+
   return (
-    <div style={{ padding: "0 28px 28px" }}>
-      <div className="kicker" style={{ marginBottom: 14 }}>
-        {named.length} named · {unnamed.length} unnamed
+    <div className="people-grid-scroll" style={{
+      flex: 1,
+      minHeight: 0,
+      overflowY: "auto",
+      padding: "0 28px 28px",
+    }}>
+      {/* Sticky header keeps the count + view control reachable while
+          scrolling a long list. Background matches `.main` so rows
+          scroll cleanly underneath it. */}
+      <div style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 0 12px",
+        background: "var(--surface-2)",
+      }}>
+        <div className="kicker">
+          {named.length} named · {unnamed.length} unnamed
+        </div>
+        <span style={{ flex: 1 }}/>
+        <PeopleViewControl view={view} setView={setView}/>
       </div>
       <div style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-        gap: 18,
+        gridTemplateColumns: `repeat(auto-fill, minmax(${minTile}px, 1fr))`,
+        gap: gridGap,
       }}>
         {everyone.map((p) => (
           <div
             key={p.id}
+            className="person-card"
             style={{
+              position: "relative",
               display: "flex", flexDirection: "column",
               borderRadius: 14,
               background: "var(--surface)",
               border: "1px solid var(--line)",
               overflow: "hidden",
-              cursor: p.personId ? "pointer" : "default",
+              // Both named persons AND unnamed clusters are now
+              // clickable — clicking an unnamed cluster drills into the
+              // source photo(s) the face was found in, so the user can
+              // SEE who it is before naming them.
+              cursor: (p.personId || p.clusterId) ? "pointer" : "default",
               transition: "border-color 120ms ease, transform 120ms ease",
             }}
-            onMouseEnter={(e) => { if (p.personId) e.currentTarget.style.borderColor = "var(--ink-3)"; }}
+            onMouseEnter={(e) => { if (p.personId || p.clusterId) e.currentTarget.style.borderColor = "var(--ink-3)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--line)"; }}
             onClick={() => {
-              if (!p.personId) return; // unnamed clusters need a name first
-              onPick?.({ personId: p.personId, name: p.name });
+              if (p.personId) {
+                onPick?.({ personId: p.personId, name: p.name });
+              } else if (p.clusterId) {
+                // Unnamed cluster — drill into its source images by
+                // cluster id (no person row exists yet).
+                onPick?.({ clusterId: p.clusterId, name: null });
+              }
             }}
-            title={p.personId ? `Show photos of ${p.name}` : "Name this person to filter their photos"}
+            title={
+              p.personId
+                ? `Show photos of ${p.name}`
+                : p.clusterId
+                  ? "Show the photo(s) this face was found in"
+                  : "Name this person to filter their photos"
+            }
           >
             {/* Square face tile — same approach as the gallery's
                 small `.person__avatar` (cover + center), just sized
@@ -1473,9 +1753,43 @@ function PeoplePicker({ people, onPick }) {
                   placeholder={{ background: "var(--surface-3)" }}
                 />
               ) : null}
+              {/* Hover affordance. Named people remove the Person row
+                  (DELETE /people/{id}, photos kept). UNNAMED clusters are
+                  marked "not a person" (POST /people/clusters/{id}/not-a-person):
+                  removes the junk grouping AND records its embeddings so the
+                  next scan won't re-detect it (masks, posters, patterns).
+                  Both hover-reveal via `.person-card__del`; stopPropagation
+                  keeps the click from drilling into the card. */}
+              {p.personId ? (
+                <button
+                  type="button"
+                  className="person-card__del"
+                  aria-label={`Delete ${p.name || "person"}`}
+                  title="Delete this person"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeletePerson?.({ personId: p.personId, name: p.name, count: p.count });
+                  }}
+                >
+                  <Icon name="trash" size={13}/>
+                </button>
+              ) : p.clusterId ? (
+                <button
+                  type="button"
+                  className="person-card__del"
+                  aria-label="Not a person — remove and don't detect again"
+                  title="Not a person? Remove this group and stop detecting it"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onNotAPerson?.({ clusterId: p.clusterId, count: p.count });
+                  }}
+                >
+                  <Icon name="trash" size={13}/>
+                </button>
+              ) : null}
             </div>
             <div style={{
-              padding: "12px 14px",
+              padding: compact ? "9px 11px" : "12px 14px",
               display: "flex",
               alignItems: "baseline",
               justifyContent: "space-between",
@@ -1725,6 +2039,11 @@ export function App() {
   // `folderPath` is the breadcrumb stack ([{id,name}, ...]).
   const [folderId, setFolderId] = useStateApp(null);
   const [folderPath, setFolderPath] = useStateApp([]);
+  // The entered folder's file count (from the folder card), so the
+  // numbered pager knows how many pages a folder has — the file-list
+  // endpoint returns no total. null = unknown (e.g. refreshed straight
+  // into a folder) → the pager falls back to its Prev/Next heuristic.
+  const [currentFolderCount, setCurrentFolderCount] = useStateApp(null);
   // People view drill-in: when a user clicks a person chip on the People
   // view, we filter the gallery to that person's photos. `null` = show
   // the person picker (no filter applied); set = show photos of person.
@@ -1732,6 +2051,7 @@ export function App() {
   const enterFolder = (folder) => {
     setFolderId(folder.id);
     setFolderPath((p) => [...p, { id: folder.id, name: folder.name }]);
+    setCurrentFolderCount(typeof folder.item_count === "number" ? folder.item_count : null);
     setSelectedFile(null);
   };
   const navigateToCrumb = (idx) => {
@@ -1743,6 +2063,8 @@ export function App() {
       setFolderId(target.id);
       setFolderPath((p) => p.slice(0, idx + 1));
     }
+    // Crumb/ancestor count isn't in hand → unknown (heuristic pager).
+    setCurrentFolderCount(null);
     setSelectedFile(null);
   };
 
@@ -1771,7 +2093,10 @@ export function App() {
   useEffectApp(() => {
     if (!signedIn) return;
     let scrollEl = null;
-    const findScroller = () => mainRef.current?.querySelector(".gallery") || mainRef.current;
+    const findScroller = () =>
+      mainRef.current?.querySelector(".gallery")
+      || mainRef.current?.querySelector(".people-grid-scroll")
+      || mainRef.current;
     const onScroll = () => setFabShow((scrollEl?.scrollTop || 0) > 240);
     const tryAttach = () => {
       scrollEl = findScroller();
@@ -1912,10 +2237,27 @@ export function App() {
   // NULL` (the root) and miss everything inside Google Drive / synced
   // folders — which surprised users with "where did my files go?"
   const isTypeView = view === "photos" || view === "videos" || view === "docs";
+  // The active backend `category`, derived from BOTH the sidebar view
+  // (Photos / Videos / Documents) AND the in-gallery type-pill
+  // (`typeFilter`). Whenever a real media category is selected we push
+  // it to the server as `?category=` so the list is filtered DB-side —
+  // the gallery paints exactly the rows that match, and the page count
+  // can be computed straight from the cross-folder facet total. This is
+  // what makes a category view show ALL files of that kind regardless
+  // of which folder they live in (the user's library is almost entirely
+  // inside cloud-synced folders, so a folder-scoped category filter
+  // showed only a fraction). `audio` maps 1:1; `doc` (the FE type-pill
+  // id) maps to the backend's `document` category.
+  const VIEW_TO_CATEGORY = { photos: "image", videos: "video", docs: "document" };
+  const PILL_TO_CATEGORY = { image: "image", video: "video", audio: "audio", doc: "document" };
+  const activeCategory =
+    VIEW_TO_CATEGORY[view] ||
+    (view === "gallery" ? (PILL_TO_CATEGORY[typeFilter] || null) : null);
   // Cross-folder scope when:
   //   - The user is searching (results need to span everything)
-  //   - The user is in a type view (Photos / Videos / Documents are
-  //     conceptually "all of this kind anywhere")
+  //   - A media category is selected (Photos / Videos / Documents /
+  //     Audio are conceptually "all of this kind anywhere", whether
+  //     chosen from the sidebar or the in-gallery type pill)
   //   - The user has any filter chip active (scene / content type /
   //     indoor-outdoor / has-people / has-location). Without this,
   //     clicking "Indoor" while sitting at root applied
@@ -1923,7 +2265,8 @@ export function App() {
   //     near-zero on libraries where most content lives inside Google
   //     Drive subfolders. The facet COUNTS were already cross-folder,
   //     so the chips invited clicks that produced empty galleries.
-  const useGlobalScope = trimmedQuery.length > 0 || isTypeView || anyFilterActive;
+  const useGlobalScope =
+    trimmedQuery.length > 0 || isTypeView || !!activeCategory || anyFilterActive;
   const filesScope = useGlobalScope ? "ALL" : folderId;
   // Fold the filter chip state into the listFiles query so server-side
   // filtering does the heavy lifting (the gallery only paints what
@@ -1939,6 +2282,11 @@ export function App() {
       : null;
     return {
       folderId: filesScope,
+      // Server-side category filter (image / video / document / audio).
+      // Null for the un-filtered "All files" browse so folders + every
+      // kind still show. When set, the list is filtered DB-side so the
+      // view shows ALL matching rows across every folder.
+      category: activeCategory,
       scene: filterScene,
       contentType: filterContentType,
       indoorOutdoor: filterIndoorOutdoor,
@@ -1948,13 +2296,20 @@ export function App() {
       tag: filterTag,
       near: filterNear,
       takenBetween: tb,
+      // Library-wide sort — server orders across ALL pages so Name/Size
+      // are correct across the whole library, not just the current 20
+      // rows. Derived from the topbar (sort key + direction) pair. Lands
+      // in the query key below, so changing the sort refetches; and in
+      // `filtersKey`, so the page-reset effect snaps back to page 1.
+      sort: serverSortParam(sort, sortDir),
     };
   }, [
-    filesScope, filterScene, filterContentType, filterIndoorOutdoor,
+    filesScope, activeCategory, filterScene, filterContentType, filterIndoorOutdoor,
     filterHasFaces, filterHasGps,
     filterPersonId, filterTag,
     filterNear,
     filterDateRange.start, filterDateRange.end,
+    sort, sortDir,
   ]);
   // Folder count for the current scope — used by the empty-state guard
   // below so a library that contains synced cloud folders (Google
@@ -1968,30 +2323,66 @@ export function App() {
     enabled: signedIn && view === "gallery",
     staleTime: 30_000,
   });
-  const { data: rawFiles = [] } = useQuery({
-    queryKey: ["files", filesQueryFilters],
-    queryFn: () => listFiles(filesQueryFilters),
+  // Gallery files — classic NUMBERED pagination (Google-style: 20 per
+  // page, then the next 20). Replaces the old infinite-scroll
+  // (useInfiniteQuery + IntersectionObserver), which the user found
+  // confusing. `page` is 0-indexed; the query fetches exactly one page
+  // of PAGE_SIZE rows at `offset = page * PAGE_SIZE`. The page-nav
+  // control at the bottom of the grid (Prev / numbered / Next) drives
+  // `setPage`. Page count comes from the cross-folder facet total for
+  // the active category (so "Photos" pages across all 573 images, not
+  // just the current folder).
+  const PAGE_SIZE = 48;
+  const [page, setPage] = useStateApp(0);
+  // Reset to the first page whenever the slice the user is looking at
+  // changes — a new category / filter / folder / search must not leave
+  // the user stranded on (say) page 12 of a result set that now has 2
+  // pages. Keyed on the serialized query filters + the active search so
+  // any axis change snaps back to page 1.
+  const filtersKey = JSON.stringify(filesQueryFilters);
+  useEffectApp(() => {
+    setPage(0);
+  }, [filtersKey, debouncedQuery, view]);
+  const {
+    data: pageFiles = [],
+    isFetching: filesFetching,
+  } = useQuery({
+    queryKey: ["files", filesQueryFilters, page],
+    queryFn: () =>
+      listFiles({ ...filesQueryFilters, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
     enabled: signedIn,
     staleTime: 10_000,
-    // Poll while any video / audio row is still waiting for its
-    // poster JPEG from the transcode worker (`has_thumbnail` flips
-    // false → true the moment the worker commits). 3s is fast
-    // enough that a 5-10 s transcode finishes within a single
-    // refetch, slow enough that an idle library doesn't hammer the
-    // API. Returns false when nothing's pending so we stop polling.
-    // TanStack v5: callback receives the Query object, data lives
-    // on `q.state.data`.
+    // v5: keep the prior page's rows on screen while the next page
+    // loads so flipping pages doesn't flash an empty grid.
+    placeholderData: keepPreviousData,
+    // Poll while any row on THIS page is still waiting on a background
+    // worker:
+    //   - video / audio rows missing their poster JPEG
+    //     (`has_thumbnail` flips false → true when the transcode
+    //     worker commits), OR
+    //   - any row whose summary is being (re)generated
+    //     (`pending_summary` flips true → false when the summarizer
+    //     finishes). This makes the gallery's "Generating summary…"
+    //     placeholders swap to real text live, no manual refresh.
+    // 3s is fast enough that a 5-10 s transcode / summarize finishes
+    // within a single refetch, slow enough that an idle library
+    // doesn't hammer the API. Returns false when nothing's pending so
+    // we stop polling.
     refetchInterval: (q) => {
       const rows = q.state.data;
       if (!Array.isArray(rows)) return false;
       const pending = rows.some(
         (f) =>
-          (f.category === "video" || f.category === "audio") &&
-          !f.has_thumbnail,
+          ((f.category === "video" || f.category === "audio") &&
+            !f.has_thumbnail) ||
+          f.pending_summary,
       );
       return pending ? 3000 : false;
     },
   });
+  // The current page's rows. Downstream consumers (search source,
+  // baseFiles map, etc.) treat this as the visible slice.
+  const rawFiles = pageFiles;
 
   // Facets — drives the chip choices below the type pills. Refetches
   // infrequently because the set of available scenes/content types
@@ -2002,6 +2393,74 @@ export function App() {
     enabled: signedIn,
     staleTime: 60_000,
   });
+
+  // ----- Numbered-pagination total -----
+  // The number of rows the active slice contains across EVERY folder,
+  // used to compute how many numbered pages to render. We never have to
+  // count rows client-side: the cross-folder facet totals already know
+  // how many images / videos / documents the user has.
+  //   - category view (Photos / Videos / Documents / Audio): the matching
+  //     `by_category` count — exactly the number the sidebar pill shows,
+  //     so the gallery now reports the same total (~573 photos).
+  //   - any other server-filtered slice (scene / has-faces / etc.): no
+  //     precomputed count, so the page-nav falls back to a "has next
+  //     page" heuristic (Next stays enabled while a full page returns).
+  //   - un-filtered "All files" browse: shows folders + the handful of
+  //     root files; total isn't known precisely, so the heuristic applies.
+  const byCat = facets?.by_category || {};
+  const otherFilterActive =
+    !!(filterScene || filterContentType || filterIndoorOutdoor ||
+       filterHasFaces || filterHasGps || filterPersonId || filterTag ||
+       filterNear || filterDateRange.start || filterDateRange.end);
+  // Exact total only for a pure category view with no other filter axis
+  // layered on. (Layering a filter narrows the set below the category
+  // count, so by_category can't be trusted then.)
+  const exactCategoryTotal =
+    activeCategory && !otherFilterActive ? (byCat[activeCategory] ?? 0) : null;
+
+  // Live summary fill-in — a single app-wide poll of the summarize
+  // progress counter that drives a refetch of everything carrying a
+  // `summary` + `pending_summary` (the gallery `["files"]` lists, the
+  // semantic `["search"]` hits, the `["facets"]` counts). The gallery
+  // query above already self-polls on its own visible rows; this poll
+  // additionally covers the preview panel and any pending row that
+  // isn't in the current folder slice, so a "Generating summary…"
+  // placeholder anywhere swaps to real text without a manual refresh.
+  //
+  // GATING: `enabled` keeps it off until signed in, and the
+  // `refetchInterval` callback returns 3000 ONLY while `pending > 0` —
+  // the instant the worker drains the queue (pending → 0) it returns
+  // false and the poll stops dead, so an idle library never spams the
+  // endpoint. Shares the `["summarize-progress"]` cache key with the
+  // top progress banner so the two dedupe into one request.
+  const { data: summarizeProgress, dataUpdatedAt: summarizeProgressAt } =
+    useQuery({
+      queryKey: ["summarize-progress"],
+      queryFn: getSummarizeProgress,
+      enabled: signedIn,
+      staleTime: 1000,
+      refetchInterval: (q) =>
+        q.state.data && q.state.data.pending > 0 ? 3000 : false,
+    });
+  // Each time the gated poll lands a fresh reading while work is still
+  // in flight, invalidate the summary-bearing caches so the completed
+  // summaries replace their placeholders. `dataUpdatedAt` changes on
+  // every successful (re)fetch — including the polled ones — which is
+  // the v5-friendly stand-in for the removed `onSuccess` callback. We
+  // do NOT invalidate when pending === 0, so the final tick that
+  // clears the queue settles the UI without kicking off needless
+  // refetches afterward.
+  const summarizePendingNow = (summarizeProgress?.pending ?? 0) > 0;
+  useEffectApp(() => {
+    if (!signedIn) return;
+    if (!summarizePendingNow) return;
+    qcApp.invalidateQueries({ queryKey: ["files"] });
+    qcApp.invalidateQueries({ queryKey: ["search"] });
+    qcApp.invalidateQueries({ queryKey: ["facets"] });
+    // `summarizeProgressAt` is the trigger: it advances on each poll
+    // tick so this fires once per fresh reading while pending > 0.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summarizeProgressAt, summarizePendingNow, signedIn]);
 
   // Semantic search via /search?q=... — CLIP cosine + FTS hybrid scored
   // server-side. We only fire when the user actually types something so
@@ -2017,6 +2476,21 @@ export function App() {
     // The backend also rejects q<2 with an empty list now; keeping
     // the gate on the FE saves the round-trip.
     queryFn: () => searchSemantic(debouncedQuery.trim(), 60),
+    enabled: signedIn && debouncedQuery.trim().length >= 2,
+    staleTime: 30_000,
+    keepPreviousData: true,
+  });
+
+  // D4 — semantic FOLDER search via /search/folders?q=… The folder
+  // analogue of the image search above: when the user searches, surface
+  // matching folders (e.g. "machine learning" → their "training" folder)
+  // as a small group ABOVE the photo/file results. Same debounced query,
+  // same 2-char gate, same auth (handled by the api client). The returned
+  // array is already ranked (highest score first) and we keep that order.
+  // Empty array → the group below renders nothing.
+  const { data: folderHits } = useQuery({
+    queryKey: ["search-folders", debouncedQuery],
+    queryFn: () => searchFolders(debouncedQuery.trim(), 12),
     enabled: signedIn && debouncedQuery.trim().length >= 2,
     staleTime: 30_000,
     keepPreviousData: true,
@@ -2113,14 +2587,25 @@ export function App() {
   });
 
   // People drill-in: when peopleFilter is set, fetch only that
-  // person's photos via the backend's `?person_id=` param. Backend
-  // joins images -> face_detections -> faces -> persons so this is
-  // a single query, not a client-side filter over `baseFiles`.
+  // person's photos via the backend's `?person_id=` param — OR, for a
+  // detected-but-unnamed cluster, via `?cluster_id=`. Backend joins
+  // images -> face_detections -> faces -> (persons | cluster) so this
+  // is a single query, not a client-side filter over `baseFiles`.
   const isPeopleView = view === "people";
+  const peopleDrillActive = !!(peopleFilter?.personId || peopleFilter?.clusterId);
   const { data: personFilesRaw = [] } = useQuery({
-    queryKey: ["files", "PERSON", peopleFilter?.personId ?? null],
-    queryFn: () => listFiles({ personId: peopleFilter.personId, folderId: "ALL" }),
-    enabled: signedIn && isPeopleView && !!peopleFilter?.personId,
+    queryKey: [
+      "files", "PERSON",
+      peopleFilter?.personId ?? null,
+      peopleFilter?.clusterId ?? null,
+    ],
+    queryFn: () =>
+      listFiles(
+        peopleFilter?.personId
+          ? { personId: peopleFilter.personId, folderId: "ALL" }
+          : { clusterId: peopleFilter.clusterId, folderId: "ALL" },
+      ),
+    enabled: signedIn && isPeopleView && peopleDrillActive,
     staleTime: 30_000,
   });
 
@@ -2138,9 +2623,17 @@ export function App() {
   // gives the user immediate visual feedback that filtering is
   // happening.
   const searchActive = trimmedQuery.length >= 2;
-  const sourceFiles = searchActive
-    ? (searchHits || [])
-    : rawFiles;
+  // Search returns the full ranked set (up to 60 hits) in one request,
+  // so we paginate it CLIENT-side — slice the current page out of the
+  // hit list. The gallery files query is server-paginated instead (one
+  // page per fetch). Either way `sourceFiles` is the ≤PAGE_SIZE slice
+  // the grid renders.
+  const allSearchHits = searchHits || [];
+  const searchPageHits = useMemoApp(
+    () => allSearchHits.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE),
+    [allSearchHits, page],
+  );
+  const sourceFiles = searchActive ? searchPageHits : rawFiles;
   const baseFiles = useMemoApp(() => {
     const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
     return sourceFiles.map((f) => {
@@ -2150,6 +2643,30 @@ export function App() {
       return n;
     });
   }, [sourceFiles, geoResp]);
+
+  // ----- Pagination metadata for the gallery view -----
+  // `totalForPagination`: exact row count of the active slice when we
+  // know it (search hit count, or a pure category facet count); null
+  // when unknown. `hasNextFallback`: when the total is unknown, the
+  // page-nav shows Prev/Next with Next enabled while the current page
+  // came back full (more rows likely exist). Both only matter in the
+  // un-search/category gallery path; other views derive their own.
+  const totalForPagination = searchActive
+    ? allSearchHits.length
+    : exactCategoryTotal != null
+      ? exactCategoryTotal
+      // Folder browse (no category / no search): use the folder's own
+      // file count so the numbered pager shows the right page count
+      // (52 files → 2 pages at 48/page) instead of collapsing to one.
+      : (folderId && !otherFilterActive && currentFolderCount != null
+          ? currentFolderCount
+          : null);
+  const hasNextFallback =
+    totalForPagination == null && rawFiles.length === PAGE_SIZE;
+  // NOTE: `viewTotalCount` (the topbar header count) reads `files`, so it
+  // is computed AFTER `const files = …` below. Defining it here ran it
+  // before `files` was initialized → a TDZ "Cannot access 'files' before
+  // initialization" ReferenceError that white-screened the entire app.
 
   // Real consent state — drives the sidebar "needs your attention" pill.
   // We count scopes still in NONE state (user hasn't decided yet); GRANTED
@@ -2179,17 +2696,44 @@ export function App() {
     return toggleable.filter((k) => states[k] === "NONE").length;
   }, [consentData]);
 
-  // Cross-folder file list, used only by the Map view. Splices the same
-  // geoResp coords onto whichever files have GPS rows.
+  // Pins for the Map view. Driven by the AUTHORITATIVE geo list
+  // (`/images/geo`, up to 5000 points) — NOT by the file list — so the
+  // number of pins equals the geo-point count, which is exactly what the
+  // sidebar "Map" badge reports. Previously the map rendered
+  // `allFilesForMap` (one un-paginated `listFiles({all:true})` that the
+  // backend caps at 100 rows) and spliced GPS onto whichever of those
+  // ≤100 files had a coordinate, so the map could show far fewer pins
+  // than the "178" the sidebar advertised. Now every point becomes a
+  // pin; we enrich it with the file's thumbnail/name when that file
+  // happens to be in the loaded slice, and fall back to the served-bytes
+  // URL + EXIF filename otherwise.
   const allFilesMapped = useMemoApp(() => {
     if (!isMapView) return [];
-    const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
-    return allFilesForMap.map((f) => {
-      const n = fileItemToNeuthek(f);
-      const g = geoMap.get(f.id);
-      if (g) n.gps = { lat: g.lat, lng: g.lng, place: g.place || null };
-      return n;
-    });
+    const points = geoResp?.points || [];
+    if (points.length === 0) return [];
+    const fileById = new Map(allFilesForMap.map((f) => [f.id, f]));
+    return points
+      .filter((p) => p && p.lat != null && p.lng != null)
+      .map((p) => {
+        const f = fileById.get(p.id);
+        if (f) {
+          const n = fileItemToNeuthek(f);
+          n.gps = { lat: p.lat, lng: p.lng, place: p.place || null };
+          return n;
+        }
+        // No file row loaded for this point — build a minimal pin
+        // straight from the geo row. `thumb` points at the served
+        // bytes (best-effort: the map shows a plain dot if it can't be
+        // fetched/decoded as an image).
+        return {
+          id: p.id,
+          type: "image",
+          category: "image",
+          name: p.original_filename || "Photo",
+          thumb: servedUrl(p.id, { maxDim: 600 }),
+          gps: { lat: p.lat, lng: p.lng, place: p.place || null },
+        };
+      });
   }, [allFilesForMap, geoResp, isMapView]);
 
   // Starred files mapped to neuthek shape (cross-folder).
@@ -2210,9 +2754,10 @@ export function App() {
     return trashedRaw.map((f) => fileItemToNeuthek(f));
   }, [trashedRaw, isTrashView]);
 
-  // Person-filtered files mapped to neuthek shape (cross-folder).
+  // Person- (or unnamed-cluster-) filtered files mapped to neuthek
+  // shape (cross-folder).
   const personFiles = useMemoApp(() => {
-    if (!isPeopleView || !peopleFilter?.personId) return [];
+    if (!isPeopleView || !peopleDrillActive) return [];
     const geoMap = new Map((geoResp?.points || []).map((p) => [p.id, p]));
     return personFilesRaw.map((f) => {
       const n = fileItemToNeuthek(f);
@@ -2220,7 +2765,7 @@ export function App() {
       if (g) n.gps = { lat: g.lat, lng: g.lng, place: g.place || null };
       return n;
     });
-  }, [personFilesRaw, geoResp, isPeopleView, peopleFilter]);
+  }, [personFilesRaw, geoResp, isPeopleView, peopleDrillActive]);
 
   // Real people total for the sidebar — named persons + unlabeled
   // clusters. The same query already drives the People strip on the
@@ -2289,22 +2834,55 @@ export function App() {
   }, [facets, baseFiles, geoResp, isStarredView, starredRaw, peopleResp, incomingShares]);
 
   const filesByView = useMemoApp(() => ({
+    // gallery / photos / videos / docs all read the SAME paged
+    // `baseFiles` slice. The category views are filtered SERVER-side
+    // (the query carries `category=image|video|document`), so the page
+    // already contains only that kind — no client-side re-filter, which
+    // also avoids dropping code files (FE type "code", backend category
+    // "document") from the Documents view.
     gallery: baseFiles,
-    photos: baseFiles.filter(f => f.type === "image"),
-    videos: baseFiles.filter(f => f.type === "video"),
-    docs: baseFiles.filter(f => f.type === "doc"),
+    photos: baseFiles,
+    videos: baseFiles,
+    docs: baseFiles,
     starred: starredFiles,
-    // People view: when no person is selected, the "files" array is
-    // empty (we render the person picker instead). When a person is
-    // selected we render the cross-folder photos returned by the
-    // person-filtered fetch.
-    people: peopleFilter?.personId ? personFiles : [],
+    // People view: when nothing is selected, the "files" array is
+    // empty (we render the person picker instead). When a named person
+    // OR an unnamed cluster is selected we render the cross-folder
+    // photos returned by the person-/cluster-filtered fetch.
+    people: peopleDrillActive ? personFiles : [],
+    // Map view renders from `allFilesMapped` (geo-driven), not this
+    // slice; `places` only feeds the (hidden-on-map) topbar fallback.
     places: baseFiles.filter(f => f.gps),
     shared: [],
     trash: trashedFiles,
-  }), [baseFiles, starredFiles, trashedFiles, personFiles, peopleFilter]);
+  }), [baseFiles, starredFiles, trashedFiles, personFiles, peopleDrillActive]);
 
   const files = filesByView[view] || [];
+  // Count shown in the topbar header ("N items" / "N results"). The
+  // gallery is now paged, so `files.length` is just the current page —
+  // show the true slice total instead so the header agrees with the
+  // sidebar pill (e.g. "Photos · 573 items"). Falls back to the page
+  // length for views whose full array we already hold (starred / trash /
+  // people / places) or whose total we can't derive. MUST come after
+  // `const files` above — it reads `files`.
+  const viewTotalCount = (() => {
+    if (searchActive) return allSearchHits.length;
+    if (view === "photos" || view === "videos" || view === "docs") {
+      const c = VIEW_TO_CATEGORY[view];
+      return byCat[c] ?? files.length;
+    }
+    // Map view: the number of mappable pins (== the geo-point count ==
+    // the sidebar Map badge). Keeps the header, the sidebar, and the
+    // map toolbar all reporting the same number.
+    if (view === "places") return (geoResp?.points || []).length;
+    if (view === "gallery") {
+      // Un-filtered browse → whole-library total; a type pill → category.
+      if (exactCategoryTotal != null) return exactCategoryTotal;
+      if (!activeCategory && !otherFilterActive) return facets?.total ?? files.length;
+      return files.length;
+    }
+    return files.length;
+  })();
 
   const openSub = (key) => {
     if (key === "face") setShowFace(true);
@@ -2361,9 +2939,64 @@ export function App() {
   }
 
   // People-picker mode: when the user is on the People view and hasn't
-  // drilled into a specific person yet, we render the full-page picker
-  // instead of the gallery (so the EmptyGallery hint doesn't appear).
-  const isPeoplePicker = view === "people" && !peopleFilter?.personId;
+  // drilled into a specific person OR unnamed cluster yet, we render
+  // the full-page picker instead of the gallery (so the EmptyGallery
+  // hint doesn't appear).
+  const isPeoplePicker = view === "people" && !peopleDrillActive;
+
+  // Delete a person (DELETE /people/{id}) — shared by the People-tab
+  // card affordance and the preview panel's person-delete button. A
+  // small confirm guards the destructive action; on success we
+  // invalidate the people list AND the file/facet caches so the person
+  // chip + any person-filtered gallery slice update immediately. If the
+  // user is currently drilled into the person we just deleted, bounce
+  // back to the picker so they're not staring at a now-orphaned filter.
+  const handleDeletePerson = async ({ personId, name, count }) => {
+    if (!personId) return;
+    const who = name || "this person";
+    const photos = count ? ` (${count} face${count === 1 ? "" : "s"} will be unlabeled)` : "";
+    if (!window.confirm(`Delete ${who}?${photos} The photos stay; only the grouping is removed.`)) return;
+    try {
+      await deletePerson(personId);
+      toast.success(`Deleted ${who}`);
+      qcApp.invalidateQueries({ queryKey: ["people"] });
+      qcApp.invalidateQueries({ queryKey: ["files"] });
+      qcApp.invalidateQueries({ queryKey: ["facets"] });
+      qcApp.invalidateQueries({ queryKey: ["image-people"] });
+      if (peopleFilter?.personId === personId) setPeopleFilter(null);
+    } catch (e) {
+      toast.error(e?.detail || "Could not delete person");
+    }
+  };
+  // Mark an UNNAMED face cluster as "NOT A PERSON" (POST
+  // /people/clusters/{id}/not-a-person) — the People-tab hover affordance
+  // on unlabeled cards. Most of these are false-positive "faces" (masks,
+  // posters, patterns) the user wants gone for good: the endpoint records
+  // the cluster's embeddings into the rejection memory AND removes the
+  // grouping, so the next scan won't re-detect the same junk. Photos are
+  // untouched. A single-face junk cluster goes with NO prompt; we only
+  // confirm when several faces would disappear at once (a multi-face
+  // cluster could be a real-but-unnamed person, so we spell out that it
+  // won't be detected again). On success invalidate the people list +
+  // file/facet caches; if drilled into the cluster, bounce to the picker.
+  const handleNotAPerson = async ({ clusterId, count }) => {
+    if (!clusterId) return;
+    const n = count || 0;
+    if (n > 1 && !window.confirm(
+      `Mark this group of ${n} faces as “not a person”? They’ll be removed and won’t be detected again. Your photos stay.`,
+    )) return;
+    try {
+      await markNotAPerson(clusterId);
+      toast.success(n > 1 ? `Marked ${n} faces as “not a person”` : "Marked as “not a person” — won’t detect it again");
+      qcApp.invalidateQueries({ queryKey: ["people"] });
+      qcApp.invalidateQueries({ queryKey: ["files"] });
+      qcApp.invalidateQueries({ queryKey: ["facets"] });
+      qcApp.invalidateQueries({ queryKey: ["image-people"] });
+      if (peopleFilter?.clusterId === clusterId) setPeopleFilter(null);
+    } catch (e) {
+      toast.error(e?.detail || "Could not update this group");
+    }
+  };
   // Trash view should render the gallery whenever there ARE trashed
   // files; only fall through to the "trash is empty" message when the
   // list is genuinely empty.
@@ -2385,7 +3018,23 @@ export function App() {
       <style>{`.gallery__grid { gap: ${densityGap}px; }`}</style>
       <Sidebar
         view={view}
-        onView={(v) => { setView(v); setQuery(""); setSelectedFile(null); setPeopleFilter(null); }}
+        onView={(v) => {
+          setView(v);
+          setQuery("");
+          setSelectedFile(null);
+          setPeopleFilter(null);
+          // Switching sidebar tabs resets the gallery's folder context +
+          // category pill + page, so a folder you'd drilled into, a stray
+          // "Photos" filter, or page 7 doesn't silently persist when you
+          // come back to Files. Users: "when I am in a folder then click
+          // the left bar sections it still says I'm in the folder I was in
+          // previously" / "when one of the [type] pills is selected it
+          // stays even after switching tabs."
+          setFolderId(null);
+          setCurrentFolderCount(null);
+          setTypeFilter("all");
+          setPage(0);
+        }}
         onUpload={() => setShowUpload(true)}
         onAccount={() => openAccount("profile")}
         // Pill is shown only when there are undecided consent scopes.
@@ -2412,8 +3061,8 @@ export function App() {
             <h1>{VIEW_LABELS[view]}</h1>
             <span className="topbar__title-meta">
               {query
-                ? `${files.length} results`
-                : `${files.length} items`}
+                ? `${viewTotalCount} results`
+                : `${viewTotalCount} items`}
             </span>
           </div>
           <div className="topbar__spacer"/>
@@ -2534,6 +3183,18 @@ export function App() {
                 direction without leaving the dropdown. */}
             <SortDropdown sort={sort} sortDir={sortDir} setSort={setSort} setSortDir={setSortDir}/>
             <div className="topbar__spacer"/>
+            {/* Trash bin-wide actions — "Restore all" + "Empty trash"
+                operate on every trashed row regardless of selection, so
+                the user can clear or recover the whole bin in one click.
+                Only rendered in the Trash view and only when the bin
+                isn't already empty. Sits ahead of the per-selection
+                BulkActionBar, which still handles subset restore/purge. */}
+            {view === "trash" && (
+              <TrashHeaderActions
+                trashedIds={trashedFiles.map(f => f.id)}
+                onDone={clearMultiSelected}
+              />
+            )}
             {/* Bulk-action toolbar — replaces the bare "N selected · Clear"
                 so multi-select actually has reach. Move / new-folder /
                 pick-best-of / delete all operate on the selection set;
@@ -2630,6 +3291,51 @@ export function App() {
           </div>
         )}
 
+        {/* D4 — semantic folder results. Shown ABOVE the photo/file grid
+            whenever a search is active and the /search/folders endpoint
+            returned matches. Each row reuses the existing `.fcard` style
+            (folder icon + name + "N items") so it matches the folder
+            cards in the gallery. Clicking opens the folder: we navigate
+            in via the same `enterFolder` the gallery uses, then clear the
+            query so the gallery drops out of search mode and paints the
+            folder's contents. Hidden entirely when the array is empty. */}
+        {!isMap && searchActive && (folderHits?.length ?? 0) > 0 && (
+          <div className="folder-search-results" style={{ padding: "10px 28px 4px" }}>
+            <div className="kicker" style={{ marginBottom: 10 }}>Folders</div>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gap: 10,
+            }}>
+              {folderHits.map((fo) => (
+                <div
+                  key={fo.id}
+                  className="fcard"
+                  role="button"
+                  tabIndex={0}
+                  title={`Open "${fo.name}"`}
+                  onClick={() => { enterFolder(fo); setQuery(""); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      enterFolder(fo);
+                      setQuery("");
+                    }
+                  }}
+                >
+                  <div className="fcard__icon"><Icon name="folder" size={18}/></div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="fcard__name">{fo.name}</div>
+                    <div className="fcard__meta">
+                      {fo.item_count ?? 0} {((fo.item_count ?? 0) === 1) ? "item" : "items"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {view === "shared"
           ? <SharedGalleryView
               initialShareId={initialShareId}
@@ -2643,6 +3349,8 @@ export function App() {
             ? <PeoplePicker
                 people={peopleResp}
                 onPick={(p) => setPeopleFilter(p)}
+                onDeletePerson={handleDeletePerson}
+                onNotAPerson={handleNotAPerson}
               />
             : showEmpty
               ? (view === "trash"
@@ -2657,8 +3365,37 @@ export function App() {
                   query={query}
                   sort={sort}
                   sortDir={sortDir}
+                  // The paged gallery views (gallery / photos / videos /
+                  // docs) get their order from the server now (listFiles
+                  // ?sort= → SQL ORDER BY, library-wide across pages), so
+                  // the gallery must NOT re-sort the current page on top.
+                  // Search keeps its own server rank (handled inside
+                  // GalleryView via the `query` guard), so excluding it
+                  // here is harmless.
+                  serverSorted={
+                    !searchActive &&
+                    (view === "gallery" || view === "photos" ||
+                     view === "videos" || view === "docs")
+                  }
                   view={view}
                   layoutMode={layoutMode}
+                  // Numbered pagination (Google-style, 48/page). Active
+                  // for the server-paged gallery file list (All files +
+                  // the Photos / Videos / Documents category views) and
+                  // for search (paged client-side over the ranked hits).
+                  // The other views (starred / trash / people / places)
+                  // load their full array and render it without paging.
+                  paginate={
+                    searchActive ||
+                    view === "gallery" || view === "photos" ||
+                    view === "videos" || view === "docs"
+                  }
+                  page={page}
+                  pageSize={PAGE_SIZE}
+                  onPageChange={setPage}
+                  totalCount={totalForPagination}
+                  hasNextFallback={hasNextFallback}
+                  isFetchingPage={filesFetching || searchIsFetching}
                   selected={selectedFile?.id}
                   multiSelected={multiSelected}
                   onMultiSelectToggle={toggleMultiSelected}
@@ -2666,6 +3403,9 @@ export function App() {
                   // render the redundant strip below the topbar.
                   showPeopleStrip={t.showPeopleStrip && view !== "people"}
                   showFolders={t.showFolders}
+                  // Library-wide category counts for the type pills so
+                  // they don't read 0 off a single paginated page.
+                  categoryCounts={byCat}
                   typeFilter={typeFilter}
                   onTypeFilter={setTypeFilter}
                   onSelect={(f) => setSelectedFile(prev => prev?.id === f.id ? null : f)}
@@ -2698,12 +3438,19 @@ export function App() {
         onClose={() => setSelectedFile(null)}
         onRename={handleRename}
         user={user}
+        // People context — when the gallery is drilled into a specific
+        // person, the preview surfaces a "Delete this person" action
+        // (and per-face correction targets default to moving faces OUT
+        // of this person). `people` feeds the "Move to…" picker.
+        activePerson={peopleFilter?.personId ? { personId: peopleFilter.personId, name: peopleFilter.name } : null}
+        people={peopleResp}
+        onDeletePerson={handleDeletePerson}
       />
 
       {/* FAB jump-to-top */}
       {t.showFab && (
         <button className="fab-top" data-show={fabShow}
-                onClick={() => mainRef.current?.querySelector(".gallery")?.scrollTo({ top: 0, behavior: "smooth" })}
+                onClick={() => (mainRef.current?.querySelector(".gallery") || mainRef.current?.querySelector(".people-grid-scroll"))?.scrollTo({ top: 0, behavior: "smooth" })}
                 aria-label="Jump to top">
           <Icon name="arrowUp" size={18}/>
         </button>

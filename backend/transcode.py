@@ -427,7 +427,19 @@ def _run_video_encode(
     logger.info("transcode: encoding %s → %s (%dx%d, %dk, %s)",
                 src.name, dst.name, width, height, bitrate_kbps,
                 "nvenc" if use_gpu else "libx264")
-    proc = subprocess.run(cmd, capture_output=True)
+    # HARDENING — bound the ffmpeg encode. A malformed/adversarial input
+    # can make ffmpeg spin instead of erroring; with no timeout the
+    # subprocess outlives the worker's asyncio watchdog (which only
+    # abandons the awaiting coroutine, not the OS process) and leaks a
+    # pegged CPU core indefinitely. 1 hour matches the HLS encode budget
+    # in hls.py — generous for any real personal-library clip; a wedge
+    # past it is abandoned + surfaced for retry.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=3600)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ffmpeg encode timed out after 3600s for {src.name}"
+        ) from exc
     if proc.returncode != 0:
         # Surface ffmpeg's stderr so the worker log has the why.
         raise RuntimeError(
@@ -455,7 +467,18 @@ def _extract_poster(src: Path, dst: Path, *, duration_s: float) -> None:
         "-q:v", "2",  # JPEG quality 2 (range 1-31, lower = higher quality)
         str(dst),
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    # HARDENING — bound the single-frame poster grab. This runs on the
+    # live HLS path (hls.py imports _extract_poster) so a hung ffmpeg
+    # here would otherwise leak a CPU core past the worker watchdog.
+    # 120s is far more than a one-frame extract ever needs; a stall
+    # past it is treated as a failure and the row keeps its
+    # download-only fallback until requeued.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ffmpeg poster extract timed out after 120s for {src.name}"
+        ) from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"ffmpeg poster extract failed (exit {proc.returncode}): "

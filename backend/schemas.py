@@ -260,6 +260,48 @@ class ImageRead(BaseModel):
     # the model that maps to `thumbnail_blob_key is not None`).
     has_thumbnail: bool = False
 
+    # Derived bool — true when this row can be opened in the
+    # server-rasterized PDF page viewer (PdfPageStack). That's the case
+    # for native PDFs AND for Office documents whose LibreOffice→PDF
+    # conversion has landed (`converted_pdf_blob_key` is set). The
+    # frontend routes any `pdf_viewable` file through the same PDF modal,
+    # so an Office doc whose conversion is still pending falls back to the
+    # download-only card until the worker finishes. Derived in the
+    # validator below so the raw blob key never leaves the server.
+    pdf_viewable: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _project_pdf_viewable(cls, data):
+        # `data` is an Image ORM instance (from_attributes path) or a
+        # dict (manual construct / search hits). Native PDFs are viewable
+        # immediately; Office docs become viewable once the worker has
+        # stored a converted PDF. We never surface the blob key itself.
+        def _native_pdf(mime, name) -> bool:
+            if (mime or "").lower().split(";")[0].strip() == "application/pdf":
+                return True
+            return (name or "").lower().endswith(".pdf")
+
+        if isinstance(data, dict):
+            if "pdf_viewable" not in data:
+                data["pdf_viewable"] = bool(
+                    data.get("converted_pdf_blob_key")
+                ) or _native_pdf(
+                    data.get("mime_type_original"),
+                    data.get("original_filename"),
+                )
+            return data
+        converted = getattr(data, "converted_pdf_blob_key", None)
+        viewable = bool(converted) or _native_pdf(
+            getattr(data, "mime_type_original", None),
+            getattr(data, "original_filename", None),
+        )
+        try:
+            object.__setattr__(data, "pdf_viewable", viewable)
+        except Exception:
+            pass
+        return data
+
 
 class FolderRead(BaseModel):
     """Folder shape returned by /folders. The grid renders folders as
@@ -385,6 +427,19 @@ class StorageUsage(BaseModel):
 
 
 class ImageSearchHit(ImageRead):
+    score: float
+
+
+class FolderSearchHit(BaseModel):
+    """D4 — a folder surfaced by semantic search. Returned by
+    `GET /search/folders` alongside the image hits from `GET /search`."""
+
+    id: uuid.UUID
+    name: str
+    parent_folder_id: uuid.UUID | None = None
+    status: str | None = None
+    status_color: str | None = None
+    item_count: int = 0
     score: float
 
 

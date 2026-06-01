@@ -182,6 +182,14 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@neuthek.local}
+      # Marketing-site newsletter forward (backend.marketing). Empty
+      # values keep the forward disabled — the opt-in is still recorded
+      # locally, the cross-service call is skipped. Set MARKETING_BASE_URL
+      # to the marketing Express origin (e.g. http://host.docker.internal:5181
+      # when the marketing site runs on the host in dev) and
+      # MARKETING_INTERNAL_TOKEN to the shared secret to enable it.
+      MARKETING_BASE_URL: ${MARKETING_BASE_URL:-}
+      MARKETING_INTERNAL_TOKEN: ${MARKETING_INTERNAL_TOKEN:-}
       REQUIRE_SIGNED_DOWNLOADS: "false"
       # HF cache lives on the model_cache volume so a rebuild doesn't
       # re-pull multi-GB weights. `transformers` reads both HF_HOME and

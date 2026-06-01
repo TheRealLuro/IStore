@@ -1,0 +1,283 @@
+/* ============================================================
+   "Fix this face" modal
+   ------------------------------------------------------------
+   Centered modal that replaces the old anchored ⋯ popover on a
+   face chip in the file preview (FaceChip in src/preview.jsx).
+   User feedback drove the rewrite:
+     - "i dont like the type field highlighted like that"  → the
+       search input now has a SINGLE clean focus ring (1px
+       border + one soft ring), not the old doubled outline.
+     - "i also cant scroll in the mini pop up"             → the
+       people list is a proper overflow-y:auto column with a
+       real max-height that scrolls smoothly.
+     - "make it its own big modal card"                    → a
+       comfortably sized centered card (overlay + dialog),
+       modeled on .share-modal so it feels native.
+
+   The app is monochrome; the "accent" is var(--ink). Scoped
+   entirely to `.facefix-*` so nothing else is affected.
+
+   This file is NOT yet @imported — add it after the other
+   sheets in styles/index.css (next to styles-facechip.css).
+   ============================================================ */
+
+/* ---- Overlay (dim backdrop, click-to-close) ----------------
+   Same backdrop + fade as .share-modal__overlay. zIndex sits
+   above the preview panel and its lightbox surfaces. */
+.facefix-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 9600;
+  padding: 20px;
+  animation: bd-fade 180ms ease-out;
+}
+
+/* ---- Modal card -------------------------------------------- */
+.facefix-modal {
+  width: min(480px, 94vw);
+  max-height: 72vh;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3, 14px);
+  padding: 20px 20px 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;            /* let the list flex-child scroll */
+  animation: facefix-pop 160ms var(--ease, cubic-bezier(0.22, 1, 0.36, 1));
+}
+@keyframes facefix-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- Header ------------------------------------------------ */
+.facefix-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+.facefix-modal__head-text {
+  flex: 1;
+  min-width: 0;
+}
+.facefix-modal__kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+.facefix-modal__title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: 2px;
+  letter-spacing: -0.2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- "Not <person>" detach row ----------------------------
+   Calm by default with a danger-tinted leading icon chip; tips
+   into a soft danger wash on hover/focus. Same language as the
+   old popover's row so the action still reads as "remove". */
+.facefix-modal__not {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  flex: 0 0 auto;
+  height: 44px;
+  padding: 0 12px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 460;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease), color 120ms var(--ease);
+}
+.facefix-modal__not:hover,
+.facefix-modal__not:focus-visible {
+  background: var(--danger-soft);
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--line));
+  color: var(--danger);
+  outline: none;
+}
+.facefix-modal__not-icon {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  transition: background 120ms var(--ease);
+}
+.facefix-modal__not:hover .facefix-modal__not-icon,
+.facefix-modal__not:focus-visible .facefix-modal__not-icon {
+  background: color-mix(in oklab, var(--danger) 16%, transparent);
+}
+.facefix-modal__not-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "MOVE TO" kicker above the search field. */
+.facefix-modal__kicker--move {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* ---- Search field -----------------------------------------
+   ONE clean focus treatment: a 1px border that darkens to
+   var(--ink) plus a single soft ring — matching the app's
+   standard input (.share-modal__input:focus). No second
+   stacked outline (the old doubled ring the user disliked). */
+.facefix-modal__search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease, color 140ms ease;
+}
+.facefix-modal__search:focus-within {
+  background: var(--surface);
+  border-color: var(--ink-3);
+  color: var(--ink-2);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ink) 8%, transparent);
+}
+.facefix-modal__search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;            /* the wrapper owns the focus ring */
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+}
+.facefix-modal__search-input::placeholder {
+  color: var(--ink-4);
+}
+
+/* ---- Scrollable people list -------------------------------
+   The fix for "can't scroll": a flex child that takes the
+   remaining height and scrolls its own overflow. A min-height
+   keeps a few rows visible; the modal's max-height caps it. */
+.facefix-modal__list {
+  flex: 1 1 auto;
+  min-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-right: 4px;
+  margin-right: -4px;       /* keep rows full-width under the scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+  overscroll-behavior: contain;
+}
+.facefix-modal__list::-webkit-scrollbar { width: 10px; }
+.facefix-modal__list::-webkit-scrollbar-track { background: transparent; }
+.facefix-modal__list::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.facefix-modal__list::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
+  background-clip: padding-box;
+}
+
+/* ---- Name rows --------------------------------------------
+   A round face-thumbnail avatar (or a fallback glyph) + name.
+   Comfortable target height so any group of people can tap it. */
+.facefix-modal__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  flex: 0 0 auto;
+  height: 48px;
+  padding: 0 12px 0 8px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 110ms var(--ease);
+}
+.facefix-modal__row:hover,
+.facefix-modal__row:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+.facefix-modal__row:active {
+  background: color-mix(in oklab, var(--ink) 7%, var(--surface));
+}
+.facefix-modal__avatar {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.facefix-modal__avatar--fallback {
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  background: var(--surface-2);
+}
+.facefix-modal__row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+/* ---- Empty states ----------------------------------------- */
+.facefix-modal__empty {
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--ink-3);
+}
+.facefix-modal__empty--none {
+  flex: 0 0 auto;
+  font-style: normal;
+  line-height: 1.5;
+  border: 1px dashed var(--line);
+  border-radius: 11px;
+  background: var(--surface-2);
+}

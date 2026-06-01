@@ -9,6 +9,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 import NeuthekMark from "./NeuthekMark.jsx";
 import { Icon } from "./icons.jsx";
+import { safeHref } from "./safe-href.js";
 
 import { viewPublicLink, downloadPublicFile } from "@/api/vault";
 import {
@@ -45,8 +46,38 @@ function fileIcon(mime = "") {
   if (m === "application/pdf") return "document";
   return "file";
 }
-const KIND_LABEL = { password: "Password", note: "Secure note", seed: "Recovery phrase", card: "Card / ID", file: "File" };
-const KIND_ICON = { password: "key", note: "document", seed: "shield", card: "contact", file: "file" };
+const KIND_LABEL = { password: "Password", note: "Secure note", seed: "Recovery phrase", card: "Card", id: "ID document", ssh_key: "SSH key", contact: "Contact", file: "File" };
+const KIND_ICON = { password: "key", note: "document", seed: "shield", card: "contact", id: "contact", ssh_key: "key", contact: "user", file: "file" };
+
+// Mask a (possibly multiline) secret while keeping its shape — non-whitespace
+// runs become bullets. Local copy; the public viewer is standalone.
+function maskSecret(text) {
+  return String(text || "").replace(/\S/g, "•");
+}
+
+// Group a card number for display (Amex 4-6-5, else 4-4-4-4…). Digits only.
+function formatCardNumber(number) {
+  const n = String(number || "").replace(/\D/g, "");
+  if (!n) return "";
+  if (/^3[47]/.test(n)) {
+    return [n.slice(0, 4), n.slice(4, 10), n.slice(10, 15)].filter(Boolean).join(" ");
+  }
+  return n.match(/.{1,4}/g)?.join(" ") || n;
+}
+
+// Best-effort brand detection from the leading digits (hint only).
+function detectCardBrand(number) {
+  const n = String(number || "").replace(/\D/g, "");
+  if (!n) return "";
+  if (/^4/.test(n)) return "Visa";
+  if (/^5[1-5]/.test(n) || /^2(2[2-9]|[3-6]\d|7[01]|720)/.test(n)) return "Mastercard";
+  if (/^3[47]/.test(n)) return "Amex";
+  if (/^3(0[0-5]|[68])/.test(n)) return "Diners Club";
+  if (/^6(011|5|4[4-9])/.test(n)) return "Discover";
+  if (/^35(2[89]|[3-8]\d)/.test(n)) return "JCB";
+  if (/^62/.test(n)) return "UnionPay";
+  return "";
+}
 
 function Shell({ children }) {
   return (
@@ -322,13 +353,67 @@ function SecureFields({ kind, data }) {
     );
   }
   if (kind === "card") {
+    const brand = d.brand || detectCardBrand(d.number);
     return (
       <>
-        <Row label="Cardholder / name" value={d.cardholder} />
-        <Row label="Number" value={d.number} secret reveal={reveal} onReveal={toggle} mono />
-        <Row label="Expiry" value={d.expiry} />
-        <Row label="CVV / code" value={d.cvv} secret reveal={reveal} onReveal={toggle} mono />
-        <Row label="Type / issuer" value={d.brand} />
+        <Row label="Cardholder" value={d.cardholder} />
+        <Row
+          label="Card number"
+          value={reveal ? formatCardNumber(d.number) : d.number}
+          secret
+          reveal={reveal}
+          onReveal={toggle}
+          mono
+        />
+        <Row label="Expiry" value={d.expiry} mono />
+        <Row label="CVV" value={d.cvv} secret reveal={reveal} onReveal={toggle} mono />
+        <Row label="Brand" value={brand} />
+        <Row label="Billing ZIP" value={d.zip} />
+        <Row label="Note" value={d.note} multiline />
+      </>
+    );
+  }
+  if (kind === "id") {
+    return (
+      <>
+        <Row label="Document type" value={d.docType} />
+        <Row label="Full name" value={d.fullName} />
+        <Row label="Document number" value={d.number} secret reveal={reveal} onReveal={toggle} mono />
+        <Row label="Country / issuer" value={d.issuer} />
+        <Row label="Issued" value={d.issued} />
+        <Row label="Expires" value={d.expires} />
+        <Row label="Date of birth" value={d.dob} />
+        <Row label="Note" value={d.note} multiline />
+      </>
+    );
+  }
+  if (kind === "ssh_key") {
+    return (
+      <>
+        <Row label="Host / label" value={d.host} />
+        <Row label="Key type" value={d.keyType} />
+        {d.privateKey ? (
+          <div className="vault-detail-row">
+            <div className="vault-secretblock__bar">
+              <span className="vault-detail-row__label">Private key</span>
+              <button className="btn-icon" onClick={toggle} aria-label={reveal ? "Hide" : "Reveal"}>
+                <Icon name={reveal ? "eyeOff" : "eye"} size={14} />
+              </button>
+            </div>
+            <pre className="vault-detail-row__pre vault-secretblock__pre" style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>
+              {reveal ? d.privateKey : maskSecret(d.privateKey)}
+            </pre>
+          </div>
+        ) : null}
+        {d.publicKey ? (
+          <div className="vault-detail-row">
+            <span className="vault-detail-row__label">Public key</span>
+            <pre className="vault-detail-row__pre vault-secretblock__pre" style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>
+              {d.publicKey}
+            </pre>
+          </div>
+        ) : null}
+        <Row label="Passphrase" value={d.passphrase} secret reveal={reveal} onReveal={toggle} mono />
       </>
     );
   }
@@ -339,6 +424,36 @@ function SecureFields({ kind, data }) {
         <Row label="Password" value={d.password} secret reveal={reveal} onReveal={toggle} mono />
         <Row label="Website" value={d.url} link />
         <Row label="Notes" value={d.notes} multiline />
+      </>
+    );
+  }
+  if (kind === "contact") {
+    const lbl = (base, extra) => [base, extra].filter(Boolean).join(" · ");
+    const list = (arr) => (Array.isArray(arr) ? arr : []);
+    return (
+      <>
+        {(d.org || d.role) && <Row label="Organization" value={lbl(d.org, d.role)} />}
+        {list(d.phones).map((p, i) => (
+          <Row key={`ph${i}`} label={lbl("Phone", p?.label)} value={p?.value} />
+        ))}
+        {list(d.emails).map((e, i) => (
+          <Row key={`em${i}`} label={lbl("Email", e?.label)} value={e?.value} />
+        ))}
+        {list(d.addresses).map((a, i) => (
+          <Row key={`ad${i}`} label={lbl("Address", a?.label)} value={a?.value} multiline />
+        ))}
+        {list(d.urls).map((u, i) => {
+          // The local Row renders a link target as its value via href=value, so
+          // pass the SANITIZED href. Unsafe schemes (javascript:/data:) → null
+          // → render the raw value as inert text (a public link could carry a
+          // hostile URL).
+          const href = safeHref(u?.value);
+          return (
+            <Row key={`ur${i}`} label={lbl("Website", u?.label)} value={href || u?.value} link={!!href} />
+          );
+        })}
+        {d.birthday && <Row label="Birthday" value={d.birthday} />}
+        {d.note && <Row label="Note" value={d.note} multiline />}
       </>
     );
   }

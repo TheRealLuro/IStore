@@ -32,6 +32,8 @@ import {
   withdrawScope,
   withdrawConsent,
   rescanAllFaces,
+  optInNewsletter,
+  optOutNewsletter,
 } from "@/api/consent";
 import { backfillSummaries, backfillSummaryEmbeddings, backfillVision, getSummarizeProgress, backfillDocThumbs } from "@/api/files";
 import {
@@ -53,10 +55,22 @@ function RealActivityLogPanel() {
     staleTime: 30_000,
   });
   if (isLoading) {
-    return <div style={{ padding: 18, color: "var(--ink-3)", fontSize: 12.5 }}>Loading…</div>;
+    return (
+      <div style={{ padding: "10px 18px 14px" }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="set-skel set-skel--line" style={{ width: `${70 - i * 12}%` }}/>
+        ))}
+      </div>
+    );
   }
   if (!data || data.length === 0) {
-    return <div style={{ padding: 18, color: "var(--ink-3)", fontSize: 12.5 }}>No activity yet.</div>;
+    return (
+      <div className="set-empty">
+        <span className="set-empty__icon"><Icon name="document" size={16}/></span>
+        <span className="set-empty__title">No activity yet</span>
+        <span className="set-empty__desc">Sign-ins, consent changes, renames, and deletes will show up here.</span>
+      </div>
+    );
   }
   return (
     <div style={{ padding: "8px 18px 14px", fontSize: 12.5 }}>
@@ -640,6 +654,12 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   const faceRecog      = readScope("face_recognition");
   const gpsTags        = readScope("gps_retention");
   const telemetry      = readScope("bandit_compression_telemetry");
+  // Marketing-site newsletter opt-in. State rides the same
+  // /consent/scopes payload (the `newsletter` scope), but turning it ON
+  // hits the dedicated POST /account/newsletter (which also forwards the
+  // email to the marketing list); OFF uses the generic withdraw. So this
+  // can't go through `flipScope` — see `setNewsletter` below.
+  const newsletter     = readScope("newsletter");
   // §B1 — EXIF retention. OFF by default = strip Make/Model/lens/timestamp
   // on upload (safer). ON = keep them in the original so the user can
   // see and export the full camera metadata. Without this toggle the
@@ -682,6 +702,54 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
   const setGpsTags        = () => flipScope("gps_retention", gpsTags);
   const setTelemetry      = () => flipScope("bandit_compression_telemetry", telemetry);
   const setExifRetention  = () => flipScope("exif_retention", exifRetention);
+  // Newsletter: ON → POST /account/newsletter (records consent + forwards
+  // the email to the marketing list); OFF → generic withdraw. Reuses the
+  // same scopeBusy/scopeOverride machinery as flipScope for the optimistic
+  // flip + in-flight guard, but with the newsletter-specific endpoints.
+  const setNewsletter = async () => {
+    const scope = "newsletter";
+    if (scopeBusy[scope]) return;
+    const currentlyOn = newsletter;
+    setScopeBusy((m) => ({ ...m, [scope]: true }));
+    setScopeOverride((m) => ({ ...m, [scope]: !currentlyOn }));
+    try {
+      if (currentlyOn) {
+        await optOutNewsletter();
+        toast.success("Unsubscribed from the newsletter.");
+      } else {
+        const res = await optInNewsletter();
+        // The local opt-in always succeeds; the marketing forward is
+        // best-effort. Tell the user the truth about what happened so a
+        // self-host build (or a transient marketing outage) doesn't look
+        // like a silent failure.
+        if (res?.marketing_synced) {
+          toast.success("Subscribed to the newsletter.");
+        } else if (res?.marketing_configured === false) {
+          toast.success("Newsletter opt-in saved.");
+        } else {
+          toast.success(
+            "Opt-in saved — we'll finish adding you to the list shortly.",
+          );
+        }
+      }
+      await qc.invalidateQueries({ queryKey: ["consent-scopes"] });
+      setScopeOverride((m) => {
+        const { [scope]: _, ...rest } = m;
+        return rest;
+      });
+    } catch (e) {
+      setScopeOverride((m) => {
+        const { [scope]: _, ...rest } = m;
+        return rest;
+      });
+      toast.error(e?.detail || "Could not update newsletter preference");
+    } finally {
+      setScopeBusy((m) => {
+        const { [scope]: _, ...rest } = m;
+        return rest;
+      });
+    }
+  };
   // face_recognition is BIPA-grade — granting requires the signed-statement
   // payload via the dedicated /consent/face-recognition/grant endpoint.
   // The generic /consent/{kind}/grant rejects it with 400. So clicking the
@@ -1013,8 +1081,11 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   <div className="applist">
                     <EmailVerifyRow user={user}/>
                     <Expandable id="pwd" icon="lock" tone="red"
-                                title="Password" desc="Last changed 4 months ago"
-                                tailExtra={<span style={{ color: "var(--ink-3)", marginRight: 8 }}>•••••••••</span>}
+                                title="Password"
+                                desc={user?.password_set === false
+                                  ? "No password set — you sign in with Google. Add one for email sign-in."
+                                  : "Change the password you use to sign in."}
+                                tailExtra={<span aria-hidden="true" style={{ color: "var(--ink-3)", marginRight: 8, letterSpacing: 2 }}>•••••••••</span>}
                                 panel={<PasswordChangePanel onSaved={() => tog("pwd")}/>}/>
                     <GoogleLinkRow user={user}/>
                     <UserTwoFactorRow user={user} onOpenTwoFA={() => setTab("security")}/>
@@ -1111,6 +1182,16 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                     <Expandable id="tel-detail" icon="layers" tone="ink"
                                 title="What's collected" desc="Crash reports, performance, feature usage"
                                 panel={<TelemetryDetailPanel/>}/>
+                  </div>
+                </Collapsible>
+
+                <Collapsible label="Email from us" count={1} id="priv-newsletter">
+                  <div className="applist">
+                    <Row icon="mail" tone="blue" title="Weekly newsletter"
+                         desc={subFor("newsletter",
+                           "Release notes each Friday — what shipped and why. Unsubscribe any time.",
+                           "Off — no marketing email.")}
+                         tail={<SwitchAcc on={newsletter} onChange={setNewsletter} ariaLabel="Newsletter"/>}/>
                   </div>
                 </Collapsible>
 

@@ -305,6 +305,8 @@ async def update_folder(
     ):
         raise HTTPException(status_code=404, detail="Folder not found")
 
+    old_parent_id = folder.parent_folder_id  # D4: a move changes the old parent's subtree too
+
     if body.parent_folder_id is not None:
         # Don't let a folder be moved inside itself or its own subtree —
         # would create a cycle and break recursive deletes.
@@ -349,6 +351,13 @@ async def update_folder(
             detail="A folder with this name already exists in this location",
         )
     await session.refresh(folder)
+    # D4 — this folder's name embedding changed; on a move the old parent's
+    # subtree changed too. Ancestor chains are handled inside the scheduler.
+    from backend.folder_embed import schedule_folder_recompute
+    _affected = [folder_id]
+    if body.parent_folder_id is not None and body.parent_folder_id != old_parent_id:
+        _affected.append(old_parent_id)
+    schedule_folder_recompute(user.id, _affected)
     return _to_read(folder)
 
 
@@ -480,6 +489,13 @@ async def upload_archive(
     # per-entry counts would let a small zip flood the daily byte ceiling
     # without the limiter noticing.
     await enforce_upload_limits(str(user.id), request, len(raw))
+    # Cumulative per-user storage quota (413 when over). The archive can
+    # expand to many Image rows; we gate on the compressed archive size
+    # here as a fast pre-check so an over-quota account can't keep
+    # ingesting. (Per-entry expansion is bounded by the same daily-byte
+    # rate limit above.) Parity with the Vault + cloud-sync paths.
+    from backend.api.storage import enforce_storage_quota
+    await enforce_storage_quota(session, user, len(raw))
 
     if parent_folder_id is not None:
         parent = await session.get(Folder, parent_folder_id)

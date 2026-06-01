@@ -173,3 +173,38 @@ html[data-theme="dark"] .map4-pin--cluster {
 .map4-pop__tile--lg {
   aspect-ratio: 16/10; width: 100%; border-radius: 10px;
 }
+
+/* ------------------------------------------------------------------
+   Perf + selection refinements (lag with many pins / overlapping pins)
+   ------------------------------------------------------------------ */
+
+/* Isolate each pin so a pin animating (hover lift) or a thumbnail
+   decoding can't trigger layout/style work on its ~178 neighbors. We use
+   `layout style` only — NOT `paint` — because pins intentionally draw
+   outside their box (drop-shadow, the pointer-tail `::after`, and the
+   larger hit-area `::before`); `contain: paint` would clip all of those. */
+.map4-pin-wrap { contain: layout style; }
+.map4-pin { contain: layout style; }
+
+/* Promote only the thing that actually animates (the inner pin transform)
+   to its own layer during interaction. Scoped to :hover so we don't keep
+   178 permanent compositor layers around (that would cost more than it
+   saves). */
+.map4-pin:hover { will-change: transform; }
+
+/* Enlarge the clickable target without growing the visible pin: a
+   transparent pseudo-element pads the hit area so near-overlapping pins
+   are easier to land on. The hovered pin is raised (JS bumps the Leaflet
+   marker z-index too) so the top one reliably wins the click. */
+.map4-pin::before {
+  content: "";
+  position: absolute;
+  inset: -6px -8px;
+  /* no background — purely a bigger pointer target */
+}
+
+/* Spiderfied pins (exactly-coincident photos fanned into a ring via a
+   shifted icon anchor). Keep them above ordinary pins so the fan is never
+   occluded, and let them pop a touch more on hover. */
+.map4-pin--spider { z-index: 1100; }
+.map4-pin--spider:hover { z-index: 1200; }

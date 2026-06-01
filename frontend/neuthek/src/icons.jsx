@@ -97,6 +97,14 @@ export const Icon = ({ name, size = 16, strokeWidth = 1.6, ...props }) => {
     archive: <><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="10" y1="13" x2="14" y2="13"/></>,
     slides: <><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M12 17v4"/><path d="M8 21h8"/></>,
     audio: <><path d="M3 12a9 9 0 0 1 18 0v6a2 2 0 0 1-2 2h-2v-6h4"/><path d="M3 18v-6h4v6H5a2 2 0 0 1-2-2z"/></>,
+    // 3D model glyph — an isometric cube: hexagon silhouette with three
+    // inner edges meeting at the center vertex. Used by the model3d kind.
+    cube: <><path d="M12 2 21 7v10l-9 5-9-5V7z"/><path d="M12 12 21 7"/><path d="M12 12 3 7"/><path d="M12 12v10"/></>,
+    // Open-book glyph — two facing pages over a spine. Used by the ebook kind.
+    book: <><path d="M12 5.5C10.5 4.5 8.5 4 6 4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1c2.5 0 4.5.5 6 1.5"/><path d="M12 5.5C13.5 4.5 15.5 4 18 4a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1c-2.5 0-4.5.5-6 1.5z"/><path d="M12 5.5v14"/></>,
+    // Type / font glyph — a serif "A" with a baseline serif bar, evoking a
+    // typeface specimen. Used by the font kind.
+    type: <><path d="M5 19 12 5l7 14"/><path d="M8 13h8"/><path d="M3 19h4"/><path d="M17 19h4"/></>,
     // Speech-bubble used by the comments panel + collapsed bubble.
     message: <><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></>,
   };

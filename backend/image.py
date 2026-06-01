@@ -406,6 +406,46 @@ def _exif_captured_at(raw_bytes: bytes) -> datetime | None:
         return None
 
 
+# Office-document MIME types + extensions that headless LibreOffice can
+# render to PDF for in-app viewing. Kept in sync with
+# `backend/worker/main.py:_OFFICE_SUFFIX_BY_MIME`. PDF is intentionally
+# excluded — native PDFs already render through the page endpoints.
+_OFFICE_MIMES: set[str] = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/msword",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+    "application/rtf",
+    "text/rtf",
+}
+_OFFICE_EXTS: tuple[str, ...] = (
+    ".docx", ".xlsx", ".pptx",
+    ".doc", ".xls", ".ppt",
+    ".odt", ".ods", ".odp",
+    ".rtf",
+)
+
+
+def is_office_document(mime: str | None, filename: str | None) -> bool:
+    """True when `mime`/`filename` names an Office document we can convert
+    to PDF for the in-app viewer (docx/xlsx/pptx/odt/ods/odp/rtf/doc/…).
+
+    Used by the ingest hook to decide whether to enqueue a `convert_office`
+    job. Matches on MIME first, then the filename extension so a generic
+    `application/octet-stream` upload still converts when the name carries
+    a known Office extension."""
+    m = (mime or "").lower().split(";")[0].strip()
+    if m in _OFFICE_MIMES:
+        return True
+    name = (filename or "").lower()
+    return any(name.endswith(ext) for ext in _OFFICE_EXTS)
+
+
 def _detect_category(content_type: str | None, filename: str | None) -> str:
     ct = (content_type or "").lower()
     name = (filename or "").lower()
@@ -470,6 +510,21 @@ async def store_upload(
     filename = validated.filename
     sha = hashlib.sha256(raw_bytes).digest()
     category = validated.category
+
+    # SVG is category "image" (so the FE routes it to the image viewer) but it's
+    # vector XML, not a raster Pillow can decode/compress/EXIF-strip/vision. The
+    # bytes were already sanitized in upload_validation (`_validate_svg`: script /
+    # on* handlers / foreignObject / external refs / XXE stripped). Store the
+    # sanitized SVG as-is via the non-image path — it skips the entire Pillow
+    # pipeline (which would otherwise raise on image/svg+xml at strip_exif) while
+    # keeping category="image" and the served mime image/svg+xml.
+    if content_type == "image/svg+xml":
+        return await _store_non_image(
+            session, user, filename, raw_bytes, content_type, sha, "image",
+            source_provider=source_provider,
+            folder_id=folder_id,
+            skip_ai_training=skip_ai_training,
+        )
 
     if category != "image":
         # Audit U6 — strip container-level metadata from videos &
@@ -819,6 +874,28 @@ async def _store_non_image(
     session.add(image)
     await session.commit()
     await session.refresh(image)
+
+    # Office documents (docx/xlsx/pptx/odt/ods/odp/rtf/doc/…) get rendered
+    # to PDF by the ml-worker so they can be viewed in-app through the
+    # SAME server-rasterized PDF viewer as a native PDF (the page
+    # endpoints serve `converted_pdf_blob_key` once it lands). Enqueue the
+    # conversion job here — this is the single funnel both direct uploads
+    # and cloud-sync ingest pass through. No inline fallback: LibreOffice
+    # isn't installed in the API container, and a synchronous conversion
+    # would block the event loop. If the worker/Redis is down the job
+    # simply doesn't run and the file stays download-only until requeued.
+    if is_office_document(content_type, filename):
+        try:
+            from backend import jobs as job_q
+
+            await job_q.enqueue_convert_office(user.id, image.id)
+        except Exception:
+            logger.exception(
+                "convert_office enqueue failed for %s — document stays "
+                "download-only until a requeue picks it up",
+                image.id,
+            )
+
     return image
 
 

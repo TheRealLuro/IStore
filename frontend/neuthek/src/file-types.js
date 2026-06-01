@@ -55,7 +55,24 @@ const CATALOG = {
   odt:  T("document", "ODT", "doc"),
   rtf:  T("document", "RTF", "doc"),
   txt:  T("document", "TXT", "code"),
-  md:   T("document", "MD",  "code"),
+  md:   T("document", "MD",  "markdown"),
+  markdown: T("document", "MARKDOWN", "markdown"),
+  epub: T("book", "EPUB", "ebook"),
+
+  // notebooks — Jupyter .ipynb opens in the NotebookViewer.
+  ipynb: T("code", "IPYNB", "notebook"),
+
+  // 3D models — opened by Model3dViewer (three.js WebGL preview).
+  stl:  T("cube", "STL",  "model3d"),
+  obj:  T("cube", "OBJ",  "model3d"),
+  gltf: T("cube", "GLTF", "model3d"),
+  glb:  T("cube", "GLB",  "model3d"),
+
+  // fonts — opened by FontViewer (runtime FontFace specimen).
+  ttf:  T("type", "TTF",   "font"),
+  otf:  T("type", "OTF",   "font"),
+  woff: T("type", "WOFF",  "font"),
+  woff2:T("type", "WOFF2", "font"),
 
   // spreadsheets — csv opens in the new CsvViewer; xlsx is generic.
   csv:  T("spreadsheet", "CSV",  "csv"),
@@ -73,13 +90,19 @@ const CATALOG = {
   ics:  T("calendar", "ICS", "ics"),
   vcf:  T("contact",  "VCF", "vcf"),
 
-  // data / config — opened by CodePreview (already wired).
-  json: T("code", "JSON", "code"),
-  yaml: T("code", "YAML", "code"),
-  yml:  T("code", "YML",  "code"),
-  xml:  T("code", "XML",  "code"),
-  toml: T("code", "TOML", "code"),
-  html: T("code", "HTML", "code"),
+  // data / config — structured config/data opens in the DataTreeViewer
+  // (collapsible JSON/YAML/XML tree); keep the `code` glyph so the card
+  // still reads as a config file.
+  json: T("code", "JSON", "datatree"),
+  yaml: T("code", "YAML", "datatree"),
+  yml:  T("code", "YML",  "datatree"),
+  xml:  T("code", "XML",  "datatree"),
+  toml: T("code", "TOML", "datatree"),
+  // html/htm open in the HtmlViewer — a sandboxed, scripts-disabled
+  // static preview (with a raw-source toggle). Kept as its own `html`
+  // kind so preview.jsx routes them there instead of the raw CodePreview.
+  html: T("code", "HTML", "html"),
+  htm:  T("code", "HTM",  "html"),
   css:  T("code", "CSS",  "code"),
   scss: T("code", "SCSS", "code"),
   js:   T("code", "JS",   "code"),
@@ -96,6 +119,64 @@ const CATALOG = {
   h:    T("code", "H",    "code"),
   sh:   T("code", "SH",   "code"),
   sql:  T("code", "SQL",  "code"),
+
+  // extended code/text languages — all open in CodePreview (Prism
+  // grammar picked from the backend `text/x-<lang>` mime). `toml` is
+  // deliberately NOT here — it's a datatree above.
+  kt:   T("code", "KT",   "code"),
+  kts:  T("code", "KTS",  "code"),
+  swift:T("code", "SWIFT","code"),
+  cs:   T("code", "CS",   "code"),
+  php:  T("code", "PHP",  "code"),
+  lua:  T("code", "LUA",  "code"),
+  r:    T("code", "R",    "code"),
+  pl:   T("code", "PL",   "code"),
+  dart: T("code", "DART", "code"),
+  scala:T("code", "SCALA","code"),
+  clj:  T("code", "CLJ",  "code"),
+  ex:   T("code", "EX",   "code"),
+  exs:  T("code", "EXS",  "code"),
+  erl:  T("code", "ERL",  "code"),
+  hs:   T("code", "HS",   "code"),
+  ml:   T("code", "ML",   "code"),
+  elm:  T("code", "ELM",  "code"),
+  nim:  T("code", "NIM",  "code"),
+  zig:  T("code", "ZIG",  "code"),
+  cr:   T("code", "CR",   "code"),
+  jl:   T("code", "JL",   "code"),
+  sol:  T("code", "SOL",  "code"),
+  groovy:T("code","GROOVY","code"),
+  gradle:T("code","GRADLE","code"),
+  fnl:  T("code", "FNL",  "code"),
+  fs:   T("code", "FS",   "code"),
+  nix:  T("code", "NIX",  "code"),
+  d:    T("code", "D",    "code"),
+  vala: T("code", "VALA", "code"),
+  hx:   T("code", "HX",   "code"),
+  tf:   T("code", "TF",   "code"),
+  hcl:  T("code", "HCL",  "code"),
+  cc:   T("code", "CC",   "code"),
+  cxx:  T("code", "CXX",  "code"),
+  hpp:  T("code", "HPP",  "code"),
+  cmake:T("code", "CMAKE","code"),
+  ini:  T("code", "INI",  "code"),
+  conf: T("code", "CONF", "code"),
+  cfg:  T("code", "CFG",  "code"),
+  env:  T("code", "ENV",  "code"),
+  proto:T("code", "PROTO","code"),
+  graphql:T("code","GRAPHQL","code"),
+  gql:  T("code", "GQL",  "code"),
+  diff: T("code", "DIFF", "code"),
+  patch:T("code", "PATCH","code"),
+  vue:  T("code", "VUE",  "code"),
+  svelte:T("code","SVELTE","code"),
+  ps1:  T("code", "PS1",  "code"),
+  bash: T("code", "BASH", "code"),
+  zsh:  T("code", "ZSH",  "code"),
+  tex:  T("code", "TEX",  "code"),
+  rst:  T("code", "RST",  "code"),
+  bat:  T("code", "BAT",  "code"),
+  cmd:  T("code", "CMD",  "code"),
 
   // archives.
   zip:  T("archive", "ZIP", "archive"),
@@ -118,3 +199,11 @@ export function isAudioExt(ext) { return fileTypeInfo(ext).kind === "audio"; }
 export function isCsvExt(ext)   { return fileTypeInfo(ext).kind === "csv"; }
 export function isIcsExt(ext)   { return fileTypeInfo(ext).kind === "ics"; }
 export function isVcfExt(ext)   { return fileTypeInfo(ext).kind === "vcf"; }
+export function isMarkdownExt(ext) { return fileTypeInfo(ext).kind === "markdown"; }
+export function isDataTreeExt(ext) { return fileTypeInfo(ext).kind === "datatree"; }
+export function isNotebookExt(ext) { return fileTypeInfo(ext).kind === "notebook"; }
+export function isModel3dExt(ext)  { return fileTypeInfo(ext).kind === "model3d"; }
+export function isFontExt(ext)     { return fileTypeInfo(ext).kind === "font"; }
+export function isEbookExt(ext)    { return fileTypeInfo(ext).kind === "ebook"; }
+export function isArchiveExt(ext)  { return fileTypeInfo(ext).kind === "archive"; }
+export function isHtmlExt(ext)     { return fileTypeInfo(ext).kind === "html"; }

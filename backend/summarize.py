@@ -144,8 +144,18 @@ async def summarize_image_id(session: AsyncSession, image_id: UUID) -> None:
     except Exception:
         pass
 
+    # Capture the owner id now (same safe `__dict__` read used for
+    # doc-chunk persistence below) so `_mark_done` can scope the
+    # adjective-tag write to this user without re-touching the
+    # possibly-poisoned ORM state.
+    owner_id = None
     try:
-        await _mark_done(image_id, result, signals)
+        owner_id = image.__dict__.get("user_id")
+    except Exception:
+        owner_id = None
+
+    try:
+        await _mark_done(image_id, result, signals, owner_id)
     except Exception:
         logger.exception("summarize: _mark_done failed for %s", image_id)
 
@@ -296,6 +306,7 @@ async def _mark_done(
     image_id,
     result: Optional[SummaryResult],
     signals: Optional[dict] = None,
+    user_id=None,
 ) -> None:
     """Persist the summary row after a worker run.
 
@@ -364,6 +375,32 @@ async def _mark_done(
     # `asyncio.to_thread` keeps the event loop responsive while we
     # do it, same pattern as the embedding call above.
     await asyncio.to_thread(_mark_done_sync, image_id, values)
+
+    # --- Adjective tags from the just-written summary -----------------
+    # The row's tags should be the descriptive adjectives in its summary
+    # (user request) rather than the upload-time CLIP concept labels.
+    # Best-effort and fully isolated: any failure here logs and leaves
+    # the prior tags intact — it must NEVER break the summarize path.
+    # Only runs when we produced a real summary and know the owner.
+    if result is not None and user_id is not None and result.summary:
+        try:
+            adjectives = await asyncio.to_thread(
+                _extract_adjective_tags, result.summary
+            )
+            if adjectives:
+                await asyncio.to_thread(
+                    _write_adjective_tags_sync, image_id, user_id, adjectives,
+                )
+                logger.info(
+                    "adjective tags for %s: %s", image_id, ", ".join(adjectives)
+                )
+            else:
+                logger.info(
+                    "adjective tags for %s: none extracted; keeping prior tags",
+                    image_id,
+                )
+        except Exception:
+            logger.exception("adjective tags: write failed for %s", image_id)
 
 
 def _mark_done_sync(image_id, values: dict) -> None:
@@ -521,6 +558,246 @@ def _encode_summary_for_search(
     return [float(x) for x in vec]
 
 
+# ---------- Adjective tags from the generated summary ----------------
+#
+# The user's file tags should be the DESCRIPTIVE ADJECTIVES that appear
+# in the file's AI summary ("serene", "vibrant", "dark", "minimalist"),
+# not the CLIP object/concept labels ("dog", "kitchen", "selfie") the
+# upload pass writes. After a summary is generated we POS-tag it,
+# keep the adjective tokens (Penn-Treebank JJ / JJR / JJS), and write
+# those as the row's tags — replacing the upload-time CLIP tags.
+#
+# Extraction uses NLTK (already a hard dep of the `[ml]` extras — it
+# backs `sumy` document summarization and `synonyms.py` WordNet). The
+# `averaged_perceptron_tagger_eng` + `punkt_tab` data download lazily
+# on first use (and are baked into the Dockerfile for reliability); a
+# failed load is cached so we don't re-pay the cost, and the caller
+# falls back to keeping the existing tags rather than crashing.
+
+# Adjectives that are grammatically JJ but carry no descriptive value as
+# a tag — determiners / quantifiers / deictics the tagger labels JJ, plus
+# a few nouns Penn-Treebank routinely mis-tags as JJ when they sit in an
+# attributive slot ("video game" → "video"/JJ, "self-portrait" → JJ).
+_TAG_ADJ_STOPWORDS: frozenset[str] = frozenset({
+    # determiner / quantifier / deictic adjectives
+    "this", "that", "these", "those", "other", "another", "such", "same",
+    "own", "more", "most", "many", "much", "few", "fewer", "little", "less",
+    "least", "several", "various", "certain", "whole", "entire", "overall",
+    "only", "single", "double", "multiple", "first", "second", "third",
+    "last", "next", "previous", "former", "latter", "new", "old", "good",
+    "great", "real", "sure", "able", "due", "likely", "available",
+    # nouns the POS tagger commonly mis-labels JJ in attributive position
+    "video", "image", "photo", "picture", "self-portrait", "self",
+    "close-up", "screenshot", "screen", "front", "back", "top", "left",
+    "right", "side", "today", "tomorrow",
+})
+
+# Sentinel for the lazy NLTK-data load: None = not tried, True = ready,
+# False = tried and failed (fall back to the regex path).
+_NLTK_POS_READY: Optional[bool] = None
+
+
+def _ensure_nltk_pos() -> bool:
+    """Make sure NLTK's POS tagger + tokenizer data are loadable.
+
+    Mirrors the lazy-load pattern in `backend/synonyms.py`: try to use
+    the resource, download it once if missing, cache the outcome. The
+    Dockerfile pre-downloads these so the first request doesn't pay the
+    network cost — this runtime path is the belt-and-suspenders fallback
+    for dev shells / fresh installs. Returns False (cached) when NLTK
+    isn't installed or the data can't be fetched, so callers degrade to
+    the regex extractor instead of raising.
+    """
+    global _NLTK_POS_READY
+    if _NLTK_POS_READY is not None:
+        return _NLTK_POS_READY
+    try:
+        import nltk  # type: ignore
+
+        # punkt_tab (tokenizer) + averaged_perceptron_tagger_eng (POS).
+        # NLTK >= 3.9 renamed both resources with the `_tab` / `_eng`
+        # suffixes; we target those names explicitly. `find` raises
+        # LookupError when the data is absent — that's our download cue.
+        for finder, pkg in (
+            ("tokenizers/punkt_tab", "punkt_tab"),
+            ("taggers/averaged_perceptron_tagger_eng",
+             "averaged_perceptron_tagger_eng"),
+        ):
+            try:
+                nltk.data.find(finder)
+            except LookupError:
+                nltk.download(pkg, quiet=True)
+        # Smoke-test the full path so a half-installed corpus fails here,
+        # not mid-summary.
+        from nltk import pos_tag, word_tokenize
+        pos_tag(word_tokenize("a quick brown test"))
+        _NLTK_POS_READY = True
+    except Exception as e:
+        logger.info("adjective tags: NLTK POS unavailable (%s); regex fallback", e)
+        _NLTK_POS_READY = False
+    return _NLTK_POS_READY
+
+
+def _clean_adj_token(word: str) -> Optional[str]:
+    """Lower-case + validate a candidate adjective token.
+
+    Keeps single hyphens inside the word (so "shoulder-length",
+    "ice-themed", "black-and-white" survive) but drops anything with
+    digits, punctuation, or that is too short. Returns None when the
+    token isn't a usable tag.
+    """
+    w = word.lower().strip().strip("-")
+    # letters + internal single hyphens only, length >= 3
+    if not re.fullmatch(r"[a-z]+(?:-[a-z]+)*", w):
+        return None
+    if len(w) < 3:
+        return None
+    return w
+
+
+def _extract_adjectives_regex(summary: str, cap: int) -> list[str]:
+    """Crude adjective heuristic for when NLTK data isn't available.
+
+    Looks for words ending in common adjective-forming suffixes
+    (-ful, -ous, -ive, -ish, -less, -ic, -al, -y, …). Lower precision
+    than POS tagging but keeps the feature alive on a torch-less /
+    data-less box instead of returning nothing.
+    """
+    suffix = re.compile(
+        r".+(?:ful|ous|ive|ish|less|able|ible|ic|ical|al|ial|"
+        r"ant|ent|ary|y|y|ed)$"
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[A-Za-z][A-Za-z-]*[A-Za-z]", summary):
+        w = _clean_adj_token(raw)
+        if not w or w in seen or w in _TAG_ADJ_STOPWORDS:
+            continue
+        if not suffix.match(w):
+            continue
+        seen.add(w)
+        out.append(w)
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _extract_adjective_tags(summary: str | None, cap: int = 8) -> list[str]:
+    """Return up to `cap` descriptive adjectives from `summary`.
+
+    Deduped, lower-cased, ordered by first appearance in the text
+    (salience proxy — a summary leads with its most defining traits).
+    POS-tags via NLTK and keeps JJ / JJR / JJS tokens; falls back to a
+    suffix-based regex heuristic when NLTK data can't load. Returns an
+    empty list for empty / very short summaries so the caller can keep
+    the previous tags instead of wiping them.
+    """
+    if not summary or not summary.strip():
+        return []
+    text = summary.strip()
+
+    if _ensure_nltk_pos():
+        try:
+            from nltk import pos_tag, word_tokenize
+
+            out: list[str] = []
+            seen: set[str] = set()
+            for word, tag in pos_tag(word_tokenize(text)):
+                if tag not in ("JJ", "JJR", "JJS"):
+                    continue
+                w = _clean_adj_token(word)
+                if not w or w in seen or w in _TAG_ADJ_STOPWORDS:
+                    continue
+                seen.add(w)
+                out.append(w)
+                if len(out) >= cap:
+                    break
+            return out
+        except Exception:
+            logger.exception("adjective tags: POS extraction failed; regex fallback")
+
+    return _extract_adjectives_regex(text, cap)
+
+
+def _write_adjective_tags_sync(image_id, user_id, adjectives: list[str]) -> None:
+    """Replace this image's auto-derived tags with `adjectives`.
+
+    Synchronous psycopg2 write, same rationale as `_mark_done_sync`:
+    owns its own connection (no asyncpg event-loop binding) and runs
+    inside `asyncio.to_thread`. Connects as the `neuthek` superuser,
+    which bypasses the FORCE-RLS policies on `tags` / `image_tags`.
+
+    Semantics:
+      * Detach every CURRENT image_tags row for this image whose tag
+        was machine-generated (`source IN ('clip','auto')`). User-
+        applied tags (`source='user'`) are left untouched — the user
+        curated those by hand.
+      * Upsert a Tag row per adjective (per-user, case-folded unique,
+        `source='auto'`) and link it to the image. Dedupe is on
+        `lower(label)` to match the `tags_user_label_idx` functional
+        unique index.
+
+    No-op when `adjectives` is empty (caller guarantees this only fires
+    when extraction produced something), so a row with an un-taggable
+    summary keeps whatever tags it already had.
+    """
+    if not adjectives:
+        return
+    import psycopg2
+
+    sync_url = settings.database_url_sync.replace(
+        "postgresql+psycopg2://", "postgresql://"
+    )
+    conn = psycopg2.connect(sync_url)
+    try:
+        with conn.cursor() as cur:
+            # 1. Drop existing machine tags from THIS image only. Other
+            #    images sharing the same Tag row keep their links; the
+            #    Tag row itself is left in place (cheap, and re-used on
+            #    the next image that needs it).
+            cur.execute(
+                """
+                DELETE FROM image_tags it
+                USING tags t
+                WHERE it.image_id = %s
+                  AND it.tag_id = t.id
+                  AND t.source IN ('clip', 'auto')
+                """,
+                (str(image_id),),
+            )
+
+            # 2. Upsert each adjective Tag (per-user) and link it.
+            for label in adjectives:
+                # Resolve / create the tag row, case-folded per user.
+                cur.execute(
+                    "SELECT id FROM tags "
+                    "WHERE user_id = %s AND lower(label) = lower(%s) "
+                    "LIMIT 1",
+                    (str(user_id), label),
+                )
+                row = cur.fetchone()
+                if row:
+                    tag_id = row[0]
+                else:
+                    cur.execute(
+                        "INSERT INTO tags (user_id, label, source) "
+                        "VALUES (%s, %s, 'auto') RETURNING id",
+                        (str(user_id), label),
+                    )
+                    tag_id = cur.fetchone()[0]
+
+                # Link to the image (idempotent — PK is (image_id, tag_id)).
+                cur.execute(
+                    "INSERT INTO image_tags (image_id, tag_id, user_id) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (image_id, tag_id) DO NOTHING",
+                    (str(image_id), tag_id, str(user_id)),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _dispatch(
     image: Image,
     raw_bytes: bytes,
@@ -531,6 +808,8 @@ def _dispatch(
         return _summarize_image(image, raw_bytes, named_people, pre_tag_labels or [])
     if image.category == "video":
         return _summarize_video(image, raw_bytes)
+    if image.category == "audio":
+        return _summarize_audio(image, raw_bytes)
     if image.category == "document":
         return _summarize_document(image, raw_bytes)
     # Catch-all for "other" — archives (.zip, .tar.gz, etc.) and any
@@ -2127,6 +2406,222 @@ def _derive_video_topic(summary: str, fallback: str) -> str:
         words = words[:6]
     topic = " ".join(w[0].upper() + w[1:] if w else w for w in words)
     return topic or (fallback or "Video")
+
+
+# --- audio -----------------------------------------------------------------
+
+
+def _summarize_audio(image: Image, raw_bytes: bytes) -> Optional[SummaryResult]:
+    """Standalone audio-file summary (mp3 / m4a / wav / flac / ogg / …).
+
+    Audio rows have no video stream and no keyframes, so there's nothing
+    for Florence to caption — the *entire* signal is what was SAID. The
+    flow mirrors the transcript half of `_summarize_video`:
+
+      1. Transcribe the audio via `transcribe_video_audio` (it runs
+         `ffmpeg -vn -ac 1 -ar 16000` then faster-whisper — `-vn` is a
+         no-op on an audio-only input, so it transcribes mp3/m4a/wav/
+         flac/ogg the same way it does a video's audio track).
+      2. Feed the transcript through the SAME Qwen rewrite the video path
+         uses (`_llm_rewrite_summary`, content_type="audio") so the
+         result is a concise CONTENT summary — the subject / speakers /
+         topics — not a verbatim transcript dump.
+      3. Derive a short title via `_derive_video_topic` from that summary.
+
+    Every step degrades independently so an install without the [ml]
+    extras (no whisper) or without ffmpeg never crashes the worker and
+    never falls back to echoing the UUID filename:
+      - whisper unavailable / ffmpeg missing → transcript is None
+      - audio is silent / instrumental music → transcript is "" / None
+      - Qwen disabled or failed            → use the raw transcript
+      - no speech at all                   → a generic but sensible
+        "Audio recording — no spoken content detected" (+ duration).
+    """
+    # Duration (ffprobe reads `format=duration` — works on audio
+    # containers just as it does on video). Used for the fallback
+    # summary + the `points` line. None when ffprobe is unavailable.
+    duration_s = _probe_video_duration(raw_bytes)
+
+    # Does the file actually carry a decodable audio stream? ffprobe's
+    # audio-stream select works on mp3/m4a/wav/flac too. None when
+    # ffprobe is unavailable — in that case we still attempt the
+    # transcribe (whisper itself will fail gracefully). This lets us
+    # tell a genuinely-silent / non-audio blob apart from a transcription
+    # that came back empty despite real audio (worth auditing).
+    has_audio_track = _video_has_audio_track(raw_bytes)
+
+    transcript: str | None = None
+    if has_audio_track is False:
+        # No audio stream — don't bother spinning up whisper.
+        transcript = None
+    else:
+        try:
+            from backend.transcribe import transcribe_video_audio
+            transcript = transcribe_video_audio(raw_bytes)
+        except Exception:
+            logger.exception("audio: transcribe step crashed")
+            transcript = None
+
+    # Cap the transcript before Qwen — same budget the video path uses
+    # so a long podcast doesn't blow the context window. ~1500 chars ≈
+    # 250 words, plenty to anchor the subject.
+    if transcript and len(transcript) > 1500:
+        transcript = transcript[:1500].rsplit(" ", 1)[0] + "…"
+
+    # Filename → fallback topic (extension stripped, _/- → spaces). Only
+    # ever used as the *topic* fallback, never as the summary body, so we
+    # never echo the raw UUID filename as the description.
+    fname_topic = ""
+    if image.original_filename:
+        fname_topic = (
+            image.original_filename.rsplit(".", 1)[0]
+            .replace("_", " ")
+            .replace("-", " ")
+        ).strip()
+        fname_topic = re.sub(r"\s+", " ", fname_topic)
+
+    # Human-readable duration for the fallback summary line.
+    def _dur_phrase() -> str:
+        if not (duration_s and duration_s > 0):
+            return ""
+        mins, secs = divmod(int(duration_s), 60)
+        if mins > 0:
+            return f" ({mins}m {secs}s)"
+        return f" ({secs}s)"
+
+    summary: Optional[str] = None
+    if transcript:
+        # Repurpose the `ocr_text` field to carry the spoken transcript,
+        # exactly as `_summarize_video` does — the Qwen prompt already
+        # treats that field as authoritative spoken content. There are no
+        # visual captions for audio, so `caption` just states the medium.
+        #
+        # IMPORTANT: pass content_type="video" (NOT "audio") here. Inside
+        # `_llm_rewrite_summary`, content_type only selects the PROMPT /
+        # transcript-label / length-caps — and the "video" branch is the
+        # one wired for spoken content: it labels ocr_text as "Spoken
+        # content (what was said)", uses the paraphrase-don't-quote
+        # instructions that turn a transcript into a CONTENT summary, and
+        # raises the reply cap to 1300 chars / 220 tokens so a long
+        # transcript isn't rejected back to a verbatim dump. The "audio"
+        # value would fall through to the IMAGE branch (a 700-char,
+        # describe-the-visuals prompt) and reject our long transcript,
+        # leaving a raw transcript echo. This arg is NOT persisted — the
+        # row's content_type comes from `_classify_content` below.
+        try:
+            summary = _llm_rewrite_summary(
+                caption="Audio-only recording — no video; describe from the spoken content.",
+                names=[],
+                ocr_text=f"Spoken content (transcribed): {transcript}",
+                scene=None,
+                setting=None,
+                content_type="video",
+                tags=None,
+                regions=None,
+                objects=None,
+                concepts=None,
+                vlm_description=None,
+            )
+        except Exception:
+            logger.exception("audio: qwen rewrite failed; using raw transcript")
+            summary = None
+        if not summary:
+            # Qwen disabled or failed — the transcript itself is the most
+            # information-dense thing we have. Still beats a filename echo.
+            summary = transcript
+        elif summary:
+            # We reused the VIDEO prompt to get transcript-aware
+            # summarization, so Qwen sometimes frames the output as
+            # "In this video, the speaker discusses…" / "The video
+            # covers…". This is an AUDIO file with no visuals, so rewrite
+            # those video references to audio-appropriate wording. Done as
+            # a post-step (not by forking the shared prompt) so real video
+            # summaries are unaffected.
+            summary = re.sub(
+                r"\bin this video\b", "In this audio recording",
+                summary, count=1, flags=re.IGNORECASE,
+            )
+            summary = re.sub(
+                r"\b(?:this|the) video\b", "this recording",
+                summary, flags=re.IGNORECASE,
+            )
+            summary = re.sub(r"\bvideo\b", "recording", summary, flags=re.IGNORECASE)
+            summary = re.sub(r"\b(?:viewers|the viewer)\b", "listeners", summary, flags=re.IGNORECASE)
+            # Re-capitalize the leading char in case a substitution landed
+            # at position 0.
+            if summary and summary[0].islower():
+                summary = summary[0].upper() + summary[1:]
+
+    if not summary:
+        # No speech detected: silent file, instrumental music, whisper
+        # unavailable, or extraction failed. Emit a sensible, honest
+        # description (+ duration) rather than the UUID filename.
+        summary = f"Audio recording — no spoken content detected{_dur_phrase()}."
+
+    # Short title from the summary; falls back to the cleaned filename,
+    # then a literal "Audio". Strip the conversational opener Qwen tends
+    # to produce ("In this audio recording, the speaker discusses …")
+    # FIRST so `_derive_video_topic` title-cases the actual subject rather
+    # than the filler lead-in. Whatever's left after the opener is the
+    # topic seed; if the regex doesn't match, the summary passes through
+    # unchanged and `_derive_video_topic` handles the "A video showing X"
+    # style openers it already knows.
+    topic_seed = re.sub(
+        r"^(?:in\s+)?(?:this|the)\s+(?:audio\s+)?recording[,:]?\s*"
+        r"(?:the\s+)?(?:speaker|host|narrator|presenter|person)?\s*"
+        r"(?:discusses|describes|explains|covers|talks about|"
+        r"goes over|walks through|presents|outlines)?\s*",
+        "",
+        summary,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    topic = _derive_video_topic(topic_seed or summary, fname_topic or "Audio")
+
+    points: list[str] = []
+    if duration_s and duration_s > 0:
+        mins, secs = divmod(int(duration_s), 60)
+        if mins > 0:
+            points.append(f"Duration: {mins}m {secs}s")
+        else:
+            points.append(f"Duration: {secs}s")
+    if image.byte_size_original:
+        mb = image.byte_size_original / (1024 * 1024)
+        points.append(f"Size: {mb:.1f} MB")
+    if transcript:
+        points.append("Transcribed spoken content")
+
+    # Classify with the video taxonomy — it carries the spoken-content
+    # buckets that fit audio (music / presentation / lecture / vlog /
+    # interview), whereas the doc taxonomy is paper-oriented.
+    cat = _classify_content(summary, image.original_filename, "video")
+
+    # Telemetry mirroring the video path's `summary_signals`, so a
+    # quality regression on audio rows is debuggable post-hoc. Same
+    # `image.__dict__[...]` write pattern (avoids the async-greenlet
+    # column-load crash); `_mark_done` persists it as JSONB.
+    signals: dict = {
+        "kind": "audio",
+        "duration_s": float(duration_s) if duration_s else None,
+        "has_audio_track": has_audio_track,
+        "has_transcript": bool(transcript),
+        "transcript_chars": len(transcript) if transcript else 0,
+        # True only when audio IS present but transcription produced
+        # nothing — the row an operator should look at.
+        "transcription_gap": bool(has_audio_track) and not bool(transcript),
+        "qwen_succeeded": bool(transcript) and summary != transcript
+        and not summary.startswith("Audio recording — no spoken content"),
+    }
+    existing = image.__dict__.get("summary_signals") or {}
+    if isinstance(existing, dict):
+        existing.update(signals)
+        image.__dict__["summary_signals"] = existing
+    else:
+        image.__dict__["summary_signals"] = signals
+
+    return SummaryResult(
+        topic=topic, summary=summary, points=points[:5], content_type=cat,
+    )
 
 
 def _probe_video_duration(raw_bytes: bytes) -> Optional[float]:

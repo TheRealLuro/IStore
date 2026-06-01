@@ -38,6 +38,37 @@ logger = logging.getLogger(__name__)
 _RUNNING = True
 
 
+async def _reaper_loop(redis_client: aioredis.Redis) -> None:
+    """Periodically requeue orphaned in-flight jobs + clear leaked dedupe
+    keys. Runs alongside the main consume loop in the same process so a
+    single worker is self-healing even with no API container help.
+
+    Each pass is fully guarded — a reaper failure never touches the
+    consume loop. The interval is a fraction of the visibility timeout so
+    an orphaned job is reclaimed within ~1.x the timeout, not 2x.
+    """
+    from backend.jobs import reap_dedupe_keys, reap_inflight
+
+    vis = int(getattr(settings, "job_visibility_timeout_seconds", 1800))
+    interval = max(30, vis // 4)
+    # Small initial delay so the first pass doesn't fire during model warmup.
+    await asyncio.sleep(min(interval, 60))
+    while _RUNNING:
+        try:
+            await reap_inflight()
+        except Exception:
+            logger.exception("worker.reaper: reap_inflight crashed")
+        try:
+            await reap_dedupe_keys()
+        except Exception:
+            logger.exception("worker.reaper: reap_dedupe_keys crashed")
+        # Sleep in short slices so shutdown is responsive.
+        slept = 0
+        while _RUNNING and slept < interval:
+            await asyncio.sleep(min(5, interval - slept))
+            slept += 5
+
+
 def _handle_signal(signum: int, _frame: Any) -> None:
     global _RUNNING
     logger.info("worker: signal %s received, draining", signum)
@@ -125,14 +156,19 @@ async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> 
                 # The ArcFace clusterer dedupes the same person across
                 # frames via cosine similarity, so running on 12-24
                 # frames doesn't fragment one person into many rows.
-                MAX_FRAMES = 24
-                SECONDS_PER_FRAME = 5.0
+                MAX_FRAMES = 32
+                SECONDS_PER_FRAME = 4.0
                 n = max(4, min(MAX_FRAMES, int(round(duration / SECONDS_PER_FRAME))))
                 if n == 1:
                     offsets = [duration * 0.5]
                 else:
+                    # Span ~4%–96% of the clip (was 10%–90%) so a face in
+                    # the opening or closing seconds isn't outside the
+                    # sampled window, and denser (1/4s, cap 32 — was 1/5s,
+                    # cap 24) to shrink the gap a face can hide between on
+                    # a long clip like a 3-minute talking-head recording.
                     offsets = [
-                        max(0.5, duration * (0.10 + (0.80 * i / (n - 1))))
+                        max(0.5, duration * (0.04 + (0.92 * i / (n - 1))))
                         for i in range(n)
                     ]
             else:
@@ -173,10 +209,56 @@ async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> 
                         idx, image_id,
                     )
             if not detected_any:
-                logger.info(
-                    "worker.face_scan: no faces detected across %d keyframes for %s",
-                    len(frames), image_id,
-                )
+                # Cascade rescue. The per-frame default detector
+                # (RetinaFace @0.3) found nothing — but videos never get
+                # the auto-cascade INSIDE process_image_for_faces, because
+                # that path is gated on image.face_likelihood, which is
+                # only ever set for still images (the vision pipeline
+                # doesn't run on videos). So re-run each keyframe through
+                # the explicit cascade (RetinaFace @0.15 → mediapipe) and
+                # persist with a relaxed confidence floor, mirroring the
+                # D8 re-detect path. This is what lets a long talking-head
+                # clip — whose face the 0.3 pass skimmed past — still
+                # register a person.
+                from backend.vision.faces import detect_with_cascade
+                from backend.vision.inference_pool import run_in_inference_pool
+                for idx, frame in enumerate(frames):
+                    try:
+                        cascaded, stage = await run_in_inference_pool(
+                            detect_with_cascade, frame
+                        )
+                    except Exception:
+                        logger.exception(
+                            "worker.face_scan: cascade failed on keyframe %d for %s",
+                            idx, image_id,
+                        )
+                        continue
+                    if not cascaded:
+                        continue
+                    try:
+                        got = await process_image_for_faces(
+                            s, user, image, frame,
+                            detections=cascaded, min_confidence=0.10,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "worker.face_scan: cascade persist failed on "
+                            "keyframe %d for %s", idx, image_id,
+                        )
+                        continue
+                    if got:
+                        detected_any = True
+                        logger.info(
+                            "worker.face_scan: cascade (%s) rescued %d face(s) on "
+                            "keyframe %d/%d for %s",
+                            stage, got, idx + 1, len(frames), image_id,
+                        )
+                if not detected_any:
+                    logger.info(
+                        "worker.face_scan: no faces detected across %d keyframes "
+                        "for %s (cascade included)",
+                        len(frames), image_id,
+                    )
             return
 
         try:
@@ -418,6 +500,262 @@ async def _process_transcode_video(
                 )
 
 
+# Office document extensions → the source filename suffix LibreOffice
+# needs to pick the right import filter. We write the original bytes to a
+# temp file with this suffix before invoking soffice. PDF is intentionally
+# absent (native PDFs already render through the page endpoints directly);
+# images / text / csv are handled by their own viewers, not this path.
+_OFFICE_SUFFIX_BY_MIME: dict[str, str] = {
+    # OOXML (modern Office)
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    # Legacy binary Office
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.ms-powerpoint": ".ppt",
+    # OpenDocument
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
+    # Rich Text
+    "application/rtf": ".rtf",
+    "text/rtf": ".rtf",
+}
+
+# File-extension fallback when the MIME is generic
+# (application/octet-stream is common for cloud-synced / legacy files).
+_OFFICE_EXTS: set[str] = {
+    ".docx", ".xlsx", ".pptx",
+    ".doc", ".xls", ".ppt",
+    ".odt", ".ods", ".odp",
+    ".rtf",
+}
+
+
+def _office_source_suffix(mime: str | None, filename: str | None) -> str | None:
+    """Return the LibreOffice import suffix for an Office doc, else None.
+
+    Prefer the MIME map; fall back to the filename extension so a
+    generic `application/octet-stream` upload still converts when the
+    name carries a known Office extension."""
+    import os
+
+    m = (mime or "").lower().split(";")[0].strip()
+    if m in _OFFICE_SUFFIX_BY_MIME:
+        return _OFFICE_SUFFIX_BY_MIME[m]
+    _, ext = os.path.splitext((filename or "").lower())
+    if ext in _OFFICE_EXTS:
+        return ext
+    return None
+
+
+def _libreoffice_convert_to_pdf_sync(src_bytes: bytes, suffix: str) -> bytes:
+    """Render Office-document bytes to PDF via headless LibreOffice.
+
+    Writes `src_bytes` to a temp file (named with `suffix` so soffice
+    selects the right import filter), runs
+
+        soffice --headless --convert-to pdf --outdir <tmp> <src>
+
+    in an isolated, per-call user-installation profile, and returns the
+    produced PDF bytes. Raises RuntimeError on any failure (non-zero exit,
+    timeout, no output file) so the caller can log + leave the row
+    unconverted for a later retry.
+
+    Runs in a thread (via asyncio.to_thread) because soffice is a
+    blocking subprocess that can take several seconds on a complex deck.
+
+    Isolation notes:
+      * `-env:UserInstallation` points at a fresh per-call profile dir so
+        two concurrent conversions (and any stale lock from a previously
+        crashed soffice) never collide on the default ~/.config profile.
+        Without it a second invocation fails with "another instance is
+        running" until the lock clears.
+      * The whole thing lives in one TemporaryDirectory that auto-cleans
+        even if the conversion raises.
+    """
+    import glob
+    import os
+    import subprocess
+    import tempfile
+
+    # Resolve the binary once — both names ship the same engine; some
+    # distro packages only expose one symlink.
+    soffice_bin = None
+    for candidate in ("libreoffice", "soffice"):
+        from shutil import which
+        if which(candidate):
+            soffice_bin = candidate
+            break
+    if soffice_bin is None:
+        raise RuntimeError(
+            "LibreOffice (libreoffice/soffice) not found on PATH — the "
+            "worker image needs the libreoffice-core + writer/calc/impress "
+            "packages installed for Office→PDF conversion."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="office2pdf-") as td:
+        src_path = os.path.join(td, f"source{suffix}")
+        out_dir = os.path.join(td, "out")
+        profile_dir = os.path.join(td, "profile")
+        os.makedirs(out_dir, exist_ok=True)
+        with open(src_path, "wb") as f:
+            f.write(src_bytes)
+
+        cmd = [
+            soffice_bin,
+            "--headless",
+            "--norestore",
+            "--nolockcheck",
+            "--nodefault",
+            "--nofirststartwizard",
+            # Per-call isolated profile (file:// URL form required).
+            f"-env:UserInstallation=file://{profile_dir}",
+            "--convert-to", "pdf",
+            "--outdir", out_dir,
+            src_path,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"LibreOffice conversion timed out after 180s for {suffix}"
+            ) from exc
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "LibreOffice conversion failed (exit "
+                f"{proc.returncode}): "
+                f"{proc.stderr.decode('utf-8', errors='replace')[:500]}"
+            )
+
+        produced = glob.glob(os.path.join(out_dir, "*.pdf"))
+        if not produced:
+            raise RuntimeError(
+                "LibreOffice reported success but produced no PDF "
+                f"(stdout: {proc.stdout.decode('utf-8', errors='replace')[:300]})"
+            )
+        with open(produced[0], "rb") as f:
+            pdf = f.read()
+        if not pdf:
+            raise RuntimeError("LibreOffice produced an empty PDF")
+        return pdf
+
+
+async def _process_convert_office(
+    session_factory, image_id: UUID,
+) -> None:
+    """Render an Office document to PDF and stash it under
+    `images.converted_pdf_blob_key` so the existing PDF page endpoints
+    can serve it through the same viewer as a native PDF.
+
+    Idempotent: if the row already has a `converted_pdf_blob_key`, or it
+    isn't an Office doc, we no-op. Best-effort end to end — any failure is
+    logged and the row simply stays unconverted (the FE shows the
+    download-only fallback) rather than crashing the worker loop.
+    """
+    from pathlib import PurePosixPath
+    from uuid import uuid4
+
+    from backend.models import Image
+    from backend.storage import storage
+
+    async with session_factory() as s:
+        image = (
+            await s.execute(select(Image).where(Image.id == image_id))
+        ).scalar_one_or_none()
+        if image is None:
+            return
+        if image.converted_pdf_blob_key:
+            # Already converted (e.g. a duplicate enqueue raced us).
+            return
+        suffix = _office_source_suffix(
+            image.mime_type_original, image.original_filename
+        )
+        if suffix is None:
+            logger.info(
+                "worker.convert_office: %s is not a recognized Office "
+                "document (mime=%r name=%r) — skipping",
+                image_id, image.mime_type_original, image.original_filename,
+            )
+            return
+        if not image.original_blob_key:
+            logger.info(
+                "worker.convert_office: %s has no original blob "
+                "(dropped by retention?) — cannot convert",
+                image_id,
+            )
+            return
+        user_id = image.user_id
+        original_key = image.original_blob_key
+
+    # Fetch the source bytes off the row-scoped session.
+    try:
+        raw = await asyncio.to_thread(
+            storage.get, storage.bucket_originals, original_key,
+        )
+    except Exception:
+        logger.exception(
+            "worker.convert_office: failed to fetch original for %s", image_id,
+        )
+        return
+
+    # Heavy blocking subprocess → thread pool so the worker loop stays
+    # responsive to its other (face-scan) jobs.
+    try:
+        pdf_bytes = await asyncio.to_thread(
+            _libreoffice_convert_to_pdf_sync, raw, suffix,
+        )
+    except Exception as exc:
+        logger.warning(
+            "worker.convert_office: LibreOffice render failed for %s "
+            "(suffix=%s) — leaving row unconverted: %s",
+            image_id, suffix, exc,
+        )
+        return
+
+    # Upload the PDF to the served bucket. Keyed under a `converted/`
+    # prefix per user so a future bulk cleanup / quota walk can find it.
+    pdf_key = f"users/{user_id}/converted/{uuid4().hex}.pdf"
+    try:
+        await asyncio.to_thread(
+            storage.put,
+            storage.bucket_served, pdf_key, pdf_bytes, "application/pdf",
+        )
+    except Exception:
+        logger.exception(
+            "worker.convert_office: PDF upload failed for %s", image_id,
+        )
+        return
+
+    # Persist the key. Re-fetch the row in a fresh session in case it was
+    # deleted while we were converting; clean up the orphan blob if so.
+    async with session_factory() as s:
+        image2 = (
+            await s.execute(select(Image).where(Image.id == image_id))
+        ).scalar_one_or_none()
+        if image2 is None:
+            try:
+                await asyncio.to_thread(
+                    storage.delete, storage.bucket_served, pdf_key,
+                )
+            except Exception:
+                pass
+            return
+        image2.converted_pdf_blob_key = pdf_key
+        await s.commit()
+    logger.info(
+        "worker.convert_office: %s rendered %s → PDF (%d KB) at %s",
+        image_id, suffix, len(pdf_bytes) // 1024,
+        PurePosixPath(pdf_key).name,
+    )
+
+
 async def _process_job(session_factory, job: dict) -> None:
     from backend.jobs import mark_done
 
@@ -448,6 +786,12 @@ async def _process_job(session_factory, job: dict) -> None:
                 logger.warning("worker: transcode_video missing user_id %s", job)
                 return
             await _process_transcode_video(session_factory, user_id, image_id)
+        elif kind == "convert_office":
+            # Office doc → PDF (headless LibreOffice). No user_id needed —
+            # the handler resolves the owner from the row. Leaving the
+            # row unconverted on failure is fine; the FE falls back to a
+            # download link.
+            await _process_convert_office(session_factory, image_id)
         else:
             logger.warning("worker: unknown job kind %s", kind)
     finally:
@@ -477,12 +821,18 @@ async def main() -> None:
     # Warm transformers on startup so the first job doesn't pay the
     # cold-import cost (which can be 30+ seconds the first time torch
     # is imported alongside open_clip/insightface).
-    try:
-        from backend.vision.runtime import warm_transformers
-        warm_transformers()
-        logger.info("worker: transformers warmed")
-    except Exception:
-        logger.exception("worker: warm_transformers failed (continuing anyway)")
+    # Warm the heavy models on startup so the first job doesn't eat the
+    # ~30s cold-load. (`warm_transformers` was removed from runtime; call
+    # the real lru_cached loaders directly to populate the cache.) Each is
+    # individually guarded — a loader that can't warm yet just logs and the
+    # model loads lazily on first use instead of crashing startup.
+    import backend.vision.runtime as _rt
+    for _loader in ("get_clip", "get_florence2", "get_summary_rewriter"):
+        try:
+            getattr(_rt, _loader)()
+            logger.info("worker: warmed %s", _loader)
+        except Exception as _e:
+            logger.warning("worker: warm %s skipped (%s)", _loader, _e)
 
     # C8.2 — emit heartbeats every 30 s so /admin/processes can see us
     # even though we live in a sibling container outside the API's
@@ -511,36 +861,81 @@ async def main() -> None:
         )
     )
 
-    logger.info("worker: ready, polling %s", JOB_QUEUE_KEY)
+    # Reliable-queue reaper: requeues jobs orphaned by a crashed worker
+    # and clears leaked dedupe keys. Runs in-process so one worker is
+    # self-healing without depending on the API container.
+    reaper_task = asyncio.create_task(_reaper_loop(redis_client))
+
+    # Reliable-queue consumer primitives (crash-safe at-least-once).
+    from backend.jobs import ack_job, reserve_job, retry_or_dead
+
+    watchdog = int(getattr(settings, "job_watchdog_timeout_seconds", 1500))
+
+    logger.info(
+        "worker: ready, consuming %s (reliable queue, watchdog %ds)",
+        JOB_QUEUE_KEY, watchdog,
+    )
     while _RUNNING:
+        # Reserve one job: atomically moves it from the ready queue to the
+        # in-flight list so a mid-process crash doesn't lose it (the reaper
+        # requeues anything stranded in-flight past the visibility timeout).
         try:
-            payload = await redis_client.blpop(JOB_QUEUE_KEY, timeout=5)
+            raw = await reserve_job(timeout=5)
         except asyncio.CancelledError:
             break
         except Exception:
-            logger.exception("worker: redis poll failed (sleeping 2s)")
+            logger.exception("worker: redis reserve failed (sleeping 2s)")
             await asyncio.sleep(2)
             continue
-        if payload is None:
+        if raw is None:
             continue
-        _key, raw = payload
         try:
             job = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("worker: invalid json on queue: %r", raw[:200])
+            # Malformed payload — ack it out of in-flight so it doesn't
+            # get reaped forever. It carries no recoverable work.
+            await ack_job(raw)
             continue
         logger.info("worker: processing %s/%s", job.get("kind"), job.get("image_id"))
         try:
-            await _process_job(Session, job)
-        except Exception:
+            # Per-job watchdog: a single job can't stall the (single-
+            # threaded) worker past `watchdog` seconds. A wedged ffmpeg /
+            # LibreOffice subprocess that ignores its own internal timeout,
+            # or a hung model call, is abandoned so the queue keeps moving.
+            await asyncio.wait_for(_process_job(Session, job), timeout=watchdog)
+        except asyncio.TimeoutError:
+            logger.error(
+                "worker: job %s/%s exceeded watchdog (%ds) — abandoning",
+                job.get("kind"), job.get("image_id"), watchdog,
+            )
+            # Clear the dedupe lock so the row isn't permanently stuck,
+            # then let retry/backoff/dead-letter decide its fate.
+            try:
+                from backend.jobs import mark_done
+                if job.get("kind") and job.get("image_id"):
+                    await mark_done(job["kind"], job["image_id"])
+            except Exception:
+                pass
+            await retry_or_dead(raw, f"watchdog timeout after {watchdog}s")
+            continue
+        except Exception as exc:
             logger.exception("worker: job %s crashed", job)
+            # Bounded retry with backoff; dead-letter on exhaustion so a
+            # poison job is preserved for inspection, not lost or looping.
+            await retry_or_dead(raw, f"{type(exc).__name__}: {exc}")
+            continue
+        # Success — remove from in-flight + drop the attempt counter.
+        await ack_job(raw)
 
     logger.info("worker: shutting down")
     heartbeat_task.cancel()
-    try:
-        await heartbeat_task
-    except (asyncio.CancelledError, Exception):
-        pass
+    reaper_task.cancel()
+    for t in (heartbeat_task, reaper_task):
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
     try:
         await redis_client.aclose()
     finally:

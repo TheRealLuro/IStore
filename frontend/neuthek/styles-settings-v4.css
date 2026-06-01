@@ -1,0 +1,454 @@
+/* ============================================================
+   Settings refinement v4 — production finish
+   ------------------------------------------------------------
+   Loaded AFTER styles-settings-v2.css and styles-settings-v3.css
+   (see styles/index.css @import order), so equal-specificity
+   rules here win the cascade without needing !important.
+
+   Goals:
+     - One coherent settings shell (modal head, left nav, main pane).
+     - Consistent titled "card group" sections with a calm type scale.
+     - A single row pattern: label + description left, control right,
+       controls vertically aligned, hairline dividers, even rhythm.
+     - Complete the monochrome line-icon tone palette (the JSX uses
+       `ink` / `amber` / `sky` tones that earlier sheets never defined,
+       so those row icons rendered with no tint — fixed here).
+     - Real states: loading skeletons, inline success/error notes,
+       saving indicators, tidy empty states.
+     - Perfect light/dark; no horizontal overflow at narrow widths.
+
+   This sheet is visual only — it changes no behavior, selectors map
+   to existing markup (.appset*, .applist*, .collapsible*, .det-*).
+   ============================================================ */
+
+/* ----------------------------------------------------------------
+   0. Local tokens — a calm, deliberate type + spacing scale shared
+   by every settings surface so nothing is ad-hoc.
+   ---------------------------------------------------------------- */
+.appset {
+  --set-row-py: 12px;          /* vertical padding inside a row      */
+  --set-row-px: 16px;          /* horizontal padding inside a row    */
+  --set-gap: 14px;             /* icon → body → control gap          */
+  --set-card-radius: 14px;
+  --set-title: 13.5px;         /* row / control title                */
+  --set-desc: 12px;            /* helper / description text          */
+  --set-section-gap: 22px;     /* between collapsible sections       */
+}
+
+/* ----------------------------------------------------------------
+   1. Modal shell — calmer header, roomy but bounded body.
+   ---------------------------------------------------------------- */
+.modal:has(.appset) {
+  width: min(960px, calc(100vw - 32px));
+}
+.modal:has(.appset) .modal__head {
+  padding-bottom: 18px;
+}
+.modal:has(.appset) .modal__head h2 {
+  letter-spacing: -0.02em;
+}
+.modal:has(.appset) .modal__head p {
+  color: var(--ink-3);
+  letter-spacing: -0.005em;
+}
+
+/* ----------------------------------------------------------------
+   2. Left navigation — quieter rail, crisper active state, tidy
+   icon tiles, danger "Sign out" pinned cleanly at the bottom.
+   ---------------------------------------------------------------- */
+.appset__sidebar {
+  padding: 20px 14px !important;
+  gap: 1px;
+}
+.appset__sidebar::before {
+  padding: 4px 12px 14px !important;
+  letter-spacing: 0.08em;
+}
+.appset__navitem {
+  padding: 8px 11px !important;
+  border-radius: 9px !important;
+  font-size: 13px !important;
+  font-weight: 450 !important;
+  letter-spacing: -0.006em;
+  color: var(--ink-2);
+}
+.appset__navitem[data-active="true"] {
+  font-weight: 550 !important;
+}
+/* Quieter, single hairline ring on the active item (drop the
+   double box-shadow that read as a heavy chip). */
+html:not([data-theme="dark"]) .appset__navitem[data-active="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-2), 0 1px 1px rgba(0,0,0,0.03);
+}
+.appset__navitem-icon {
+  width: 24px !important; height: 24px !important;
+  border-radius: 7px;
+}
+/* The active-edge accent bar: align it to the rail, not the viewport. */
+.appset__navitem[data-active="true"]::before {
+  left: -14px !important;
+  top: 7px !important; bottom: 7px !important;
+}
+
+/* ----------------------------------------------------------------
+   3. Main pane — generous gutters, a single section header style.
+   ---------------------------------------------------------------- */
+.appset__main {
+  padding: 32px 40px 40px !important;
+}
+.appset__main-head {
+  margin-bottom: 24px !important;
+  padding-bottom: 14px;
+}
+.appset__main-head h3 {
+  font-size: 22px !important;
+  letter-spacing: -0.022em !important;
+  font-weight: 600 !important;
+}
+.appset__main-head p {
+  max-width: 64ch;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .appset { grid-template-columns: 1fr !important; height: auto !important; min-height: 0 !important; }
+  .appset__sidebar {
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--line) !important;
+    padding: 10px !important;
+    gap: 4px;
+  }
+  .appset__sidebar::before { display: none; }
+  .appset__sidebar-spacer { display: none; }
+  .appset__navitem { white-space: nowrap; }
+  .appset__navitem--danger { margin: 0 !important; }
+  .appset__navitem[data-active="true"]::before { display: none; }
+  .appset__main { padding: 22px 18px 28px !important; }
+}
+
+/* ----------------------------------------------------------------
+   4. Profile hero — balanced card, avatar, status badges.
+   ---------------------------------------------------------------- */
+.appset__profile {
+  align-items: center;
+}
+.appset__profile-avatar {
+  letter-spacing: -0.01em;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.10);
+}
+.appset__profile-name {
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------
+   5. Section "card groups" — give each Collapsible a clear titled
+   header and group its .applist into one calm card. This is the
+   backbone of the consistent section architecture.
+   ---------------------------------------------------------------- */
+.appset__main .collapsible {
+  border-bottom: 0;
+  margin-bottom: var(--set-section-gap);
+}
+.appset__main .collapsible:last-of-type { margin-bottom: 0; }
+
+.appset__main .collapsible__head {
+  padding: 0 2px 10px !important;
+}
+.appset__main .collapsible__label {
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  color: var(--ink-3);
+}
+.appset__main .collapsible[data-open="true"] .collapsible__label {
+  color: var(--ink-2);
+}
+.appset__main .collapsible__body {
+  padding: 0 !important;
+}
+
+/* The list inside a section: one bordered card, hairline rows. */
+.appset .applist {
+  border-radius: var(--set-card-radius) !important;
+  overflow: hidden;
+}
+.appset .applist__row {
+  padding: var(--set-row-py) var(--set-row-px) !important;
+  gap: var(--set-gap);
+  align-items: center;
+}
+/* Rows whose body wraps to multiple lines (radio/bytes rows) opt back
+   into top alignment via inline styles in the JSX; keep the default
+   centered so single-line rows read level. */
+.appset .applist__row + .applist__row {
+  border-top: 1px solid var(--line-2) !important;
+}
+html[data-theme="dark"] .appset .applist__row + .applist__row {
+  border-top-color: rgba(255,255,255,0.055) !important;
+}
+.appset .applist__row:hover {
+  background: color-mix(in oklab, var(--ink) 3%, transparent) !important;
+}
+html[data-theme="dark"] .appset .applist__row:hover {
+  background: rgba(255,255,255,0.035) !important;
+}
+
+.appset .applist__row-title {
+  font-size: var(--set-title) !important;
+  letter-spacing: -0.006em;
+}
+.appset .applist__row-desc {
+  font-size: var(--set-desc) !important;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.appset .applist__row-tail {
+  gap: 10px;
+}
+
+/* ----------------------------------------------------------------
+   6. Complete the icon tone palette.
+   styles-refine3.css defines blue/green/orange/red/purple/indigo/
+   teal. The settings JSX also uses `ink`, `amber`, and `sky`, which
+   previously fell through to the flat default tile (no tint). Define
+   them here so EVERY settings row icon is intentionally toned, in
+   both themes, matching the muted house style.
+   ---------------------------------------------------------------- */
+.applist__row-icon[data-tone="ink"] {
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+html[data-theme="dark"] .applist__row-icon[data-tone="ink"] {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.85);
+}
+.applist__row-icon[data-tone="amber"] {
+  background: color-mix(in oklch, #f5a623 18%, var(--surface-3));
+  color: #b4690e;
+}
+html[data-theme="dark"] .applist__row-icon[data-tone="amber"] {
+  background: rgba(245,166,35,0.20);
+  color: #f0bf6a;
+}
+.applist__row-icon[data-tone="sky"] {
+  background: color-mix(in oklch, #5ac8fa 18%, var(--surface-3));
+  color: #2f93c4;
+}
+html[data-theme="dark"] .applist__row-icon[data-tone="sky"] {
+  background: rgba(90,200,250,0.18);
+  color: #7fcef0;
+}
+
+/* ----------------------------------------------------------------
+   7. Controls — consistent switch, radio, and in-row buttons.
+   ---------------------------------------------------------------- */
+/* Switch: slightly larger hit area, smoother knob. */
+.appset .switch {
+  width: 40px; height: 23px;
+}
+.appset .switch::after {
+  width: 19px; height: 19px;
+}
+.appset .switch[data-on="true"]::after { transform: translateX(17px); }
+
+/* Native radios used by the retention + playback pickers — give them
+   a consistent size, accent, and a clear focus ring. */
+.appset .applist__row input[type="radio"] {
+  width: 18px; height: 18px;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+.appset .applist__row input[type="radio"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+html[data-theme="dark"] .appset .applist__row input[type="radio"]:focus-visible {
+  outline-color: rgba(255,255,255,0.78);
+}
+/* A selected radio/choice row gets a faint wash so the active choice
+   is legible at a glance even before reading the control. */
+.appset .applist__row:has(input[type="radio"]:checked) {
+  background: color-mix(in oklab, var(--ink) 3.5%, transparent);
+}
+html[data-theme="dark"] .appset .applist__row:has(input[type="radio"]:checked) {
+  background: rgba(255,255,255,0.045);
+}
+
+/* "CURRENT" pill used by the retention picker — align with the rest. */
+.appset .applist__row-title .set-pill,
+.appset .applist__row-title span[style*="CURRENT"] { letter-spacing: 0.04em; }
+
+/* Buttons that live in a row tail: keep them from stretching the row. */
+.appset .applist__row-tail .btn { flex-shrink: 0; }
+
+/* ----------------------------------------------------------------
+   8. Reusable state primitives (skeleton / note / saving / empty).
+   These are utility classes the JSX can adopt for inline feedback.
+   ---------------------------------------------------------------- */
+
+/* Loading skeleton — shimmering placeholder lines/tiles. */
+.set-skel {
+  border-radius: 8px;
+  background: linear-gradient(
+    100deg,
+    var(--surface-2) 30%,
+    color-mix(in oklab, var(--ink) 6%, var(--surface-2)) 50%,
+    var(--surface-2) 70%
+  );
+  background-size: 200% 100%;
+  animation: set-skel-shimmer 1.3s ease-in-out infinite;
+}
+html[data-theme="dark"] .set-skel {
+  background: linear-gradient(
+    100deg,
+    rgba(255,255,255,0.04) 30%,
+    rgba(255,255,255,0.08) 50%,
+    rgba(255,255,255,0.04) 70%
+  );
+  background-size: 200% 100%;
+}
+.set-skel--line { height: 12px; margin: 7px 0; }
+.set-skel--line.is-60 { width: 60%; }
+.set-skel--line.is-40 { width: 40%; }
+.set-skel--row { height: 44px; margin: 0; border-radius: 0; }
+@keyframes set-skel-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .set-skel { animation: none; }
+}
+.set-skel-group {
+  border: 1px solid var(--line-2);
+  border-radius: var(--set-card-radius);
+  overflow: hidden;
+}
+.set-skel-group .set-skel--row + .set-skel--row {
+  border-top: 1px solid var(--line-2);
+}
+
+/* Inline status note — success / error / neutral feedback that sits
+   in the surface (not only a toast), e.g. under a form or a row. */
+.set-note {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; line-height: 1.4;
+  padding: 8px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+.set-note svg { flex-shrink: 0; }
+.set-note[data-tone="success"] {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: color-mix(in oklab, var(--success) 28%, transparent);
+}
+.set-note[data-tone="error"] {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: color-mix(in oklab, var(--danger) 28%, transparent);
+}
+.set-note[data-tone="warn"] {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-color: color-mix(in oklab, var(--warning) 28%, transparent);
+}
+
+/* Saving indicator — a tiny spinner + label for in-flight async. */
+.set-saving {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; color: var(--ink-3);
+}
+.set-saving::before {
+  content: "";
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in oklab, var(--ink) 22%, transparent);
+  border-top-color: var(--ink);
+  animation: set-spin 0.7s linear infinite;
+}
+@keyframes set-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .set-saving::before { animation: none; }
+}
+
+/* Empty state — calm centered placeholder for sections with no data. */
+.set-empty {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; text-align: center;
+  padding: 26px 18px;
+  color: var(--ink-3);
+}
+.set-empty__icon {
+  width: 34px; height: 34px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+.set-empty__title { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.set-empty__desc { font-size: 12px; max-width: 36ch; line-height: 1.45; }
+
+/* ----------------------------------------------------------------
+   9. Detail sub-panels (det-*) used inside expanded rows + Security.
+   Tighten them to match the section rhythm and keep them bounded.
+   ---------------------------------------------------------------- */
+.appset .det-section { margin-bottom: 18px; }
+.appset .det-section:last-child { margin-bottom: 0; }
+.appset .det-card {
+  border-radius: 12px;
+}
+/* Stat tiles read as one unit; tighten the grid + numerals. */
+.appset .stat-tile__value { font-feature-settings: "tnum"; }
+
+/* Danger surfaces (det-danger) — consistent with the destructive
+   language used in the sidebar Sign-out + delete-account rows. */
+.appset .det-danger { border-radius: 12px; }
+.appset .det-danger .btn {
+  background: var(--danger-soft);
+  color: var(--danger) !important;
+  border: 1px solid color-mix(in oklab, var(--danger) 30%, transparent);
+}
+.appset .det-danger .btn:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--danger) 16%, var(--surface));
+}
+
+/* Status pills inside detail panels: add the warn/amber tone the JSX
+   sometimes asks for, and a neutral dark-mode ink variant. */
+.det-status-pill[data-tone="amber"],
+.det-status-pill[data-tone="warn"] {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+/* ----------------------------------------------------------------
+   10. Notifications channel table — align with the card rhythm and
+   give the toggles room to breathe.
+   ---------------------------------------------------------------- */
+.appset .admin-table--compact th {
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+}
+.appset .admin-table--compact td {
+  padding: 12px 14px;
+  border-top: 1px solid var(--line-2);
+  vertical-align: middle;
+}
+.appset .admin-table--compact tbody tr:first-child td { border-top: 0; }
+.appset .admin-table--compact td strong { font-size: 13px; font-weight: 500; }
+
+/* ----------------------------------------------------------------
+   11. Overflow guards — nothing in settings should cause a sideways
+   scrollbar at any width.
+   ---------------------------------------------------------------- */
+.appset__main .det-card,
+.appset__main .applist { max-width: 100%; }
+.appset__main code,
+.appset__main .mono { overflow-wrap: anywhere; }
+.appset .stat-grid { min-width: 0; }
+.appset .stat-tile { min-width: 0; }
+.appset .stat-tile__value { overflow-wrap: anywhere; }

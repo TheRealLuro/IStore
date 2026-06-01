@@ -1,0 +1,373 @@
+/* ============================================================
+   Spreadsheet viewer (spreadsheet-viewer.jsx)
+   A real cell grid for .xlsx / .xls / .ods. Cells are parsed
+   server-side (python-calamine → normalized JSON) and rendered
+   here as a live grid: sticky A/B/C column header, sticky 1/2/3
+   row numbers, sheet tabs, zebra rows, an active-cell crosshair,
+   and a scroll shadow under the frozen headers. Uses the app's
+   design tokens so it tracks light/dark automatically.
+   The human adds `@import "./styles-spreadsheet.css";` to the CSS
+   spine.
+   ============================================================ */
+
+/* Root fills the modal body (.pdf-modal__body) and lays out as a
+   column: fixed toolbar, the scrolling grid (min-height:0 so it can
+   actually shrink and scroll instead of overflowing), then the tab
+   strip pinned at the bottom. */
+.sheet-viewer {
+  /* Fill the modal body in both axes. `width:100%` matters when the modal
+     caps at its max-width on a wide sheet: the body is then a definite
+     width and a content-width root would leave a gap on the right; 100%
+     makes the root (and its scrolling grid) fill the capped body. In a
+     fit-content body it's a no-op. `min-width:0` lets the inner
+     `overflow:auto` grid clamp + scroll instead of forcing the root wide. */
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* ---- toolbar: filename · sheet count · dimensions ----------------- */
+.sheet-viewer__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  flex-shrink: 0;
+}
+.sheet-viewer__head > svg { flex-shrink: 0; color: var(--ink-3); }
+.sheet-viewer__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sheet-viewer__meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+/* Sheet-count pill — subtle chip so the count reads as metadata, not
+   a number floating in space. */
+.sheet-viewer__meta-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.sheet-viewer__meta-dims { color: var(--ink-3); }
+
+/* The scroll surface host. The grid lives inside and scrolls in both
+   axes; sticky header/row-number cells stay pinned against the inner
+   scroll container. */
+.sheet-viewer__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---- empty / error states (centered, iconographic) ---------------- */
+.sheet-viewer__empty,
+.sheet-viewer__error {
+  margin: auto;
+  padding: 28px;
+  font-size: 13px;
+  color: var(--ink-3);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 440px;
+  line-height: 1.55;
+}
+.sheet-viewer__error { color: var(--ink-2); }
+.sheet-viewer__error svg,
+.sheet-viewer__empty svg { color: var(--ink-4); }
+
+/* ---- loading skeleton — a ghosted grid, not a blank flash --------- */
+.sheet-viewer__skeleton {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.sheet-viewer__skeleton-head {
+  height: 28px;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.sheet-viewer__skeleton-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  height: 31px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line-2);
+}
+.sheet-viewer__skeleton-rownum {
+  width: 46px;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+}
+.sheet-viewer__skeleton-cell {
+  flex: 1;
+  margin: 8px 11px;
+  border-radius: var(--radius-1, 4px);
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 0%,
+    var(--surface-3) 50%,
+    var(--surface-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: sheet-shimmer 1.3s ease-in-out infinite;
+  opacity: 0.7;
+}
+/* Stagger column widths a touch so the skeleton reads as data, not bars. */
+.sheet-viewer__skeleton-cell:nth-child(2) { max-width: 70%; }
+.sheet-viewer__skeleton-cell:nth-child(4) { max-width: 55%; }
+.sheet-viewer__skeleton-cell:nth-child(6) { max-width: 80%; }
+@keyframes sheet-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet-viewer__skeleton-cell { animation: none; }
+}
+
+/* "Showing first N rows" banner above the grid when the server clipped
+   a big sheet. */
+.sheet-viewer__clip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.sheet-viewer__clip svg { color: var(--ink-4); flex-shrink: 0; }
+
+/* The actual scroll container for the table. Focusable for keyboard
+   scrolling; the focus ring is suppressed (it's a scroll region, not a
+   control) but it still takes arrow/page/home/end keys. */
+.sheet-viewer__grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+  scrollbar-width: thin;
+  position: relative;
+}
+
+/* border-collapse:separate (not collapse) so sticky header/row cells
+   keep their borders while scrolling — collapsed borders detach from
+   sticky cells in most engines. We paint a single 1px grid with
+   right+bottom borders per cell and spacing 0. table-layout:fixed so the
+   <colgroup> widths (computed from content) are honored exactly. */
+.sheet-viewer__grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  table-layout: fixed;
+  width: max-content;
+}
+.sheet-viewer__col-corner { width: 46px; }
+
+/* ---- column-letter header row (sticky to top) --------------------- */
+.sheet-viewer__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-weight: 600;
+  font-size: 11px;
+  text-align: center;
+  padding: 6px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  user-select: none;
+  transition: background 0.1s, color 0.1s;
+}
+/* Column header lights up when its column is under the cursor. */
+.sheet-viewer__colhdr.is-active {
+  background: var(--surface-4);
+  color: var(--ink);
+}
+
+/* ---- row-number column (sticky to left) --------------------------- */
+.sheet-viewer__rowhdr {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface-2);
+  color: var(--ink-4);
+  font-weight: 500;
+  font-size: 11px;
+  text-align: right;
+  padding: 6px 10px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-2);
+  white-space: nowrap;
+  user-select: none;
+  transition: background 0.1s, color 0.1s;
+}
+.sheet-viewer__rowhdr.is-active {
+  background: var(--surface-4);
+  color: var(--ink);
+}
+
+/* ---- top-left corner: sticky on BOTH axes, above everything ------- */
+.sheet-viewer__corner {
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 3;
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---- scroll shadows: subtle depth cue once the headers freeze over
+   scrolled content. Painted as box-shadow on the sticky cells so the
+   shadow rides with them. Only shown after the user scrolls. --------- */
+.sheet-viewer__grid-wrap.is-scrolled-y thead th {
+  box-shadow: 0 4px 6px -4px rgba(0, 0, 0, 0.18);
+}
+.sheet-viewer__grid-wrap.is-scrolled-x .sheet-viewer__rowhdr,
+.sheet-viewer__grid-wrap.is-scrolled-x .sheet-viewer__corner {
+  box-shadow: 4px 0 6px -4px rgba(0, 0, 0, 0.18);
+}
+/* Corner needs the corner shadow on Y-scroll too so it doesn't look
+   detached from the frozen header row. */
+.sheet-viewer__grid-wrap.is-scrolled-y .sheet-viewer__corner {
+  box-shadow: 0 4px 6px -4px rgba(0, 0, 0, 0.18);
+}
+.sheet-viewer__grid-wrap.is-scrolled-x.is-scrolled-y .sheet-viewer__corner {
+  box-shadow: 4px 4px 8px -4px rgba(0, 0, 0, 0.22);
+}
+
+/* ---- data cells --------------------------------------------------- */
+.sheet-viewer__cell {
+  padding: 6px 11px;
+  border-right: 1px solid var(--line-2);
+  border-bottom: 1px solid var(--line-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  max-width: 0; /* with table-layout:fixed, lets ellipsis honor col width */
+}
+
+/* Numbers/dates get the monospace face so digits line up. */
+.sheet-viewer__cell.is-num {
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+/* Formula errors (#DIV/0!, #N/A …) — dim + centered so they read as
+   non-values without shouting. */
+.sheet-viewer__cell.is-err {
+  color: var(--ink-4);
+  font-style: italic;
+  font-size: 11.5px;
+}
+
+/* Zebra striping. The sticky row-number header sits in the same <tr>, so
+   it inherits the stripe too (its own bg is overridden above to stay
+   solid). */
+.sheet-viewer__grid tbody tr:nth-child(even) .sheet-viewer__cell {
+  background: rgba(127, 127, 127, 0.045);
+}
+
+/* ---- active-cell crosshair: highlight the hovered cell's row + column.
+   We tint the whole active row and the active column; the intersection
+   reads a touch stronger. Theme-agnostic rgba tints so it works in both
+   light and dark without a dedicated accent token. ------------------- */
+.sheet-viewer__cell.is-active-col {
+  background: rgba(127, 127, 127, 0.08);
+}
+.sheet-viewer__grid tbody tr.is-active-row .sheet-viewer__cell {
+  background: rgba(127, 127, 127, 0.09);
+}
+/* Intersection (active row ∩ active column) — strongest. */
+.sheet-viewer__grid tbody tr.is-active-row .sheet-viewer__cell.is-active-col {
+  background: rgba(127, 127, 127, 0.16);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* Keep the frozen row-number cell opaque (so data cells don't show
+   through when scrolling horizontally) on the active row. */
+.sheet-viewer__grid tbody tr.is-active-row .sheet-viewer__rowhdr {
+  background: var(--surface-4);
+  color: var(--ink);
+}
+
+/* ---- sheet tabs (bottom strip) ------------------------------------ */
+.sheet-viewer__tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 8px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.sheet-viewer__tab {
+  appearance: none;
+  border: 0;
+  border-top: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.12s, background 0.12s;
+}
+.sheet-viewer__tab:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+}
+.sheet-viewer__tab.is-active {
+  color: var(--ink);
+  background: var(--surface);
+  border-top-color: var(--ink);
+  font-weight: 600;
+}

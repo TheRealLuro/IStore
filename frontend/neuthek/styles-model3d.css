@@ -1,0 +1,633 @@
+/* ============================================================
+ * 3D model viewer (model3d-viewer.jsx)
+ * ------------------------------------------------------------
+ * An STL / OBJ / glTF / GLB preview that FILLS the host modal
+ * body (no awkward blank space): the root is a flex column that
+ * hands its full height to a body which in turn lets the WebGL
+ * canvas (or the Source pane) take all remaining space. The
+ * three.js <canvas> is sized in JS via a ResizeObserver on
+ * `.model3d__canvas`, so the CSS just has to give that element a
+ * real, non-zero box and force the canvas to fill it.
+ *
+ * Theme: pulls the same design tokens (--surface, --ink-*,
+ * --line, --radius-*) the rest of the app uses, so it tracks
+ * light / dark automatically.
+ *
+ * This file ALSO carries the HTML viewer's styling (html-viewer.jsx)
+ * at the bottom — it's a sibling "document/render with a source
+ * toggle" surface and shares the same toolbar / segmented-control
+ * / page-canvas vocabulary, so co-locating keeps the two cohesive.
+ * @import this once (it already is, alongside the other style sheets).
+ * ============================================================ */
+
+.model3d {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* ---------- toolbar ---------- */
+.model3d__bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 44px;
+  padding: 0 10px 0 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.model3d__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;            /* let the filename ellipsize */
+  overflow: hidden;
+}
+
+.model3d__name {
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 34ch;
+}
+
+.model3d__badge {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  line-height: 1.5;
+}
+
+/* A faint separating dot between the stat pills so tris / verts /
+ * objects read as a single dimmed cluster, not loose tokens. */
+.model3d__stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.model3d__stat {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.model3d__stat + .model3d__stat::before {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  opacity: 0.7;
+}
+
+.model3d__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Icon buttons (reset camera, wireframe, auto-rotate) — square, quiet
+ * at rest, fill on hover, and read "on" with a tinted surface + border
+ * when toggled (wireframe / auto-rotate). Matches the code viewer's
+ * `.code-tool` so the whole app's icon buttons feel identical. */
+.model3d__tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  width: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-1);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.model3d__tool:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.model3d__tool:active:not(:disabled) {
+  background: var(--surface-4);
+}
+.model3d__tool:focus-visible {
+  outline: none;
+  border-color: var(--ink-3);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink-3) 22%, transparent);
+}
+.model3d__tool[data-on="true"] {
+  background: var(--surface-3);
+  color: var(--ink);
+  border-color: var(--line);
+}
+.model3d__tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.model3d__tool svg { display: block; }
+
+/* A hairline rule that separates the icon-button cluster from the
+ * Render/Source segmented control to its right. */
+.model3d__divider {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+/* ---------- Render / Source segmented toggle ---------- */
+.model3d__seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+}
+.model3d__segbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--radius-1) - 2px);
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+}
+.model3d__segbtn:hover {
+  color: var(--ink);
+}
+.model3d__segbtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-3) 30%, transparent);
+}
+.model3d__segbtn[data-active="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+.model3d__segbtn svg { display: block; }
+
+/* ---------- body: holds the canvas + (optional) source pane ---------- */
+.model3d__body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
+
+/* The WebGL surface. `flex: 1` + `min-*: 0` so it fills the body.
+ * A two-layer studio backdrop: a soft vertical gradient (slightly
+ * brighter at the top, like a seamless photo sweep) topped with a
+ * radial pool of light behind the model and a gentle darkened
+ * vignette at the corners — reads premium / studio, not techy. The
+ * ResizeObserver in JS keeps the drawing buffer matched to this box. */
+.model3d__canvas {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% 32%,
+      color-mix(in srgb, var(--surface-3) 80%, var(--surface)) 0%,
+      var(--surface) 58%,
+      color-mix(in srgb, var(--surface-2) 60%, #000 4%) 100%),
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--surface) 100%, #fff 0%) 0%,
+      var(--surface-2) 100%);
+}
+/* Corner vignette as a pseudo-element so it layers over the canvas
+ * (which is opaque-ish but alpha:true) without tinting the model. */
+.model3d__canvas::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(130% 120% at 50% 45%,
+    transparent 60%,
+    color-mix(in srgb, #000 10%, transparent) 100%);
+  z-index: 1;
+}
+html[data-theme="dark"] .model3d__canvas::after {
+  background: radial-gradient(130% 120% at 50% 45%,
+    transparent 55%,
+    rgba(0,0,0,0.45) 100%);
+}
+/* When Source is active the canvas is hidden but stays in the DOM (and
+ * keeps its GL context). display:none zeroes its box; JS re-measures +
+ * re-frames when it comes back. */
+.model3d__canvas[data-hidden="true"] {
+  display: none;
+}
+
+/* The three.js <canvas> must be a block that fills `.model3d__canvas`
+ * (canvas defaults to inline, which leaves a descender gap and won't
+ * stretch). JS also sets these inline as a belt-and-braces guard.
+ * Sits above the gradient, below the vignette pseudo-element. */
+.model3d__canvas > canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  position: relative;
+  z-index: 0;
+}
+
+/* ---------- loading skeleton ----------
+ * Shown while the bytes download + the loader parses. A centered,
+ * slowly-pulsing wireframe cube glyph over the studio backdrop reads
+ * as "rendering a 3D thing" far better than a bare spinner. The
+ * animation is paused under prefers-reduced-motion (below). */
+.model3d__skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+  text-align: center;
+  padding: 16px;
+}
+.model3d__skeleton-cube {
+  color: var(--ink-4);
+  animation: model3d-cube-spin 3.2s ease-in-out infinite;
+  transform-origin: center;
+  filter: drop-shadow(0 6px 16px color-mix(in srgb, var(--ink) 12%, transparent));
+}
+.model3d__skeleton-label {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  color: var(--ink-3);
+}
+@keyframes model3d-cube-spin {
+  0%   { transform: translateY(0) rotate(-6deg); opacity: 0.55; }
+  50%  { transform: translateY(-4px) rotate(6deg); opacity: 1; }
+  100% { transform: translateY(0) rotate(-6deg); opacity: 0.55; }
+}
+
+/* ---------- error state ----------
+ * A graceful, centered card with an alert glyph + the message,
+ * instead of the canvas reading as a blank black box on failure. */
+.model3d__error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 28px;
+  text-align: center;
+}
+.model3d__error-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  color: var(--ink-3);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.model3d__error-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 40ch;
+}
+
+/* Bottom-center interaction hint — a quiet glass pill that fades in
+ * once the model is ready and fades away on first interaction (JS
+ * toggles data-fade). */
+.model3d__hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 11px;
+  pointer-events: none;
+  user-select: none;
+  box-shadow: var(--shadow-1);
+  transition: opacity 0.5s ease;
+}
+.model3d__hint[data-fade="true"] {
+  opacity: 0;
+}
+
+/* ---------- Source pane ---------- *
+ * Fills the body. <CodeView> is itself height:100% / flex-column, so we
+ * just give it a full-size flex cell. */
+.model3d__source {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+.model3d__source > .code-preview {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Note shown instead of CodeView for binary STL / GLB (no text source). */
+.model3d__sourcenote {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 28px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  background: var(--surface);
+}
+.model3d__sourcenote svg { color: var(--ink-4); }
+
+/* Honor reduced-motion: freeze the loading cube + drop the hint fade
+ * so nothing animates for users who asked us not to. (Auto-rotate is
+ * gated in JS the same way.) */
+@media (prefers-reduced-motion: reduce) {
+  .model3d__skeleton-cube { animation: none; }
+  .model3d__hint { transition: none; }
+}
+
+
+/* ============================================================
+ * HTML viewer (html-viewer.jsx)
+ * ------------------------------------------------------------
+ * A STATIC, scripts-disabled preview of an uploaded .html / .htm,
+ * with a Rendered / Source segmented toggle. The rendered page is
+ * shown inside a locked-down `<iframe sandbox srcDoc>` (NO
+ * allow-scripts, NO allow-same-origin — enforced in JS), framed as
+ * a page (max-width canvas with a soft drop shadow) floating on a
+ * neutral backdrop so it reads like a document, not a raw frame.
+ * Shares the toolbar / segmented-control vocabulary above so the
+ * two viewers feel like one family.
+ * ============================================================ */
+
+.htmlv {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* ---------- header ---------- */
+.htmlv__bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 10px 0 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.htmlv__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Security pill — communicates the "view, not run" model. A shield
+ * glyph + label inside a rounded outline; the green-ish safe tint is
+ * kept subtle (token-derived) so it reads trustworthy, not alarming. */
+.htmlv__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 9px 3px 8px;
+  white-space: nowrap;
+}
+.htmlv__pill svg { color: var(--ink-3); display: block; }
+
+.htmlv__spacer { margin-left: auto; }
+
+/* Rendered / Source segmented toggle — identical mechanics to the
+ * model3d one above. */
+.htmlv__seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  flex-shrink: 0;
+}
+.htmlv__segbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--radius-1) - 2px);
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+}
+.htmlv__segbtn:hover { color: var(--ink); }
+.htmlv__segbtn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-3) 30%, transparent);
+}
+.htmlv__segbtn[data-active="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+.htmlv__segbtn svg { display: block; }
+
+/* ---------- body ---------- */
+.htmlv__body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Rendered surface: a neutral "deck" with the page floated as a
+ * max-width card. Scroll happens on the deck so long pages scroll
+ * with the page-shadow staying attached to the document. */
+.htmlv__deck {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, var(--surface-2) 0%, var(--surface-3) 100%);
+  padding: 22px clamp(12px, 4vw, 48px);
+}
+.htmlv__page {
+  flex: 0 1 920px;
+  align-self: flex-start;
+  width: 100%;
+  min-height: calc(100% - 0px);
+  background: #fff;            /* documents assume a white page */
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+.htmlv__frame {
+  display: block;
+  width: 100%;
+  /* Tall default so short documents still present as a "page"; the
+   * deck scrolls. JS keeps height in sync with content where the
+   * same-origin restriction allows; otherwise this min keeps it
+   * looking intentional. */
+  height: 100%;
+  min-height: 1100px;
+  border: 0;
+  background: #fff;
+}
+
+/* Source pane hosts CodeView full-bleed (it manages its own scroll). */
+.htmlv__source {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+.htmlv__source > .code-preview {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Loading + error states, centered on the body. */
+.htmlv__state {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 28px;
+  text-align: center;
+}
+.htmlv__state-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  color: var(--ink-3);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.htmlv__state-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 42ch;
+}
+.htmlv__state--error .htmlv__state-icon { color: var(--danger); }
+
+/* Loading skeleton: three faint shimmering bars standing in for a
+ * page, so the rendered surface doesn't flash empty. */
+.htmlv__skel {
+  margin: auto;
+  width: min(620px, 80%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.htmlv__skel-bar {
+  height: 12px;
+  border-radius: 5px;
+  background: linear-gradient(90deg,
+    var(--surface-3) 0%, var(--surface-4) 50%, var(--surface-3) 100%);
+  background-size: 200% 100%;
+  animation: htmlv-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes htmlv-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+html[data-theme="dark"] .htmlv__skel-bar {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.10) 50%, rgba(255,255,255,0.05) 100%);
+  background-size: 200% 100%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .htmlv__skel-bar { animation: none; }
+}

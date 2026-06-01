@@ -207,6 +207,7 @@ async def sweep_orphan_blobs(session: AsyncSession) -> list[OrphanSweepResult]:
       - Image.thumbnail_blob_key
       - every entry in Image.served_variants (legacy mp4 tier keys)
       - every object under Image.served_variants["hls_prefix"]
+      - Image.converted_pdf_blob_key (Office→PDF renders, in `served`)
     """
     from backend.models import Image as ImageModel
 
@@ -220,6 +221,7 @@ async def sweep_orphan_blobs(session: AsyncSession) -> list[OrphanSweepResult]:
                 ImageModel.served_blob_key,
                 ImageModel.thumbnail_blob_key,
                 ImageModel.served_variants,
+                ImageModel.converted_pdf_blob_key,
             )
         )
     ).all()
@@ -227,13 +229,19 @@ async def sweep_orphan_blobs(session: AsyncSession) -> list[OrphanSweepResult]:
     orig_refs: set[str] = set()
     served_refs: set[str] = set()
     hls_prefixes: list[str] = []
-    for orig, served, thumb, sv in rows:
+    for orig, served, thumb, sv, converted_pdf in rows:
         if orig:
             orig_refs.add(orig)
         if served:
             served_refs.add(served)
         if thumb:
             served_refs.add(thumb)
+        # Office→PDF conversions live in the served bucket under
+        # `converted/`. They MUST be in the referenced set or the orphan
+        # sweep deletes them, and the doc viewer then 500s with NoSuchKey
+        # (the bug that broke every converted .docx/.xlsx/.pptx).
+        if converted_pdf:
+            served_refs.add(converted_pdf)
         if isinstance(sv, dict):
             for label, v in sv.items():
                 if label == "hls_prefix" and isinstance(v, str):
@@ -719,4 +727,146 @@ async def sweep_scheduled_account_deletes(
         accounts_hard_deleted=deleted,
         accounts_skipped_no_due=0,
         swept_at_iso=now.isoformat(),
+    )
+
+
+# ----- Stuck-job / stale-pending reaper (production hardening) -----
+#
+# Background: an upload sets `pending_summary` / `pending_face_scan` and
+# enqueues a worker job. If the worker (or Redis) was down at that moment,
+# or the worker died mid-process and its dedupe key leaked, the row sits
+# `pending_*` FOREVER — nothing on the server side ever re-enqueues it.
+# The FE `summarize-progress` poll drains some of these, but ONLY for the
+# user actively looking at that screen, ONLY for summaries, and it's
+# defeated by a leaked dedupe key.
+#
+# This sweeper is the server-side, all-users, all-kinds backstop:
+# it finds rows that have been `pending_*` longer than the timeout, are
+# AI-eligible (not skip_ai_training), and re-enqueues a bounded batch.
+# The Redis dedupe set makes re-enqueueing a row that's legitimately
+# still queued a cheap no-op, and the queue-side reaper has already
+# cleared any leaked dedupe key by the time this runs, so this can't
+# double-process. Fully best-effort — every enqueue is individually
+# guarded so one bad row can't abort the sweep.
+
+
+@dataclass
+class StuckPendingSweepResult:
+    scanned_summary: int
+    scanned_faces: int
+    requeued_summary: int
+    requeued_faces: int
+    requeued_transcode: int
+
+
+async def sweep_stuck_pending(
+    session: AsyncSession,
+    *,
+    timeout_seconds: int | None = None,
+    batch_size: int | None = None,
+) -> StuckPendingSweepResult:
+    """Re-enqueue Image rows stuck in a `pending_*` state past the
+    timeout. Bounded by `batch_size` per kind so a large backlog drains
+    gradually instead of flooding the queue in one tick.
+    """
+    from backend import jobs as job_q
+
+    timeout = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else getattr(settings, "stuck_pending_timeout_seconds", 1800)
+    )
+    limit = (
+        batch_size
+        if batch_size is not None
+        else getattr(settings, "stuck_pending_batch_size", 200)
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout)
+
+    requeued_summary = 0
+    requeued_faces = 0
+    requeued_transcode = 0
+
+    # --- Stuck summaries ---------------------------------------------
+    # A row is "stuck pending summary" when pending_summary is true (or
+    # it never produced a summary) AND it's older than the cutoff AND
+    # it's AI-eligible. We DON'T re-enqueue rows whose summary already
+    # landed — those aren't pending, the flag is just stale telemetry.
+    summary_rows = (
+        await session.execute(
+            select(Image.id, Image.user_id)
+            .where(
+                Image.deleted_at.is_(None),
+                Image.skip_ai_training.is_(False),
+                Image.pending_summary.is_(True),
+                Image.summary.is_(None),
+                Image.uploaded_at < cutoff,
+            )
+            .order_by(Image.uploaded_at.asc())
+            .limit(limit)
+        )
+    ).all()
+    for image_id, user_id in summary_rows:
+        try:
+            if await job_q.enqueue_summarize(user_id, image_id):
+                requeued_summary += 1
+        except Exception:
+            logger.exception("stuck-pending: summary re-enqueue failed for %s", image_id)
+
+    # --- Stuck face scans --------------------------------------------
+    # Only image + video rows carry a meaningful face scan; the worker
+    # re-checks consent at scan time so we don't have to gate on it here.
+    face_rows = (
+        await session.execute(
+            select(Image.id, Image.user_id, Image.category)
+            .where(
+                Image.deleted_at.is_(None),
+                Image.skip_ai_training.is_(False),
+                Image.pending_face_scan.is_(True),
+                Image.category.in_(("image", "video")),
+                Image.uploaded_at < cutoff,
+            )
+            .order_by(Image.uploaded_at.asc())
+            .limit(limit)
+        )
+    ).all()
+    for image_id, user_id, _category in face_rows:
+        try:
+            if await job_q.enqueue_face_scan(user_id, image_id):
+                requeued_faces += 1
+        except Exception:
+            logger.exception("stuck-pending: face re-enqueue failed for %s", image_id)
+
+    # --- Stuck transcodes --------------------------------------------
+    # A video/audio row that still has an original_blob_key but no
+    # served_variants (and whose served == original, i.e. never
+    # transcoded) past the cutoff means its transcode job was lost.
+    transcode_rows = (
+        await session.execute(
+            select(Image.id, Image.user_id)
+            .where(
+                Image.deleted_at.is_(None),
+                Image.category.in_(("video", "audio")),
+                Image.original_blob_key.is_not(None),
+                Image.served_variants.is_(None),
+                Image.served_blob_key == Image.original_blob_key,
+                Image.uploaded_at < cutoff,
+            )
+            .order_by(Image.uploaded_at.asc())
+            .limit(limit)
+        )
+    ).all()
+    for image_id, user_id in transcode_rows:
+        try:
+            if await job_q.enqueue_transcode_video(user_id, image_id):
+                requeued_transcode += 1
+        except Exception:
+            logger.exception("stuck-pending: transcode re-enqueue failed for %s", image_id)
+
+    return StuckPendingSweepResult(
+        scanned_summary=len(summary_rows),
+        scanned_faces=len(face_rows),
+        requeued_summary=requeued_summary,
+        requeued_faces=requeued_faces,
+        requeued_transcode=requeued_transcode,
     )

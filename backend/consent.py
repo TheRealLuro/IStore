@@ -55,6 +55,15 @@ SUPPORTED_SCOPES: tuple[str, ...] = (
     "ai_summary",             # Florence-2/Qwen scene + topic summaries
     "semantic_search",        # CLIP embeddings retained for vector search
     "bandit_compression_telemetry",  # LinUCB reward signals
+    # Marketing-site newsletter opt-in. Distinct from the in-app
+    # `notification_prefs` matrix (product_updates / security_alerts):
+    # this scope tracks consent to the EXTERNAL marketing newsletter and
+    # its GRANT side-effect is a cross-service forward to the marketing
+    # subscriber list. Grant goes through POST /account/newsletter (which
+    # fires the forward); withdraw rides the generic /consent/{kind}
+    # path. Listed here so the state shows up in /consent/scopes (drives
+    # the Settings toggle) and the GDPR export.
+    "newsletter",
 )
 
 router = APIRouter(prefix="/consent", tags=["consent"])

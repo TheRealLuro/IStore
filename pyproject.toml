@@ -56,6 +56,22 @@ dependencies = [
     # forever and the backfill toast read "none could be geocoded"
     # with no warning in the logs.
     "httpx==0.27.2",
+    # lxml — hardened XML parser used to SANITIZE uploaded SVGs server-side
+    # (strip <script>, on* handlers, <foreignObject>, external refs, and block
+    # XXE/DTD). SVG uploads are allowed but only after this allowlist scrub; see
+    # backend/upload_validation.py `_sanitize_svg`. Already present transitively
+    # in the image, but pinned here so it can never silently disappear from a
+    # rebuild and leave the SVG sanitizer unable to import (it fails closed).
+    "lxml>=5.0",
+    # python-calamine — Rust `calamine` binding (MIT/Apache-2.0) that reads
+    # ALL spreadsheet formats from one library: modern `.xlsx`, legacy binary
+    # `.xls` (BIFF), OpenDocument `.ods`, plus `.xlsm`/`.xlsb`. Powers the
+    # server-side parse behind `GET /images/{id}/spreadsheet` so the in-app
+    # spreadsheet viewer renders live cells for .xls/.ods (which the old
+    # client-side exceljs parser couldn't open). Ships manylinux wheels — no
+    # build tools or LibreOffice subprocess needed. See
+    # backend/spreadsheet_extract.py.
+    "python-calamine>=0.2.3",
 ]
 
 [project.optional-dependencies]

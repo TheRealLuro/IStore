@@ -186,8 +186,22 @@ html[data-theme="light"] .preview-backdrop {
  * and paginated the document under `view=Fit` mode; now the user
  * sees the full doc height in one continuous, themed scroll. */
 .pdf-modal {
-  width: min(1100px, 94vw);
-  height: min(92vh, 1280px);
+  /* Shrink-wrap to the content (within caps) so a 7-line log or a 6×6
+   * sheet gets a snug modal instead of a 1100×92vh box with acres of
+   * blank space. When content exceeds the caps the modal pins to
+   * max-width/height and the viewer scrolls inside. Viewers with no
+   * natural content size (a WebGL canvas, an epub reader, a sandboxed
+   * iframe page, the two-pane archive browser) opt into the old fixed
+   * size with `.pdf-modal--fill`. */
+  width: fit-content;
+  /* No explicit height: a flex column with height:auto sizes to its
+   * content and is capped by max-height — that gives the body a DEFINITE
+   * height to scroll within when content overflows. (height:fit-content
+   * here left the height indefinite and broke the viewers' inner scroll.) */
+  min-width: min(460px, 94vw);
+  min-height: 220px;
+  max-width: min(1100px, 94vw);
+  max-height: min(92vh, 1280px);
   background: var(--surface-2);
   border-radius: 18px;
   overflow: hidden;
@@ -197,6 +211,11 @@ html[data-theme="light"] .preview-backdrop {
   cursor: default;
   animation: lb-pop 280ms cubic-bezier(0.32, 0.72, 0, 1.05);
 }
+.pdf-modal.pdf-modal--fill {
+  width: min(1100px, 94vw);
+  height: min(92vh, 1280px);
+}
+.pdf-modal.pdf-modal--fill .pdf-modal__body { flex: 1 1 auto; }
 .pdf-modal__head {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px 10px 16px;
@@ -233,7 +252,11 @@ html[data-theme="light"] .preview-backdrop {
  * scroll viewport inside. No padding here — the inner stack adds its
  * own breathing room around each page. */
 .pdf-modal__body {
-  flex: 1; min-height: 0;
+  /* `flex: 1 1 auto` (basis:auto): contributes its content height so the
+   * modal shrink-wraps, FILLS the modal once it caps at max-height, and
+   * shrinks (flex-shrink:1 + min-height:0) so the viewer's own scroll
+   * region engages on tall content. */
+  flex: 1 1 auto; min-height: 0;
   background: var(--surface-2);
   display: flex;
   overflow: hidden;

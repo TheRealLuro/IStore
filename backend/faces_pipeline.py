@@ -23,36 +23,121 @@ from typing import Optional
 from uuid import uuid4
 
 import numpy as np
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, type_coerce, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Face, FaceDetection, Image, Person, User
+from backend.models import (
+    Face,
+    FaceDetection,
+    Image,
+    Person,
+    RejectedFaceEmbedding,
+    User,
+)
 from backend.storage import storage
+
+try:  # pgvector is only present where the [ml]/db extras are installed.
+    from pgvector.sqlalchemy import Vector as _Vector
+except Exception:  # pragma: no cover - keeps import working in bare envs
+    _Vector = None
+
+# The all-zeros placeholder embedding stored on no-embedding faces
+# (mediapipe cascade / manual box). Used to exclude those rows from
+# nearest-face matching with a plain `!=` — pgvector's `l2_norm(vector)`
+# is overloaded (vector + halfvec) and resolves ambiguously, so a norm
+# predicate raises AmbiguousFunctionError; an equality test against the
+# zero vector is unambiguous and index-friendly.
+_PLACEHOLDER_EMBEDDING: list[float] = [0.0] * 512
 
 logger = logging.getLogger(__name__)
 
-# ArcFace cosine similarity thresholds. Same-person pairs typically land in
-# [0.4, 0.8]; different-person pairs are usually <0.3. Centroids average out
-# variance so we can match against them with a slightly looser bar.
+# ArcFace cosine similarity thresholds. Same-person pairs on buffalo_l
+# typically land in [0.45, 0.85]; different-person pairs usually sit
+# below ~0.30. Centroids average out per-person variance, so a *correct*
+# match against a centroid is usually 0.50+. We deliberately set the
+# auto-attach bar high: merging a face into the WRONG named person
+# (the "Jason got merged into Patrick" failure) is far more damaging to
+# the user than leaving a face in its own unlabeled cluster that they
+# can name in one click. When in doubt we prefer a NEW cluster.
 SAME_PERSON_THRESHOLD_FACE = 0.50      # individual-face match (vs. existing Face row)
-SAME_PERSON_THRESHOLD_CENTROID = 0.40  # named-person centroid match
 
-# Adaptive low-confidence match — when no centroid clears
-# `SAME_PERSON_THRESHOLD_CENTROID` but the *closest* one is still
-# notably above the runner-up, accept it. This rescues "appearance
-# mode" mismatches like a B&W extreme-close-up of someone whose
-# centroid was built from color selfies (cosine sim drops to ~0.20
-# under those domain shifts even when humans easily recognize the
-# face). The margin gate avoids false attaches when two people are
-# both equally "kinda close."
-SAME_PERSON_LOW_THRESHOLD = 0.18       # absolute floor — anything below is noise
-SAME_PERSON_LOW_MARGIN    = 0.08       # closest must beat 2nd-closest by this much
+# Named-person centroid match. Raised 0.40 -> 0.52. At 0.40 a
+# different-person face whose embedding happened to land in the
+# 0.40-0.50 "ambiguous" band auto-merged into a named person and then
+# polluted that person's centroid, snowballing into more wrong matches.
+# 0.52 keeps confident frontal matches (which sit 0.55-0.85) while
+# refusing the ambiguous band.
+SAME_PERSON_THRESHOLD_CENTROID = 0.52
+
+# Detector confidence required to AUTO-ATTACH a face to an EXISTING
+# named person. Higher than MIN_DET_CONFIDENCE: a blurry / tiny / heavily
+# cropped detection produces a noisier embedding, and a noisy embedding
+# is exactly what slips past the centroid bar into the wrong person.
+# Borderline detections (between MIN_DET_CONFIDENCE and this) are still
+# kept — they just form / grow an UNLABELED cluster instead of merging
+# into a named identity. The user can confirm them with one click.
+MIN_DET_CONFIDENCE_NAMED_ATTACH = 0.70
+
+# The adaptive "low-confidence but clear-winner" centroid path
+# (SAME_PERSON_LOW_THRESHOLD / _MARGIN) has been REMOVED. It accepted a
+# centroid match at cosine sim as low as 0.18 as long as it beat the
+# runner-up by 0.08 — but 0.18 sim is squarely in different-person
+# territory for ArcFace, and the margin gate gave false confidence when
+# the true person simply wasn't in the library yet. This path was the
+# primary driver of wrong-person merges (e.g. Jason -> Patrick). Faces
+# that don't clear SAME_PERSON_THRESHOLD_CENTROID now form their own
+# unlabeled cluster, which the user resolves via the People UI.
 
 # Back-compat constant exported for any external callers / tests.
 SAME_PERSON_THRESHOLD = SAME_PERSON_THRESHOLD_FACE
 
-# Minimum detection confidence to consider a face "real" (filters tiny / blurry detections).
+# Minimum detection confidence to consider a face "real" at all (filters
+# tiny / blurry detections). Faces below this are dropped entirely.
 MIN_DET_CONFIDENCE = 0.55
+
+# "Not a person" rejection memory. When the user marks a detected face
+# as a false positive, its embedding is stored in
+# `rejected_face_embeddings` (see backend/api/people.py + migration
+# 0051). Before persisting a NEW face we look up the nearest rejected
+# embedding for this user; if cosine similarity to it is >= this
+# threshold we DROP the detection instead of re-creating the bogus face
+# on every scan. Set in the same neighbourhood as
+# SAME_PERSON_THRESHOLD_CENTROID (0.52) but deliberately a touch lower
+# (0.50) so a slightly-different angle of the SAME false positive (a
+# mask / poster / pattern) still gets suppressed — while staying well
+# above the different-person noise floor (~0.30) so we don't suppress a
+# real, distinct face that merely sits near a rejected one. Tune UP if a
+# real face ever gets wrongly suppressed; tune DOWN if a false positive
+# keeps coming back across re-scans.
+REJECTED_FACE_THRESHOLD = 0.50
+
+# An ArcFace embedding is L2-normalized to unit length, so a *real*
+# embedding has norm ~1.0. The mediapipe-cascade and manual-box paths
+# store a placeholder all-zeros vector (norm 0) on faces that have no
+# real embedding. Such vectors must NEVER participate in centroid
+# matching (cosine distance to a zero vector is undefined and pgvector
+# sorts it unpredictably) and must NEVER be averaged into a named
+# person's centroid (a zero row drags the centroid toward the origin and
+# corrupts every subsequent match). This floor distinguishes a real
+# embedding from a placeholder one.
+_MIN_EMBEDDING_NORM = 0.5
+
+
+def _is_real_embedding(embedding) -> bool:
+    """True only for a genuine (non-placeholder, non-empty) ArcFace vector.
+
+    Guards every auto-attach / centroid path. An empty list (mediapipe
+    box with no embedding) or an all-zeros 512-d placeholder both return
+    False, so neither can ever be matched against a named person or
+    folded into a person centroid — they can only ever become an
+    unlabeled face the user names by hand.
+    """
+    if embedding is None:
+        return False
+    arr = np.asarray(embedding, dtype=np.float32)
+    if arr.size == 0:
+        return False
+    return bool(np.linalg.norm(arr) >= _MIN_EMBEDDING_NORM)
 
 
 def _detect_sync(raw_bytes: bytes):
@@ -77,17 +162,20 @@ async def _match_named_person(
 ) -> Optional[Person]:
     """Nearest-named-person match by centroid distance.
 
-    Two acceptance paths:
-      1. Closest centroid clears `SAME_PERSON_THRESHOLD_CENTROID`
-         (0.40) — same as before, the "obvious match" path.
-      2. Closest centroid is at least `SAME_PERSON_LOW_THRESHOLD`
-         (0.18) AND beats the runner-up by `SAME_PERSON_LOW_MARGIN`
-         (0.08). This rescues appearance-mode mismatches (B&W vs
-         color, profile vs frontal) where a known person's centroid
-         is the clear winner but the absolute cosine sim is below
-         the conservative 0.40 floor. The margin gate prevents
-         false attaches when two named people are both "kinda
-         close" and we'd be guessing.
+    Single, conservative acceptance path: the closest named-person
+    centroid must clear `SAME_PERSON_THRESHOLD_CENTROID` (0.52 cosine
+    similarity). If nothing clears it, we return None and the caller
+    forms / grows an UNLABELED cluster instead of guessing.
+
+    The previous "low-confidence clear-winner" path (accept at sim 0.18
+    if it beats the runner-up) was removed — it was the main cause of
+    wrong-person merges. A face the model can't confidently attribute to
+    a known person is better left for the user to confirm with one click
+    than silently merged into the wrong identity.
+
+    Callers MUST pre-filter to real embeddings (`_is_real_embedding`)
+    before calling this — a placeholder zero vector has an undefined
+    cosine distance and would sort unpredictably against centroids.
     """
     distance = Person.centroid_embedding.cosine_distance(embedding)
     stmt = (
@@ -98,28 +186,20 @@ async def _match_named_person(
             Person.face_count > 0,
         )
         .order_by(distance.asc())
-        .limit(2)  # top-2 so we can check the runner-up margin
+        .limit(1)
     )
-    rows = (await session.execute(stmt)).all()
-    if not rows:
+    row = (await session.execute(stmt)).first()
+    if row is None:
         return None
-    best_person, best_dist = rows[0][0], float(rows[0][1])
+    best_person, best_dist = row[0], float(row[1])
     best_sim = 1.0 - best_dist
     if best_sim >= SAME_PERSON_THRESHOLD_CENTROID:
         return best_person
-
-    # Low-confidence-but-clear-winner path. Requires a runner-up to
-    # compare against — single-person libraries fall through to the
-    # default "no match" branch (no risk of a wrong attach when there's
-    # only one option, but also no signal to confirm it's right).
-    if len(rows) >= 2 and best_sim >= SAME_PERSON_LOW_THRESHOLD:
-        runner_sim = 1.0 - float(rows[1][1])
-        if (best_sim - runner_sim) >= SAME_PERSON_LOW_MARGIN:
-            logger.info(
-                "match_named: low-conf attach to %s (sim=%.3f, runner=%.3f)",
-                best_person.display_name, best_sim, runner_sim,
-            )
-            return best_person
+    logger.debug(
+        "match_named: no confident centroid match (best=%s sim=%.3f < %.2f) "
+        "-> leaving as unlabeled cluster",
+        best_person.display_name, best_sim, SAME_PERSON_THRESHOLD_CENTROID,
+    )
     return None
 
 
@@ -128,11 +208,28 @@ async def _match_individual_face(
     user_id,
     embedding: list[float],
 ) -> Optional[Face]:
-    """Stage 2: nearest individual face row (handles unnamed clusters)."""
+    """Stage 2: nearest individual face row (handles unnamed clusters).
+
+    Excludes placeholder rows: a Face whose embedding is the all-zeros
+    placeholder (mediapipe / manual-box faces with no real ArcFace
+    vector) has an undefined cosine distance and must not be a match
+    target — otherwise a brand-new real embedding could "match" a
+    placeholder and inherit its (usually None) person/cluster. We filter
+    them out at the SQL level via the L2-norm guard.
+    """
     distance = Face.embedding.cosine_distance(embedding)
+    where_clauses = [Face.user_id == user_id]
+    if _Vector is not None:
+        # Real embeddings only — exclude the all-zeros placeholder rows.
+        # `type_coerce` binds the list through pgvector's Vector type so
+        # asyncpg serializes it as a vector literal (a plain list bind
+        # raises a DataError).
+        where_clauses.append(
+            Face.embedding != type_coerce(_PLACEHOLDER_EMBEDDING, _Vector(512))
+        )
     stmt = (
         select(Face, distance.label("distance"))
-        .where(Face.user_id == user_id)
+        .where(*where_clauses)
         .order_by(distance.asc())
         .limit(1)
     )
@@ -143,6 +240,57 @@ async def _match_individual_face(
     if (1.0 - dist) >= SAME_PERSON_THRESHOLD_FACE:
         return face
     return None
+
+
+async def _is_rejected_embedding(
+    session: AsyncSession,
+    user_id,
+    embedding: list[float],
+) -> bool:
+    """True if `embedding` matches one this user marked "not a person".
+
+    Nearest-rejected-embedding lookup: the closest row in
+    `rejected_face_embeddings` for this user must be within
+    `REJECTED_FACE_THRESHOLD` cosine similarity for the new detection to
+    count as a known false positive (and therefore be dropped instead of
+    re-created). Uses the HNSW cosine index (one indexed nearest-neighbour
+    query, LIMIT 1 — not a Python scan over all rejections).
+
+    FAIL-OPEN by contract: this guards face *scanning*, which must never
+    break because of the rejection feature. Any error here (table not yet
+    migrated, query failure, malformed embedding, …) is logged and
+    returns False so normal detection proceeds. Callers MUST pre-filter to
+    real embeddings (`_is_real_embedding`) — a placeholder zero vector has
+    an undefined cosine distance and the rejected rows are always real
+    ArcFace vectors, so there's nothing meaningful to compare.
+    """
+    try:
+        distance = RejectedFaceEmbedding.embedding.cosine_distance(embedding)
+        stmt = (
+            select(distance.label("distance"))
+            .where(RejectedFaceEmbedding.user_id == user_id)
+            .order_by(distance.asc())
+            .limit(1)
+        )
+        nearest = (await session.execute(stmt)).first()
+        if nearest is None:
+            return False
+        sim = 1.0 - float(nearest[0])
+        if sim >= REJECTED_FACE_THRESHOLD:
+            logger.info(
+                "faces: suppressing detection — matches a 'not a person' "
+                "rejection (sim=%.3f >= %.2f) for user %s",
+                sim, REJECTED_FACE_THRESHOLD, user_id,
+            )
+            return True
+        return False
+    except Exception:
+        # Fail-open: never let the rejection lookup break face scanning.
+        logger.exception(
+            "faces: rejected-embedding lookup failed (proceeding with "
+            "normal detection) for user %s", user_id,
+        )
+        return False
 
 
 async def _next_cluster_id(session: AsyncSession, user_id) -> int:
@@ -156,8 +304,18 @@ async def update_person_centroid(
     session: AsyncSession, user_id, person_id: int
 ) -> int:
     """Recompute the centroid for one named person from all their face
-    embeddings. Returns the face count averaged. Centroid is L2-normalized
-    so cosine similarity is consistent with ArcFace's unit-norm embeddings.
+    embeddings. Returns the count of REAL faces averaged. Centroid is
+    L2-normalized so cosine similarity is consistent with ArcFace's
+    unit-norm embeddings.
+
+    Placeholder (all-zeros) embeddings are excluded from the average:
+    a manual-box / mediapipe face the user later assigns to this person
+    must not drag the centroid toward the origin (which would corrupt
+    every subsequent centroid match). `face_count` therefore counts only
+    the faces that actually contribute to the identity — which is also
+    the right number for the `_match_named_person` `face_count > 0` gate
+    (a person with ONLY placeholder faces has no usable centroid, so it
+    correctly stays out of auto-matching until a real face lands).
     """
     rows = (
         await session.execute(
@@ -166,14 +324,20 @@ async def update_person_centroid(
             )
         )
     ).scalars().all()
-    if not rows:
+    real = [r for r in rows if _is_real_embedding(r)]
+    if not real:
+        # Either no faces at all, or only placeholder faces. Clear the
+        # centroid and zero the count so this person can't be an
+        # auto-match target until a real embedding is attached. Note the
+        # person row itself survives (the user's chosen name is kept);
+        # the People listing already hides 0-photo persons.
         await session.execute(
             update(Person)
             .where(Person.id == person_id)
             .values(centroid_embedding=None, face_count=0)
         )
         return 0
-    arr = np.asarray(rows, dtype=np.float32)
+    arr = np.asarray(real, dtype=np.float32)
     centroid = arr.mean(axis=0)
     norm = float(np.linalg.norm(centroid))
     if norm > 0:
@@ -183,11 +347,11 @@ async def update_person_centroid(
         .where(Person.id == person_id)
         .values(
             centroid_embedding=centroid.tolist(),
-            face_count=len(rows),
+            face_count=len(real),
             updated_at=datetime.now(timezone.utc),
         )
     )
-    return len(rows)
+    return len(real)
 
 
 async def process_image_for_faces(
@@ -252,11 +416,28 @@ async def process_image_for_faces(
     for det in detections:
         if det.detection_confidence < threshold:
             continue
-        if not det.embedding:
-            # Mediapipe-cascade detections carry no ArcFace embedding —
-            # we still want a Face row so the user can label it, but
-            # skip the centroid / cluster matching and don't try to
-            # average a null vector into a person centroid.
+        # "Not a person" suppression (the user-trained memory). If this
+        # detection's embedding matches one the user previously marked as
+        # a false positive, DROP it — don't re-create the bogus face on
+        # this (re-)scan. Only real ArcFace vectors are checked: the
+        # rejected rows are always real embeddings, and a placeholder
+        # zero vector has no meaningful cosine distance. The lookup is
+        # fail-open (see `_is_rejected_embedding`), so a missing table or
+        # query error never blocks scanning.
+        if _is_real_embedding(det.embedding) and await _is_rejected_embedding(
+            session, user.id, det.embedding
+        ):
+            continue
+        if not _is_real_embedding(det.embedding):
+            # Mediapipe-cascade detections (and any future no-embedding
+            # path) carry no real ArcFace vector — we still want a Face
+            # row so the user can label it, but it stores the all-zeros
+            # placeholder and is EXCLUDED from every auto-match / centroid
+            # path. It can only ever become an unlabeled face the user
+            # names by hand; it never auto-merges into a named person and
+            # is never averaged into a person centroid. Guarding on
+            # `_is_real_embedding` (not just `not det.embedding`) also
+            # rejects a degenerate all-zeros non-empty vector.
             crop_key = f"users/{user.id}/faces/{uuid4().hex}.jpg"
             try:
                 storage.put(
@@ -307,11 +488,19 @@ async def process_image_for_faces(
         else:
             crop_key_to_save = crop_key
 
-        # Stage 1: try a named-person centroid match first (cheaper + more
-        # reliable once we have ≥2 named faces, because the centroid averages
-        # variance across angles/lighting). Stage 2 is a fall-back over raw
-        # face rows so unnamed clusters can still grow.
-        person_match = await _match_named_person(session, user.id, det.embedding)
+        # Stage 1: try a named-person centroid match — but ONLY for a
+        # high-confidence detection. A blurry / tiny / heavily-cropped
+        # detection (confidence in [MIN_DET_CONFIDENCE,
+        # MIN_DET_CONFIDENCE_NAMED_ATTACH)) yields a noisy embedding that
+        # is exactly what slips past the centroid bar into the WRONG
+        # person, so we skip the named-person attach for it and let it
+        # grow an unlabeled cluster instead (Stage 2). High-confidence
+        # detections take the centroid path, which averages per-person
+        # variance across angles/lighting and is reliable once a person
+        # has a couple of named faces.
+        person_match = None
+        if det.detection_confidence >= MIN_DET_CONFIDENCE_NAMED_ATTACH:
+            person_match = await _match_named_person(session, user.id, det.embedding)
         if person_match is not None:
             sample_face = (
                 await session.execute(
@@ -336,17 +525,30 @@ async def process_image_for_faces(
         else:
             face_match = await _match_individual_face(session, user.id, det.embedding)
             if face_match is not None:
+                # A Stage-2 match may point at a face that already belongs
+                # to a named person. Only INHERIT that person_id (and thus
+                # feed the person's centroid) when this detection is itself
+                # high-confidence — same gate as Stage 1. A borderline
+                # detection still joins the matched cluster, but stays
+                # UNLABELED so it can't drag a named centroid. The user
+                # confirming the cluster promotes the whole group at once.
+                inherit_person_id = face_match.person_id
+                if (
+                    inherit_person_id is not None
+                    and det.detection_confidence < MIN_DET_CONFIDENCE_NAMED_ATTACH
+                ):
+                    inherit_person_id = None
                 face_row = Face(
                     user_id=user.id,
                     embedding=det.embedding,
-                    person_id=face_match.person_id,
+                    person_id=inherit_person_id,
                     cluster_id=face_match.cluster_id,
                     quality_score=det.detection_confidence,
                 )
                 session.add(face_row)
                 await session.flush()
-                if face_match.person_id is not None:
-                    persons_to_recentroid.add(face_match.person_id)
+                if inherit_person_id is not None:
+                    persons_to_recentroid.add(inherit_person_id)
             else:
                 cluster_id = await _next_cluster_id(session, user.id)
                 face_row = Face(

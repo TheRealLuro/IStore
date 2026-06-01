@@ -7,6 +7,7 @@ from sqlalchemy import text
 from backend.api.account import admin_router as admin_router
 from backend.api.account import router as account_router
 from backend.api.admin import router as admin_dashboard_router
+from backend.api.archives import router as archives_router
 from backend.api.billing import router as billing_router
 from backend.api.cloud import router as cloud_router
 from backend.api.comments import router as comments_router
@@ -170,6 +171,46 @@ async def lifespan(app: FastAPI):
 
     retention_task = asyncio.create_task(_retention_loop())
 
+    # Production hardening — stuck-pending reaper. Independent of the
+    # daily retention loop because it runs on a much tighter cadence
+    # (~10 min default). Finds Image rows stuck `pending_summary` /
+    # `pending_face_scan` / un-transcoded past a timeout with no active
+    # job and re-enqueues a bounded batch, server-side, for ALL users.
+    # This is the backstop for the failure mode where the worker (or
+    # Redis) was down at upload time, or a worker died mid-process and
+    # its job was lost: without it those rows sit pending forever. The
+    # Redis dedupe set makes re-enqueueing an already-queued row a no-op,
+    # and the queue-side reaper clears leaked dedupe keys first, so this
+    # can't double-process. Guarded so a failure never crashes the app.
+    async def _stuck_pending_loop():
+        import logging
+        log = logging.getLogger(__name__)
+        from backend.retention import sweep_stuck_pending
+
+        interval = max(
+            60, int(getattr(settings, "stuck_pending_reaper_interval_seconds", 600))
+        )
+        # Initial delay so we don't compete with boot warmup, and so the
+        # ml-worker has a moment to drain whatever was already queued.
+        await asyncio.sleep(min(interval, 120))
+        while True:
+            try:
+                async with SessionLocal() as s:
+                    res = await sweep_stuck_pending(s)
+                if (
+                    res.requeued_summary
+                    or res.requeued_faces
+                    or res.requeued_transcode
+                ):
+                    log.info("retention.stuck_pending: %s", res)
+            except Exception:
+                log.exception("retention.stuck_pending: sweep crashed — continuing")
+            await asyncio.sleep(interval)
+
+    stuck_pending_task: asyncio.Task | None = None
+    if getattr(settings, "stuck_pending_reaper_enabled", True):
+        stuck_pending_task = asyncio.create_task(_stuck_pending_loop())
+
     try:
         yield
     finally:
@@ -184,6 +225,12 @@ async def lifespan(app: FastAPI):
             await retention_task
         except (asyncio.CancelledError, Exception):
             pass
+        if stuck_pending_task is not None:
+            stuck_pending_task.cancel()
+            try:
+                await stuck_pending_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def create_app() -> FastAPI:
@@ -345,6 +392,10 @@ def create_app() -> FastAPI:
         tags=["users"],
     )
     app.include_router(images_router)
+    # Browsable archive viewer — list an owned archive's contents and
+    # extract a single inner file for inline preview. Read-only sibling
+    # of backend.archive_upload (shares its safety inspection).
+    app.include_router(archives_router)
     app.include_router(shares_router)
     app.include_router(folders_router)
     app.include_router(search_router)

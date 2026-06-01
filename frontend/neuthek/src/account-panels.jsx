@@ -9,12 +9,11 @@ import { getProviderFolderStats } from "@/api/cloud";
 import { getSubscription, openPortal } from "@/api/billing";
 import {
   getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login,
-  getAccountActivity, getAccountTrash, emptyAccountTrash,
+  emptyAccountTrash,
   getTwoFactorStatus, setupTwoFactor, verifyTwoFactor, disableTwoFactor,
   getNotificationPrefs, updateNotificationPrefs, signOutOtherSessions,
 } from "@/api/auth";
-import { backfillSummaries, backfillSummaryEmbeddings, backfillVision } from "@/api/files";
-import { API_BASE_URL, tokens } from "@/api/client";
+import { API_BASE_URL } from "@/api/client";
 
 // Build a fetch init dict for cookie-auth + legacy-bearer fallback.
 // Cookie mode: `credentials: "include"` sends the HttpOnly session
@@ -28,15 +27,6 @@ const authFetch = (extra = {}) => {
   if (legacy) headers.Authorization = `Bearer ${legacy}`;
   return { credentials: "include", ...extra, headers };
 };
-// Back-compat shim — older code reads `tokenHeader()` for just the
-// headers slice. Returns headers only; callers should migrate to
-// `authFetch()` which also sets `credentials: "include"`.
-const tokenHeader = () => {
-  let legacy = null;
-  try { legacy = localStorage.getItem("neuthek.jwt"); } catch {}
-  return legacy ? { Authorization: `Bearer ${legacy}` } : {};
-};
-import { activityLabel, activityTone, activityWhen } from "./activity-labels.js";
 import { useAuthStore } from "@/stores/authStore";
 import { useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
@@ -760,91 +750,6 @@ function DevicesPage() {
   );
 }
 
-// ---------- Plan ----------
-function PlanPage() {
-  const plans = [
-    { id: "free", name: "Free", price: "$0",     unit: "/mo", size: "15 GB",  feats: ["Photos & docs",      "Basic search"] },
-    { id: "plus", name: "Plus", price: "$2.99",  unit: "/mo", size: "200 GB", feats: ["Everything in Free", "AI summaries"] },
-    { id: "pro",  name: "Pro",  price: "$6.99",  unit: "/mo", size: "2 TB",   feats: ["Everything in Plus","Semantic search","Face recognition"], current: true },
-    { id: "max",  name: "Max",  price: "$19.99", unit: "/mo", size: "12 TB",  feats: ["Everything in Pro",  "Family sharing", "Priority support"] },
-  ];
-  const [sel, setSel] = useStateSP("pro");
-  const cur = plans.find(p => p.current);
-  return (
-    <>
-      <DetSection title="Current plan" right={<StatusPill tone="green">Active</StatusPill>}>
-        <div className="det-card" style={{ display: "flex", gap: 16, alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "-0.012em" }}>neuthek {cur.name}</div>
-            <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 4 }}>Renews May 1, 2027 · {cur.price}{cur.unit} · billed annually</div>
-          </div>
-          <span style={{ flex: 1 }}/>
-          <button className="btn btn--ghost">Manage payment</button>
-        </div>
-      </DetSection>
-
-      <DetSection title="Choose a plan" desc="Switch any time. Changes are prorated to your next renewal.">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
-          {plans.map(p => (
-            <button key={p.id} className="plan-card-v3" data-active={sel === p.id} onClick={() => setSel(p.id)}>
-              {p.current && <span className="plan-card-v3__cur-badge">Current</span>}
-              <div className="plan-card-v3__name">{p.name}</div>
-              <div className="plan-card-v3__price">{p.price}<small>{p.unit}</small></div>
-              <div className="plan-card-v3__size">{p.size} of storage</div>
-              <div className="plan-card-v3__features">
-                {p.feats.map((f, i) => (
-                  <div key={i} className="plan-card-v3__feature">
-                    <span className="plan-card-v3__check"><Icon name="check" size={11}/></span>
-                    {f}
-                  </div>
-                ))}
-              </div>
-            </button>
-          ))}
-        </div>
-        <div className="det-actions">
-          <button className="btn btn--primary" disabled={sel === "pro"}>
-            {sel === "pro" ? "Current plan" : "Switch to " + plans.find(p => p.id === sel).name}
-          </button>
-          <button className="btn btn--ghost" style={{ color: "var(--danger)" }}>Cancel subscription</button>
-        </div>
-      </DetSection>
-    </>
-  );
-}
-
-// ---------- Invoices ----------
-function InvoicesPage() {
-  const invs = [
-    { date: "May 1, 2026", number: "INV-2026-001", amount: "$79.99", plan: "neuthek Pro · annual",  status: "Paid"   },
-    { date: "May 1, 2025", number: "INV-2025-001", amount: "$79.99", plan: "neuthek Pro · annual",  status: "Paid"   },
-    { date: "May 1, 2024", number: "INV-2024-001", amount: "$59.99", plan: "neuthek Plus · annual", status: "Paid"   },
-    { date: "May 1, 2023", number: "INV-2023-001", amount: "$59.99", plan: "neuthek Plus · annual", status: "Paid"   },
-  ];
-  return (
-    <DetSection title="Receipts" desc="Past invoices and subscription receipts. Click to download a PDF copy.">
-      <div className="det-card" style={{ padding: 0 }}>
-        <table className="inv-table">
-          <thead>
-            <tr><th>Date</th><th>Description</th><th>Status</th><th className="right">Amount</th><th></th></tr>
-          </thead>
-          <tbody>
-            {invs.map(iv => (
-              <tr key={iv.number}>
-                <td style={{ fontWeight: 500 }}>{iv.date}</td>
-                <td className="muted">{iv.plan}<br/><span className="mono" style={{ fontSize: 11 }}>{iv.number}</span></td>
-                <td><StatusPill tone="green">{iv.status}</StatusPill></td>
-                <td className="right amt">{iv.amount}</td>
-                <td className="right"><button className="btn btn--ghost btn--sm">PDF</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </DetSection>
-  );
-}
-
 // ---------- Face data (real-data version) ----------
 function FaceDetailPage() {
   // Pull the people list — counts named persons + unlabelled clusters
@@ -1049,190 +954,39 @@ function LocationDetailPage() {
 }
 
 // ---------- Telemetry / diagnostics ----------
+//
+// Read-only breakdown of what the single "Compression telemetry"
+// consent (bandit_compression_telemetry) actually covers. The master
+// on/off lives on the toggle row in Privacy → Diagnostics; this panel
+// just itemizes the streams so the user can see exactly what the one
+// switch governs. (It deliberately has no per-stream toggles — the
+// backend exposes one consent scope, not three, so showing three
+// independent switches here would be a fiction.)
 function TelemetryDetailPage() {
-  const [crashes, setCrashes] = useStateSP(true);
-  const [perf,    setPerf]    = useStateSP(false);
-  const [usage,   setUsage]   = useStateSP(false);
+  const streams = [
+    { title: "Encode reward signals", desc: "Which compression settings won the bandit per file — bitrate, codec, and the resulting quality score. No pixels, no filenames." },
+    { title: "Performance metrics", desc: "Transcode duration and throughput on your hardware, aggregated across all opted-in servers to tune the defaults." },
+    { title: "App + model versions", desc: "The neuthek build and model versions in play, so a regression can be traced to a release." },
+  ];
   return (
     <>
       <DetExplain>
-        We collect anonymous performance and reliability data to find bugs and optimize the app. We <strong>never</strong> read file names, contents, or AI summaries.
+        Compression telemetry shares anonymous signals from your encodes
+        so the adaptive compressor improves for everyone. We <strong>never</strong>{" "}
+        read file names, contents, or AI summaries. Turn it on or off with
+        the <strong>Compression telemetry</strong> switch above.
       </DetExplain>
 
-      <DetSection title="What to share" desc="Granular control over each diagnostic stream.">
+      <DetSection title="What's included" desc="Everything the single telemetry switch governs.">
         <div className="det-card" style={{ padding: "4px 18px" }}>
-          <div className="det-toggle-row">
-            <div className="det-toggle-row__body">
-              <div className="det-toggle-row__title">Crash reports</div>
-              <div className="det-toggle-row__desc">Stack traces and app version when something crashes. No file paths.</div>
+          {streams.map((s) => (
+            <div key={s.title} className="det-toggle-row">
+              <div className="det-toggle-row__body">
+                <div className="det-toggle-row__title">{s.title}</div>
+                <div className="det-toggle-row__desc">{s.desc}</div>
+              </div>
             </div>
-            <SwitchSP on={crashes} onChange={setCrashes} ariaLabel="Crashes"/>
-          </div>
-          <div className="det-toggle-row">
-            <div className="det-toggle-row__body">
-              <div className="det-toggle-row__title">Performance metrics</div>
-              <div className="det-toggle-row__desc">Render time, scroll smoothness, search latency. Aggregated across all users.</div>
-            </div>
-            <SwitchSP on={perf} onChange={setPerf} ariaLabel="Perf"/>
-          </div>
-          <div className="det-toggle-row">
-            <div className="det-toggle-row__body">
-              <div className="det-toggle-row__title">Feature usage</div>
-              <div className="det-toggle-row__desc">Which screens you visit. Helps prioritize what to improve.</div>
-            </div>
-            <SwitchSP on={usage} onChange={setUsage} ariaLabel="Usage"/>
-          </div>
-        </div>
-      </DetSection>
-    </>
-  );
-}
-
-// ---------- AI Models ----------
-function ModelsPage() {
-  const list = [
-    { id: "vision",  name: "vision-base",       desc: "Image classification & embeddings",     on: true,  size: "210 MB" },
-    { id: "summary", name: "text-summary-mini", desc: "One-line caption generator",            on: true,  size: "84 MB"  },
-    { id: "face",    name: "face-embed-v2",     desc: "Face detection and grouping",           on: true,  size: "62 MB"  },
-    { id: "ocr",     name: "ocr-fast",          desc: "Read text in screenshots and documents",on: false, size: "118 MB" },
-    { id: "audio",   name: "audio-transcribe",  desc: "Transcribe video soundtracks",          on: false, size: "240 MB" },
-  ];
-  const [m, setM] = useStateSP(Object.fromEntries(list.map(x => [x.id, x.on])));
-  return (
-    <DetSection title="Models" desc="Toggle individual capabilities. Disabling a model frees its space and stops new processing.">
-      <div className="det-card" style={{ padding: "4px 20px" }}>
-        {list.map(x => (
-          <div key={x.id} className="model-row-v3">
-            <div className="model-row-v3__body">
-              <div className="model-row-v3__name">{x.name}</div>
-              <div className="model-row-v3__desc">{x.desc} · <span className="mono">{x.size}</span></div>
-            </div>
-            <SwitchSP on={!!m[x.id]} onChange={() => setM(s => ({ ...s, [x.id]: !s[x.id] }))} ariaLabel={x.name}/>
-          </div>
-        ))}
-      </div>
-    </DetSection>
-  );
-}
-
-// ---------- AI usage ----------
-function AIUsagePage() {
-  const qc = useQueryClient();
-  const [busy, setBusy] = useStateSP(false);
-  const [videosBusy, setVideosBusy] = useStateSP(false);
-  const [visionBusy, setVisionBusy] = useStateSP(false);
-  const [embedBusy, setEmbedBusy] = useStateSP(false);
-  const reprocess = async () => {
-    if (busy) return;
-    if (!window.confirm("Re-run summarization on every image in your library? This uses your local Florence-2 + Qwen2.5 models and can take several minutes.")) return;
-    setBusy(true);
-    try {
-      const r = await backfillSummaries(500, true);
-      toast.success(`Queued ${r.queued} files for re-summarization.`);
-      // Invalidate file lists so the UI shows the loading skeleton on
-      // affected cards as the worker churns through them.
-      qc.invalidateQueries({ queryKey: ["files"] });
-    } catch (e) {
-      toast.error(e?.detail || "Could not start re-summarize.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  // Video-only variant. Same `backfill-summaries` endpoint with
-  // `category=video` so it routes through the worker's transcode-
-  // aware summarizer (multi-keyframe + Qwen aggregation) without
-  // also re-running on every image. Useful after a video-summary
-  // upgrade or when the user knows their existing video rows have
-  // stale "Video file" stubs.
-  const reprocessVideos = async () => {
-    if (videosBusy) return;
-    if (!window.confirm("Re-run video summarization on every video in your library? Each video gets 4 keyframes captioned and aggregated — typically 5-30 s per video on GPU.")) return;
-    setVideosBusy(true);
-    try {
-      const r = await backfillSummaries(500, true, "video");
-      if (r.queued === 0) {
-        toast("No videos to re-summarize.");
-      } else {
-        toast.success(`Queued ${r.queued} video${r.queued === 1 ? "" : "s"} for re-summarization.`);
-      }
-      qc.invalidateQueries({ queryKey: ["files"] });
-    } catch (e) {
-      toast.error(e?.detail || "Could not start video re-summarize.");
-    } finally {
-      setVideosBusy(false);
-    }
-  };
-  // Compute the CLIP text-space embedding for every summary that has
-  // one but no `summary_clip_embedding`. New summaries get encoded
-  // inline by the worker; this is the one-shot for rows that
-  // pre-date the column. Cheap (~10 ms / row on GPU) and synchronous
-  // — the toast tells the user how many were filled.
-  const embedSummaries = async () => {
-    if (embedBusy) return;
-    setEmbedBusy(true);
-    try {
-      const r = await backfillSummaryEmbeddings(2000);
-      if (r.filled === 0 && r.eligible === 0) {
-        toast("Every summary already has an embedding.");
-      } else if (r.filled === 0) {
-        toast.error(`Found ${r.eligible} eligible rows but none could be embedded — check server logs.`);
-      } else {
-        toast.success(`Embedded ${r.filled} of ${r.eligible} summaries.`);
-      }
-    } catch (e) {
-      toast.error(e?.detail || "Could not start embedding backfill.");
-    } finally {
-      setEmbedBusy(false);
-    }
-  };
-  const reclassify = async () => {
-    if (visionBusy) return;
-    setVisionBusy(true);
-    try {
-      const r = await backfillVision(500);
-      if (r.processed > 0) {
-        toast.success(`Reclassified ${r.processed} image${r.processed === 1 ? "" : "s"} — gallery filters should populate now.`);
-      } else if (r.examined === 0) {
-        toast.success("Every image already has scene + content metadata.");
-      } else {
-        toast.error("Reclassification ran but produced no results. Check server logs.");
-      }
-      // Facets feed the filter chip choices — invalidate so new
-      // scene_label / content_type / indoor_outdoor values render
-      // immediately.
-      qc.invalidateQueries({ queryKey: ["facets"] });
-      qc.invalidateQueries({ queryKey: ["files"] });
-    } catch (e) {
-      toast.error(e?.detail || "Could not reclassify.");
-    } finally {
-      setVisionBusy(false);
-    }
-  };
-  return (
-    <>
-      <DetSection title="How AI is used">
-        <DetExplain>
-          AI runs on encrypted blobs in your account. Embeddings and summaries are stored alongside your files — nothing is sent to third-party services.
-        </DetExplain>
-      </DetSection>
-
-      <DetSection
-        title="Library maintenance"
-        desc="Re-run the summarizer or scene/content classifier over your library. Cloud-synced (Google Drive) images skip vision at upload — reclassifying populates scene labels so the gallery filter chips become useful. The video pass samples 4 keyframes per clip and aggregates them through the LLM rewriter — typically 5-30 s per video on GPU."
-      >
-        <div className="det-card" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button className="btn btn--secondary" onClick={reprocess} disabled={busy}>
-            <Icon name="refresh" size={12}/> {busy ? "Queueing…" : "Reprocess summaries"}
-          </button>
-          <button className="btn btn--secondary" onClick={reprocessVideos} disabled={videosBusy}>
-            <Icon name="video" size={12}/> {videosBusy ? "Queueing…" : "Re-summarize videos"}
-          </button>
-          <button className="btn btn--secondary" onClick={reclassify} disabled={visionBusy}>
-            <Icon name="sparkles" size={12}/> {visionBusy ? "Classifying…" : "Reclassify images (filters)"}
-          </button>
-          <button className="btn btn--secondary" onClick={embedSummaries} disabled={embedBusy}>
-            <Icon name="search" size={12}/> {embedBusy ? "Embedding…" : "Backfill search embeddings"}
-          </button>
+          ))}
         </div>
       </DetSection>
     </>
@@ -1248,7 +1002,7 @@ const STORAGE_COLORS = {
 };
 function StoragePage() {
   const qc = useQueryClient();
-  const { data } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["storage"],
     queryFn: getStorageUsage,
     staleTime: 30_000,
@@ -1385,6 +1139,21 @@ function StoragePage() {
     quotaBand === "crit" ? "var(--danger)" :
     quotaBand === "warn" ? "var(--warning, #f59e0b)" :
     "var(--ink-3)";
+
+  // First paint before /storage/usage resolves: show a calm skeleton
+  // instead of a bar full of zeros + "0 B of 0 B".
+  if (isLoading && !data) {
+    return (
+      <DetSection title="Storage used">
+        <div className="det-card">
+          <div className="set-skel" style={{ height: 12, borderRadius: 6, marginBottom: 16 }}/>
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="set-skel set-skel--line" style={{ width: `${80 - i * 10}%` }}/>
+          ))}
+        </div>
+      </DetSection>
+    );
+  }
 
   return (
     <>
@@ -1725,202 +1494,14 @@ function BytesRow({ icon, tone, title, desc, bytes, pct, action }) {
   );
 }
 
-// ---------- Activity log ----------
-//
-// All labeling/tone/relative-time formatting lives in `activity-labels.js`
-// so this expanded panel and the in-modal mini-list (account.jsx) render
-// the same strings. No local declarations here.
-function ActivityLogPage() {
-  const { data: events, isLoading } = useQuery({
-    queryKey: ["account-activity"],
-    queryFn: () => getAccountActivity(50),
-    staleTime: 30_000,
-  });
-  return (
-    <DetSection title="Recent activity" desc="Sign-ins, uploads, consent changes, and deletes on your account.">
-      <div className="det-card" style={{ padding: "10px 20px 16px" }}>
-        {isLoading ? (
-          <div style={{ color: "var(--ink-3)", fontSize: 13 }}>Loading…</div>
-        ) : (events && events.length > 0) ? (
-          <div className="activity-timeline">
-            {events.map((e) => (
-              <div key={e.id} className="activity-item" data-tone={activityTone(e.action)}>
-                <div className="activity-item__what">{activityLabel(e.action, e.details)}</div>
-                <div className="activity-item__when">{activityWhen(e.created_at)}</div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ color: "var(--ink-3)", fontSize: 13 }}>No recent activity yet.</div>
-        )}
-      </div>
-    </DetSection>
-  );
-}
-
-// ---------- Trash ----------
-function TrashPage({ onBack }) {
-  const [confirm, setConfirm] = useStateSP(false);
-  const [busy, setBusy] = useStateSP(false);
-  const qc = useQueryClient();
-  const { data: trash } = useQuery({
-    queryKey: ["account-trash"],
-    queryFn: getAccountTrash,
-    staleTime: 30_000,
-  });
-  const count = trash?.count ?? 0;
-  const bytes = trash?.total_bytes ?? 0;
-  const handleEmpty = async () => {
-    setBusy(true);
-    try {
-      const r = await emptyAccountTrash();
-      toast.success(`Permanently deleted ${r.deleted} item${r.deleted === 1 ? "" : "s"}.`);
-      qc.invalidateQueries({ queryKey: ["account-trash"] });
-      qc.invalidateQueries({ queryKey: ["files"] });
-      qc.invalidateQueries({ queryKey: ["storage"] });
-      onBack?.();
-    } catch (e) {
-      toast.error(e?.detail || "Could not empty trash");
-    } finally {
-      setBusy(false);
-      setConfirm(false);
-    }
-  };
-  return (
-    <>
-      <DetSection title="Trash">
-        <div className="stat-grid">
-          <StatTile label="Items in trash" value={String(count)} sub={count > 0 ? "auto-deleted in 30 days" : "nothing here right now"}/>
-          <StatTile label="Total size"     value={fmtBytes(bytes)} sub={count > 0 ? "will free on empty" : "—"}/>
-        </div>
-      </DetSection>
-
-      <DetSection title="What happens">
-        <DetExplain>
-          Items in trash are kept for 30 days, then permanently deleted. Until then, you can restore any of them. Emptying trash now bypasses the 30-day window.
-        </DetExplain>
-      </DetSection>
-
-      <div className="det-danger">
-        <div className="det-danger__title">Empty trash now</div>
-        <div className="det-danger__desc">
-          {count > 0
-            ? `Permanently removes ${count} item${count === 1 ? "" : "s"} totalling ${fmtBytes(bytes)}. This can't be undone.`
-            : "Trash is already empty."}
-        </div>
-        {confirm ? (
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn btn--primary" style={{ background: "#cc2f26" }}
-                    disabled={busy}
-                    onClick={handleEmpty}>
-              {busy ? "Deleting…" : "Yes, permanently delete"}
-            </button>
-            <button className="btn btn--ghost" onClick={() => setConfirm(false)} disabled={busy}>Cancel</button>
-          </div>
-        ) : (
-          <button className="btn btn--secondary" style={{ color: "var(--danger)" }}
-                  onClick={() => setConfirm(true)} disabled={count === 0}>Empty trash…</button>
-        )}
-      </div>
-    </>
-  );
-}
-
-// ---------- Notifications: per-event channel matrix (kept) ----------
-function NotifMatrix({ emailNotif, setEmailNotif, pushNotif, setPushNotif }) {
-  const events = [
-    { id: "signin",  label: "New sign-in",        desc: "Unrecognized device or location" },
-    { id: "upload",  label: "Upload complete",    desc: "Bulk uploads, exports, transfers" },
-    { id: "share",   label: "Shared with you",    desc: "Someone sent you a file or album" },
-    { id: "storage", label: "Storage warning",    desc: "Approaching plan limit" },
-    { id: "ai",      label: "AI processing done", desc: "Summaries, captions, face groups" },
-  ];
-  const [matrix, setMatrix] = useStateSP({
-    signin:  { email: true,  push: true  },
-    upload:  { email: false, push: true  },
-    share:   { email: true,  push: false },
-    storage: { email: true,  push: false },
-    ai:      { email: false, push: false },
-  });
-  const tog = (id, ch) => setMatrix(m => ({ ...m, [id]: { ...m[id], [ch]: !m[id][ch] } }));
-
-  return (
-    <>
-      <div className="applist__label" style={{ marginTop: 0 }}>Channels</div>
-      <div className="applist">
-        <div className="applist__row">
-          <div className="applist__row-icon" data-tone="red"><Icon name="bell" size={14}/></div>
-          <div className="applist__row-body">
-            <div className="applist__row-title">Email</div>
-            <div className="applist__row-desc">Sent to alex@example.com</div>
-          </div>
-          <SwitchSP on={emailNotif} onChange={setEmailNotif} ariaLabel="Email"/>
-        </div>
-        <div className="applist__row">
-          <div className="applist__row-icon" data-tone="orange"><Icon name="bell" size={14}/></div>
-          <div className="applist__row-body">
-            <div className="applist__row-title">Push (browser)</div>
-            <div className="applist__row-desc">{pushNotif ? "Allowed in this browser" : "Click to grant browser permission"}</div>
-          </div>
-          <SwitchSP on={pushNotif} onChange={setPushNotif} ariaLabel="Push"/>
-        </div>
-      </div>
-
-      <div className="applist__label">What to notify me about</div>
-      <div className="notif-matrix">
-        <div className="notif-matrix__head">
-          <div></div>
-          <div>Email</div>
-          <div>Push</div>
-        </div>
-        {events.map(e => (
-          <div key={e.id} className="notif-matrix__row">
-            <div>
-              <div className="notif-matrix__title">{e.label}</div>
-              <div className="notif-matrix__desc">{e.desc}</div>
-            </div>
-            <div><SwitchSP on={matrix[e.id].email && emailNotif} onChange={() => tog(e.id, "email")} disabled={!emailNotif} ariaLabel={`${e.label} email`}/></div>
-            <div><SwitchSP on={matrix[e.id].push && pushNotif} onChange={() => tog(e.id, "push")} disabled={!pushNotif} ariaLabel={`${e.label} push`}/></div>
-          </div>
-        ))}
-      </div>
-
-      <div className="applist__label">Quiet hours</div>
-      <div className="applist">
-        <div className="applist__row">
-          <div className="applist__row-icon" data-tone="indigo"><Icon name="moon" size={14}/></div>
-          <div className="applist__row-body">
-            <div className="applist__row-title">Mute notifications between</div>
-            <div className="applist__row-desc">No alerts during these hours, even urgent ones</div>
-          </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5 }}>
-            <input className="input" type="time" defaultValue="22:00" style={{ width: 96 }}/>
-            <span style={{ color: "var(--ink-3)" }}>to</span>
-            <input className="input" type="time" defaultValue="07:00" style={{ width: 96 }}/>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
 // Re-export with the names account.jsx expects (the prototype mixed
 // "Page" and "Panel" suffixes — we normalize on Panel for callers).
 export {
   PasswordPage as PasswordChangePanel,
-  TwoFactorPage as TwoFactorPanel,
-  DevicesPage as SessionsPanel,
-  PlanPage as PlanPanel,
-  InvoicesPage as InvoicesPanel,
   FaceDetailPage as FaceDetailPanel,
   LocationDetailPage as LocationDetailPanel,
   TelemetryDetailPage as TelemetryDetailPanel,
-  ModelsPage as ModelsPanel,
-  AIUsagePage as AIUsagePanel,
   StoragePage as StorageBreakdownPanel,
-  ActivityLogPage as ActivityLogPanel,
-  TrashPage as TrashPanel,
-  NotifMatrix,
 };
 
 // Minimal SecurityPanel — the prototype referenced this but never defined it.
@@ -2002,7 +1583,11 @@ export function NotificationsPanel() {
         </div>
       </div>
       {isLoading ? (
-        <div style={{ color: "var(--ink-3)", padding: 20 }}>Loading…</div>
+        <div className="set-skel-group">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="set-skel set-skel--row"/>
+          ))}
+        </div>
       ) : (
         <>
           <Collapsible label="Channels" defaultOpen count={(data?.kinds || []).length} id="notif-channels">

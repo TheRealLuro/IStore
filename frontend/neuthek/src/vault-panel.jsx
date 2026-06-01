@@ -16,6 +16,7 @@ import toast from "react-hot-toast";
 
 import { Icon } from "./icons.jsx";
 import { Modal, ModalClose } from "./primitives.jsx";
+import { safeHref } from "./safe-href.js";
 
 import {
   getVaultMeta,
@@ -74,6 +75,11 @@ import {
   touchVault,
   useVaultUnlocked,
 } from "@/vault/session";
+import {
+  isImportableExt,
+  parseImportableFile,
+  MAX_IMPORT_TEXT_BYTES,
+} from "./vault-import.js";
 
 // VLT-8 — bring the account keypair into the live session after the master
 // key is available. If the vault has a keypair, unwrap its private key; if it
@@ -135,6 +141,107 @@ function generatePassword(len = 20) {
   return out;
 }
 
+// ---- payment-card helpers (client-side; all formatting/detection local) ----
+
+// Detect a card brand from the leading digits (IIN/BIN ranges). Returns a
+// human label, or "" when it can't be confidently determined. Used for the
+// brand badge + grouping; it's a hint, not validation.
+function detectCardBrand(number) {
+  const n = String(number || "").replace(/\D/g, "");
+  if (!n) return "";
+  if (/^4/.test(n)) return "Visa";
+  // Mastercard: 51–55, or the 2221–2720 range.
+  if (/^5[1-5]/.test(n) || /^2(2[2-9]|[3-6]\d|7[01]|720)/.test(n)) return "Mastercard";
+  if (/^3[47]/.test(n)) return "Amex";
+  if (/^3(0[0-5]|[68])/.test(n)) return "Diners Club";
+  if (/^6(011|5|4[4-9])/.test(n) || /^622(12[6-9]|1[3-9]\d|[2-8]\d\d|9([01]\d|2[0-5]))/.test(n))
+    return "Discover";
+  if (/^35(2[89]|[3-8]\d)/.test(n)) return "JCB";
+  if (/^(50|5[6-9]|6[0-9])/.test(n)) return "Maestro";
+  if (/^62/.test(n)) return "UnionPay";
+  return "";
+}
+
+// Group a card number for display: Amex is 4-6-5, everything else 4-4-4-4…
+// Operates on the digits only; preserves nothing else. Empty in → empty out.
+function formatCardNumber(number) {
+  const n = String(number || "").replace(/\D/g, "");
+  if (!n) return "";
+  const amex = /^3[47]/.test(n);
+  if (amex) {
+    return [n.slice(0, 4), n.slice(4, 10), n.slice(10, 15)].filter(Boolean).join(" ");
+  }
+  return n.match(/.{1,4}/g)?.join(" ") || n;
+}
+
+// Format an MM/YY expiry as the user types: keep digits, insert a "/" after
+// the month. Clamps to 4 digits (MMYY).
+function formatExpiry(value) {
+  const d = String(value || "").replace(/\D/g, "").slice(0, 4);
+  if (d.length <= 2) return d;
+  return `${d.slice(0, 2)} / ${d.slice(2)}`;
+}
+
+// Last 4 digits of a card number, for the masked row subtitle.
+function cardLast4(number) {
+  const n = String(number || "").replace(/\D/g, "");
+  return n.length >= 4 ? n.slice(-4) : "";
+}
+
+// Row subtitle for a payment card: "Brand · •••• 4242", falling back to the
+// stored brand or the cardholder when there's no number.
+function cardRowSub(d = {}) {
+  const brand = d.brand || detectCardBrand(d.number);
+  const last4 = cardLast4(d.number);
+  if (last4) return [brand || "Card", `•••• ${last4}`].filter(Boolean).join(" · ");
+  return brand || d.cardholder || "Card";
+}
+
+// ---- SSH key helpers (client-side; pure string inspection, no crypto) ----
+
+// Infer the key type from the key text (private OR public). Recognizes the
+// OpenSSH public-key prefix and the PEM header families. Returns one of
+// ed25519 | rsa | ecdsa | dsa, or "" when undetermined.
+function inferSshKeyType(privateKey = "", publicKey = "") {
+  const pub = String(publicKey || "");
+  const priv = String(privateKey || "");
+  const blob = `${pub}\n${priv}`;
+  if (/ssh-ed25519|BEGIN OPENSSH PRIVATE KEY/i.test(blob) && /ed25519/i.test(blob))
+    return "ed25519";
+  if (/ssh-ed25519/i.test(pub)) return "ed25519";
+  if (/ecdsa-sha2-/i.test(pub) || /BEGIN EC PRIVATE KEY/i.test(priv)) return "ecdsa";
+  if (/ssh-dss/i.test(pub) || /BEGIN DSA PRIVATE KEY/i.test(priv)) return "dsa";
+  if (/ssh-rsa/i.test(pub) || /BEGIN RSA PRIVATE KEY/i.test(priv)) return "rsa";
+  // OpenSSH-format private keys don't expose the algo in the header; fall back
+  // to the public key's algorithm token if present.
+  const m = pub.match(/^(ssh-[a-z0-9]+|ecdsa-sha2-[a-z0-9-]+)/i);
+  if (m) {
+    if (/ed25519/i.test(m[1])) return "ed25519";
+    if (/ecdsa/i.test(m[1])) return "ecdsa";
+    if (/dss/i.test(m[1])) return "dsa";
+    if (/rsa/i.test(m[1])) return "rsa";
+  }
+  return "";
+}
+
+const SSH_KEY_TYPES = ["ed25519", "rsa", "ecdsa", "dsa"];
+
+// Mask a (possibly multiline) secret for display while keeping a hint of its
+// shape: non-whitespace runs become bullets, line breaks/spaces are kept. Used
+// for the private-key textarea + detail viewer when not revealed.
+function maskSecret(text) {
+  return String(text || "").replace(/\S/g, "•");
+}
+
+// Identity-document types offered in the `id` kind picker.
+const ID_DOC_TYPES = [
+  "Passport",
+  "Driver’s license",
+  "National ID",
+  "Residence permit",
+  "Other",
+];
+
 async function copyToClipboard(text, label = "Copied") {
   try {
     await navigator.clipboard.writeText(text);
@@ -181,7 +288,10 @@ const KIND_META = {
   password: { icon: "key", label: "Password", placeholder: "e.g. GitHub" },
   note: { icon: "document", label: "Note", placeholder: "e.g. Recovery codes" },
   seed: { icon: "shield", label: "Seed phrase", placeholder: "e.g. Ledger backup" },
-  card: { icon: "contact", label: "Card / ID", placeholder: "e.g. Visa ending 4242" },
+  card: { icon: "contact", label: "Card", placeholder: "e.g. Visa ending 4242" },
+  id: { icon: "contact", label: "ID document", placeholder: "e.g. Passport" },
+  ssh_key: { icon: "key", label: "SSH key", placeholder: "e.g. server@host" },
+  contact: { icon: "user", label: "Contact", placeholder: "e.g. Jane Doe" },
 };
 
 // Map a MIME type / filename to one of our existing Icon names.
@@ -860,7 +970,12 @@ function VaultHome() {
     if (searching) {
       list = list.filter((i) => {
         const d = i.data || {};
-        return [d.title, d.username, d.url]
+        // Contacts also match on name / org / first email so they're findable.
+        const contactBits =
+          i.kind === "contact"
+            ? [d.fullName, d.org, (d.emails || [])[0]?.value]
+            : [];
+        return [d.title, d.username, d.url, ...contactBits]
           .filter(Boolean)
           .some((s) => String(s).toLowerCase().includes(q));
       });
@@ -902,7 +1017,50 @@ function VaultHome() {
     }
   };
 
-  // Encrypt + upload each picked file into the current folder.
+  // VLT-7 — attempt a STRUCTURED import of a data file: parse it CLIENT-SIDE
+  // and, for each record, encrypt + create the matching secure item (contact /
+  // card / password / note). Returns the number of items imported, or null
+  // when the file isn't a structured-data file we should auto-import (the
+  // caller then falls back to a normal encrypted file upload). All parsing is
+  // local; only ciphertext is sent — zero-knowledge is preserved exactly as in
+  // the manual Add flow (same encryptItem + createVaultItem path).
+  const importStructuredFile = async (file, key, t) => {
+    if (!isImportableExt(file.name)) return null;
+    // Only read small files as text; a large "data file" is better stored as
+    // an encrypted file than exploded into items.
+    if (file.size > MAX_IMPORT_TEXT_BYTES) return null;
+    let text;
+    try {
+      text = await file.text();
+    } catch {
+      return null;
+    }
+    const records = parseImportableFile(file.name, text);
+    if (!records || records.length === 0) return null;
+
+    let imported = 0;
+    for (const rec of records) {
+      // Encrypt on this device, then send only (nonce, ciphertext) — the
+      // server never sees the contact/login/card/note plaintext.
+      const sealed = await encryptItem(key, rec.data);
+      await createVaultItem({
+        kind: rec.kind,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+        folder_id: currentFolder,
+      });
+      imported++;
+      if (records.length > 1) {
+        toast.loading(`Importing ${file.name}… ${imported}/${records.length}`, { id: t });
+      }
+    }
+    return imported;
+  };
+
+  // Encrypt + upload each picked file into the current folder. Structured data
+  // files (vCard / password export / card JSON / note text) auto-import into
+  // the matching secure item types; everything else uploads as an encrypted
+  // file, unchanged.
   const onPickFiles = async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
@@ -922,6 +1080,18 @@ function VaultHome() {
       setUploading((n) => n + 1);
       const t = toast.loading(`Encrypting ${file.name}…`);
       try {
+        // 1) Try structured import first (contacts / logins / cards / notes).
+        const imported = await importStructuredFile(file, key, t);
+        if (imported != null) {
+          toast.success(
+            imported === 1
+              ? `Imported 1 item from ${file.name}`
+              : `Imported ${imported} items from ${file.name}`,
+            { id: t },
+          );
+          continue;
+        }
+        // 2) Fall back to the normal encrypted-file upload path.
         const fileKey = randomFileKey();
         const { blob, meta } = await encryptFile(file, fileKey);
         const wrapped_key = await sealToPublicKey(pub, fileKey);
@@ -1161,7 +1331,23 @@ function VaultHome() {
                         ? formatBytes(item.size_bytes) || "File"
                         : item.kind === "password"
                           ? item.data?.username || item.data?.url || "Password"
-                          : KIND_META[item.kind]?.label || "Secure item"}
+                          : item.kind === "contact"
+                            ? item.data?.org ||
+                              (item.data?.emails || [])[0]?.value ||
+                              (item.data?.phones || [])[0]?.value ||
+                              "Contact"
+                            : item.kind === "card"
+                              ? cardRowSub(item.data)
+                              : item.kind === "id"
+                                ? item.data?.docType ||
+                                  item.data?.issuer ||
+                                  "ID document"
+                                : item.kind === "ssh_key"
+                                  ? item.data?.host ||
+                                    (item.data?.keyType
+                                      ? `SSH · ${item.data.keyType}`
+                                      : "SSH key")
+                                  : KIND_META[item.kind]?.label || "Secure item"}
                     </span>
                   </span>
                 </button>
@@ -1481,12 +1667,41 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
   // seed phrase
   const [phrase, setPhrase] = useState("");
   const [passphrase, setPassphrase] = useState("");
-  // card / id
+  // card (payment)
   const [cardholder, setCardholder] = useState("");
   const [cardNumber, setCardNumber] = useState("");
   const [expiry, setExpiry] = useState("");
   const [cvv, setCvv] = useState("");
   const [brand, setBrand] = useState("");
+  const [cardZip, setCardZip] = useState("");
+  const [cardNote, setCardNote] = useState("");
+  const [showCvv, setShowCvv] = useState(false);
+  const [showCardNum, setShowCardNum] = useState(false);
+  // id (identity document)
+  const [idDocType, setIdDocType] = useState(ID_DOC_TYPES[0]);
+  const [idFullName, setIdFullName] = useState("");
+  const [idNumber, setIdNumber] = useState("");
+  const [idIssuer, setIdIssuer] = useState("");
+  const [idIssued, setIdIssued] = useState("");
+  const [idExpires, setIdExpires] = useState("");
+  const [idDob, setIdDob] = useState("");
+  const [idNote, setIdNote] = useState("");
+  const [showIdNumber, setShowIdNumber] = useState(false);
+  // ssh key
+  const [sshHost, setSshHost] = useState("");
+  const [sshKeyType, setSshKeyType] = useState("");
+  const [sshPrivate, setSshPrivate] = useState("");
+  const [sshPublic, setSshPublic] = useState("");
+  const [sshPassphrase, setSshPassphrase] = useState("");
+  const [showSshPrivate, setShowSshPrivate] = useState(false);
+  // contact
+  const [cOrg, setCOrg] = useState("");
+  const [cRole, setCRole] = useState("");
+  const [cPhone, setCPhone] = useState("");
+  const [cEmail, setCEmail] = useState("");
+  const [cAddr, setCAddr] = useState("");
+  const [cUrl, setCUrl] = useState("");
+  const [cNote, setCNote] = useState("");
 
   const reset = () => {
     setKind("password");
@@ -1495,6 +1710,12 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
     setBody("");
     setPhrase(""); setPassphrase("");
     setCardholder(""); setCardNumber(""); setExpiry(""); setCvv(""); setBrand("");
+    setCardZip(""); setCardNote(""); setShowCvv(false); setShowCardNum(false);
+    setIdDocType(ID_DOC_TYPES[0]); setIdFullName(""); setIdNumber(""); setIdIssuer("");
+    setIdIssued(""); setIdExpires(""); setIdDob(""); setIdNote(""); setShowIdNumber(false);
+    setSshHost(""); setSshKeyType(""); setSshPrivate(""); setSshPublic("");
+    setSshPassphrase(""); setShowSshPrivate(false);
+    setCOrg(""); setCRole(""); setCPhone(""); setCEmail(""); setCAddr(""); setCUrl(""); setCNote("");
   };
 
   const close = () => {
@@ -1513,7 +1734,11 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
           ? !!phrase.trim()
           : kind === "card"
             ? !!cardNumber.trim()
-            : true);
+            : kind === "id"
+              ? !!idNumber.trim() || !!idFullName.trim()
+              : kind === "ssh_key"
+                ? !!sshPrivate.trim() || !!sshPublic.trim()
+                : true); // contact needs only a title (the full name)
 
   const buildPlaintext = () => {
     const t = title.trim();
@@ -1522,7 +1747,57 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
     // Seed + card carry only their structured secret fields — no freeform
     // notes, which keeps anything potentially shareable free of stray context.
     if (kind === "seed") return { title: t, phrase: phrase.trim().replace(/\s+/g, " "), passphrase };
-    if (kind === "card") return { title: t, cardholder, number: cardNumber, expiry, cvv, brand };
+    if (kind === "card") {
+      // Store the bare digits (the viewer formats on display, mirroring the
+      // import path); auto-fill the brand from the number when left blank.
+      const number = cardNumber.replace(/\D/g, "");
+      return {
+        title: t,
+        cardholder,
+        number,
+        expiry,
+        cvv,
+        brand: brand.trim() || detectCardBrand(number),
+        zip: cardZip,
+        note: cardNote,
+      };
+    }
+    if (kind === "id")
+      return {
+        title: t,
+        docType: idDocType,
+        fullName: idFullName,
+        number: idNumber,
+        issuer: idIssuer,
+        issued: idIssued,
+        expires: idExpires,
+        dob: idDob,
+        note: idNote,
+      };
+    if (kind === "ssh_key")
+      return {
+        title: t,
+        host: sshHost,
+        keyType: sshKeyType || inferSshKeyType(sshPrivate, sshPublic),
+        privateKey: sshPrivate,
+        publicKey: sshPublic,
+        passphrase: sshPassphrase,
+      };
+    if (kind === "contact")
+      // Mirror the imported-contact shape exactly (single-entry arrays) so the
+      // manual + import paths produce identical, viewer-compatible items.
+      return {
+        title: t,
+        fullName: t,
+        org: cOrg,
+        role: cRole,
+        phones: cPhone.trim() ? [{ value: cPhone.trim(), label: "" }] : [],
+        emails: cEmail.trim() ? [{ value: cEmail.trim(), label: "" }] : [],
+        addresses: cAddr.trim() ? [{ value: cAddr.trim(), label: "" }] : [],
+        urls: cUrl.trim() ? [{ value: cUrl.trim(), label: "" }] : [],
+        birthday: "",
+        note: cNote,
+      };
     return { title: t };
   };
 
@@ -1702,55 +1977,363 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
         {kind === "card" && (
           <>
             <label className="vault-field">
-              <span>Cardholder / name</span>
+              <span>Cardholder name</span>
               <input
                 className="input"
                 value={cardholder}
                 autoComplete="off"
                 onChange={(e) => setCardholder(e.target.value)}
+                placeholder="Name on card"
               />
             </label>
             <label className="vault-field">
-              <span>Number</span>
-              <input
-                className="input vault-mono"
-                value={cardNumber}
-                inputMode="numeric"
-                autoComplete="off"
-                onChange={(e) => setCardNumber(e.target.value)}
-                placeholder="Card or ID number"
-              />
+              <span>Card number</span>
+              <div className="vault-field__input">
+                <input
+                  className="input vault-mono"
+                  type={showCardNum ? "text" : "password"}
+                  value={showCardNum ? formatCardNumber(cardNumber) : cardNumber}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  // Keep only digits in state (max 19, the PAN ceiling); the
+                  // viewer/field formats on display.
+                  onChange={(e) =>
+                    setCardNumber(e.target.value.replace(/\D/g, "").slice(0, 19))
+                  }
+                  placeholder="1234 5678 9012 3456"
+                />
+                {(brand || detectCardBrand(cardNumber)) && (
+                  <span className="vault-card-brand">
+                    {brand || detectCardBrand(cardNumber)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="btn-icon"
+                  onClick={() => setShowCardNum((v) => !v)}
+                  aria-label={showCardNum ? "Hide" : "Show"}
+                >
+                  <Icon name={showCardNum ? "eyeOff" : "eye"} size={14} />
+                </button>
+              </div>
             </label>
             <div className="vault-field-row">
               <label className="vault-field">
                 <span>Expiry</span>
                 <input
-                  className="input"
+                  className="input vault-mono"
                   value={expiry}
+                  inputMode="numeric"
                   autoComplete="off"
-                  onChange={(e) => setExpiry(e.target.value)}
+                  onChange={(e) => setExpiry(formatExpiry(e.target.value))}
                   placeholder="MM / YY"
                 />
               </label>
               <label className="vault-field">
-                <span>CVV / code</span>
+                <span>CVV</span>
+                <div className="vault-field__input">
+                  <input
+                    className="input vault-mono"
+                    type={showCvv ? "text" : "password"}
+                    value={cvv}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    onChange={(e) =>
+                      setCvv(e.target.value.replace(/\D/g, "").slice(0, 4))
+                    }
+                    placeholder="•••"
+                  />
+                  <button
+                    type="button"
+                    className="btn-icon"
+                    onClick={() => setShowCvv((v) => !v)}
+                    aria-label={showCvv ? "Hide" : "Show"}
+                  >
+                    <Icon name={showCvv ? "eyeOff" : "eye"} size={14} />
+                  </button>
+                </div>
+              </label>
+            </div>
+            <div className="vault-field-row">
+              <label className="vault-field">
+                <span>Brand</span>
                 <input
-                  className="input vault-mono"
-                  value={cvv}
-                  inputMode="numeric"
+                  className="input"
+                  value={brand}
                   autoComplete="off"
-                  onChange={(e) => setCvv(e.target.value)}
+                  onChange={(e) => setBrand(e.target.value)}
+                  placeholder={detectCardBrand(cardNumber) || "Visa, Mastercard…"}
+                />
+              </label>
+              <label className="vault-field">
+                <span>Billing ZIP</span>
+                <input
+                  className="input"
+                  value={cardZip}
+                  autoComplete="off"
+                  onChange={(e) => setCardZip(e.target.value)}
                 />
               </label>
             </div>
             <label className="vault-field">
-              <span>Type / issuer (optional)</span>
+              <span>Note (optional)</span>
+              <textarea
+                className="input"
+                rows={2}
+                value={cardNote}
+                onChange={(e) => setCardNote(e.target.value)}
+              />
+            </label>
+          </>
+        )}
+
+        {kind === "id" && (
+          <>
+            <label className="vault-field">
+              <span>Document type</span>
+              <select
+                className="input"
+                value={idDocType}
+                onChange={(e) => setIdDocType(e.target.value)}
+              >
+                {ID_DOC_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="vault-field">
+              <span>Full name</span>
               <input
                 className="input"
-                value={brand}
+                value={idFullName}
                 autoComplete="off"
-                onChange={(e) => setBrand(e.target.value)}
-                placeholder="e.g. Visa, Passport, Driver’s license"
+                onChange={(e) => setIdFullName(e.target.value)}
+                placeholder="As printed on the document"
+              />
+            </label>
+            <label className="vault-field">
+              <span>Document number</span>
+              <div className="vault-field__input">
+                <input
+                  className="input vault-mono"
+                  type={showIdNumber ? "text" : "password"}
+                  value={idNumber}
+                  autoComplete="off"
+                  onChange={(e) => setIdNumber(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-icon"
+                  onClick={() => setShowIdNumber((v) => !v)}
+                  aria-label={showIdNumber ? "Hide" : "Show"}
+                >
+                  <Icon name={showIdNumber ? "eyeOff" : "eye"} size={14} />
+                </button>
+              </div>
+            </label>
+            <label className="vault-field">
+              <span>Country / issuer</span>
+              <input
+                className="input"
+                value={idIssuer}
+                autoComplete="off"
+                onChange={(e) => setIdIssuer(e.target.value)}
+                placeholder="e.g. United Kingdom · DVLA"
+              />
+            </label>
+            <div className="vault-field-row">
+              <label className="vault-field">
+                <span>Issue date</span>
+                <input
+                  className="input"
+                  type="date"
+                  value={idIssued}
+                  onChange={(e) => setIdIssued(e.target.value)}
+                />
+              </label>
+              <label className="vault-field">
+                <span>Expiry date</span>
+                <input
+                  className="input"
+                  type="date"
+                  value={idExpires}
+                  onChange={(e) => setIdExpires(e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="vault-field">
+              <span>Date of birth</span>
+              <input
+                className="input"
+                type="date"
+                value={idDob}
+                onChange={(e) => setIdDob(e.target.value)}
+              />
+            </label>
+            <label className="vault-field">
+              <span>Note (optional)</span>
+              <textarea
+                className="input"
+                rows={2}
+                value={idNote}
+                onChange={(e) => setIdNote(e.target.value)}
+              />
+            </label>
+          </>
+        )}
+
+        {kind === "ssh_key" && (
+          <>
+            <div className="vault-field-row">
+              <label className="vault-field">
+                <span>Host / label (optional)</span>
+                <input
+                  className="input"
+                  value={sshHost}
+                  autoComplete="off"
+                  onChange={(e) => setSshHost(e.target.value)}
+                  placeholder="e.g. deploy@prod"
+                />
+              </label>
+              <label className="vault-field">
+                <span>Key type</span>
+                <select
+                  className="input"
+                  value={sshKeyType || inferSshKeyType(sshPrivate, sshPublic)}
+                  onChange={(e) => setSshKeyType(e.target.value)}
+                >
+                  <option value="">Auto-detect</option>
+                  {SSH_KEY_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="vault-field">
+              <span>Private key</span>
+              <textarea
+                className="input vault-mono"
+                rows={5}
+                spellCheck={false}
+                autoComplete="off"
+                // Mask when hidden, but NEVER write the bullet mask back into
+                // state: editing is only accepted while revealed (focusing
+                // reveals), so the stored value stays the real key.
+                value={showSshPrivate ? sshPrivate : maskSecret(sshPrivate)}
+                onChange={(e) => {
+                  if (showSshPrivate) setSshPrivate(e.target.value);
+                }}
+                onFocus={() => setShowSshPrivate(true)}
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              />
+              <button
+                type="button"
+                className="vault-link"
+                style={{ alignSelf: "flex-start" }}
+                onClick={() => setShowSshPrivate((v) => !v)}
+              >
+                {showSshPrivate ? "Hide private key" : "Show private key"}
+              </button>
+            </label>
+            <label className="vault-field">
+              <span>Public key (optional)</span>
+              <textarea
+                className="input vault-mono"
+                rows={3}
+                spellCheck={false}
+                autoComplete="off"
+                value={sshPublic}
+                onChange={(e) => setSshPublic(e.target.value)}
+                placeholder="ssh-ed25519 AAAA… user@host"
+              />
+            </label>
+            <label className="vault-field">
+              <span>Passphrase (optional)</span>
+              <input
+                className="input"
+                type="password"
+                value={sshPassphrase}
+                autoComplete="off"
+                onChange={(e) => setSshPassphrase(e.target.value)}
+                placeholder="Key passphrase, if it has one"
+              />
+            </label>
+          </>
+        )}
+
+        {kind === "contact" && (
+          <>
+            <div className="vault-field-row">
+              <label className="vault-field">
+                <span>Organization</span>
+                <input
+                  className="input"
+                  value={cOrg}
+                  autoComplete="off"
+                  onChange={(e) => setCOrg(e.target.value)}
+                />
+              </label>
+              <label className="vault-field">
+                <span>Role / title</span>
+                <input
+                  className="input"
+                  value={cRole}
+                  autoComplete="off"
+                  onChange={(e) => setCRole(e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="vault-field">
+              <span>Phone</span>
+              <input
+                className="input"
+                value={cPhone}
+                inputMode="tel"
+                autoComplete="off"
+                onChange={(e) => setCPhone(e.target.value)}
+              />
+            </label>
+            <label className="vault-field">
+              <span>Email</span>
+              <input
+                className="input"
+                value={cEmail}
+                inputMode="email"
+                autoComplete="off"
+                onChange={(e) => setCEmail(e.target.value)}
+              />
+            </label>
+            <label className="vault-field">
+              <span>Address</span>
+              <input
+                className="input"
+                value={cAddr}
+                autoComplete="off"
+                onChange={(e) => setCAddr(e.target.value)}
+              />
+            </label>
+            <label className="vault-field">
+              <span>Website</span>
+              <input
+                className="input"
+                value={cUrl}
+                inputMode="url"
+                autoComplete="off"
+                onChange={(e) => setCUrl(e.target.value)}
+                placeholder="https://"
+              />
+            </label>
+            <label className="vault-field">
+              <span>Note</span>
+              <textarea
+                className="input"
+                rows={2}
+                value={cNote}
+                onChange={(e) => setCNote(e.target.value)}
               />
             </label>
           </>
@@ -1860,29 +2443,13 @@ function ItemDetailModal({ item, onClose, onDelete, onShare, onSaved }) {
             onReveal={toggleReveal}
           />
         ) : item.kind === "card" ? (
-          <>
-            <DetailRow label="Cardholder / name" value={d.cardholder} copyable />
-            <DetailRow
-              label="Number"
-              value={d.number}
-              secret
-              reveal={reveal}
-              onReveal={toggleReveal}
-              copyable
-              mono
-            />
-            <DetailRow label="Expiry" value={d.expiry} />
-            <DetailRow
-              label="CVV / code"
-              value={d.cvv}
-              secret
-              reveal={reveal}
-              onReveal={toggleReveal}
-              copyable
-              mono
-            />
-            <DetailRow label="Type / issuer" value={d.brand} />
-          </>
+          <CardView d={d} reveal={reveal} onReveal={toggleReveal} />
+        ) : item.kind === "id" ? (
+          <IdView d={d} reveal={reveal} onReveal={toggleReveal} />
+        ) : item.kind === "ssh_key" ? (
+          <SshKeyView d={d} reveal={reveal} onReveal={toggleReveal} />
+        ) : item.kind === "contact" ? (
+          <ContactView d={d} />
         ) : (
           <DetailRow label="" value={d.body} multiline />
         )}
@@ -2063,26 +2630,222 @@ function EditFields({ kind, draft, setDraft }) {
       <>
         {titleField}
         <label className="vault-field">
-          <span>Cardholder / name</span>
+          <span>Cardholder name</span>
           <input className="input" value={draft?.cardholder || ""} onChange={set("cardholder")} />
         </label>
         <label className="vault-field">
-          <span>Number</span>
-          <input className="input vault-mono" value={draft?.number || ""} onChange={set("number")} />
+          <span>Card number</span>
+          <input
+            className="input vault-mono"
+            value={draft?.number || ""}
+            inputMode="numeric"
+            onChange={(e) =>
+              setDraft((dd) => {
+                const number = e.target.value.replace(/\D/g, "").slice(0, 19);
+                // Keep the auto-brand in step unless the user typed a custom one.
+                const prevAuto = detectCardBrand(dd?.number);
+                const brand =
+                  !dd?.brand || dd.brand === prevAuto ? detectCardBrand(number) : dd.brand;
+                return { ...dd, number, brand };
+              })
+            }
+          />
         </label>
         <div className="vault-field-row">
           <label className="vault-field">
             <span>Expiry</span>
-            <input className="input" value={draft?.expiry || ""} onChange={set("expiry")} />
+            <input
+              className="input vault-mono"
+              value={draft?.expiry || ""}
+              onChange={(e) => setDraft((dd) => ({ ...dd, expiry: formatExpiry(e.target.value) }))}
+            />
           </label>
           <label className="vault-field">
-            <span>CVV / code</span>
-            <input className="input vault-mono" value={draft?.cvv || ""} onChange={set("cvv")} />
+            <span>CVV</span>
+            <input
+              className="input vault-mono"
+              value={draft?.cvv || ""}
+              inputMode="numeric"
+              onChange={(e) =>
+                setDraft((dd) => ({ ...dd, cvv: e.target.value.replace(/\D/g, "").slice(0, 4) }))
+              }
+            />
+          </label>
+        </div>
+        <div className="vault-field-row">
+          <label className="vault-field">
+            <span>Brand</span>
+            <input className="input" value={draft?.brand || ""} onChange={set("brand")} />
+          </label>
+          <label className="vault-field">
+            <span>Billing ZIP</span>
+            <input className="input" value={draft?.zip || ""} onChange={set("zip")} />
           </label>
         </div>
         <label className="vault-field">
-          <span>Type / issuer (optional)</span>
-          <input className="input" value={draft?.brand || ""} onChange={set("brand")} />
+          <span>Note</span>
+          <textarea className="input" rows={2} value={draft?.note || ""} onChange={set("note")} />
+        </label>
+      </>
+    );
+  }
+
+  if (kind === "id") {
+    return (
+      <>
+        {titleField}
+        <label className="vault-field">
+          <span>Document type</span>
+          <select className="input" value={draft?.docType || ID_DOC_TYPES[0]} onChange={set("docType")}>
+            {ID_DOC_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="vault-field">
+          <span>Full name</span>
+          <input className="input" value={draft?.fullName || ""} onChange={set("fullName")} />
+        </label>
+        <label className="vault-field">
+          <span>Document number</span>
+          <input className="input vault-mono" value={draft?.number || ""} onChange={set("number")} />
+        </label>
+        <label className="vault-field">
+          <span>Country / issuer</span>
+          <input className="input" value={draft?.issuer || ""} onChange={set("issuer")} />
+        </label>
+        <div className="vault-field-row">
+          <label className="vault-field">
+            <span>Issue date</span>
+            <input className="input" type="date" value={draft?.issued || ""} onChange={set("issued")} />
+          </label>
+          <label className="vault-field">
+            <span>Expiry date</span>
+            <input className="input" type="date" value={draft?.expires || ""} onChange={set("expires")} />
+          </label>
+        </div>
+        <label className="vault-field">
+          <span>Date of birth</span>
+          <input className="input" type="date" value={draft?.dob || ""} onChange={set("dob")} />
+        </label>
+        <label className="vault-field">
+          <span>Note</span>
+          <textarea className="input" rows={2} value={draft?.note || ""} onChange={set("note")} />
+        </label>
+      </>
+    );
+  }
+
+  if (kind === "ssh_key") {
+    return (
+      <>
+        {titleField}
+        <div className="vault-field-row">
+          <label className="vault-field">
+            <span>Host / label</span>
+            <input className="input" value={draft?.host || ""} onChange={set("host")} />
+          </label>
+          <label className="vault-field">
+            <span>Key type</span>
+            <select
+              className="input"
+              value={draft?.keyType || inferSshKeyType(draft?.privateKey, draft?.publicKey)}
+              onChange={set("keyType")}
+            >
+              <option value="">Auto-detect</option>
+              {SSH_KEY_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <label className="vault-field">
+          <span>Private key</span>
+          <textarea
+            className="input vault-mono"
+            rows={5}
+            spellCheck={false}
+            value={draft?.privateKey || ""}
+            onChange={set("privateKey")}
+          />
+        </label>
+        <label className="vault-field">
+          <span>Public key</span>
+          <textarea
+            className="input vault-mono"
+            rows={3}
+            spellCheck={false}
+            value={draft?.publicKey || ""}
+            onChange={set("publicKey")}
+          />
+        </label>
+        <label className="vault-field">
+          <span>Passphrase</span>
+          <input className="input" value={draft?.passphrase || ""} onChange={set("passphrase")} />
+        </label>
+      </>
+    );
+  }
+
+  if (kind === "contact") {
+    // Edit the first entry of each list field (the common case for an imported
+    // or hand-added contact). Multi-entry imported contacts keep their extra
+    // entries intact: we only rewrite index 0, preserving the rest of the array
+    // and any non-edited fields (birthday, etc.).
+    const first = (k) => (draft?.[k] || [])[0]?.value || "";
+    const setFirst = (k) => (e) =>
+      setDraft((dd) => {
+        const arr = Array.isArray(dd?.[k]) ? [...dd[k]] : [];
+        const v = e.target.value;
+        if (arr.length === 0) arr.push({ value: v, label: "" });
+        else arr[0] = { ...arr[0], value: v };
+        return { ...dd, [k]: arr };
+      });
+    return (
+      <>
+        <label className="vault-field">
+          <span>Name</span>
+          <input
+            className="input"
+            value={draft?.title || ""}
+            onChange={(e) =>
+              setDraft((dd) => ({ ...dd, title: e.target.value, fullName: e.target.value }))
+            }
+          />
+        </label>
+        <div className="vault-field-row">
+          <label className="vault-field">
+            <span>Organization</span>
+            <input className="input" value={draft?.org || ""} onChange={set("org")} />
+          </label>
+          <label className="vault-field">
+            <span>Role / title</span>
+            <input className="input" value={draft?.role || ""} onChange={set("role")} />
+          </label>
+        </div>
+        <label className="vault-field">
+          <span>Phone</span>
+          <input className="input" value={first("phones")} onChange={setFirst("phones")} />
+        </label>
+        <label className="vault-field">
+          <span>Email</span>
+          <input className="input" value={first("emails")} onChange={setFirst("emails")} />
+        </label>
+        <label className="vault-field">
+          <span>Address</span>
+          <input className="input" value={first("addresses")} onChange={setFirst("addresses")} />
+        </label>
+        <label className="vault-field">
+          <span>Website</span>
+          <input className="input" value={first("urls")} onChange={setFirst("urls")} />
+        </label>
+        <label className="vault-field">
+          <span>Note</span>
+          <textarea className="input" rows={2} value={draft?.note || ""} onChange={set("note")} />
         </label>
       </>
     );
@@ -2161,6 +2924,233 @@ function DetailRow({ label, value, secret, reveal, onReveal, copyable, link, mul
         </div>
       </div>
     </div>
+  );
+}
+
+// Read-only viewer for a `contact` vault item (imported from a .vcf, or added
+// by hand). Renders one labelled, copyable row per datum — names, org/role,
+// every phone / email / address / url, birthday, and a note — reusing the same
+// DetailRow chrome as the other secure-item viewers. URLs are scheme-gated via
+// safeHref (a vCard could contain `javascript:` / `data:`); an unsafe URL shows
+// as plain, non-clickable text so it's still visible but inert.
+function ContactView({ d }) {
+  const c = d || {};
+  const fmtLabeled = (label, extra) =>
+    [label, extra].map((s) => (s ? String(s) : "")).filter(Boolean).join(" · ");
+  const list = (arr, baseLabel) => (Array.isArray(arr) ? arr : []);
+  return (
+    <div className="vault-contact">
+      {(c.org || c.role) && (
+        <DetailRow label="Organization" value={fmtLabeled(c.org, c.role)} copyable />
+      )}
+      {list(c.phones).map((p, i) => (
+        <DetailRow
+          key={`ph${i}`}
+          label={fmtLabeled("Phone", p?.label)}
+          value={p?.value}
+          copyable
+        />
+      ))}
+      {list(c.emails).map((e, i) => (
+        <DetailRow
+          key={`em${i}`}
+          label={fmtLabeled("Email", e?.label)}
+          value={e?.value}
+          copyable
+        />
+      ))}
+      {list(c.addresses).map((a, i) => (
+        <DetailRow
+          key={`ad${i}`}
+          label={fmtLabeled("Address", a?.label)}
+          value={a?.value}
+          multiline
+        />
+      ))}
+      {list(c.urls).map((u, i) => {
+        // Render the SANITIZED href as both the link target and the shown text
+        // (DetailRow's `link` branch uses the value as the href). An unsafe
+        // scheme → href is null → show the raw value as inert, non-clickable
+        // text so it's still visible but can't execute.
+        const href = safeHref(u?.value);
+        return (
+          <DetailRow
+            key={`ur${i}`}
+            label={fmtLabeled("Website", u?.label)}
+            value={href || u?.value}
+            link={!!href}
+            copyable
+          />
+        );
+      })}
+      {c.birthday && <DetailRow label="Birthday" value={c.birthday} />}
+      {c.note && <DetailRow label="Note" value={c.note} multiline />}
+    </div>
+  );
+}
+
+// A reveal-gated, copyable MULTILINE secret block (monospace). Used for an SSH
+// private key, where the value is large and spans many lines. While hidden it
+// shows a shape-preserving bullet mask; revealing shows the raw text in a
+// scrollable pre. Copy works regardless of reveal state.
+function SecretBlock({ label, value, reveal, onReveal, warn }) {
+  if (!value) return null;
+  return (
+    <div className="vault-detail-row">
+      <div className="vault-secretblock__bar">
+        <span className="vault-detail-row__label">{label}</span>
+        <div className="vault-detail-row__actions">
+          <button
+            className="btn-icon"
+            onClick={onReveal}
+            aria-label={reveal ? "Hide" : "Reveal"}
+            title={reveal ? "Hide" : "Reveal"}
+          >
+            <Icon name={reveal ? "eyeOff" : "eye"} size={14} />
+          </button>
+          <button
+            className="btn-icon"
+            onClick={() => {
+              touchVault();
+              copyToClipboard(value, label || "Copied");
+            }}
+            aria-label="Copy"
+            title="Copy"
+          >
+            <Icon name="copy" size={14} />
+          </button>
+        </div>
+      </div>
+      {warn && (
+        <div className="vault-warn vault-warn--tight" style={{ marginBottom: 8 }}>
+          <Icon name="alert" size={15} />
+          <div>
+            Never share your private key. Anyone who has it can authenticate as
+            you.
+          </div>
+        </div>
+      )}
+      <pre className="vault-detail-row__pre vault-mono vault-secretblock__pre">
+        {reveal ? value : maskSecret(value)}
+      </pre>
+    </div>
+  );
+}
+
+// Read-only viewer for a `card` (payment) item: cardholder, masked number
+// shown grouped, expiry, masked CVV, brand (auto-detected if not stored), zip,
+// note. Reveal toggles the number + CVV together.
+function CardView({ d, reveal, onReveal }) {
+  const c = d || {};
+  const brand = c.brand || detectCardBrand(c.number);
+  return (
+    <>
+      <DetailRow label="Cardholder" value={c.cardholder} copyable />
+      <DetailRow
+        label="Card number"
+        value={reveal ? formatCardNumber(c.number) : c.number}
+        secret
+        reveal={reveal}
+        onReveal={onReveal}
+        copyable
+        mono
+      />
+      <div className="vault-field-row">
+        <DetailRow label="Expiry" value={c.expiry} mono />
+        <DetailRow
+          label="CVV"
+          value={c.cvv}
+          secret
+          reveal={reveal}
+          onReveal={onReveal}
+          copyable
+          mono
+        />
+      </div>
+      <DetailRow label="Brand" value={brand} />
+      <DetailRow label="Billing ZIP" value={c.zip} copyable />
+      <DetailRow label="Note" value={c.note} multiline />
+    </>
+  );
+}
+
+// Read-only viewer for an `id` (identity document) item.
+function IdView({ d, reveal, onReveal }) {
+  const c = d || {};
+  return (
+    <>
+      <DetailRow label="Document type" value={c.docType} />
+      <DetailRow label="Full name" value={c.fullName} copyable />
+      <DetailRow
+        label="Document number"
+        value={c.number}
+        secret
+        reveal={reveal}
+        onReveal={onReveal}
+        copyable
+        mono
+      />
+      <DetailRow label="Country / issuer" value={c.issuer} copyable />
+      <div className="vault-field-row">
+        <DetailRow label="Issued" value={c.issued} />
+        <DetailRow label="Expires" value={c.expires} />
+      </div>
+      <DetailRow label="Date of birth" value={c.dob} />
+      <DetailRow label="Note" value={c.note} multiline />
+    </>
+  );
+}
+
+// Read-only viewer for an `ssh_key` item: host/label + key type, the public
+// key (copyable, not secret), the masked private key (reveal-gated), and the
+// optional passphrase (secret).
+function SshKeyView({ d, reveal, onReveal }) {
+  const c = d || {};
+  const keyType = c.keyType || inferSshKeyType(c.privateKey, c.publicKey);
+  return (
+    <>
+      <DetailRow label="Host / label" value={c.host} copyable />
+      <DetailRow label="Key type" value={keyType} />
+      <SecretBlock
+        label="Private key"
+        value={c.privateKey}
+        reveal={reveal}
+        onReveal={onReveal}
+        warn
+      />
+      {c.publicKey ? (
+        <div className="vault-detail-row">
+          <div className="vault-secretblock__bar">
+            <span className="vault-detail-row__label">Public key</span>
+            <div className="vault-detail-row__actions">
+              <button
+                className="btn-icon"
+                onClick={() => {
+                  touchVault();
+                  copyToClipboard(c.publicKey, "Public key");
+                }}
+                aria-label="Copy"
+                title="Copy"
+              >
+                <Icon name="copy" size={14} />
+              </button>
+            </div>
+          </div>
+          <pre className="vault-detail-row__pre vault-mono vault-secretblock__pre">
+            {c.publicKey}
+          </pre>
+        </div>
+      ) : null}
+      <DetailRow
+        label="Passphrase"
+        value={c.passphrase}
+        secret
+        reveal={reveal}
+        onReveal={onReveal}
+        copyable
+        mono
+      />
+    </>
   );
 }
 
@@ -2667,13 +3657,13 @@ function SharedSecureViewer({ open, kind, data, ownerEmail, onClose }) {
           ) : kind === "seed" ? (
             <SeedView phrase={d.phrase} passphrase={d.passphrase} reveal={reveal} onReveal={toggle} />
           ) : kind === "card" ? (
-            <>
-              <DetailRow label="Cardholder / name" value={d.cardholder} copyable />
-              <DetailRow label="Number" value={d.number} secret reveal={reveal} onReveal={toggle} copyable mono />
-              <DetailRow label="Expiry" value={d.expiry} />
-              <DetailRow label="CVV / code" value={d.cvv} secret reveal={reveal} onReveal={toggle} copyable mono />
-              <DetailRow label="Type / issuer" value={d.brand} />
-            </>
+            <CardView d={d} reveal={reveal} onReveal={toggle} />
+          ) : kind === "id" ? (
+            <IdView d={d} reveal={reveal} onReveal={toggle} />
+          ) : kind === "ssh_key" ? (
+            <SshKeyView d={d} reveal={reveal} onReveal={toggle} />
+          ) : kind === "contact" ? (
+            <ContactView d={d} />
           ) : (
             <DetailRow label="" value={d.body} multiline />
           )}

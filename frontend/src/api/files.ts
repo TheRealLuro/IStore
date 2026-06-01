@@ -8,6 +8,9 @@ export interface ListFilters {
   category?: FileCategory | "all";
   person?: string | null;
   personId?: number | null;
+  /** Unlabeled face cluster id — drills into a detected-but-unnamed
+   *  group's source images before the user names it. */
+  clusterId?: number | null;
   /** null = root view, uuid = inside that folder, "ALL" sentinel = ignore filter (search). */
   folderId?: string | null | "ALL";
   /** Cross-folder "starred only" view (overrides folderId server-side). */
@@ -32,6 +35,13 @@ export interface ListFilters {
   /** §C9 — `ISO,ISO` date range against COALESCE(image_geo.taken_at,
    *  uploaded_at). Either side can be empty for open-ended. */
   takenBetween?: string | null;
+  /** Library-wide sort key, applied server-side in the SQL ORDER BY so
+   *  the ordering spans every page/offset (numbered pagination would
+   *  otherwise only sort the current 20-row window). One of:
+   *  recent | oldest | name_asc | name_desc | size_desc | size_asc.
+   *  Omit (or "recent") for newest-first, the default. Ignored by the
+   *  starred / trashed views, which keep their own fixed ordering. */
+  sort?: string | null;
   limit?: number;
   offset?: number;
 }
@@ -82,6 +92,9 @@ export async function listFiles(filters: ListFilters = {}): Promise<FileItem[]> 
   if (filters.personId != null) {
     params.set("person_id", String(filters.personId));
   }
+  if (filters.clusterId != null) {
+    params.set("cluster_id", String(filters.clusterId));
+  }
   if (filters.trashed) {
     params.set("trashed", "true");
   } else if (filters.starred) {
@@ -102,6 +115,9 @@ export async function listFiles(filters: ListFilters = {}): Promise<FileItem[]> 
   if (filters.tag) params.set("tag", filters.tag);
   if (filters.near) params.set("near", filters.near);
   if (filters.takenBetween) params.set("taken_between", filters.takenBetween);
+  // Library-wide sort — server orders across all pages. Skip emitting the
+  // default ("recent") so the cache key / URL stay clean for the common case.
+  if (filters.sort && filters.sort !== "recent") params.set("sort", filters.sort);
   // Default behavior (no folderId / no starred) returns root images only —
   // same as passing folder_id=null on the backend.
   if (filters.limit) params.set("limit", String(filters.limit));
@@ -336,6 +352,48 @@ export interface PdfMeta {
  *  preview modal page stack to reserve scroll height before rasters land. */
 export const getPdfMeta = (id: string): Promise<PdfMeta> =>
   api.get<PdfMeta>(`/images/${id}/pdf-meta`);
+
+// ---------- Spreadsheet (.xlsx / .xls / .ods) live cell grid ----------
+// The backend parses every workbook format server-side (python-calamine)
+// into normalized JSON so the in-app spreadsheet viewer renders real
+// cells for legacy .xls / .ods too, not just .xlsx. Each cell is
+// pre-formatted: `v` is the display string, `t` a type tag the viewer
+// uses for alignment + styling.
+
+/** One spreadsheet cell. `t`: "s" text · "n" number · "d" date/time ·
+ *  "b" boolean · "e" formula error · "" empty. */
+export interface SheetCell {
+  v: string;
+  t: "s" | "n" | "d" | "b" | "e" | "";
+}
+
+export interface SheetData {
+  name: string;
+  /** Row-major, padded to `shown_cols` width. */
+  rows: SheetCell[][];
+  /** TRUE dimensions before the server's per-sheet clip. */
+  n_rows: number;
+  n_cols: number;
+  /** What actually made it into `rows` (≤ 1000 × 100). */
+  shown_rows: number;
+  shown_cols: number;
+  /** True when clipped on either axis. */
+  truncated: boolean;
+}
+
+export interface SpreadsheetData {
+  sheets: SheetData[];
+  /** TRUE sheet count (the workbook may have more than we emit). */
+  sheet_count: number;
+  sheets_truncated: boolean;
+}
+
+/** Parse a stored workbook (.xlsx / .xls / .ods / .xlsm / .xlsb) into a
+ *  normalized cell grid. Owner-scoped + auth via the standard `api`
+ *  wrapper (same as `getPdfMeta`). 415 if the row isn't a spreadsheet,
+ *  422 if the bytes can't be read. */
+export const getSpreadsheet = (id: string): Promise<SpreadsheetData> =>
+  api.get<SpreadsheetData>(`/images/${id}/spreadsheet`);
 
 /** URL for a single rasterized PDF page. Hit via `useAuthedBlobUrl` so the
  *  JWT travels in the Authorization header (same as `originalUrl`).

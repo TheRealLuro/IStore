@@ -66,6 +66,23 @@ RUN /opt/venv/bin/pip install --no-cache-dir ".[cloud]" \
          /opt/venv/bin/pip install --no-cache-dir ".[ml]" ; \
        fi
 
+# Pre-download the NLTK corpora the ml pipeline needs so the FIRST
+# request doesn't pay the network round-trip (and so a network-isolated
+# runtime still works):
+#   - punkt_tab                          → sentence/word tokenizer
+#   - averaged_perceptron_tagger_eng     → POS tagger, used by
+#     `backend/summarize._extract_adjective_tags` to pull the
+#     descriptive adjectives that become a file's tags.
+#   - wordnet / omw-1.4                  → query-synonym expansion
+#     (backend/synonyms.py), previously relied on a lazy runtime
+#     download too.
+# Installed into the venv's nltk_data dir (/opt/venv/nltk_data is on
+# NLTK's default search path) and copied whole into the runtime stage.
+RUN if [ "$INSTALL_ML" = "1" ]; then \
+      /opt/venv/bin/python -m nltk.downloader -d /opt/venv/nltk_data \
+        punkt_tab averaged_perceptron_tagger_eng wordnet omw-1.4 ; \
+    fi
+
 
 # ---------- Stage 2: runtime ----------
 FROM python:3.12-slim AS runtime
@@ -85,11 +102,32 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #                    Bookworm's ffmpeg ships libx264 + built-in aac;
 #                    h264_nvenc is available when the ml-worker has
 #                    NVIDIA passthrough enabled per docker-compose.yml.
+#   libreoffice-*  — headless Office→PDF conversion for in-app document
+#                    viewing (backend/worker/main.py:_process_convert_office
+#                    runs `soffice --headless --convert-to pdf`). The
+#                    ml-worker renders docx/xlsx/pptx/odt/ods/odp/rtf/doc to
+#                    PDF so they flow through the existing PDF page viewer.
+#                    MINIMAL set — only the engine core + the three document
+#                    apps, NOT the `libreoffice` metapackage (which drags in
+#                    Base, Draw, Math, the whole GNOME/KDE integration stack,
+#                    ~1 GB more). `--no-install-recommends` keeps the JRE,
+#                    dictionaries, and clipart out:
+#                      libreoffice-core    shared headless engine + PDF export
+#                      libreoffice-writer  .docx/.doc/.odt/.rtf
+#                      libreoffice-calc     .xlsx/.xls/.ods
+#                      libreoffice-impress  .pptx/.ppt/.odp
+#                    Note: no Java (default-jre-headless) — basic Writer/
+#                    Calc/Impress → PDF export does not need it. A handful
+#                    of legacy spreadsheet features (some array formulas,
+#                    .xls macros) silently degrade without Java; add
+#                    default-jre-headless here if that ever matters.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          libpq5 curl ca-certificates unzip \
          libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
          ffmpeg \
+         libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
+         fonts-liberation fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # §C4.6 — Install rclone for Proton Drive + MEGA sync. Both services

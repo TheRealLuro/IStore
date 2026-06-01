@@ -1,4 +1,4 @@
-/* Aggregates the 13 neuthek stylesheets in their original load order. The
+/* Aggregates the neuthek stylesheets in their original load order. The
    files were authored as iterative refines on top of the base styles, so the
    order matters — each later sheet may override earlier rules. */
 @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap");
@@ -14,8 +14,15 @@
 @import "../styles-refine7.css";
 @import "../styles-settings-v2.css";
 @import "../styles-settings-v3.css";
+@import "../styles-settings-v4.css";
 @import "../styles-map4.css";
 @import "../styles-vault.css";
+@import "../styles-facechip.css";
+@import "../styles-face-modal.css";
+@import "../styles-markdown.css";
+@import "../styles-model3d.css";
+@import "../styles-spreadsheet.css";
+@import "../styles-viewers.css";
 
 /* Default Geist as the app font now that the inline `style="font-family"`
    on <body> in the prototype HTML is gone. */

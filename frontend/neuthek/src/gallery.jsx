@@ -25,6 +25,7 @@ import { TagPicker, tagChipStyle } from "./tag-picker.jsx";
 import { QuickTagInput } from "./quick-tag.jsx";
 import { ShareModal } from "./share-modal.jsx";
 import { fileTypeInfo } from "./file-types.js";
+import { languageIcon, LanguageIcon } from "./language-icons.jsx";
 import { API_BASE_URL } from "@/api/client";
 
 /** Fetch the folder-zip endpoint with a Bearer token, drop the
@@ -361,13 +362,21 @@ function FileRow({ f, selected, multiSelected, onClick, onMultiSelectToggle, onR
       </div>
       <div className="filerow__name">{f.name}</div>
       <div className="filerow__topic">
-        {f.topic ? (
+        {/* While a (re)summarize is in flight the `topic` field may still
+            hold the OLD text — show the shimmer placeholder regardless so
+            we never display stale AI output as if it were current. */}
+        {f.pendingSummary ? (
+          <span
+            className="skel skel--text"
+            style={{ width: 140, display: "inline-block" }}
+            aria-label="Generating summary"
+            title="Generating summary…"
+          />
+        ) : f.topic ? (
           <>
             <span className="kicker" style={{ marginRight: 6, fontSize: 9 }}>AI</span>
             {f.topic}
           </>
-        ) : f.pendingSummary ? (
-          <span className="skel skel--text" style={{ width: 140, display: "inline-block" }}/>
         ) : null}
       </div>
       <div className="filerow__when">{f.when}</div>
@@ -443,8 +452,15 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
           <div className="thumb-icon">
             {/* Prefer the file-type catalog (extension → glyph) so
                 video/audio/CSV/ICS/VCF files render the right icon
-                even when the backend has them grouped under "doc". */}
-            <Icon name={fileTypeInfo(f.ext).icon || TYPE_ICON[f.type] || "document"} size={32} strokeWidth={1.3}/>
+                even when the backend has them grouped under "doc".
+                Code files get a per-language line glyph instead of the
+                generic angle-brackets so the gallery reads as a cohesive
+                language family. */}
+            {fileTypeInfo(f.ext).kind === "code" ? (
+              <LanguageIcon name={languageIcon(f.ext)} size={32} strokeWidth={1.3}/>
+            ) : (
+              <Icon name={fileTypeInfo(f.ext).icon || TYPE_ICON[f.type] || "document"} size={32} strokeWidth={1.3}/>
+            )}
             <span className="mono" style={{ fontSize: 11 }}>{fileTypeInfo(f.ext).label || f.ext}</span>
           </div>
         )}
@@ -579,22 +595,25 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
             </span>
           </div>
         )}
-        {query && f.topic && (
+        {/* When summarization is still queued/running for a file, show a
+            shimmer placeholder in the same slot the AI topic occupies so
+            the gallery clearly signals "this card is waiting on AI" —
+            instead of looking like a card whose summary silently failed.
+            This wins over `f.topic` because that field may still hold the
+            OLD summary while a re-summarize is in flight; we must not show
+            stale text as current. Once `pendingSummary` clears, the real
+            topic shows (search mode only, to keep non-search cards tidy). */}
+        {f.pendingSummary ? (
+          <div className="card__summary" aria-label="Generating summary" title="Generating summary…">
+            <span className="kicker" style={{ marginRight: 6, fontSize: 9 }}>AI</span>
+            <span className="skel skel--text" style={{ width: "70%", display: "inline-block", verticalAlign: "middle" }}/>
+          </div>
+        ) : query && f.topic ? (
           <div className="card__summary">
             <span className="kicker" style={{ marginRight: 6, fontSize: 9 }}>AI</span>
             {highlight(f.topic)}
           </div>
-        )}
-        {/* When summarization is still queued/running for a file, show a
-            shimmer placeholder in the same slot the AI topic occupies so
-            the gallery clearly signals "this card is waiting on AI" —
-            instead of looking like a card whose summary silently failed. */}
-        {f.pendingSummary && !f.topic && (
-          <div className="card__summary" aria-label="Generating summary">
-            <span className="kicker" style={{ marginRight: 6, fontSize: 9 }}>AI</span>
-            <span className="skel skel--text" style={{ width: "70%", display: "inline-block", verticalAlign: "middle" }}/>
-          </div>
-        )}
+        ) : null}
       </div>
 
       {/* Quick-tag popover. Lighter than the full TagPicker — just one
@@ -623,12 +642,20 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
 }
 
 // File-type filter chips
-function TypeChips({ active, onChange, files }) {
+function TypeChips({ active, onChange, files, categoryCounts }) {
   // Order: real backend categories first (Photos / Videos / Audio /
   // Code / Documents), then forward-looking mock categories. The
-  // chip self-hides when no file of that type exists in the current
-  // batch (count === 0), so users on a docs-only library don't
-  // see Photos / Videos chips at all.
+  // chip self-hides when there's no file of that type.
+  //
+  // Counts are LIBRARY-WIDE (cross-folder) when `categoryCounts` is
+  // supplied — derived from /images/facets in the parent. This matters
+  // now that the gallery is paginated: deriving counts from `files`
+  // (just the current page of ≤20 rows) would make most chips read 0
+  // and self-hide, so you couldn't switch from the Photos pill to the
+  // Videos pill. The current-page derivation is kept as a fallback for
+  // the `code` pill (code is a `document`-category subset that facets
+  // don't count separately) and for any caller that doesn't pass
+  // cross-folder counts.
   //
   // 2026-05 — added `audio` + `code` chips. Audio files used to fall
   // through to "doc" in the frontend mapping; code files used to
@@ -645,11 +672,25 @@ function TypeChips({ active, onChange, files }) {
     { id: "gamesave", label: "Game saves",icon: "game" },
     { id: "iot",      label: "Home data", icon: "wifi" },
   ];
+  // Map the FE type-pill id → the cross-folder facet count when we have
+  // one. `doc` ⇒ the backend `document` category; the rest are 1:1.
+  const crossFolderCount = (id) => {
+    if (!categoryCounts) return null;
+    if (id === "doc") return categoryCounts.document ?? null;
+    return categoryCounts[id] ?? null;
+  };
   return (
     <div className="typechips">
       {types.map(t => {
-        const count = t.id === "all" ? files.length : files.filter(f => f.type === t.id).length;
-        if (t.id !== "all" && count === 0) return null;
+        const pageCount = t.id === "all"
+          ? files.length
+          : files.filter(f => f.type === t.id).length;
+        const xf = t.id === "all" ? null : crossFolderCount(t.id);
+        const count = xf != null ? xf : pageCount;
+        // Hide a non-active chip only when it truly has nothing to show.
+        // Keep the active chip visible even at 0 so the user can see
+        // what they're filtered to.
+        if (t.id !== "all" && count === 0 && active !== t.id) return null;
         return (
           <button key={t.id} className="typechip" data-active={active === t.id}
                   onClick={() => onChange(t.id)}>
@@ -817,7 +858,21 @@ function FolderCard({ folder, onEnter, onRequestRename, onRequestDelete }) {
 
 export function GalleryView({
   files, query, sort, sortDir = "desc", onSelect, selected,
+  // When true the `files` slice already arrived sorted from the server
+  // (the paged gallery passes the chosen sort to `listFiles` → SQL
+  // ORDER BY, so the order is library-wide across every page). In that
+  // mode the client-side comparator below is skipped: re-sorting only
+  // the current 20-row window can't reorder across pages and would in
+  // fact FIGHT the server order (e.g. its size key ignores rows that
+  // only have an original byte size). Views that still hand us a full
+  // unsorted array (none today, but kept for safety) leave this false
+  // and get the local sort.
+  serverSorted = false,
   showPeopleStrip = true, showFolders = true,
+  // Cross-folder per-category counts (from /images/facets), used by the
+  // type pills so they show library-wide totals rather than the current
+  // (paginated) page's row counts.
+  categoryCounts = null,
   typeFilter = "all", onTypeFilter, onRename,
   folderId = null, onEnterFolder,
   view = "gallery",
@@ -830,6 +885,14 @@ export function GalleryView({
   // "grid" (default tile cards) | "list" (compact bar rows). Driven
   // by the topbar view toggle.
   layoutMode = "grid",
+  // Numbered-pagination controls, plumbed from the App's paged query.
+  // `paginate` gates the whole control; when false (people picker,
+  // static lists) nothing renders and the grid behaves as before.
+  // `page` is 0-indexed; `totalCount` is the exact slice size when
+  // known (drives numbered pages) and null otherwise (Prev/Next with
+  // `hasNextFallback` deciding whether Next is live).
+  paginate = false, page = 0, pageSize = 20, onPageChange,
+  totalCount = null, hasNextFallback = false, isFetchingPage = false,
 }) {
   // §C1.3 — folders show in the all-files view AND under the
   // image/video/document type pills (each filtered by
@@ -855,7 +918,21 @@ export function GalleryView({
   const [shareTarget, setShareTarget] = useStateG(null);
   const filtered = useMemoG(() => {
     let list = files;
-    if (typeFilter !== "all") list = list.filter(f => f.type === typeFilter);
+    // Client-side type-pill filter. For non-search category views the
+    // parent already filters server-side (the list is exactly one
+    // category), so this is a no-op; it does real work only when a
+    // search is active (search hits span every category and the pill
+    // narrows them) or for the mock-only pills. The "doc" pill matches
+    // BOTH `doc` and `code` rows — code files are `category=document`
+    // server-side but get a distinct `code` FE type for their icon, so
+    // filtering strictly to `doc` would wrongly drop them from Documents.
+    if (typeFilter !== "all") {
+      list = list.filter(f =>
+        typeFilter === "doc"
+          ? (f.type === "doc" || f.type === "code")
+          : f.type === typeFilter,
+      );
+    }
     // When a search query is active the upstream already supplied
     // server-ranked semantic hits (CLIP cosine + FTS over summary,
     // topic, points, filename) — we preserve that order and only
@@ -864,10 +941,15 @@ export function GalleryView({
     // matches like "classroom" → a whiteboard photo whose summary
     // mentions "lecture room", which the server's CLIP pass surfaces
     // correctly.
-    // Search-result ordering (when `query` is set) is server-ranked by
-    // CLIP cosine + FTS — preserve it. Otherwise apply the topbar
-    // sort key + direction.
-    if (!query) {
+    // Ordering precedence:
+    //  1. A search query → server-ranked (CLIP cosine + FTS); preserve.
+    //  2. `serverSorted` → the paged gallery already applied the chosen
+    //     sort library-wide in SQL; preserve so paging stays consistent
+    //     across all pages (a client re-sort would only touch the
+    //     current 20 rows and disagree with the rest of the library).
+    //  3. Otherwise → apply the topbar sort key + direction client-side
+    //     (legacy path for any view that hands us a full unsorted array).
+    if (!query && !serverSorted) {
       const dir = sortDir === "asc" ? 1 : -1;
       const cmp = (() => {
         if (sort === "name") {
@@ -887,7 +969,7 @@ export function GalleryView({
       list = [...list].sort(cmp);
     }
     return list;
-  }, [files, query, sort, sortDir, typeFilter]);
+  }, [files, query, sort, sortDir, typeFilter, serverSorted]);
 
   // Real folders for the current scope (root or inside a folder).
   // §C1.3 — when the type pill is set to a category that matches a
@@ -927,7 +1009,7 @@ export function GalleryView({
 
   return (
     <div className="gallery">
-      {peopleFilter?.personId && (
+      {(peopleFilter?.personId || peopleFilter?.clusterId) && (
         <div style={{
           margin: "0 0 14px",
           padding: "8px 12px",
@@ -938,7 +1020,11 @@ export function GalleryView({
           fontSize: 13,
         }}>
           <Icon name="users" size={13}/>
-          <span>Photos of <strong>{peopleFilter.name || "this person"}</strong></span>
+          {peopleFilter?.personId ? (
+            <span>Photos of <strong>{peopleFilter.name || "this person"}</strong></span>
+          ) : (
+            <span>Photo(s) this <strong>unnamed person</strong> was found in — name them to group all their photos</span>
+          )}
           <span style={{ flex: 1 }}/>
           <button
             type="button"
@@ -949,7 +1035,7 @@ export function GalleryView({
           </button>
         </div>
       )}
-      <TypeChips active={typeFilter} onChange={onTypeFilter || (()=>{})} files={files}/>
+      <TypeChips active={typeFilter} onChange={onTypeFilter || (()=>{})} files={files} categoryCounts={categoryCounts}/>
 
       {isMockType && (
         <div
@@ -1016,6 +1102,22 @@ export function GalleryView({
 
       {!query && <div className="kicker" style={{ marginBottom: 10 }}>Files</div>}
 
+      {/* Top pager — same numbered nav as the bottom one, so on a
+          48-per-page gallery you can jump pages without scrolling to the
+          end first. Guarded on filtered.length so it never shows above an
+          empty state; Pagination itself returns null for a single page. */}
+      {paginate && filtered.length > 0 && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          totalCount={totalCount}
+          hasNextFallback={hasNextFallback}
+          isFetching={isFetchingPage}
+          currentPageLen={filtered.length}
+          onPageChange={onPageChange}
+        />
+      )}
+
       {filtered.length === 0 ? (
         query ? (
           <div className="empty">
@@ -1043,6 +1145,21 @@ export function GalleryView({
           onRename={onRename}
           onShare={setShareTarget}
           query={query}
+        />
+      )}
+      {/* Numbered page navigation (Google-style). Rendered below the
+          grid whenever pagination is enabled AND there's more than one
+          page worth of results. Reset-to-page-1-on-filter-change is
+          handled by the parent. */}
+      {paginate && (
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          totalCount={totalCount}
+          hasNextFallback={hasNextFallback}
+          isFetching={isFetchingPage}
+          currentPageLen={filtered.length}
+          onPageChange={onPageChange}
         />
       )}
       {/* Hoisted ShareModal — lives outside every card's DOM tree so
@@ -1402,6 +1519,158 @@ function MarqueeGrid({
         }}
       />
     </div>
+  );
+}
+
+// Numbered page navigation — Prev / 1 2 3 … N / Next, Google-style.
+//
+// `totalCount` (when known) yields an exact page count and the full
+// numbered strip with ellipsis collapsing for large sets. When
+// `totalCount` is null (a slice whose size we can't precompute, e.g.
+// the un-filtered root browse or a layered filter), we fall back to a
+// Prev/Next pair where Next is enabled iff `hasNextFallback` (the
+// current page came back full, so more rows probably exist). `page`
+// is 0-indexed everywhere; the labels render 1-indexed.
+function Pagination({
+  page, pageSize, totalCount, hasNextFallback, isFetching,
+  currentPageLen, onPageChange,
+}) {
+  const navRef = useRefG(null);
+  const go = (p) => {
+    if (typeof onPageChange !== "function") return;
+    if (p < 0) return;
+    onPageChange(p);
+    // Jump back to the top of whatever actually scrolls so the new page
+    // starts at the first card rather than mid-scroll. The gallery lives
+    // inside a scrollable `.main` column on most layouts (not the
+    // window), so walk up from the pager to the nearest scroll container
+    // and scroll THAT; fall back to the window when the page itself
+    // scrolls.
+    try {
+      window.requestAnimationFrame(() => {
+        let n = navRef.current?.parentElement;
+        while (n) {
+          const sy = getComputedStyle(n).overflowY;
+          if ((sy === "auto" || sy === "scroll") && n.scrollHeight > n.clientHeight) {
+            n.scrollTo({ top: 0, behavior: "smooth" });
+            return;
+          }
+          n = n.parentElement;
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    } catch { /* non-browser env */ }
+  };
+
+  // Exact-count path: build the numbered model with ellipsis.
+  if (totalCount != null) {
+    const pageCount = Math.max(1, Math.ceil(totalCount / pageSize));
+    // One page → nothing to navigate.
+    if (pageCount <= 1) return null;
+    const current = Math.min(page, pageCount - 1);
+    // Window of page numbers to show: first, last, and ±1 around the
+    // current page; gaps become a single ellipsis token. This is the
+    // "1 2 3 … 29" shape the user asked for.
+    const wanted = new Set([
+      0, pageCount - 1, current - 1, current, current + 1,
+    ]);
+    // Also keep page 2 / second-to-last visible when current is near an
+    // edge so the strip doesn't read "1 … 3" with an ellipsis hiding
+    // just one number.
+    if (current <= 2) { wanted.add(1); wanted.add(2); }
+    if (current >= pageCount - 3) { wanted.add(pageCount - 2); wanted.add(pageCount - 3); }
+    const nums = [...wanted].filter((n) => n >= 0 && n < pageCount).sort((a, b) => a - b);
+    const tokens = [];
+    let prev = -1;
+    for (const n of nums) {
+      if (prev !== -1 && n - prev > 1) tokens.push({ ellipsis: true, key: `e${n}` });
+      tokens.push({ n, key: `p${n}` });
+      prev = n;
+    }
+    const firstShown = current * pageSize + 1;
+    const lastShown = Math.min(totalCount, current * pageSize + pageSize);
+    return (
+      <nav className="pager" aria-label="Pagination" role="navigation" ref={navRef}>
+        <button
+          type="button"
+          className="pager__btn"
+          onClick={() => go(current - 1)}
+          disabled={current === 0 || isFetching}
+          aria-label="Previous page"
+        >
+          <Icon name="chevronLeft" size={13}/> Prev
+        </button>
+        <div className="pager__pages">
+          {tokens.map((t) =>
+            t.ellipsis ? (
+              <span key={t.key} className="pager__ellipsis" aria-hidden="true">…</span>
+            ) : (
+              <button
+                key={t.key}
+                type="button"
+                className="pager__page"
+                data-active={t.n === current}
+                aria-current={t.n === current ? "page" : undefined}
+                onClick={() => go(t.n)}
+                disabled={isFetching && t.n !== current}
+              >
+                {t.n + 1}
+              </button>
+            ),
+          )}
+        </div>
+        <button
+          type="button"
+          className="pager__btn"
+          onClick={() => go(current + 1)}
+          disabled={current >= pageCount - 1 || isFetching}
+          aria-label="Next page"
+        >
+          Next <Icon name="chevronRight" size={13}/>
+        </button>
+        <span className="pager__summary mono">
+          {firstShown}–{lastShown} of {totalCount}
+        </span>
+      </nav>
+    );
+  }
+
+  // Unknown-count fallback: Prev/Next only. Hide the control entirely on
+  // page 1 when there's no next page (single page of results).
+  const hasPrev = page > 0;
+  const hasNext = !!hasNextFallback;
+  if (!hasPrev && !hasNext) return null;
+  return (
+    <nav className="pager" aria-label="Pagination" role="navigation" ref={navRef}>
+      <button
+        type="button"
+        className="pager__btn"
+        onClick={() => go(page - 1)}
+        disabled={!hasPrev || isFetching}
+        aria-label="Previous page"
+      >
+        <Icon name="chevronLeft" size={13}/> Prev
+      </button>
+      <div className="pager__pages">
+        <span className="pager__page" data-active="true" aria-current="page">
+          {page + 1}
+        </span>
+      </div>
+      <button
+        type="button"
+        className="pager__btn"
+        onClick={() => go(page + 1)}
+        disabled={!hasNext || isFetching}
+        aria-label="Next page"
+      >
+        Next <Icon name="chevronRight" size={13}/>
+      </button>
+      {currentPageLen > 0 && (
+        <span className="pager__summary mono">
+          Page {page + 1}
+        </span>
+      )}
+    </nav>
   );
 }
 

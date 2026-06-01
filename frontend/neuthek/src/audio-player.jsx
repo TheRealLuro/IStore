@@ -22,7 +22,7 @@ function fmtTime(s) {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
-export function AudioPlayer({ fileId, fileName, fileExt }) {
+export function AudioPlayer({ fileId, fileName, fileExt, onClose }) {
   const [streamUrl, setStreamUrl] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -122,6 +122,17 @@ export function AudioPlayer({ fileId, fileName, fileExt }) {
 
   return (
     <div className="audio-player" onClick={(e) => e.stopPropagation()}>
+      {onClose && (
+        <button
+          type="button"
+          className="audio-player__close btn-icon"
+          onClick={onClose}
+          aria-label="Close"
+          title="Close"
+        >
+          <Icon name="x" size={16} />
+        </button>
+      )}
       <audio
         ref={audioRef}
         src={streamUrl || undefined}

@@ -137,6 +137,16 @@ class Image(Base):
     served_blob_key: Mapped[str] = mapped_column(Text, nullable=False)
     original_filename: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     thumbnail_blob_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Office-document → PDF conversion output (migration 0050). An Office
+    # file (docx/xlsx/pptx/odt/ods/odp/rtf/doc/…) is rendered to PDF by
+    # the ml-worker's `convert_office` job (headless LibreOffice) and the
+    # resulting PDF stored in the served bucket under this key. The
+    # existing PDF page-rasterization endpoints (`/pdf-meta`,
+    # `/pdf-page/{n}`) then serve pages from THIS blob instead of the raw
+    # original, so Office files reuse the same server-rasterized PDF
+    # viewer with zero new frontend viewer. NULL until conversion lands
+    # (or the file isn't an Office doc / conversion failed).
+    converted_pdf_blob_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     category: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default="image"
     )
@@ -385,6 +395,19 @@ class Folder(Base):
     status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status_color: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
+    # D4 — aggregate CLIP embedding for semantic folder search. An
+    # L2-normalised blend of the folder NAME (CLIP text encode) and the
+    # centroid of descendant images' summary_clip_embedding. Lets a query
+    # like "the trip to Mexico" match the folder, not just its photos.
+    # Recomputed on child add/move/delete + when a child summary lands;
+    # see backend/folder_embed.py. HNSW cosine index (migration 0049).
+    summary_clip_embedding: Mapped[Optional[list[float]]] = mapped_column(
+        Vector(768), nullable=True
+    )
+    embedding_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
     # Cloud-sync attribution. NULL on every folder the user made
     # manually through the UI; set on the synthesized "Google Drive"
     # root + every subfolder the sync worker mirrored from the
@@ -602,6 +625,46 @@ class Face(Base):
     quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RejectedFaceEmbedding(Base):
+    """Per-user "not a person" memory (migration 0051).
+
+    When the user marks a detected face cluster (or a single face) as a
+    false positive — something the detector mistook for a face that
+    really isn't one — we record the rejected face embedding(s) here and
+    then delete the bogus Face rows. On every subsequent face scan,
+    `backend.faces_pipeline.process_image_for_faces` compares each
+    newly-detected embedding to this user's rejected embeddings (nearest
+    neighbour via the HNSW cosine index) and DROPS the detection when it
+    lands within the rejection threshold — so the same false positive
+    doesn't get re-created on the next scan. That suppression lookup is
+    wrapped fail-open: any error there logs and proceeds with normal
+    detection, so this can never break face scanning.
+
+    `embedding` is the same 512-d ArcFace vector as `faces.embedding`.
+    `source_cluster_id` is provenance only (the unlabeled cluster the
+    rejection came from); the cluster itself is deleted right after the
+    rejection is recorded, so this is not a live FK.
+    """
+
+    __tablename__ = "rejected_face_embeddings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(512), nullable=False)
+    source_cluster_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("rejected_face_embeddings_user_idx", "user_id"),
     )
 
 

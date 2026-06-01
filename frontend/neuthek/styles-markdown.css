@@ -1,0 +1,319 @@
+/* ============================================================
+   markdown-viewer — authentic GitHub `.markdown-body` styling
+   ------------------------------------------------------------
+   The heavy lifting is done by the CANONICAL GitHub stylesheet
+   (`github-markdown-css`, MIT — sindresorhus/github-markdown-css),
+   imported from markdown-viewer.jsx:
+
+       import "github-markdown-css/github-markdown.css";
+
+   That package is the real GitHub `.markdown-body` CSS: heading
+   sizes + h1/h2 bottom borders, GitHub-blue links, tables with
+   header shading + cell borders + zebra striping, blockquotes,
+   GFM task lists, <hr>, the inline-code chip, and the fenced-code
+   panel all come straight from it, so the output reads as genuine
+   GitHub rather than a hand-rolled approximation.
+
+   THIS file contains only two thin layers on top of the package:
+
+     1. THEME BRIDGE.  The combined package is variable-driven —
+        every rule reads `var(--fgColor-default)`, `var(--bgColor-
+        muted)`, `var(--color-prettylights-syntax-*)`, etc. — and it
+        only switches those palettes via `@media (prefers-color-
+        scheme)`. That ties the look to the OS setting. This app's
+        theme is instead a MANUAL toggle: app.jsx / main.tsx set
+        `document.documentElement[data-theme="light"|"dark"]` (saved
+        in localStorage), independent of the OS. So below we redefine
+        GitHub's exact light/dark palette variables — copied verbatim
+        from the package's own `@media` blocks — under UN-media-gated
+        `[data-theme="dark"|"light"] .markdown-body` selectors. That
+        makes the app toggle authoritative in both directions: dark
+        app theme → GitHub dark, light app theme → GitHub light, no
+        matter what the OS prefers. (`[data-theme] .markdown-body`
+        also out-specifies the package's bare `.markdown-body` base
+        block, so our values win cleanly.)
+
+     2. PRISM ↔ GITHUB SYNTAX BRIDGE.  Fenced code blocks are
+        highlighted by Prism in markdown-viewer.jsx's <CodeBlock>
+        (post-sanitize, on text we control). GitHub paints the code
+        PANEL (background / padding / radius via `.markdown-body pre`)
+        and colors its own highlighter's `.pl-*` tokens — but Prism
+        emits `.token.*` spans, which GitHub never styles, so the two
+        coexist with zero conflict: GitHub gives the container chrome,
+        Prism colors the tokens. To make those tokens look like
+        GitHub too, we map each Prism `.token.*` class onto the SAME
+        `--color-prettylights-syntax-*` variables GitHub uses for its
+        `.pl-*` classes. Because those vars are themed by the bridge
+        above, the fenced-code palette is GitHub's authentic syntax
+        coloring AND follows the app's light/dark toggle for free.
+
+   Loaded last in styles/index.css (`@import "../styles-markdown.css"`),
+   so these overrides sit on top of both the app sheets and the
+   imported GitHub package.
+   ============================================================ */
+
+/* ============================================================
+   1. THEME BRIDGE — GitHub's palette under the app's data-theme
+   ------------------------------------------------------------
+   Values copied verbatim from github-markdown-css@5.x's own
+   `@media (prefers-color-scheme: dark|light)` blocks, minus the
+   media wrapper, scoped to the app's `[data-theme]` so the manual
+   toggle (not the OS) selects the palette.
+   ============================================================ */
+[data-theme="dark"] .markdown-body {
+  color-scheme: dark;
+  --fgColor-accent: #4493f8;
+  --bgColor-attention-muted: #bb800926;
+  --bgColor-default: #0d1117;
+  --bgColor-muted: #151b23;
+  --bgColor-neutral-muted: #656c7633;
+  --borderColor-accent-emphasis: #1f6feb;
+  --borderColor-attention-emphasis: #9e6a03;
+  --borderColor-danger-emphasis: #da3633;
+  --borderColor-default: #3d444d;
+  --borderColor-done-emphasis: #8957e5;
+  --borderColor-success-emphasis: #238636;
+  --color-prettylights-syntax-brackethighlighter-angle: #9198a1;
+  --color-prettylights-syntax-brackethighlighter-unmatched: #f85149;
+  --color-prettylights-syntax-carriage-return-bg: #b62324;
+  --color-prettylights-syntax-carriage-return-text: #f0f6fc;
+  --color-prettylights-syntax-comment: #9198a1;
+  --color-prettylights-syntax-constant: #79c0ff;
+  --color-prettylights-syntax-constant-other-reference-link: #a5d6ff;
+  --color-prettylights-syntax-entity: #d2a8ff;
+  --color-prettylights-syntax-entity-tag: #7ee787;
+  --color-prettylights-syntax-keyword: #ff7b72;
+  --color-prettylights-syntax-markup-bold: #f0f6fc;
+  --color-prettylights-syntax-markup-changed-bg: #5a1e02;
+  --color-prettylights-syntax-markup-changed-text: #ffdfb6;
+  --color-prettylights-syntax-markup-deleted-bg: #67060c;
+  --color-prettylights-syntax-markup-deleted-text: #ffdcd7;
+  --color-prettylights-syntax-markup-heading: #1f6feb;
+  --color-prettylights-syntax-markup-ignored-bg: #1158c7;
+  --color-prettylights-syntax-markup-ignored-text: #f0f6fc;
+  --color-prettylights-syntax-markup-inserted-bg: #033a16;
+  --color-prettylights-syntax-markup-inserted-text: #aff5b4;
+  --color-prettylights-syntax-markup-italic: #f0f6fc;
+  --color-prettylights-syntax-markup-list: #f2cc60;
+  --color-prettylights-syntax-meta-diff-range: #d2a8ff;
+  --color-prettylights-syntax-storage-modifier-import: #f0f6fc;
+  --color-prettylights-syntax-string: #a5d6ff;
+  --color-prettylights-syntax-string-regexp: #7ee787;
+  --color-prettylights-syntax-sublimelinter-gutter-mark: #3d444d;
+  --color-prettylights-syntax-variable: #ffa657;
+  --fgColor-attention: #d29922;
+  --fgColor-danger: #f85149;
+  --fgColor-default: #f0f6fc;
+  --fgColor-done: #ab7df8;
+  --fgColor-muted: #9198a1;
+  --fgColor-success: #3fb950;
+  --borderColor-muted: #3d444db3;
+  --color-prettylights-syntax-invalid-illegal-bg: var(--bgColor-danger-muted);
+  --color-prettylights-syntax-invalid-illegal-text: var(--fgColor-danger);
+  --focus-outlineColor: var(--borderColor-accent-emphasis);
+  --borderColor-neutral-muted: var(--borderColor-muted);
+}
+
+[data-theme="light"] .markdown-body {
+  color-scheme: light;
+  --fgColor-danger: #d1242f;
+  --bgColor-attention-muted: #fff8c5;
+  --bgColor-muted: #f6f8fa;
+  --bgColor-neutral-muted: #818b981f;
+  --borderColor-accent-emphasis: #0969da;
+  --borderColor-attention-emphasis: #9a6700;
+  --borderColor-danger-emphasis: #cf222e;
+  --borderColor-default: #d1d9e0;
+  --borderColor-done-emphasis: #8250df;
+  --borderColor-success-emphasis: #1a7f37;
+  --color-prettylights-syntax-brackethighlighter-angle: #59636e;
+  --color-prettylights-syntax-brackethighlighter-unmatched: #82071e;
+  --color-prettylights-syntax-carriage-return-bg: #cf222e;
+  --color-prettylights-syntax-carriage-return-text: #f6f8fa;
+  --color-prettylights-syntax-comment: #59636e;
+  --color-prettylights-syntax-constant: #0550ae;
+  --color-prettylights-syntax-constant-other-reference-link: #0a3069;
+  --color-prettylights-syntax-entity: #6639ba;
+  --color-prettylights-syntax-entity-tag: #0550ae;
+  --color-prettylights-syntax-invalid-illegal-text: var(--fgColor-danger);
+  --color-prettylights-syntax-keyword: #cf222e;
+  --color-prettylights-syntax-markup-changed-bg: #ffd8b5;
+  --color-prettylights-syntax-markup-changed-text: #953800;
+  --color-prettylights-syntax-markup-deleted-bg: #ffebe9;
+  --color-prettylights-syntax-markup-deleted-text: #82071e;
+  --color-prettylights-syntax-markup-heading: #0550ae;
+  --color-prettylights-syntax-markup-ignored-bg: #0550ae;
+  --color-prettylights-syntax-markup-ignored-text: #d1d9e0;
+  --color-prettylights-syntax-markup-inserted-bg: #dafbe1;
+  --color-prettylights-syntax-markup-inserted-text: #116329;
+  --color-prettylights-syntax-markup-list: #3b2300;
+  --color-prettylights-syntax-meta-diff-range: #8250df;
+  --color-prettylights-syntax-string: #0a3069;
+  --color-prettylights-syntax-string-regexp: #116329;
+  --color-prettylights-syntax-sublimelinter-gutter-mark: #818b98;
+  --color-prettylights-syntax-variable: #953800;
+  --fgColor-accent: #0969da;
+  --fgColor-attention: #9a6700;
+  --fgColor-done: #8250df;
+  --fgColor-muted: #59636e;
+  --fgColor-success: #1a7f37;
+  --bgColor-default: #ffffff;
+  --borderColor-muted: #d1d9e0b3;
+  --color-prettylights-syntax-invalid-illegal-bg: var(--bgColor-danger-muted);
+  --color-prettylights-syntax-markup-bold: #1f2328;
+  --color-prettylights-syntax-markup-italic: #1f2328;
+  --color-prettylights-syntax-storage-modifier-import: #1f2328;
+  --fgColor-default: #1f2328;
+  --focus-outlineColor: var(--borderColor-accent-emphasis);
+  --borderColor-neutral-muted: var(--borderColor-muted);
+}
+
+/* ============================================================
+   2. INTEGRATION OVERRIDES — fit the package into the modal
+   ------------------------------------------------------------
+   Deliberately minimal. The package owns typography, spacing,
+   borders, tables, lists, blockquotes, links, etc.; we touch
+   only what's needed to sit nicely inside the viewer chrome.
+   ============================================================ */
+
+/* Comfortable inner gutter inside `.md-viewer__body`. GitHub renders
+   `.markdown-body` edge-to-edge and lets the page provide the frame;
+   our modal doesn't, so add GitHub's own reading padding. The body's
+   `var(--bgColor-default)` (GitHub white / #0d1117) now paints the
+   reading surface, which is the genuine GitHub look the user asked for. */
+.md-viewer__rendered.markdown-body {
+  padding: 24px 28px 40px;
+  box-sizing: border-box;
+  /* NO `min-height: 100%` here — pinning the rendered surface to the
+     scroll viewport's height stopped a TALL document from overflowing the
+     `.md-viewer__body` (overflow:auto), so rendered Markdown couldn't
+     scroll. The content is now natural-height and overflows → scrolls. */
+}
+/* Keep GitHub's reading surface filling the viewport under SHORT docs by
+   painting the scroll container itself, instead of stretching the content. */
+.md-viewer__body { background: var(--bgColor-default, var(--surface-2)); }
+[data-theme="dark"] .md-viewer__body { background: #0d1117; }
+[data-theme="light"] .md-viewer__body { background: #ffffff; }
+
+/* Align the monospace stack with the rest of the app (Geist Mono is
+   the app's code face) while keeping GitHub's fallback chain, so
+   inline chips and fenced blocks match the code-preview pane. */
+.markdown-body {
+  --fontStack-monospace: "Geist Mono", ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* A link whose unsafe scheme was stripped renders as a <span> (see
+   markdown-viewer.jsx). Keep it visibly inert — not a live GitHub-blue
+   link — so it's clearly not clickable. */
+.markdown-body span[title*="unsafe scheme"] {
+  color: var(--fgColor-muted);
+  text-decoration: underline dotted var(--borderColor-default);
+  cursor: not-allowed;
+}
+
+/* Dropped-image placeholder from the `img` renderer's fallback path. */
+.markdown-body .md-img-fallback {
+  color: var(--fgColor-muted);
+  font-style: italic;
+}
+
+/* No ligatures in code (matches code-preview); the package doesn't set
+   this and Geist Mono ligates by default. Scope to code only. */
+.markdown-body code,
+.markdown-body pre,
+.markdown-body .md-inline-code {
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* ============================================================
+   3. PRISM ↔ GITHUB SYNTAX BRIDGE
+   ------------------------------------------------------------
+   <CodeBlock> in markdown-viewer.jsx highlights fenced code with
+   Prism, which emits `.token.*` spans. GitHub styles its OWN
+   highlighter's `.pl-*` classes, never `.token.*`, so the panel
+   chrome (`.markdown-body pre` → padding / bg / radius / 1.45
+   line-height) and Prism's token colors coexist without fighting.
+
+   Here we recolor Prism's tokens with the SAME GitHub prettylights
+   variables that drive `.pl-*`, so fenced code matches GitHub's
+   syntax palette and inherits the light/dark switch from the theme
+   bridge above. Mapping mirrors GitHub's `.pl-*` → prettylights
+   assignment:
+     comment            → comment
+     keyword/atrule     → keyword          (storage-modifier-import
+                          is GitHub's actual keyword-ish hue but
+                          keyword maps cleanest for Prism)
+     string/regex       → string
+     function/class     → entity           (purple)
+     constant/number    → constant         (blue)
+     variable/property  → variable         (orange)
+     tag/selector       → entity-tag       (green)
+     inserted/deleted   → markup inserted/deleted text
+   ============================================================ */
+.markdown-body .token.comment,
+.markdown-body .token.prolog,
+.markdown-body .token.cdata {
+  color: var(--color-prettylights-syntax-comment);
+}
+.markdown-body .token.doctype,
+.markdown-body .token.punctuation {
+  color: var(--fgColor-default);
+}
+.markdown-body .token.namespace { opacity: 0.7; }
+
+.markdown-body .token.keyword,
+.markdown-body .token.rule,
+.markdown-body .token.important,
+.markdown-body .token.atrule,
+.markdown-body .token.selector .token.keyword {
+  color: var(--color-prettylights-syntax-keyword);
+}
+
+.markdown-body .token.string,
+.markdown-body .token.char,
+.markdown-body .token.attr-value,
+.markdown-body .token.regex {
+  color: var(--color-prettylights-syntax-string);
+}
+
+.markdown-body .token.function,
+.markdown-body .token.method,
+.markdown-body .token.class-name,
+.markdown-body .token.maybe-class-name,
+.markdown-body .token.function-variable {
+  color: var(--color-prettylights-syntax-entity);
+}
+
+.markdown-body .token.boolean,
+.markdown-body .token.number,
+.markdown-body .token.constant,
+.markdown-body .token.symbol,
+.markdown-body .token.builtin {
+  color: var(--color-prettylights-syntax-constant);
+}
+
+.markdown-body .token.attr-name,
+.markdown-body .token.property,
+.markdown-body .token.variable,
+.markdown-body .token.parameter {
+  color: var(--color-prettylights-syntax-variable);
+}
+
+.markdown-body .token.tag,
+.markdown-body .token.selector,
+.markdown-body .token.operator,
+.markdown-body .token.entity,
+.markdown-body .token.url {
+  color: var(--color-prettylights-syntax-entity-tag);
+}
+
+.markdown-body .token.inserted {
+  color: var(--color-prettylights-syntax-markup-inserted-text);
+}
+.markdown-body .token.deleted {
+  color: var(--color-prettylights-syntax-markup-deleted-text);
+}
+
+.markdown-body .token.bold { font-weight: 600; }
+.markdown-body .token.italic { font-style: italic; }

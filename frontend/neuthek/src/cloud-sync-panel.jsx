@@ -258,13 +258,22 @@ export function CloudSyncPanel() {
 
   if (error) {
     return (
-      <div style={{ padding: 18, color: "var(--ink-3)" }}>
-        Could not load cloud links. {error.message || ""}
+      <div style={{ padding: 18 }}>
+        <div className="set-note" data-tone="error">
+          <Icon name="alert" size={14}/>
+          <span>Could not load cloud links. {error.message || ""}</span>
+        </div>
       </div>
     );
   }
   if (isLoading) {
-    return <div style={{ padding: 18, color: "var(--ink-3)" }}>Loading…</div>;
+    return (
+      <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+        {[0, 1].map((i) => (
+          <div key={i} className="set-skel" style={{ height: 96, borderRadius: 12 }}/>
+        ))}
+      </div>
+    );
   }
 
   const connected = new Set(links.map((l) => l.provider));
@@ -1086,8 +1095,15 @@ function ProviderCatalog({ connected, onConnect }) {
 
   if (isLoading || !data) {
     return (
-      <div style={{ fontSize: 12, color: "var(--ink-3)", padding: 12 }}>
-        Loading providers…
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+        gap: 8,
+        marginTop: 6,
+      }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="set-skel" style={{ height: 52, borderRadius: 10 }}/>
+        ))}
       </div>
     );
   }

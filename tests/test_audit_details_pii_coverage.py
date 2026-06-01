@@ -156,6 +156,8 @@ KNOWN_NON_PII_KEYS = frozenset({
     "path", "details", "level", "message", "method", "via",
     "quota_bytes", "old_quota_bytes", "role",
     "totp_verified_at", "totp_enabled",
+    # Marketing-site newsletter opt-in forward outcome (boolean).
+    "marketing_synced",
     "accounts_hard_deleted", "accounts_skipped_no_due",
     "has_anchor", "model", "category", "action",
     # Audit-meta + sweeper bookkeeping

@@ -20,7 +20,8 @@ Endpoints:
   POST   /vault/setup           — create the vault (first time only).
   POST   /vault/account-key     — provision the account keypair (legacy vault).
   GET    /vault/items           — all items (incl. file metadata + wrapped key).
-  POST   /vault/items           — create one small item (password/note/seed/card).
+  POST   /vault/items           — create one small item (password/note/seed/
+                                  card/contact/ssh_key/id).
   PUT    /vault/items/{id}      — replace one item's nonce + ciphertext.
   DELETE /vault/items/{id}      — delete one item (frees its blob too).
   GET    /vault/folders         — all folders (flat; client builds the tree).
@@ -292,7 +293,18 @@ class VaultMetaResponse(BaseModel):
 # Small secure items the client encrypts wholesale into `ciphertext`. File
 # items are NOT creatable here — they go through the multipart /vault/files
 # endpoint (they carry an object-storage blob + wrapped key).
-SmallItemKind = Literal["password", "note", "seed", "card"]
+#
+# `contact` (VLT-7) is a structured contact card (name, phones, emails,
+# addresses, org, url, note) imported from a .vcf / vCard client-side.
+# `ssh_key` is an SSH key (label/host, private key, public key, optional
+# passphrase, key type); `id` is an identity document (passport / driver's
+# license / national ID …) split out from the payment-`card` kind. Like every
+# other kind they are opaque ciphertext to the server; `kind` is the only
+# cleartext tag and just selects the client viewer. Must stay in lock-step
+# with the DB CHECK in migration 0053_vault_ssh_id_kinds.
+SmallItemKind = Literal[
+    "password", "note", "seed", "card", "contact", "ssh_key", "id"
+]
 
 
 class VaultItemUpsert(BaseModel):

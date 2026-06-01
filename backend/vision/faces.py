@@ -277,11 +277,56 @@ def _mediapipe_detect(raw_bytes: bytes) -> list[tuple[int, int, int, int, float]
         return []
 
 
+def _enhance_lowlight(raw_bytes: bytes) -> Optional[bytes]:
+    """Lift shadows / boost local contrast on a backlit or dark frame so a
+    face hidden in shadow has a chance of being detected.
+
+    Backlit subjects (e.g. someone sitting against a bright window) come
+    through with the face in deep shadow — too little local contrast for
+    RetinaFace even at det_thresh=0.15. CLAHE on the L channel of LAB
+    raises contrast in the shadows WITHOUT blowing out the bright
+    background, which is exactly the failure mode on phone videos shot
+    toward a window. Returns enhanced PNG bytes, or None if enhancement
+    isn't possible (caller then simply skips the enhanced retry).
+    """
+    try:
+        bgr = _to_bgr_array(raw_bytes)
+    except Exception:
+        return None
+    try:
+        import cv2  # insightface already depends on opencv-python
+
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        merged = cv2.merge((clahe.apply(l), a, b))
+        out_bgr = cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+        ok, buf = cv2.imencode(".png", out_bgr)
+        return buf.tobytes() if ok else None
+    except Exception:
+        # No cv2 (or it failed): PIL autocontrast on the frame as a
+        # lighter-weight fallback — less targeted than CLAHE but still
+        # lifts an under-exposed frame enough to help.
+        try:
+            import io as _io
+
+            from PIL import ImageOps
+
+            im = PILImage.fromarray(bgr[:, :, ::-1])
+            im = ImageOps.autocontrast(im, cutoff=1)
+            buf = _io.BytesIO()
+            im.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception:
+            return None
+
+
 def detect_with_cascade(raw_bytes: bytes) -> tuple[list[DetectedFace], str]:
     """D8 user-signal cascade:
 
-        RetinaFace 0.3 → RetinaFace 0.15 → mediapipe face_mesh detection
-        → empty (caller falls back to user-drawn-box flow).
+        RetinaFace 0.3 → RetinaFace 0.15 → CLAHE-enhanced RetinaFace 0.15
+        → mediapipe (plain, then enhanced) → empty (caller falls back to
+        the user-drawn-box flow).
 
     Returns `(detections, stage)` where `stage` is the label that
     actually produced results ("retina-0.3" / "retina-0.15" /

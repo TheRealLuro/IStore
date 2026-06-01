@@ -221,11 +221,104 @@ _CODE_EXTS: dict[str, str] = {
     ".elm": "text/x-elm",
     ".erl": "text/x-erlang",
     ".hs": "text/x-haskell",
+    ".lhs": "text/x-haskell",
     ".ml": "text/x-ocaml",
     ".mli": "text/x-ocaml",
+    ".fs": "text/x-fsharp",
+    ".fsi": "text/x-fsharp",
+    ".fsx": "text/x-fsharp",
     ".nim": "text/x-nim",
+    ".nims": "text/x-nim",
     ".zig": "text/x-zig",
     ".v": "text/x-v",
+    ".cr": "text/x-crystal",
+    ".groovy": "text/x-groovy",
+    ".gradle": "text/x-groovy",
+    ".jl": "text/x-julia",
+    ".sol": "text/x-solidity",
+    ".fnl": "text/x-fennel",
+    ".hcl": "text/x-hcl",
+    ".tf": "text/x-hcl",
+    ".tfvars": "text/x-hcl",
+    ".nix": "text/x-nix",
+    ".d": "text/x-d",
+    ".pas": "text/x-pascal",
+    ".pp": "text/x-pascal",
+    ".f": "text/x-fortran",
+    ".f90": "text/x-fortran",
+    ".f95": "text/x-fortran",
+    ".for": "text/x-fortran",
+    ".cob": "text/x-cobol",
+    ".cbl": "text/x-cobol",
+    ".asm": "text/x-asm",
+    ".s": "text/x-asm",
+    ".vala": "text/x-vala",
+    ".hx": "text/x-haxe",
+    ".rkt": "text/x-scheme",
+    ".scm": "text/x-scheme",
+    ".ss": "text/x-scheme",
+    ".lisp": "text/x-lisp",
+    ".lsp": "text/x-lisp",
+    ".el": "text/x-lisp",
+    ".cljs": "text/x-clojure",
+    ".cljc": "text/x-clojure",
+    ".edn": "text/x-clojure",
+    ".coffee": "text/x-coffeescript",
+    ".purs": "text/x-purescript",
+    ".re": "text/x-reason",
+    ".rei": "text/x-reason",
+    ".gleam": "text/x-gleam",
+    ".odin": "text/x-odin",
+    ".jsonc": "application/json",
+    ".json5": "application/json",
+    ".tsv": "text/tab-separated-values",
+    ".csv": "text/csv",
+    ".awk": "text/x-awk",
+    ".sed": "text/x-sed",
+    ".bat": "text/x-batch",
+    ".cmd": "text/x-batch",
+    ".tcl": "text/x-tcl",
+    ".vim": "text/x-vim",
+    ".pug": "text/x-pug",
+    ".jade": "text/x-pug",
+    ".haml": "text/x-haml",
+    ".slim": "text/x-slim",
+    ".astro": "text/x-astro",
+    ".njk": "text/x-jinja2",
+    ".jinja": "text/x-jinja2",
+    ".jinja2": "text/x-jinja2",
+    ".j2": "text/x-jinja2",
+    ".twig": "text/x-twig",
+    ".mustache": "text/x-handlebars",
+    ".hbs": "text/x-handlebars",
+    ".handlebars": "text/x-handlebars",
+    ".liquid": "text/x-liquid",
+    ".erb": "text/x-erb",
+    ".ejs": "text/x-ejs",
+    ".cmake": "text/x-cmake",
+    ".mk": "text/x-makefile",
+    ".bazel": "text/x-bazel",
+    ".bzl": "text/x-bazel",
+    ".n3": "text/n3",
+    ".ttl": "text/turtle",
+    ".m": "text/x-objectivec",
+    ".mm": "text/x-objectivec",
+    ".applescript": "text/x-applescript",
+    ".ahk": "text/x-autohotkey",
+    ".au3": "text/x-autoit",
+    ".ino": "text/x-arduino",
+    ".pde": "text/x-processing",
+    ".sml": "text/x-sml",
+    ".idr": "text/x-idris",
+    ".agda": "text/x-agda",
+    ".lean": "text/x-lean",
+    ".wat": "text/x-wasm",
+    ".prql": "text/x-prql",
+    ".cql": "text/x-sql",
+    ".psql": "text/x-sql",
+    ".plsql": "text/x-sql",
+    ".rs.in": "text/x-rust",
+    ".kts.in": "text/x-kotlin",
     # Markup + docs
     ".rst": "text/x-rst",
     ".adoc": "text/x-asciidoc",
@@ -242,9 +335,17 @@ _CODE_EXTS: dict[str, str] = {
     ".editorconfig": "text/plain",
     ".cfg": "text/x-properties",
     ".conf": "text/x-properties",
+    ".ini": "text/x-properties",
     ".properties": "text/x-properties",
     ".xml": "text/xml",
+    ".xsd": "text/xml",
+    ".xsl": "text/xml",
+    ".xslt": "text/xml",
+    ".svg.txt": "text/xml",
     ".plist": "text/xml",
+    ".toml": "text/x-toml",
+    ".sarif": "application/json",
+    ".lock": "text/plain",
     ".graphql": "text/x-graphql",
     ".gql": "text/x-graphql",
     ".proto": "text/x-protobuf",
@@ -263,6 +364,34 @@ _CODE_BASENAMES: dict[str, str] = {
     "podfile": "text/x-ruby",
     "vagrantfile": "text/x-ruby",
     "procfile": "text/plain",
+}
+# Extension → bare language token, used by `_lang_text_mime` to derive a
+# `text/x-<lang>` MIME for a text-decoding file whose extension is NOT in
+# the curated `_CODE_EXTS` allow-list above. This is the broadening that
+# makes ANY UTF-8-clean code/text file viewable: rather than fall straight
+# to a download-only `application/octet-stream`, an unrecognized-but-textual
+# extension still earns a viewable `text/x-<token>` MIME so the FE renders
+# it through the code preview (with a graceful plain-monospace fallback
+# when the FE has no Prism grammar for the token). Curated `_CODE_EXTS`
+# entries always win — this table only catches the long tail. Tokens are
+# lowercased extensions stripped of the leading dot unless remapped here
+# to a friendlier Prism-ish name.
+_EXT_LANG_TOKEN: dict[str, str] = {
+    # Friendlier tokens than the bare extension for a handful of cases the
+    # FE's MIME→grammar map keys on. Anything not listed here derives its
+    # token directly from the extension (e.g. `.foo` → `text/x-foo`).
+    "rs": "rust",
+    "py": "python",
+    "rb": "ruby",
+    "kt": "kotlin",
+    "kts": "kotlin",
+    "js": "javascript",
+    "ts": "typescript",
+    "yml": "yaml",
+    "md": "markdown",
+    "txt": "plain",
+    "text": "plain",
+    "rs.in": "rust",
 }
 _OOXML = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -329,6 +458,23 @@ _ISO_BMFF_BRANDS: dict[bytes, str] = {
     b"M4A ": "audio/mp4",
     b"M4B ": "audio/mp4",
     b"qt  ": "video/quicktime",
+    # HEIF/HEIC STILL IMAGES (iPhone photos) + AVIF. These are ISOBMFF
+    # too and were previously unmatched here, so detect_magic fell through
+    # to the `video/mp4` default below — every iPhone HEIC got routed into
+    # the video transcoder, producing an HLS playlist + a garbage poster
+    # frame that showed as a B&W blob in the gallery. Map the image brands
+    # so they're recognized as images up front.
+    b"heic": "image/heic",
+    b"heix": "image/heic",
+    b"heim": "image/heic",
+    b"heis": "image/heic",
+    b"hevc": "image/heic",
+    b"hevx": "image/heic",
+    b"mif1": "image/heif",
+    b"msf1": "image/heif",
+    b"mif2": "image/heif",
+    b"avif": "image/avif",
+    b"avis": "image/avif",
 }
 
 
@@ -380,12 +526,24 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
         brand = data[8:12]
         if brand in _ISO_BMFF_BRANDS:
             mime = _ISO_BMFF_BRANDS[brand]
-            return mime, "audio" if mime.startswith("audio/") else "video"
+            if mime.startswith("audio/"):
+                cat = "audio"
+            elif mime.startswith("image/"):
+                cat = "image"
+            else:
+                cat = "video"
+            return mime, cat
         ext = _suffix(filename)
         if ext in _VIDEO_EXTS:
             return _VIDEO_EXTS[ext], "video"
         if ext in _AUDIO_EXTS:
             return _AUDIO_EXTS[ext], "audio"
+        # HEIC/HEIF/AVIF with an unrecognized brand but a clear image
+        # extension is still an image, never a video.
+        if ext in {".heic", ".heif", ".hif", ".heics"}:
+            return "image/heic", "image"
+        if ext == ".avif":
+            return "image/avif", "image"
         return "video/mp4", "video"  # safe default for ftyp blobs
     # Matroska / WebM — EBML header magic. Disambiguate by extension
     # because the EBML doctype could be either.
@@ -424,13 +582,12 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
             return "audio/mpeg", "audio"
         if ext == ".aac":
             return "audio/aac", "audio"
-    # Reject SVG / HTML / script payloads by CONTENT — robustly. `lower` is
+    # Detect SVG / HTML / script payloads by CONTENT — robustly. `lower` is
     # already lstrip()'d, but a leading XML/HTML *comment* (`<!--…-->`) still
     # slips a `<svg onload=…>` / `<script>` past a naive `startswith` while a
     # browser renders it just fine. Peel any leading comment(s) before
-    # matching so a comment-prefixed payload can't later be stored with an
-    # active image/svg+xml or text/html MIME (see _CODE_EXTS) and then
-    # rendered inline on a direct navigation to the served blob.
+    # matching so a comment-prefixed payload is classified correctly (and, for
+    # the reject cases below, can't sneak past with an active MIME).
     sniff = lower
     _peeled = 0
     while sniff.startswith(b"<!--") and _peeled < 8:
@@ -439,11 +596,44 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
             break
         sniff = sniff[_end + 3:].lstrip()
         _peeled += 1
-    if sniff.startswith((b"<svg", b"<?xml")) and b"<svg" in lower:
-        raise UploadValidationError("SVG uploads are not accepted.", 415)
-    if sniff.startswith((b"<!doctype html", b"<html", b"<script")):
+    ext = _suffix(filename)
+    # SVG — previously hard-rejected. Now ACCEPTED as an image, but the bytes
+    # are sanitized (script / on* handlers / foreignObject / external refs / XXE
+    # stripped) by `_validate_svg` before they're stored. We classify by content
+    # (a `<svg …>` root, optionally XML-declared) so a `.svg` mislabeled as
+    # something else still lands here, and a `data.xml` that happens to embed an
+    # `<svg>` deeper down does NOT (it stays a generic XML document via
+    # `_CODE_EXTS`). Category is "image" + mime image/svg+xml so the FE routes it
+    # to the image viewer (rendered inertly inside an <img>).
+    if b"<svg" in lower and (
+        sniff.startswith(b"<svg")
+        or (sniff.startswith(b"<?xml") and b"<svg" in sniff)
+        or ext == ".svg"
+    ):
+        return "image/svg+xml", "image"
+    # HTML — previously hard-rejected outright. Now ACCEPTED *only when the file
+    # is explicitly named* `.html` / `.htm`. Such a file is a document/code-
+    # category upload (mime text/html). It is NOT sanitized here: the serve path
+    # forces Content-Disposition: attachment + nosniff + `default-src 'none'` CSP
+    # for text/html (see backend/api/images.py + SecurityHeadersMiddleware), so a
+    # direct navigation downloads it and can never execute script at our origin;
+    # the FE renders it only inside a sandboxed (no-allow-scripts) iframe.
+    #
+    # HTML/script content WITHOUT an .html/.htm extension stays REJECTED — that's
+    # the dangerous masquerade case (a `photo.png` or `notes.txt` whose bytes are
+    # actually `<script>`/`<html>`). Accepting only the explicitly-named files
+    # keeps that guard intact while letting users upload genuine HTML.
+    _is_html_content = sniff.startswith((b"<!doctype html", b"<html", b"<head", b"<body"))
+    if ext in (".html", ".htm") and _looks_text(data):
+        # Recognized HTML document. Falls through to the _CODE_EXTS lookup below,
+        # which maps .html/.htm → text/html, document category.
+        pass
+    elif _is_html_content or sniff.startswith(b"<script"):
+        # HTML/script bytes under a non-HTML extension (or no extension): reject,
+        # exactly as before. A scriptable payload must never be stored under a
+        # benign MIME and rendered inline on a direct navigation.
         raise UploadValidationError("HTML/script uploads are not accepted.", 415)
-    if _suffix(filename) in _TEXT_EXTS and _looks_text(data):
+    if ext in _TEXT_EXTS and _looks_text(data):
         return _text_mime(filename), "document"
     # Source code + structured-text uploads. Same trust line as plain
     # text — we require the bytes to look like UTF-8 with no NUL bytes
@@ -479,13 +669,20 @@ def detect_magic(data: bytes, filename: str | None) -> tuple[str, str]:
     #     pass touches an opaque binary.
     #
     # Text-shaped files that slipped past the code/text allow-lists
-    # above still get the script-injection guard: if it looks like
-    # text, run it through _reject_scriptable_text before accepting,
-    # so a `.weirdext` full of `<script>` can't sneak through as
-    # "other" and later be coaxed into an inline render.
+    # above are now made *viewable* rather than download-only. ANY file
+    # whose bytes decode cleanly as UTF-8 (already asserted by
+    # `_looks_text` — no NUL bytes, valid UTF-8) earns a viewable
+    # `text/x-<lang>` (or `text/plain`) MIME derived from its extension,
+    # so the gallery renders it through the syntax-highlighted code
+    # preview instead of forcing a download. The script-injection guard
+    # is unchanged and runs FIRST: a `.weirdext` (or any unrecognized
+    # extension) full of `<script>` / `<svg>` / `javascript:` is still
+    # rejected by `_reject_scriptable_text` before we hand back a
+    # viewable text MIME, so active HTML/SVG can never be coaxed into an
+    # inline render via this broadened path.
     if _looks_text(data):
         _reject_scriptable_text(data)
-        return "text/plain", "document"
+        return _lang_text_mime(filename), "document"
     return "application/octet-stream", "other"
 
 
@@ -498,6 +695,32 @@ def _text_mime(filename: str | None) -> str:
     if ext == ".json":
         return "application/json"
     return "text/plain"
+
+
+def _lang_text_mime(filename: str | None) -> str:
+    """Derive a *viewable* text MIME for a file that decoded cleanly as
+    UTF-8 but isn't in the curated `_CODE_EXTS` allow-list.
+
+    Returns a `text/x-<token>` MIME when the extension yields a usable
+    language token (so the FE code preview can attempt a Prism grammar),
+    or plain `text/plain` when there's no meaningful extension. Either
+    way the result is a viewable `text/*` MIME — never the download-only
+    `application/octet-stream`. The token is the lowercased extension
+    (sans leading dot) unless remapped in `_EXT_LANG_TOKEN`.
+
+    Note: callers must run `_reject_scriptable_text` on the bytes before
+    trusting this MIME — this function only picks a label, it does NOT
+    re-check for active `<script>` / `<svg>` content.
+    """
+    ext = _suffix(filename)
+    if not ext:
+        return "text/plain"
+    token = _EXT_LANG_TOKEN.get(ext.lstrip("."), ext.lstrip("."))
+    # A token has to look like a bare identifier to be MIME-safe; a weird
+    # extension full of punctuation just falls back to plain text.
+    if not token or token == "plain" or not re.fullmatch(r"[a-z0-9][a-z0-9+._-]*", token):
+        return "text/plain"
+    return f"text/x-{token}"
 
 
 def _looks_text(data: bytes) -> bool:
@@ -627,6 +850,294 @@ def _inspect_ooxml(data: bytes, filename: str | None) -> None:
         raise UploadValidationError("Office document is not a valid ZIP container.", 415) from exc
 
 
+# ---------- SVG sanitization ----------
+#
+# SVG is XML that a browser executes: <script>, on* handlers, <foreignObject>
+# (arbitrary HTML), javascript:/data: URIs, and external href/<use> refs all run
+# code or exfiltrate. Rather than hard-reject every .svg (the old behavior), we
+# parse the bytes with a HARDENED lxml parser (DTD/entity resolution OFF — blocks
+# XXE / billion-laughs) and walk the tree with a strict ALLOWLIST scrub:
+#   * remove every element NOT in `_SVG_ALLOWED_TAGS` (drops <script>, <foreignObject>,
+#     <iframe>/<embed>/<object>, <handler>, <set>, animation-with-script, etc.);
+#   * strip every attribute that is an on* event handler or not in the per-tag /
+#     global allowlist;
+#   * scrub URL-bearing attributes (href / xlink:href / src / from / to / values /
+#     style url(...)) so only same-document `#fragment` refs and safe inline
+#     `data:image/(png|jpeg|gif|webp)` survive — javascript:, external http(s)///,
+#     and non-image data: URIs are dropped;
+#   * drop <style> contents containing url()/@import/expression/javascript: rather
+#     than try to parse CSS (conservative: nuke the whole style block if suspicious).
+# The result is re-serialized and stored. If lxml can't parse the bytes we FAIL
+# CLOSED (reject), never store unparseable "maybe-svg" bytes with an active MIME.
+#
+# This is the FINAL server-side guard. The serve path additionally sends
+# Content-Disposition: attachment + nosniff + `default-src 'none'` CSP for
+# image/svg+xml (see backend/api/images.py `_serve_headers` and the
+# SecurityHeadersMiddleware), and the FE renders SVG only inside an <img> tag
+# (which never runs SVG script). Defense in depth — but the scrub below stands on
+# its own.
+
+# SVG namespace URIs we recognize. lxml reports tags as `{uri}local`; we compare
+# on the local name but also reject foreign namespaces (HTML / XSLT smuggled in).
+_SVG_NS = "http://www.w3.org/2000/svg"
+_XLINK_NS = "http://www.w3.org/1999/xlink"
+
+# Allowlisted SVG element local-names. Anything not here is dropped wholesale.
+# Deliberately EXCLUDES: script, foreignObject, iframe, embed, object, handler,
+# audio, video, animate*/set (can target attributes to inject), use is allowed
+# but its href is scrubbed to same-document refs only, image is allowed but href
+# scrubbed to safe data:/# only.
+_SVG_ALLOWED_TAGS = frozenset({
+    "svg", "g", "defs", "symbol", "use", "switch", "a",
+    "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+    "text", "tspan", "textPath", "tref",
+    "title", "desc", "metadata",
+    "linearGradient", "radialGradient", "stop", "pattern",
+    "clipPath", "mask", "filter",
+    # filter primitives — pure raster ops, no script surface
+    "feBlend", "feColorMatrix", "feComponentTransfer", "feComposite",
+    "feConvolveMatrix", "feDiffuseLighting", "feDisplacementMap",
+    "feDistantLight", "feFlood", "feFuncA", "feFuncB", "feFuncG", "feFuncR",
+    "feGaussianBlur", "feImage", "feMerge", "feMergeNode", "feMorphology",
+    "feOffset", "fePointLight", "feSpecularLighting", "feSpotLight", "feTile",
+    "feTurbulence",
+    "marker", "view",
+    "image", "style",
+})
+
+# Global attributes safe on any element. on* handlers are blocked by a separate
+# prefix check; URL-bearing attributes are scrubbed by `_SVG_URL_ATTRS`.
+_SVG_ALLOWED_ATTRS = frozenset({
+    # core / presentation
+    "id", "class", "style", "transform", "x", "y", "width", "height",
+    "viewBox", "preserveAspectRatio", "version", "baseProfile",
+    "d", "points", "cx", "cy", "r", "rx", "ry", "x1", "y1", "x2", "y2",
+    "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width",
+    "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
+    "stroke-opacity", "stroke-miterlimit", "opacity", "color",
+    "stop-color", "stop-opacity", "offset",
+    "gradientUnits", "gradientTransform", "spreadMethod",
+    "patternUnits", "patternContentUnits", "patternTransform",
+    "clip-path", "clip-rule", "mask", "filter",
+    "font-family", "font-size", "font-weight", "font-style", "text-anchor",
+    "letter-spacing", "word-spacing", "dominant-baseline", "alignment-baseline",
+    "dx", "dy", "rotate", "textLength", "lengthAdjust",
+    "display", "visibility", "overflow",
+    "markerStart", "marker-start", "marker-mid", "marker-end",
+    "markerWidth", "markerHeight", "markerUnits", "orient", "refX", "refY",
+    "maskUnits", "maskContentUnits", "filterUnits", "primitiveUnits",
+    "result", "in", "in2", "mode", "values", "type", "stdDeviation",
+    "operator", "k1", "k2", "k3", "k4", "scale", "xChannelSelector",
+    "yChannelSelector", "baseFrequency", "numOctaves", "seed", "stitchTiles",
+    "tableValues", "slope", "intercept", "amplitude", "exponent",
+    "edgeMode", "kernelMatrix", "divisor", "bias", "targetX", "targetY",
+    "surfaceScale", "specularConstant", "specularExponent", "diffuseConstant",
+    "limitingConeAngle", "pointsAtX", "pointsAtY", "pointsAtZ",
+    "azimuth", "elevation", "radius", "flood-color", "flood-opacity",
+    "lighting-color", "color-interpolation-filters", "color-interpolation",
+    "shape-rendering", "text-rendering", "image-rendering",
+    "vector-effect", "paint-order", "isolation", "mix-blend-mode",
+    "enable-background", "stop-color", "xml:space", "space",
+    "startOffset", "method", "spacing", "side",
+})
+
+# Attributes whose value is a URL/IRI and must be scrubbed to a safe subset.
+_SVG_URL_ATTRS = frozenset({"href", "src", "from", "to", "values", "begin", "end"})
+
+# Inline data: URIs we permit (raster images only — rendered, never executed).
+_SVG_SAFE_DATA_URI_RE = re.compile(
+    r"^data:image/(?:png|jpe?g|gif|webp);base64,", re.IGNORECASE
+)
+# Characters that could re-introduce a scheme after whitespace/control stripping.
+_SVG_CTRL_RE = re.compile(r"[\x00-\x20\x7f]")
+# CSS that smells like it pulls/executes: url(), @import, expression(), behavior,
+# javascript:, -moz-binding. If a <style> body or a style="" attr matches, we drop it.
+_SVG_DANGEROUS_CSS_RE = re.compile(
+    r"url\s*\(|@import|expression\s*\(|behavior\s*:|javascript\s*:|"
+    r"-moz-binding|vbscript\s*:|<\s*script",
+    re.IGNORECASE,
+)
+
+
+def _svg_safe_url(value: str) -> str | None:
+    """Return the value if it's a safe SVG URL, else None (drop the attr).
+
+    Safe = same-document fragment ref (`#id`) or an inline raster `data:` URI.
+    Everything else — javascript:, vbscript:, external http(s)/protocol-relative
+    `//host`, file:, and non-image data: — is rejected. Control/whitespace chars
+    are stripped first so `java\\nscript:` can't sneak through.
+    """
+    if value is None:
+        return None
+    stripped = _SVG_CTRL_RE.sub("", value).strip()
+    if not stripped:
+        return None
+    low = stripped.lower()
+    # Same-document fragment reference — the common, safe <use href="#id"> case.
+    if stripped.startswith("#"):
+        return value
+    # Inline raster data URI — rendered as an image, never executed.
+    if low.startswith("data:"):
+        return value if _SVG_SAFE_DATA_URI_RE.match(stripped) else None
+    # Anything with a scheme (javascript:, http:, https:, file:, vbscript:, …)
+    # or protocol-relative (//host) or a bare external path is dropped.
+    return None
+
+
+def _svg_clean_style(value: str | None) -> str | None:
+    """Drop a style value entirely if it contains anything that could fetch or
+    execute (url(), @import, expression(), javascript:, …). We don't try to
+    parse CSS — conservative nuke-on-suspicion."""
+    if not value:
+        return value
+    if _SVG_DANGEROUS_CSS_RE.search(value):
+        return None
+    return value
+
+
+def _sanitize_svg(data: bytes) -> bytes:
+    """Parse + allowlist-scrub SVG bytes, returning safe re-serialized SVG.
+
+    Raises UploadValidationError (fail closed) if the bytes can't be parsed as
+    XML or don't contain an <svg> root — we never store unparseable bytes under
+    an active image/svg+xml MIME.
+    """
+    try:
+        from lxml import etree
+    except ImportError as exc:  # pragma: no cover - lxml is a hard dep
+        raise UploadValidationError(
+            "SVG support requires the `lxml` library on the server.", 500
+        ) from exc
+
+    # Hardened parser: resolve_entities=False + no_network=True + DTD load off
+    # blocks XXE, billion-laughs, and external-entity SSRF. huge_tree=False keeps
+    # the default expansion limits. We also forbid a DOCTYPE outright below.
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        dtd_validation=False,
+        huge_tree=False,
+        remove_comments=True,
+        remove_pis=True,
+        recover=False,
+    )
+    try:
+        root = etree.fromstring(data, parser=parser)
+    except etree.XMLSyntaxError as exc:
+        raise UploadValidationError(
+            f"SVG file is not well-formed XML and was rejected: {exc}", 415
+        ) from exc
+    except ValueError as exc:
+        raise UploadValidationError(
+            f"SVG file could not be parsed and was rejected: {exc}", 415
+        ) from exc
+
+    tree = root.getroottree()
+    # Reject any DOCTYPE — even an "empty" one can declare entities (XXE). The
+    # hardened parser won't resolve them, but refusing outright is cleaner.
+    docinfo = tree.docinfo
+    if docinfo is not None and (docinfo.doctype or docinfo.internalDTD is not None):
+        raise UploadValidationError(
+            "SVG file declares a DOCTYPE/DTD, which is not allowed.", 415
+        )
+
+    def _local(tag) -> str:
+        # tag may be a comment/PI callable wrapper; only str tags matter.
+        if not isinstance(tag, str):
+            return ""
+        return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+    def _ns(tag) -> str | None:
+        if not isinstance(tag, str) or not tag.startswith("{"):
+            return None
+        return tag[1:tag.index("}")]
+
+    # The root MUST be <svg>. A non-svg root means the bytes were misrouted.
+    if _local(root.tag) != "svg":
+        raise UploadValidationError(
+            "File routed as SVG does not have an <svg> root element.", 415
+        )
+
+    # Walk the whole tree once. Collect removals first (mutating during iterate
+    # is unsafe), then drop them from their parents.
+    to_remove = []
+    for el in root.iter():
+        tag = el.tag
+        # Comments / PIs are already stripped by the parser flags, but guard.
+        if not isinstance(tag, str):
+            to_remove.append(el)
+            continue
+        local = _local(tag)
+        ns = _ns(tag)
+        # Drop elements outside the SVG namespace (smuggled HTML / XSLT / etc.)
+        # and any tag not on the allowlist (script, foreignObject, …).
+        if (ns is not None and ns != _SVG_NS) or local not in _SVG_ALLOWED_TAGS:
+            to_remove.append(el)
+            continue
+        # Scrub attributes on the surviving element.
+        for name in list(el.attrib.keys()):
+            attr_ns = _ns(name)
+            attr_local = _local(name)
+            low = attr_local.lower()
+            # Drop ALL event handlers (onload, onclick, onbegin, onmouseover…).
+            if low.startswith("on"):
+                del el.attrib[name]
+                continue
+            # xlink:* — only xlink:href is meaningful and it's URL-scrubbed.
+            if attr_ns == _XLINK_NS:
+                if attr_local == "href":
+                    safe = _svg_safe_url(el.attrib[name])
+                    if safe is None:
+                        del el.attrib[name]
+                    else:
+                        el.attrib[name] = safe
+                else:
+                    del el.attrib[name]
+                continue
+            # Drop attributes in any other foreign namespace (keep none-NS and
+            # the xml: namespace handled via allowlist).
+            if attr_ns is not None and attr_ns not in (None,):
+                # xml:space etc. arrive with the XML namespace; allow only the
+                # handful in the allowlist by local name.
+                if attr_local not in _SVG_ALLOWED_ATTRS:
+                    del el.attrib[name]
+                    continue
+            # URL-bearing attributes (href/src/…) get scrubbed.
+            if attr_local in _SVG_URL_ATTRS:
+                safe = _svg_safe_url(el.attrib[name])
+                if safe is None:
+                    del el.attrib[name]
+                else:
+                    el.attrib[name] = safe
+                continue
+            # style="" — drop if it can fetch/execute.
+            if attr_local == "style":
+                cleaned = _svg_clean_style(el.attrib[name])
+                if cleaned is None:
+                    del el.attrib[name]
+                else:
+                    el.attrib[name] = cleaned
+                continue
+            # Everything else must be on the global allowlist.
+            if attr_local not in _SVG_ALLOWED_ATTRS:
+                del el.attrib[name]
+                continue
+        # <style> element bodies: nuke text content if it can fetch/execute.
+        if local == "style" and el.text and _SVG_DANGEROUS_CSS_RE.search(el.text):
+            el.text = ""
+
+    for el in to_remove:
+        parent = el.getparent()
+        if parent is not None:
+            parent.remove(el)
+        # (root itself is never in to_remove — its tag was validated as svg.)
+
+    # Re-serialize. xml_declaration keeps it a valid standalone SVG document.
+    out = etree.tostring(root, xml_declaration=True, encoding="utf-8")
+    return out
+
+
 def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, str]:
     """Re-decode + re-encode an upload via Pillow to defang malicious
     polyglots, then return the safe re-encoded bytes.
@@ -740,6 +1251,23 @@ def _sanitize_image(data: bytes, detected_mime: str) -> tuple[bytes, int, int, s
                 out = BytesIO()
                 pil.save(out, format="PNG")
                 return out.getvalue(), width, height, "image/png"
+            if detected_mime in ("image/heic", "image/heif"):
+                # Browsers can't render HEIC/HEIF natively, so re-encode the
+                # SERVED bytes to JPEG (the true original HEIC still lives
+                # untouched in the originals bucket, same as the RAW path).
+                # pillow_heif's opener is registered via `backend.codecs`,
+                # so PILImage.open already decoded it above. Preserve the
+                # EXIF blob so GPS / camera metadata rides along to image_geo
+                # and to the user's download, exactly like the JPEG branch.
+                # Without this branch HEIC — an iPhone's default format and a
+                # type already in our catalog — fell through to "Unsupported
+                # image format" and the web uploader rejected every HEIC.
+                out = BytesIO()
+                save_kwargs = {"format": "JPEG", "quality": 95, "optimize": True}
+                if exif_blob:
+                    save_kwargs["exif"] = exif_blob
+                pil.convert("RGB").save(out, **save_kwargs)
+                return out.getvalue(), width, height, "image/jpeg"
     except UploadValidationError:
         raise
     except Exception as exc:
@@ -772,6 +1300,20 @@ def _validate_image(raw_bytes: bytes, filename: str | None, detected_mime: str, 
     return ValidatedUpload(filename, sanitized, raw_bytes, sanitized_mime, "image", w, h)
 
 
+def _validate_svg(raw_bytes: bytes, filename: str | None, detected_mime: str, category: str) -> ValidatedUpload:
+    """Sanitize an SVG upload and store the SCRUBBED bytes.
+
+    `_sanitize_svg` parses with a hardened (XXE-proof) parser and allowlist-
+    scrubs script / on* handlers / foreignObject / external refs / dangerous
+    URIs, failing closed (reject) on unparseable input. The sanitized bytes go
+    into BOTH raw_bytes (served + originals) and original_raw_bytes — we never
+    retain the un-scrubbed original for an SVG. Category stays "image"; the FE
+    renders it inside an <img>, which never executes SVG script.
+    """
+    sanitized = _sanitize_svg(raw_bytes)
+    return ValidatedUpload(filename, sanitized, sanitized, "image/svg+xml", "image")
+
+
 def _validate_document(raw_bytes: bytes, filename: str | None, detected_mime: str, category: str) -> ValidatedUpload:
     # OOXML containers get a zip-shape inspection (entry count, path
     # traversal, depth, ratio, symlinks). Text-shaped documents get
@@ -779,7 +1321,17 @@ def _validate_document(raw_bytes: bytes, filename: str | None, detected_mime: st
     # — that's a deliberate trust line for now.
     if detected_mime in _OOXML.values():
         _inspect_ooxml(raw_bytes, filename)
-    if detected_mime.startswith("text/") or detected_mime == "application/json":
+    # `text/html` is the ONE text type we intentionally allow to contain
+    # markup/script: it only reaches here for an explicitly-named .html/.htm
+    # file (see detect_magic), and it's neutralized at the serve layer
+    # (Content-Disposition: attachment + nosniff + `default-src 'none'` CSP)
+    # and rendered only inside a no-allow-scripts sandboxed iframe on the FE.
+    # Running `_reject_scriptable_text` on it would reject every real HTML file,
+    # so we skip the scriptable-text gate for text/html specifically. Every
+    # OTHER text/* + json document is still scrubbed for <script>/<svg>/etc.
+    if detected_mime == "text/html":
+        pass
+    elif detected_mime.startswith("text/") or detected_mime == "application/json":
         _reject_scriptable_text(raw_bytes)
     return ValidatedUpload(filename, raw_bytes, raw_bytes, detected_mime, "document")
 
@@ -826,6 +1378,12 @@ def _validate_sync(
             f"Content-Type does not match file bytes ({html.escape(detected_mime)}).",
             415,
         )
+    # SVG is category "image" but must NOT go through the Pillow re-encode
+    # validator (Pillow can't decode vector XML). Route it to the dedicated
+    # XML-sanitizing validator instead, which scrubs script/handlers/XXE and
+    # stores the cleaned bytes.
+    if detected_mime == "image/svg+xml":
+        return _validate_svg(raw_bytes, filename, detected_mime, category)
     validator = _VALIDATORS.get(category, _validate_passthrough)
     return validator(raw_bytes, filename, detected_mime, category)
 

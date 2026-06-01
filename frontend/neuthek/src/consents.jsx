@@ -62,12 +62,17 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
   const [scopes, setScopes] = useStateC({ gps: true, aiSummary: allowEarlyAI, semanticSearch: false, telemetry: true });
   const [cookies, setCookies] = useStateC("all");
   const [signature, setSignature] = useStateC("");
+  // Marketing-site newsletter opt-in. OFF by default — same
+  // informed-consent default as the public marketing signup form; the
+  // user must explicitly tick it. Surfaced in the Features step and
+  // returned in onComplete so auth.jsx can subscribe them post-register.
+  const [newsletter, setNewsletter] = useStateC(false);
 
   useEffectC(() => {
     if (!open) return;
     setStepIdx(0); setTerms(false); setAge13(false); setPrivacyRead(false); setBipa(false);
     setScopes({ gps: true, aiSummary: allowEarlyAI, semanticSearch: false, telemetry: true });
-    setCookies("all"); setSignature("");
+    setCookies("all"); setSignature(""); setNewsletter(false);
   }, [open, allowEarlyAI]);
 
   const completed = {
@@ -94,7 +99,7 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
   const next = () => {
     if (!canAdvance) return;
     if (isLast) {
-      onComplete && onComplete({ scopes, cookies, bipa, signature, age13 });
+      onComplete && onComplete({ scopes, cookies, bipa, signature, age13, newsletter });
     } else {
       setStepIdx(i => Math.min(STEPS.length - 1, i + 1));
     }
@@ -221,6 +226,22 @@ export function ConsentsModal({ open, onClose, onComplete, requireFace = false, 
               <SwitchC on={scopes[it.id]} onChange={(v) => setOne(it.id, v)} ariaLabel={it.title}/>
             </div>
           ))}
+          {/* Marketing-site newsletter. Separate from the privacy scopes
+              above — opting in subscribes the email to the weekly
+              release-notes newsletter on the marketing site. OFF by
+              default; fully optional. */}
+          <div className="scope-row" style={{ marginTop: 8 }}>
+            <div className="scope-row__icon"><Icon name="mail" size={15}/></div>
+            <div className="scope-row__body">
+              <div className="scope-row__title">Weekly newsletter
+                <span className="scope-row__chip" data-state={newsletter ? "on" : "off"}>
+                  {newsletter ? "On" : "Off"}
+                </span>
+              </div>
+              <div className="scope-row__desc">Release notes each Friday — what shipped and why. Unsubscribe any time.</div>
+            </div>
+            <SwitchC on={newsletter} onChange={setNewsletter} ariaLabel="Weekly newsletter"/>
+          </div>
         </StepFrame>}
 
         {stepId === "cookies" && <StepFrame stepKey="cookies">

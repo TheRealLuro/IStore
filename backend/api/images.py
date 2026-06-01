@@ -95,6 +95,21 @@ async def _enqueue_or_inline_fallback(enqueue_fn, *args, inline) -> None:
         logger.exception("enqueue raised; falling back to inline")
         ok = False
     if not ok and inline is not None:
+        from backend.config import settings
+
+        if settings.is_production:
+            # NEVER load heavy ML models (Florence-2 / Qwen / InternVL2)
+            # inside the API process in production — that is exactly what the
+            # ml-worker exists for. Doing it under load (e.g. a Redis blip
+            # during a large backfill) pins the GIL and can OOM the API.
+            # Leave the row pending; the worker and the /summarize-progress
+            # drainer pick it up once Redis recovers.
+            logger.warning(
+                "enqueue did not take (redis down or already in-flight) in "
+                "production — leaving work for the ml-worker, NOT running ML "
+                "inline in the API"
+            )
+            return
         _detach(inline())
 
 
@@ -202,6 +217,12 @@ async def upload_image(
             "Upload exceeds the per-file size limit.",
         )
     await enforce_upload_limits(str(user.id), request, len(raw))
+    # Cumulative per-user storage quota (413 when over). enforce_upload_limits
+    # above is only a rate limit (per-file size + per-hour count + per-day
+    # bytes); without this gate a user within their daily rate could fill the
+    # disk over time. Parity with the Vault + cloud-sync upload paths.
+    from backend.api.storage import enforce_storage_quota
+    await enforce_storage_quota(session, user, len(raw))
     try:
         image = await store_upload(session, user, file.filename, raw, file.content_type)
     except UploadValidationError as exc:
@@ -775,6 +796,25 @@ async def list_images(
     # match → memory DoS. Cap matches admin.py:139's pattern.
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+    # Library-wide sort. Applied in the SQL ORDER BY so the ordering
+    # spans EVERY page/offset, not just the current 20-row window — the
+    # gallery's numbered pagination would otherwise only ever sort the
+    # rows it already fetched. Full option set:
+    #   recent    — uploaded_at DESC (default; prior behavior)
+    #   oldest    — uploaded_at ASC
+    #   name_asc  — original_filename A→Z (case-insensitive via lower())
+    #   name_desc — original_filename Z→A (case-insensitive via lower())
+    #   size_desc — largest first  (coalesce(byte_size_served, original))
+    #   size_asc  — smallest first (same column)
+    # The `starred` and `trashed` views keep their own fixed ordering
+    # (starred_at / deleted_at desc) and ignore this param. Every branch
+    # appends `Image.id` as a stable tiebreaker so two rows with an equal
+    # sort key never swap order between pages (which would otherwise
+    # duplicate or skip rows across offsets).
+    sort: Annotated[
+        str,
+        Query(pattern="^(recent|oldest|name_asc|name_desc|size_desc|size_asc)$"),
+    ] = "recent",
     scene: Annotated[str | None, Query(max_length=64)] = None,
     content_type: Annotated[str | None, Query(max_length=32)] = None,
     tag: Annotated[str | None, Query(max_length=64)] = None,
@@ -782,6 +822,12 @@ async def list_images(
     category: Annotated[str | None, Query(max_length=16)] = None,
     person: Annotated[str | None, Query(max_length=120)] = None,
     person_id: Annotated[int | None, Query(ge=1)] = None,
+    # Unlabeled face cluster — lets the People tab drill into a
+    # detected-but-unnamed group BEFORE the user names it. Matches the
+    # source images of every face row whose `cluster_id` equals this and
+    # which isn't yet attached to a Person (named clusters drill in via
+    # `person_id` instead).
+    cluster_id: Annotated[int | None, Query(ge=1)] = None,
     # Phase 12 — folder scoping. `folder_id=null` (the default) returns
     # images that don't have a parent folder assigned (= "root view").
     # Pass `folder_id=<uuid>` to fetch the contents of a specific folder.
@@ -880,6 +926,23 @@ async def list_images(
             )
         person_image_ids = face_subq.union(manual_subq)
         stmt = stmt.where(Image.id.in_(person_image_ids))
+    if cluster_id is not None:
+        # Unlabeled-cluster drill-in. A cluster is a set of Face rows
+        # sharing a `cluster_id` and not yet attached to a Person; the
+        # images we want are the ones those faces were detected in. We
+        # require `person_id IS NULL` so naming part of a cluster (which
+        # moves those faces onto a Person) cleanly drops them out of the
+        # unnamed view — matching what the People tab shows.
+        cluster_image_ids = (
+            select(FaceDetection.image_id)
+            .join(Face, Face.id == FaceDetection.face_id)
+            .where(
+                FaceDetection.user_id == user.id,
+                Face.cluster_id == cluster_id,
+                Face.person_id.is_(None),
+            )
+        )
+        stmt = stmt.where(Image.id.in_(cluster_image_ids))
     if has_faces is True:
         # EXISTS subquery — cheaper than a join + DISTINCT and still
         # composes with all the other filters above.
@@ -995,13 +1058,34 @@ async def list_images(
             stmt = stmt.where(captured_at <= end_dt)
     # Starred view sorts by when the user starred each row (newest stars
     # first); trashed view by when the file hit the bin (newest first);
-    # everything else sorts by upload recency.
+    # everything else honors the `sort` param (library-wide — applied in
+    # SQL so it spans every page/offset, not just the fetched window).
+    #
+    # Every branch ends in `Image.id` as a stable tiebreaker: without it,
+    # rows sharing a sort key (same byte size, same filename, NULLs) have
+    # an undefined relative order that Postgres may pick differently per
+    # query plan, so paging by offset could skip or repeat a row.
     if starred:
-        stmt = stmt.order_by(nulls_last(Image.starred_at.desc()))
+        stmt = stmt.order_by(nulls_last(Image.starred_at.desc()), Image.id)
     elif trashed:
-        stmt = stmt.order_by(Image.deleted_at.desc())
+        stmt = stmt.order_by(Image.deleted_at.desc(), Image.id)
     else:
-        stmt = stmt.order_by(Image.uploaded_at.desc())
+        # Name sort is case-insensitive (lower()), with NULL filenames
+        # pushed to the end either way so unnamed rows don't crowd the top
+        # of A→Z. Size sort uses the served byte size when present, else
+        # the original's — `coalesce` so rows that never produced a
+        # distinct served variant still sort by a real number; NULLs last.
+        name_key = func.lower(Image.original_filename)
+        size_key = func.coalesce(Image.byte_size_served, Image.byte_size_original)
+        sort_clauses = {
+            "recent": (Image.uploaded_at.desc(),),
+            "oldest": (Image.uploaded_at.asc(),),
+            "name_asc": (nulls_last(name_key.asc()),),
+            "name_desc": (nulls_last(name_key.desc()),),
+            "size_desc": (nulls_last(size_key.desc()),),
+            "size_asc": (nulls_last(size_key.asc()),),
+        }[sort]
+        stmt = stmt.order_by(*sort_clauses, Image.id)
     stmt = stmt.limit(limit).offset(offset)
 
     result = await session.execute(stmt)
@@ -1377,8 +1461,15 @@ async def summarize_progress(
     )
     await session.commit()
 
+    # A row is "pending" if it has never been summarized (summary +
+    # summary_generated_at both NULL) OR it's been explicitly flagged for
+    # (re)summarization via pending_summary — e.g. a force backfill of
+    # already-summarized rows, which keep their old text so search keeps
+    # working while the new summary generates. `_mark_done` clears
+    # pending_summary on success AND failure, so this can't double-count.
     pending_predicate = (
-        Image.summary.is_(None) & Image.summary_generated_at.is_(None)
+        (Image.summary.is_(None) & Image.summary_generated_at.is_(None))
+        | Image.pending_summary.is_(True)
     )
     row = (
         await session.execute(
@@ -1413,13 +1504,14 @@ async def summarize_progress(
                     Image.user_id == user.id,
                     Image.deleted_at.is_(None),
                     Image.skip_ai_training.is_(False),
-                    # Match `pending_predicate` above. Rows with
-                    # summary_generated_at set + summary NULL are
-                    # dead-letter; manual re-summarize via the per-item
-                    # "Force re-summarize" action or
-                    # /images/backfill-summaries?force=true if needed.
-                    Image.summary.is_(None),
-                    Image.summary_generated_at.is_(None),
+                    # Match `pending_predicate` above: never-summarized rows
+                    # OR rows explicitly flagged pending_summary (a force
+                    # re-summarize). Re-enqueuing an already-queued row is a
+                    # no-op thanks to the Redis dedupe set, so this also
+                    # self-heals a re-summarize job lost before the worker
+                    # picked it up.
+                    (Image.summary.is_(None) & Image.summary_generated_at.is_(None))
+                    | Image.pending_summary.is_(True),
                 )
                 .order_by(Image.uploaded_at.desc())
                 .limit(8)
@@ -1855,6 +1947,104 @@ async def download_served(
     return Response(content=blob, media_type=mime, headers=headers)
 
 
+# Filename extensions the spreadsheet endpoint will attempt to parse.
+# We gate on this (plus the OOXML/legacy/ODS MIME types) so the endpoint
+# returns a clean 415 for non-spreadsheet rows instead of handing random
+# bytes to calamine. `.csv` / `.tsv` are intentionally absent — those
+# render through the dedicated CSV viewer client-side, not here.
+_SPREADSHEET_EXTS = {".xlsx", ".xls", ".xlsm", ".xlsb", ".ods"}
+_SPREADSHEET_MIMES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+    "application/vnd.oasis.opendocument.spreadsheet",
+}
+
+
+def _looks_like_spreadsheet(image: Image) -> bool:
+    """True when the row is a spreadsheet we should try to parse, judged
+    by MIME first then filename extension (cloud-synced / legacy uploads
+    often carry a generic `application/octet-stream` MIME, so the
+    extension is the reliable fallback)."""
+    import os
+
+    mime = (image.mime_type_original or "").lower().split(";")[0].strip()
+    if mime in _SPREADSHEET_MIMES:
+        return True
+    _, ext = os.path.splitext((image.original_filename or "").lower())
+    return ext in _SPREADSHEET_EXTS
+
+
+@router.get("/{image_id}/spreadsheet")
+async def get_spreadsheet(
+    image_id: UUID,
+    user: Annotated[User, Depends(current_active_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    """Parse a stored workbook into normalized JSON for the in-app
+    spreadsheet viewer.
+
+    Handles `.xlsx`, legacy binary `.xls` (BIFF), and OpenDocument
+    `.ods` (plus `.xlsm` / `.xlsb`) through a single python-calamine
+    parse — see `backend/spreadsheet_extract.py`. Returns:
+
+        { "sheets": [ { name, rows, n_rows, n_cols, shown_rows,
+                        shown_cols, truncated }, … ],
+          "sheet_count": <int>, "sheets_truncated": <bool> }
+
+    Each cell is `{ "v": <display string>, "t": <type tag> }`. Output is
+    capped per sheet (≤ 1000 rows × 100 cols) so a huge workbook can't
+    blow up the response; `truncated` flags any clip.
+
+    Auth + ownership mirror `/original` and `/served`: owner-scoped
+    lookup via `_load_owned_image`, which 404s anything the caller
+    doesn't own. We read the ORIGINAL bytes (the true workbook), falling
+    back to the served copy only if retention has dropped the original
+    (for non-image rows the served blob IS the original, so this is the
+    same bytes anyway).
+    """
+    from backend.spreadsheet_extract import (
+        SpreadsheetParseError,
+        extract_workbook,
+    )
+
+    image = await _load_owned_image(image_id, user, session)
+    if not _looks_like_spreadsheet(image):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            "This file is not a supported spreadsheet format.",
+        )
+
+    if image.original_blob_key is not None:
+        blob, _mime = await fetch_original(image)
+    elif image.served_blob_key is not None:
+        # Retention dropped the original; the served copy is the only
+        # surviving bytes (and for documents it's a verbatim copy).
+        blob, _mime = await fetch_served(image)
+    else:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "No bytes available for this file"
+        )
+
+    try:
+        # CPU-bound parse — keep it off the event loop.
+        result = await asyncio.to_thread(extract_workbook, blob)
+    except SpreadsheetParseError as exc:
+        # Corrupt / password-protected / not-actually-a-spreadsheet.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "This spreadsheet could not be read.",
+        ) from exc
+    except Exception:
+        logger.exception("spreadsheet parse crashed for %s", image_id)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Failed to read spreadsheet.",
+        )
+    return result
+
+
 # Process-local LRU cache for resized served variants. Keyed on
 # (image_id, max_dim) → (jpeg/webp bytes, mime). Capped at ~256 MB
 # total bytes so a busy gallery doesn't exhaust container memory.
@@ -1957,6 +2147,35 @@ def _is_pdf(image: Image) -> bool:
     return name.endswith(".pdf")
 
 
+def _is_pdf_viewable(image: Image) -> bool:
+    """True when this row can be served through the PDF page-rasterization
+    viewer — either because it IS a native PDF, or because it's an Office
+    document whose LibreOffice→PDF conversion has landed
+    (`converted_pdf_blob_key` is set).
+
+    Office docs whose conversion hasn't completed yet return False so the
+    page endpoints 415 (the FE keeps showing its pending / download-only
+    state) instead of trying to rasterize the raw .docx bytes as a PDF."""
+    if _is_pdf(image):
+        return True
+    return bool(image.converted_pdf_blob_key)
+
+
+async def _fetch_pdf_bytes(image: Image) -> bytes:
+    """Return the PDF bytes to rasterize for the page viewer.
+
+    For a native PDF that's the original blob. For an Office document
+    it's the converted PDF the worker stored under
+    `converted_pdf_blob_key` (served bucket). Assumes `_is_pdf_viewable`
+    already passed."""
+    if not _is_pdf(image) and image.converted_pdf_blob_key:
+        return await asyncio.to_thread(
+            storage.get, storage.bucket_served, image.converted_pdf_blob_key,
+        )
+    raw, _mime = await fetch_original(image)
+    return raw
+
+
 @router.get("/{image_id}/pdf-meta")
 async def pdf_meta(
     image_id: UUID,
@@ -1967,14 +2186,16 @@ async def pdf_meta(
 
     Used by the preview-modal page stack so the scroll height is correct
     before any page raster arrives. Non-PDF rows 415 because the rest of
-    the modal would never call this for them.
+    the modal would never call this for them. Office documents are
+    accepted once their LibreOffice→PDF conversion has landed — the same
+    page stack then renders the converted PDF transparently.
     """
     image = await _load_owned_image(image_id, user, session)
-    if not _is_pdf(image):
+    if not _is_pdf_viewable(image):
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Not a PDF"
         )
-    raw, _mime = await fetch_original(image)
+    raw = await _fetch_pdf_bytes(image)
     try:
         return await asyncio.to_thread(_pdf_meta_sync, raw)
     except Exception as exc:
@@ -1999,13 +2220,17 @@ async def pdf_page(
     on (image_id, page, width). The blob URL the frontend wraps this
     in is per-page-per-tab, so even at the modal's max DPI request
     each page is fetched at most once per session.
+
+    Office documents are served here too once their LibreOffice→PDF
+    conversion has landed: the bytes come from `converted_pdf_blob_key`
+    and rasterize identically to a native PDF page.
     """
     image = await _load_owned_image(image_id, user, session)
-    if not _is_pdf(image):
+    if not _is_pdf_viewable(image):
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Not a PDF"
         )
-    raw, _mime = await fetch_original(image)
+    raw = await _fetch_pdf_bytes(image)
     try:
         jpeg = await asyncio.to_thread(
             _pdf_page_jpeg_sync, raw, page, width
@@ -2226,6 +2451,12 @@ async def backfill_summaries(
         # and search consumers know the text is about to be replaced.
         from sqlalchemy import update as sa_update
 
+        # Flag them pending (NOT clearing summary — that would make the
+        # self-heal sweep below dead-letter these old rows, and would drop
+        # search text mid-regen). /summarize-progress counts pending_summary
+        # so the top progress bar shows; the FE shows the "Generating…"
+        # skeleton off the same flag; _mark_done clears it when the new
+        # summary lands.
         await session.execute(
             sa_update(Image)
             .where(Image.id.in_(ids))
@@ -2529,6 +2760,7 @@ async def move_image(
     bulk wrapper. Bulk move is a thin loop over this in the FE.
     """
     image = await _load_owned_image(image_id, user, session)
+    old_folder_id = image.folder_id  # D4: the source folder's aggregate must refresh too
 
     if body.folder_id is not None:
         from backend.models import Folder
@@ -2544,6 +2776,10 @@ async def move_image(
     image.folder_id = body.folder_id
     await session.commit()
     await session.refresh(image)
+    # D4 — both source and destination folder embeddings change when an
+    # item moves between them. Fire-and-forget so the move stays snappy.
+    from backend.folder_embed import schedule_folder_recompute
+    schedule_folder_recompute(user.id, [old_folder_id, body.folder_id])
     return image
 
 
@@ -2802,6 +3038,15 @@ async def bulk_move(
         ):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Folder not found")
 
+    # D4 — capture the items' current folders so their aggregates refresh
+    # alongside the destination after the bulk move.
+    _old_folders = (
+        await session.execute(
+            select(Image.folder_id)
+            .where(Image.id.in_(image_ids), Image.user_id == user.id)
+            .distinct()
+        )
+    ).scalars().all()
     res = await session.execute(
         sa_update(Image)
         .where(
@@ -2813,6 +3058,8 @@ async def bulk_move(
     )
     moved = int(res.rowcount or 0)
     await session.commit()
+    from backend.folder_embed import schedule_folder_recompute
+    schedule_folder_recompute(user.id, [*_old_folders, folder_id])
     skipped = max(0, len(image_ids) - moved)
     return {
         "moved": moved,

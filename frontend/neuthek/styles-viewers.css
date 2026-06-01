@@ -1,0 +1,1473 @@
+/* ======================================================================
+   styles-viewers.css — polished, type-specific full-file viewers.
+
+   One section per viewer (VCF / ICS / CSV / Font / EPUB / Data-tree /
+   Notebook). Every viewer ROOT is fitted: it fills the modal body
+   (height:100%; column flex; min-height:0) with the scroll happening in
+   the content region, so there's no dead space around a small box.
+
+   House style: monochrome line-icons, the app's CSS variables
+   (--ink / --ink-2/3/4, --surface / --surface-2/3, --line / --line-2,
+   --radius-*), theme-aware light + dark. Loaded after styles.css, so the
+   rules here that share a selector with the originals win on tie.
+
+   Shared design family (all 7 viewers):
+     · a consistent header — icon · title · meta · actions
+     · a tasteful shimmer skeleton while loading
+     · a clean empty state + a friendly error state (Retry / Download)
+     · a copy button that flashes "Copied ✓"
+     · focus-visible rings, subtle elevation, prefers-reduced-motion
+   ====================================================================== */
+
+/* ---- shared tokens (scoped to the viewers, so we never leak) -------- */
+.vcf-viewer,
+.ics-viewer,
+.csv-viewer,
+.font-viewer,
+.ebook-viewer,
+.dtv,
+.nbv {
+  --vw-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --vw-ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --vw-focus: color-mix(in oklab, var(--ink) 35%, transparent);
+}
+
+/* ---- shared viewer scaffolding -------------------------------------- */
+.vcf-viewer,
+.ics-viewer,
+.csv-viewer,
+.font-viewer,
+.ebook-viewer,
+.dtv,
+.nbv {
+  /* The modal body is `display:flex` (row); the viewer root is its only
+     item. `flex:1 1 auto` + `width:100%` makes the root FILL the body's
+     width — critical in a `.pdf-modal--fill` body (EPUB) where the body
+     is a fixed 1100px and a content-width root would otherwise strand the
+     right half blank; harmless in a fit-content body (the body sizes to
+     the root's content, and a capped body is fully filled with no
+     right-gap). `height:100%` + `min-height:0` lets the body's own
+     `flex:1; min-height:0; overflow:auto` region engage on tall content. */
+  flex: 1 1 auto;
+  height: 100%;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* Header strip shared by the parser viewers. A leading type-icon, the
+   title, a meta chip pushed to the right, then any action affordances. */
+.vcf-viewer__head,
+.ics-viewer__head,
+.csv-viewer__head,
+.font-viewer__head,
+.dtv__head,
+.nbv__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in oklab, var(--surface-2) 92%, var(--surface));
+}
+/* The leading glyph that anchors every header. */
+.vw-head__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+}
+.vcf-viewer__name,
+.ics-viewer__name,
+.csv-viewer__name,
+.dtv__name,
+.nbv__name,
+.font-viewer__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vcf-viewer__meta,
+.ics-viewer__meta,
+.csv-viewer__meta,
+.dtv__meta,
+.nbv__meta {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scroll regions — flex:1 + min-height:0 is what keeps the viewer fitted
+   with the content (not the box) doing the scrolling. */
+.vcf-viewer__body,
+.ics-viewer__body,
+.csv-viewer__body,
+.font-viewer__body,
+.dtv__body,
+.nbv__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ====================================================================
+   Shared state kit — skeleton / empty / error
+   Used by every viewer so loading, empty, and failure read identically.
+   ==================================================================== */
+.vw-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 100%;
+  padding: 40px 32px;
+  text-align: center;
+}
+.vw-state__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.vw-state--err .vw-state__icon {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: color-mix(in oklab, var(--danger) 25%, var(--line));
+}
+.vw-state__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.vw-state__msg {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  max-width: 30ch;
+}
+.vw-state__actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.vw-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 130ms var(--vw-ease), color 130ms var(--vw-ease),
+              border-color 130ms var(--vw-ease), transform 130ms var(--vw-ease);
+}
+.vw-btn:hover {
+  color: var(--ink);
+  background: var(--surface-3);
+  border-color: var(--line);
+}
+.vw-btn:active { transform: translateY(0.5px); }
+.vw-btn--primary {
+  color: var(--surface);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.vw-btn--primary:hover {
+  color: var(--surface);
+  background: color-mix(in oklab, var(--ink) 86%, var(--surface));
+}
+
+/* Skeleton shimmer — a calm left-to-right sweep over neutral blocks. */
+.vw-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+}
+.vw-shimmer {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
+}
+.vw-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--ink) 7%, transparent),
+    transparent
+  );
+  animation: vw-sweep 1.35s var(--vw-ease) infinite;
+}
+@keyframes vw-sweep {
+  100% { transform: translateX(100%); }
+}
+
+/* Legacy single-line state classes kept as thin aliases so any markup we
+   didn't convert still renders centered + on-token. */
+.vcf-viewer__loading, .vcf-viewer__empty, .vcf-viewer__error,
+.ics-viewer__loading, .ics-viewer__empty, .ics-viewer__error,
+.csv-viewer__loading, .csv-viewer__empty, .csv-viewer__error,
+.dtv__state, .nbv__state, .font-viewer__msg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 32px;
+  font-size: 13px;
+  color: var(--ink-3);
+  text-align: center;
+}
+.vcf-viewer__error,
+.ics-viewer__error,
+.csv-viewer__error,
+.dtv__state--err,
+.nbv__state--err { color: var(--danger); }
+
+/* Small inline-warning banner reused by tree / notebook raw fallback. */
+.dtv__warn, .nbv__warn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 11.5px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-bottom: 1px solid color-mix(in oklab, var(--warning) 22%, var(--line));
+}
+
+/* Shared focus ring — crisp, monochrome, only on keyboard focus. */
+.vcf-viewer :focus-visible,
+.ics-viewer :focus-visible,
+.csv-viewer :focus-visible,
+.font-viewer :focus-visible,
+.ebook-viewer :focus-visible,
+.dtv :focus-visible,
+.nbv :focus-visible {
+  outline: 2px solid var(--vw-focus);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Visually-hidden label for the busy/skeleton regions (keeps the
+   loading announcement for screen readers without showing text). */
+.vw-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- shared copy buttons (icon + text variants) -------------------- */
+.vw-copy {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-4);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms var(--vw-ease), color 120ms var(--vw-ease),
+              background 120ms var(--vw-ease), border-color 120ms var(--vw-ease);
+}
+.vw-copy:hover {
+  color: var(--ink);
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.vw-copy.is-done {
+  opacity: 1;
+  color: var(--success);
+  border-color: color-mix(in oklab, var(--success) 30%, transparent);
+}
+/* Tiny text pill — used inside dense rows (data-tree). */
+.vw-copytext {
+  flex: none;
+  font-size: 9px;
+  line-height: 1;
+  padding: 3px 6px;
+  cursor: pointer;
+  color: var(--ink-4);
+  background: transparent;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0;
+  white-space: nowrap;
+  transition: opacity 120ms var(--vw-ease), color 120ms var(--vw-ease), border-color 120ms var(--vw-ease);
+}
+.vw-copytext:hover { color: var(--ink); border-color: var(--line); }
+.vw-copytext.is-done {
+  opacity: 1;
+  color: var(--success);
+  border-color: color-mix(in oklab, var(--success) 30%, transparent);
+}
+
+/* ====================================================================
+   VCF / vCard — contact cards
+   ==================================================================== */
+.vcf-viewer__list {
+  list-style: none;
+  margin: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.vcf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow 160ms var(--vw-ease), border-color 160ms var(--vw-ease);
+}
+.vcf-card:hover {
+  border-color: color-mix(in oklab, var(--ink) 16%, var(--line));
+  box-shadow: var(--shadow-2);
+}
+.vcf-card__top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.vcf-card__avatar {
+  width: 60px;
+  height: 60px;
+  flex: none;
+  border-radius: 999px;
+  background:
+    radial-gradient(120% 120% at 30% 20%,
+      color-mix(in oklab, var(--ink) 9%, var(--surface-3)),
+      var(--surface-3));
+  border: 1px solid var(--line);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--surface) 60%, transparent);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.vcf-card__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.vcf-card__heading { min-width: 0; }
+.vcf-card__name {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  color: var(--ink);
+  line-height: 1.2;
+}
+.vcf-card__org {
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+.vcf-card__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.vcf-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 7px 0;
+  border-top: 1px solid var(--line-2);
+}
+.vcf-row:first-child { border-top: 0; }
+.vcf-row__icon {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+.vcf-row__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.vcf-row__val {
+  font-size: 13px;
+  color: var(--ink);
+  word-break: break-word;
+}
+a.vcf-row__val {
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+a.vcf-row__val:hover { border-bottom-color: var(--ink-3); }
+.vcf-row__label {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+/* Reveal the shared copy button on row hover / focus. */
+.vcf-row:hover .vw-copy,
+.vcf-row:focus-within .vw-copy,
+.vw-copy:focus-visible { opacity: 1; }
+.vcf-card__note {
+  display: flex;
+  gap: 11px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.vcf-card__note-icon {
+  flex: none;
+  color: var(--ink-4);
+  margin-top: 1px;
+}
+
+/* ====================================================================
+   ICS / iCalendar — event cards with a month/day date-chip
+   ==================================================================== */
+.ics-viewer__list {
+  list-style: none;
+  margin: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ics-event {
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow 160ms var(--vw-ease), border-color 160ms var(--vw-ease);
+}
+.ics-event:hover {
+  border-color: color-mix(in oklab, var(--ink) 16%, var(--line));
+  box-shadow: var(--shadow-2);
+}
+.ics-event__chip {
+  flex: none;
+  width: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background:
+    linear-gradient(180deg,
+      color-mix(in oklab, var(--ink) 5%, var(--surface-2)),
+      var(--surface-2));
+  text-align: center;
+  align-self: flex-start;
+  overflow: hidden;
+}
+.ics-event__chip-mon {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--ink-3);
+}
+.ics-event__chip-day {
+  font-size: 23px;
+  font-weight: 650;
+  line-height: 1.05;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.ics-event__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ics-event__title {
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--ink);
+  line-height: 1.25;
+}
+.ics-event__day {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.ics-event__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.ics-event__row--top { align-items: flex-start; }
+.ics-event__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--ink-4);
+  margin-top: 0;
+}
+.ics-event__row--top .ics-event__icon { margin-top: 2px; }
+.ics-event__row a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+  word-break: break-word;
+}
+.ics-event__row a:hover { border-bottom-color: var(--ink-3); }
+.ics-event__attendees {
+  line-height: 1.5;
+  word-break: break-word;
+}
+.ics-event__desc {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-2);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+
+/* ====================================================================
+   CSV / TSV — data table
+   ==================================================================== */
+.csv-viewer__table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.csv-viewer__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.csv-viewer__table thead th.csv-num { text-align: right; }
+.csv-viewer__table tbody td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: top;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.csv-viewer__table td.csv-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+/* Neutralize the older odd-row tint from styles.css so the even-row td
+   zebra below is the single source of striping (and the sticky rownum
+   column doesn't show two different backgrounds). */
+.csv-viewer__table tbody tr:nth-child(odd) { background: transparent; }
+.csv-viewer__table tbody tr:nth-child(even) td {
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+}
+.csv-viewer__table tbody tr:hover td {
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
+}
+/* Sticky, distinct row-number column. */
+.csv-viewer__rownum {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--ink-4);
+  user-select: none;
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+}
+.csv-viewer__table thead th.csv-viewer__rownum { z-index: 3; }
+.csv-viewer__table tbody tr:hover td.csv-viewer__rownum {
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+
+/* ---- data-grid scroll shadows --------------------------------------
+   The scroll container is position:relative; two pseudo-elements pin to
+   the top and left edges and fade in only once scrolled, giving the
+   sticky header / row-number column a real "floating above content"
+   depth cue. */
+.csv-viewer__body {
+  position: relative;
+}
+/* Top edge shadow — a sticky strip pinned to the top of the scroll
+   container, just under the sticky header row, fading in once scrolled. */
+.csv-viewer__body::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: block;
+  height: 0;
+  margin: 0 0 -1px;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 7px 9px -7px color-mix(in oklab, var(--ink) 48%, transparent);
+  transition: opacity 160ms var(--vw-ease);
+}
+.csv-viewer__body[data-scroll-y="1"]::before { opacity: 1; }
+/* Left edge cue — the sticky row-number column gains a soft shadow on
+   its right edge once horizontally scrolled. */
+.csv-viewer__body[data-scroll-x="1"] .csv-viewer__rownum {
+  border-right-color: color-mix(in oklab, var(--ink) 22%, var(--line));
+  box-shadow: 6px 0 8px -6px color-mix(in oklab, var(--ink) 35%, transparent);
+}
+
+/* ---- CSV loading skeleton (table-shaped) --------------------------- */
+.csv-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+.csv-skel__row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-2);
+}
+.csv-skel__row--head {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+}
+.csv-skel__cell { height: 12px; }
+
+/* ====================================================================
+   Font specimen
+   ==================================================================== */
+.font-viewer__head { justify-content: space-between; }
+.font-viewer__tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.font-viewer__fmt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.font-viewer__size { font-size: 11px; color: var(--ink-3); }
+.font-viewer__doc {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding: 22px 26px 30px;
+}
+.font-viewer__hero-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.font-viewer__hero {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px dashed transparent;
+  background: transparent;
+  color: var(--ink);
+  line-height: 1.12;
+  letter-spacing: -0.01em;
+  padding: 4px 0;
+  outline: none;
+  transition: border-color 130ms var(--vw-ease);
+}
+.font-viewer__hero:focus { border-bottom-color: var(--line); }
+.font-viewer__hero::placeholder { color: var(--ink-4); }
+/* Size control under the hero — a slim range + a tabular readout. */
+.font-viewer__sizer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 360px;
+}
+.font-viewer__slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+  cursor: pointer;
+  outline: none;
+}
+.font-viewer__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--ink);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+  cursor: pointer;
+  transition: transform 120ms var(--vw-ease);
+}
+.font-viewer__slider::-webkit-slider-thumb:hover { transform: scale(1.12); }
+.font-viewer__slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--ink);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--line);
+  cursor: pointer;
+}
+.font-viewer__sizeval {
+  flex: none;
+  min-width: 42px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+/* Glyph grid — one cell per glyph, hairline separators. */
+.font-viewer__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(46px, 1fr));
+  gap: 1px;
+  background: var(--line-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+}
+.font-viewer__cell {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  font-size: 22px;
+  color: var(--ink);
+  background: var(--surface);
+  line-height: 1;
+  transition: background 120ms var(--vw-ease), color 120ms var(--vw-ease);
+}
+.font-viewer__cell:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.font-viewer__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.font-viewer__section-label {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 5px;
+}
+.font-viewer__ramp {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.font-viewer__ramp-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+.font-viewer__ramp-size {
+  flex: none;
+  width: 30px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--ink-4);
+}
+.font-viewer__ramp-text {
+  color: var(--ink);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.font-viewer__glyphs {
+  font-size: 28px;
+  line-height: 1.45;
+  letter-spacing: 0.04em;
+  word-spacing: 0.12em;
+  color: var(--ink);
+  word-break: break-word;
+}
+.font-viewer__glyphs--punct {
+  font-size: 22px;
+  color: var(--ink-2);
+}
+.font-viewer__kv {
+  margin: 0;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+}
+.font-viewer__kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 5px 0;
+  border-top: 1px solid var(--line-2);
+}
+.font-viewer__kv-row:first-child { border-top: 0; }
+.font-viewer__kv-row dt {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.font-viewer__kv-row dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+  text-align: right;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+/* Font specimen skeleton. */
+.font-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding: 24px 26px;
+}
+.font-skel__ramp {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ====================================================================
+   EPUB reader
+   ==================================================================== */
+.ebook-viewer { background: #16181d; }
+.ebook-viewer__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.ebook-viewer__tocbtn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.ebook-viewer__tocbtn:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+.ebook-viewer__tocbtn[aria-pressed="true"] { color: var(--ink); border-color: var(--ink-3); }
+.ebook-viewer__tocbtn:disabled { opacity: 0.4; cursor: default; }
+.ebook-viewer__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ebook-viewer__pct {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-4);
+  font-variant-numeric: tabular-nums;
+}
+/* Reading-size cycle button: a small "Aa" that steps through presets. */
+.ebook-viewer__fontbtn {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 1px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 120ms var(--vw-ease), color 120ms var(--vw-ease), border-color 120ms var(--vw-ease);
+}
+.ebook-viewer__fontbtn:hover { background: var(--surface-3); color: var(--ink); border-color: var(--line); }
+.ebook-viewer__fontbtn-sm { font-size: 10px; }
+.ebook-viewer__progress {
+  flex: none;
+  height: 2px;
+  background: var(--line-2);
+}
+.ebook-viewer__progress-fill {
+  height: 100%;
+  background: var(--ink-3);
+  transition: width 180ms ease;
+}
+.ebook-viewer__stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  background: #16181d;
+}
+.ebook-viewer__toc {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 3;
+  width: 290px;
+  max-width: 72%;
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  padding: 8px 0;
+}
+.ebook-viewer__toc-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.35;
+  padding: 7px 14px;
+}
+.ebook-viewer__toc-item:hover { background: var(--surface-3); color: var(--ink); }
+.ebook-viewer__nav {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 56px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: none;
+  color: #6b7180;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.ebook-viewer__nav:hover {
+  color: #d6d9df;
+  background: linear-gradient(to var(--dir, right), rgba(255,255,255,0.05), transparent);
+}
+.ebook-viewer__nav--prev { left: 0; --dir: right; }
+.ebook-viewer__nav--next { right: 0; --dir: left; }
+.ebook-viewer__page {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  /* Keep the reading column off the page edges / nav zones. */
+  margin: 0 56px;
+  background: #16181d;
+}
+.ebook-viewer__overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12.5px;
+  color: #9aa0ac;
+  pointer-events: none;
+  background: #16181d;
+  z-index: 4;
+}
+/* The error overlay needs clicks (Retry / Download) and reuses the shared
+   state kit; restate the dark surface so the buttons read on it. */
+.ebook-viewer__overlay--err { pointer-events: auto; }
+.ebook-viewer__overlay--err .vw-state__icon {
+  background: rgba(248,113,113,0.12);
+  border-color: rgba(248,113,113,0.35);
+  color: #f87171;
+}
+.ebook-viewer__overlay--err .vw-state__title { color: #f2f4f8; }
+.ebook-viewer__overlay--err .vw-state__msg { color: #9aa0ac; }
+.ebook-viewer__overlay--err .vw-btn {
+  color: #d6d9df;
+  background: #1d2027;
+  border-color: #2a2e37;
+}
+.ebook-viewer__overlay--err .vw-btn:hover { background: #242832; color: #fff; }
+.ebook-viewer__overlay--err .vw-btn--primary {
+  color: #16181d;
+  background: #d6d9df;
+  border-color: #d6d9df;
+}
+.ebook-viewer__overlay--err .vw-btn--primary:hover { background: #fff; }
+/* EPUB opening skeleton — faint text lines centered in the reading column,
+   tinted to the dark reader surface rather than the app tokens. */
+.ebook-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  width: min(560px, 76%);
+  padding: 0 8px;
+}
+.ebook-skel__line {
+  height: 13px;
+  border-radius: 5px;
+  background: rgba(255,255,255,0.06);
+}
+.ebook-skel__line::after {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+}
+
+/* ====================================================================
+   Data-tree (JSON / YAML / XML)
+   ==================================================================== */
+.dtv__expanders {
+  display: inline-flex;
+  gap: 4px;
+}
+.dtv__expbtn,
+.dtv__toggle {
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  transition: background 120ms var(--vw-ease), color 120ms var(--vw-ease);
+}
+.dtv__expbtn:hover,
+.dtv__toggle:hover { color: var(--ink); background: var(--surface-3); }
+.dtv__toggle[aria-pressed="true"] { color: var(--ink); background: var(--surface); }
+/* Inline tree search. */
+.dtv__search {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-4);
+  transition: border-color 120ms var(--vw-ease), color 120ms var(--vw-ease);
+}
+.dtv__search:focus-within {
+  border-color: color-mix(in oklab, var(--ink) 30%, var(--line));
+  color: var(--ink-3);
+}
+.dtv__search-input {
+  width: 130px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11.5px;
+  outline: none;
+  padding: 0;
+}
+.dtv__search-input::placeholder { color: var(--ink-4); }
+.dtv__search-clear {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-4);
+  cursor: pointer;
+}
+.dtv__search-clear:hover { color: var(--ink); background: var(--surface-3); }
+.dtv__tree {
+  padding: 14px 16px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.dtv__row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 0;
+}
+.dtv__row--leaf { padding-left: 0; }
+.dtv__caret {
+  flex: 0 0 14px;
+  width: 14px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-3);
+  padding: 0;
+  line-height: 1;
+  font-size: 9px;
+  transition: transform 0.12s ease;
+  align-self: center;
+}
+.dtv__caret--open { transform: rotate(90deg); }
+.dtv__caret--empty { cursor: default; }
+/* While searching, every node is force-open and the caret/summary are
+   disabled; keep them visually unchanged (not greyed) so the tree still
+   reads cleanly. */
+.dtv__caret:disabled { cursor: default; opacity: 1; transform: rotate(90deg); }
+.dtv__summary:disabled { cursor: default; opacity: 1; color: var(--ink-3); }
+.dtv__key { color: #4a8fd1; }
+html[data-theme="dark"] .dtv__key { color: #6fb0e8; }
+.dtv__colon { color: var(--ink-4); }
+.dtv__val { word-break: break-word; }
+.dtv__val--string { color: #3b9e6a; }
+.dtv__val--number { color: #c08a2e; }
+.dtv__val--boolean,
+.dtv__val--null,
+.dtv__val--undefined { color: #9a6fce; }
+html[data-theme="dark"] .dtv__val--string { color: #6cc28d; }
+html[data-theme="dark"] .dtv__val--number { color: #d6a548; }
+html[data-theme="dark"] .dtv__val--boolean,
+html[data-theme="dark"] .dtv__val--null,
+html[data-theme="dark"] .dtv__val--undefined { color: #b793e0; }
+.dtv__summary {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-3);
+  padding: 0;
+  font: inherit;
+}
+.dtv__type {
+  margin-left: 4px;
+  font-size: 9.5px;
+  color: var(--ink-4);
+  text-transform: uppercase;
+}
+/* The data-tree copy control is the shared text-pill; just nudge spacing
+   and reveal it on row hover / focus. */
+.dtv__copy { margin-left: 6px; }
+.dtv__row:hover > .dtv__copy,
+.dtv__row:focus-within > .dtv__copy,
+.dtv__copy:focus-visible { opacity: 1; }
+/* Type-tint dot — a small colored bullet that reads the leaf/branch type
+   at a glance, matching the value colors. */
+.dtv__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  align-self: center;
+  background: var(--ink-4);
+}
+.dtv__dot--string { background: #3b9e6a; }
+.dtv__dot--number { background: #c08a2e; }
+.dtv__dot--boolean,
+.dtv__dot--null,
+.dtv__dot--undefined { background: #9a6fce; }
+.dtv__dot--object,
+.dtv__dot--array { background: #4a8fd1; }
+html[data-theme="dark"] .dtv__dot--string { background: #6cc28d; }
+html[data-theme="dark"] .dtv__dot--number { background: #d6a548; }
+html[data-theme="dark"] .dtv__dot--boolean,
+html[data-theme="dark"] .dtv__dot--null,
+html[data-theme="dark"] .dtv__dot--undefined { background: #b793e0; }
+html[data-theme="dark"] .dtv__dot--object,
+html[data-theme="dark"] .dtv__dot--array { background: #6fb0e8; }
+/* Search match highlight + row tint. */
+.dtv__mark {
+  background: color-mix(in oklab, var(--warning) 38%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.dtv__row.is-hit {
+  background: color-mix(in oklab, var(--warning) 9%, transparent);
+  border-radius: 5px;
+}
+.dtv__children {
+  border-left: 1px solid var(--line-2);
+  margin-left: 6px;
+  padding-left: 8px;
+}
+.dtv__empty {
+  color: var(--ink-4);
+  font-style: italic;
+  font-size: 12px;
+  padding-left: 14px;
+}
+.dtv__row--close { color: var(--ink-4); padding-left: 0; }
+.dtv__state--err { color: #c0564f; }
+.dtv__raw {
+  margin: 0;
+  padding: 14px 18px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-2);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+/* ====================================================================
+   Jupyter notebook
+   ==================================================================== */
+.nbv__toggle {
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+  color: var(--ink-3);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.nbv__toggle:hover { color: var(--ink); background: var(--surface-3); }
+.nbv__toggle[aria-pressed="true"] { color: var(--ink); background: var(--surface); }
+.nbv__cells {
+  padding: 18px 20px 26px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+.nbv-cell { margin-bottom: 16px; }
+.nbv-cell:last-child { margin-bottom: 0; }
+
+.nbv-cell--md { padding: 0 2px; }
+.nbv-md { font-size: 13.5px; line-height: 1.6; }
+
+.nbv-cell--code { display: flex; flex-direction: column; }
+.nbv-cell__src-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+  background: var(--surface-2);
+  transition: border-color 140ms var(--vw-ease);
+}
+.nbv-cell__src-wrap:hover { border-color: color-mix(in oklab, var(--ink) 14%, var(--line)); }
+/* Per-cell copy — floats in the top-right of the source block, revealed
+   on hover. Sits above the code; the shared .vw-copy owns the visuals. */
+.nbv-cell__copy {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 1;
+  background: color-mix(in oklab, var(--surface-2) 80%, transparent);
+  backdrop-filter: blur(2px);
+}
+.nbv-cell__src-wrap:hover .nbv-cell__copy,
+.nbv-cell__copy:focus-visible,
+.nbv-cell__copy.is-done { opacity: 1; }
+.nbv-cell__gutter {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding: 9px 8px 9px 10px;
+  text-align: right;
+  color: var(--ink-4);
+  font-size: 11px;
+  border-right: 1px solid var(--line);
+  user-select: none;
+  white-space: nowrap;
+}
+.nbv-cell__src {
+  margin: 0;
+  padding: 9px 12px;
+  overflow: auto;
+  flex: 1;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre;
+  color: var(--ink);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.nbv-cell__outputs {
+  margin-left: 58px;
+  margin-top: 6px;
+  border-left: 2px solid var(--line-2);
+  background: var(--surface);
+}
+.nbv-out { margin: 0; }
+.nbv-out--stream,
+.nbv-out--plain,
+.nbv-out--error,
+.nbv-out--err {
+  padding: 6px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.nbv-out--err {
+  color: #c2554d;
+  background: color-mix(in oklab, #c2554d 8%, transparent);
+}
+.nbv-out--img { padding: 8px 12px; }
+.nbv-out--img img { max-width: 100%; height: auto; }
+.nbv-out--html {
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow: auto;
+}
+.nbv-cell--raw {
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-1);
+  background: var(--surface-2);
+}
+.nbv__raw {
+  margin: 0;
+  padding: 14px 18px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink-2);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+/* Notebook loading skeleton — a markdown block then a few code blocks. */
+.nbv-skel {
+  padding: 20px 20px;
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.nbv-skel__md {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.nbv-skel__code {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--surface-2);
+}
+.nbv-skel__gutter { flex: none; }
+.nbv-skel__lines {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ====================================================================
+   Reduced motion — honor the user setting across every viewer. Disables
+   the shimmer sweep, hover lifts, and transitions; states still render,
+   just without animation.
+   ==================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .vcf-viewer *,
+  .ics-viewer *,
+  .csv-viewer *,
+  .font-viewer *,
+  .ebook-viewer *,
+  .dtv *,
+  .nbv * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .vw-shimmer::after,
+  .ebook-skel__line::after { animation: none !important; display: none; }
+  .vcf-card:hover,
+  .ics-event:hover { box-shadow: var(--shadow-1); }
+}

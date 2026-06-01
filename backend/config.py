@@ -25,6 +25,11 @@ _FILE_ENV_NAMES = {
     # POSTing crafted events to `/billing/webhook`.
     "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET",
+    # Shared secret for the marketing-site newsletter forward. A leak
+    # would let an attacker subscribe arbitrary emails to the marketing
+    # list (spam / list-poisoning), so treat it like other secrets and
+    # support the Docker/K8s *_FILE convention.
+    "MARKETING_INTERNAL_TOKEN",
 }
 
 
@@ -99,7 +104,7 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="dev-only-jwt-secret-CHANGE-IN-PROD")
     jwt_lifetime_seconds: int = Field(default=60 * 60 * 24)
 
-    upload_max_bytes: int = Field(default=200 * 1024 * 1024)
+    upload_max_bytes: int = Field(default=2 * 1024 * 1024 * 1024)  # 2 GB — supports screen-recordings / DVR clips / .mov / .mp4
     # VLT-8 — vault files can be much larger than AI-processed photos
     # (videos, disk images, archives the user wants zero-knowledge). The
     # ciphertext is streamed straight to object storage, so a generous
@@ -107,11 +112,11 @@ class Settings(BaseSettings):
     # quota. Default 5 GB per file.
     vault_upload_max_bytes: int = Field(default=5 * 1024 * 1024 * 1024)
     upload_max_count_per_hour: int = Field(default=300)
-    upload_max_bytes_per_day: int = Field(default=10 * 1024 * 1024 * 1024)
+    upload_max_bytes_per_day: int = Field(default=100 * 1024 * 1024 * 1024)  # 100 GB/day so a real library sync isn't blocked after the per-file bump
     upload_max_image_pixels: int = Field(default=120_000_000)
     upload_max_archive_entries: int = Field(default=5_000)
     upload_max_archive_depth: int = Field(default=10)
-    upload_max_archive_ratio: int = Field(default=5)
+    upload_max_archive_ratio: int = Field(default=100)  # Office files (.docx/.xlsx/.pptx) are zips whose XML compresses 10-50x; real zip bombs are 1000x+ and are still caught by the absolute uncompressed caps below
     # Audit U2 — per-entry + total uncompressed caps. The cumulative
     # ratio above (5) only catches archives where the AVERAGE entry
     # is ≥5× compressed. A single 200 MB bomb hidden among 4999
@@ -317,6 +322,15 @@ class Settings(BaseSettings):
     # that shouldn't issue outbound HTTP.
     cloud_sync_hourly_enabled: bool = Field(default=True)
     cloud_sync_interval_seconds: int = Field(default=3600)
+    # Per-socket timeout (seconds) for the Google Drive client. The
+    # googleapiclient transport (httplib2) ships with NO socket timeout
+    # by default, so a Drive endpoint that accepts the connection then
+    # stalls (no bytes, no FIN) wedges the sync worker thread forever —
+    # the CS10 retry wrapper only fires on an HTTP *status*, not on a
+    # silent hang. Pin a generous-but-finite read timeout so a wedged
+    # connection raises (and the retry/skip path takes over) instead of
+    # blocking. 120s comfortably covers a large single-file chunk fetch.
+    cloud_sync_drive_http_timeout_seconds: float = Field(default=120.0)
 
     # ---- Stripe billing (migration 0025) ----
     # All empty → billing endpoints return 503 and `users.quota_bytes`
@@ -344,6 +358,84 @@ class Settings(BaseSettings):
     stripe_checkout_return_url: str = Field(
         default="http://localhost:5173/billing/return?session_id={CHECKOUT_SESSION_ID}"
     )
+
+    # ---- Marketing-site newsletter integration ----
+    # When a signed-in user ticks the newsletter opt-in, the backend
+    # records the consent locally AND forwards their (already-verified)
+    # email to the marketing site's newsletter list via an internal,
+    # token-authenticated HTTP call (see backend/marketing.py).
+    #
+    # `marketing_base_url` is the marketing Express server's origin
+    # (e.g. https://neuthek.com in prod, http://host.docker.internal:5181
+    # in local dev when the marketing site runs on the host). Empty
+    # disables the forward — the consent is still recorded locally, the
+    # marketing call is simply skipped (logged, not an error), so a
+    # self-host deploy without the marketing site keeps working.
+    marketing_base_url: str = Field(default="")
+    # Shared bearer token, matched against INTERNAL_API_TOKEN on the
+    # marketing server. Empty disables the forward (same as no base URL).
+    # Treated as a secret (see _FILE_ENV_NAMES below for *_FILE support).
+    marketing_internal_token: str = Field(default="")
+    # Per-call timeout for the marketing subscribe HTTP request. Kept
+    # short so a slow/unreachable marketing site never stalls the user's
+    # opt-in request (the call is best-effort + fire-and-record anyway).
+    marketing_http_timeout_seconds: float = Field(default=8.0)
+
+    # ---- Job-queue reliability (production hardening for scale) ----
+    #
+    # The ml-worker consumes a Redis list (`neuthek:jobs`). These knobs
+    # govern crash-safety, retries, and the watchdog. All are additive
+    # and default to safe values; nothing here changes the enqueue
+    # contract on the API side.
+    #
+    # `job_max_attempts` — how many times a single job is allowed to run
+    # before it's moved to the dead-letter list (`neuthek:jobs:dead`)
+    # instead of being retried forever. A poison job (corrupt blob, model
+    # that always OOMs on it) lands in dead-letter after this many tries
+    # rather than looping and starving real work.
+    job_max_attempts: int = Field(default=5)
+    # `job_visibility_timeout_seconds` — a job that's been in the
+    # in-flight list (`neuthek:jobs:inflight`) longer than this with no
+    # progress is presumed orphaned (worker died mid-process) and is
+    # re-queued by the reaper. Must comfortably exceed the slowest real
+    # job: a long Florence beam search + Qwen rewrite + HLS transcode can
+    # run minutes, so default 30 min.
+    job_visibility_timeout_seconds: int = Field(default=1800)
+    # `job_watchdog_timeout_seconds` — hard per-job wall-clock cap inside
+    # the worker. If a single job exceeds this (a wedged LibreOffice /
+    # ffmpeg subprocess that ignores its own timeout, a hung model call),
+    # the worker abandons it so one hung job can't permanently stall the
+    # single-threaded consumer. Set above the visibility timeout would be
+    # pointless; keep it the same order. Default 25 min (< visibility so a
+    # watchdog-killed job is still reclaimable by the reaper).
+    job_watchdog_timeout_seconds: int = Field(default=1500)
+    # `job_retry_backoff_base_seconds` — base for exponential backoff
+    # between retries (delay = base * 2**(attempt-1), capped). Keeps a
+    # transiently-failing job (e.g. MinIO blip) from hot-looping.
+    job_retry_backoff_base_seconds: float = Field(default=5.0)
+    job_retry_backoff_max_seconds: float = Field(default=300.0)
+    # `stuck_pending_reaper_enabled` — server-side sweep that finds Image
+    # rows stuck `pending_summary` / `pending_face_scan` past a timeout
+    # with no active job and re-enqueues them (bounded). The companion to
+    # the FE `summarize-progress` drainer, but it runs for ALL users and
+    # ALL job kinds, server-side, on a timer. Disabled in test so pytest
+    # doesn't fire background enqueues.
+    stuck_pending_reaper_enabled: bool = Field(default=True)
+    # How old a `pending_*` row must be (since upload) before the reaper
+    # considers it stuck. Above the normal worst-case processing latency
+    # so it never races a job that's legitimately still queued.
+    stuck_pending_timeout_seconds: int = Field(default=1800)
+    # How many stuck rows the reaper re-enqueues per tick (bounded so a
+    # huge backlog drains gradually rather than flooding the queue).
+    stuck_pending_batch_size: int = Field(default=200)
+    # Reaper tick interval.
+    stuck_pending_reaper_interval_seconds: int = Field(default=600)
+    # Hard cap on the live queue depth. The API refuses to enqueue NEW
+    # background work when the queue is already this deep (backpressure)
+    # so a runaway producer can't grow Redis unbounded. The upload itself
+    # still succeeds — the row is left `pending_*` and the reaper / FE
+    # drainer pick it up once the queue drains. 0 disables the cap.
+    job_queue_max_depth: int = Field(default=100_000)
 
     @property
     def is_production(self) -> bool:

@@ -188,6 +188,22 @@ async def create_image_comment(
     user: Annotated[User, Depends(current_active_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> CommentRead:
+    # HARDENING — per-user create throttle. Comments are writable by any
+    # ACTIVE share recipient (not just the image owner), so without a
+    # limit a recipient could script thousands of inserts to flood a
+    # thread / inflate the DB / spam the owner. 60/min/user is well above
+    # any human commenting cadence while capping automated abuse. Keyed
+    # on user id only (not image) so rotating across images can't
+    # multiply the budget. Matches the rate-limit pattern used by the
+    # other write endpoints (people/images/shares/vault).
+    from backend.security import enforce_rate_limit
+    await enforce_rate_limit(
+        key=f"comment:create:{user.id}",
+        limit=60,
+        window_seconds=60,
+        detail="Too many comments. Slow down and try again in a minute.",
+    )
+
     await _can_access_image(session, image_id, user)
 
     # If this is a reply, the parent has to belong to the same image —

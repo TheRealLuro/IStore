@@ -759,6 +759,22 @@ def _icloud_service_sync(link: "CloudLink") -> "PyiCloudService":
 _ICLOUD_SVC_CACHE: dict[int, tuple] = {}
 _ICLOUD_SVC_TTL = timedelta(minutes=10)
 
+# SYNC-6 — id namespace for iCloud Photos assets. Drive entries use the
+# file's full path as `remote_id`; Photos entries use this prefix + the
+# asset's stable CloudKit recordName so the two never collide and the
+# download dispatcher can route a Photos asset to PhotoAsset.download()
+# instead of trying to navigate it as a Drive path.
+_ICLOUD_PHOTO_ID_PREFIX = "photos:"
+# Synthetic folder name the camera-roll lands in, under the "iCloud
+# Drive" provider root, so Photos don't dump into the gallery root next
+# to real Drive folders.
+_ICLOUD_PHOTOS_FOLDER = "Photos"
+# Per-link cache of {asset_id -> PhotoAsset} built during the Photos
+# walk so the per-file download can fetch by id without re-enumerating
+# the whole library. Keyed by link id; lives as long as the service
+# cache entry (cleared in _icloud_invalidate_service).
+_ICLOUD_PHOTO_ASSET_CACHE: dict[int, dict] = {}
+
 
 def _icloud_service_and_root(link: "CloudLink"):
     """Return (service, drive_root_node), building + caching once per
@@ -785,6 +801,7 @@ def _icloud_invalidate_service(link_id: int) -> None:
     so a long-idle session doesn't get reused on the next run with a
     possibly-expired trust token."""
     _ICLOUD_SVC_CACHE.pop(link_id, None)
+    _ICLOUD_PHOTO_ASSET_CACHE.pop(link_id, None)
 
 
 async def _icloud_collect_entries(link: "CloudLink") -> list[dict]:
@@ -878,9 +895,21 @@ async def _icloud_collect_entries(link: "CloudLink") -> list[dict]:
 
 
 async def _icloud_download(link: "CloudLink", entry: dict) -> bytes:
-    """Fetch the bytes of a single iCloud Drive file. `entry` is the
-    dict produced by `_icloud_collect_entries` — we use its `remote_id`
-    (the full path) to navigate from `service.drive` to the leaf."""
+    """Fetch the bytes of a single iCloud file. `entry` is the dict
+    produced by `_icloud_collect_entries` (Drive) or
+    `_icloud_collect_photo_entries` (Photos).
+
+    Routing is by `remote_id` prefix: Photos assets carry a
+    `"photos:<recordName>"` id and go through the Photos-library
+    downloader; everything else is a Drive path we navigate from
+    `service.drive`."""
+    # SYNC-6 — iCloud *Photos* (the camera roll) is a completely
+    # separate CloudKit zone from iCloud *Drive* (the Files app).
+    # Photos assets are downloaded via PhotoAsset.download(), not by
+    # walking the Drive tree, so dispatch on the id namespace.
+    if (entry.get("remote_id") or "").startswith(_ICLOUD_PHOTO_ID_PREFIX):
+        return await _icloud_photo_download(link, entry)
+
     def _dl_sync() -> bytes:
         # SYNC-3 — reuse the cached service + drive root instead of
         # rebuilding a fresh PyiCloudService (re-auth + PCS check) per
@@ -929,10 +958,217 @@ async def _icloud_download(link: "CloudLink", entry: dict) -> bytes:
     return await _asyncio_icloud.to_thread(_dl_sync)
 
 
+# SYNC-6 — iCloud Photos (camera roll) enumeration + download.
+#
+# THE bug behind "iCloud doesn't get everything": the collector above
+# only walks `service.drive` — the iCloud *Drive* (Files app) zone.
+# Photos shot on an iPhone/iPad live in iCloud *Photos*, a SEPARATE
+# CloudKit zone reached through `service.photos`. A user whose images
+# are in their camera roll (the overwhelmingly common case) saw the
+# Drive walk return their handful of Drive documents and none of their
+# actual photos. We now enumerate `service.photos.all` (the "All
+# Photos" smart album, which already excludes Hidden + Recently
+# Deleted) IN ADDITION to the Drive tree and merge both into the sync.
+
+
+def _icloud_photo_modified(asset) -> "datetime | None":
+    """Best-effort change-detection timestamp for a Photos asset.
+    pyicloud exposes `asset_date` (when the photo was taken) which is
+    stable per asset — good enough for the hash-less (size, modified)
+    dedup the sync loop uses for iCloud."""
+    try:
+        return asset.asset_date
+    except Exception:
+        try:
+            return asset.created
+        except Exception:
+            return None
+
+
+def _icloud_photo_size(asset) -> int:
+    """pyicloud's `PhotoAsset.size` reads `resOriginalRes` directly and
+    raises KeyError when that field is absent (some shared / partially-
+    synced assets). Guard it so one odd asset can't abort the walk, and
+    fall back to the version metadata when present."""
+    try:
+        return int(asset.size or 0)
+    except Exception:
+        pass
+    try:
+        ver = asset.versions.get("original") or {}
+        return int(ver.get("size") or 0)
+    except Exception:
+        return 0
+
+
+async def _icloud_collect_photo_entries(link: "CloudLink") -> list[dict]:
+    """Enumerate the user's iCloud Photos library ("All Photos").
+
+    Returns the same entry-dict shape every provider emits, with two
+    iCloud-Photos specifics:
+      * `remote_id` is `"photos:<recordName>"` — the asset's stable
+        CloudKit id, namespaced so it can't collide with a Drive path
+        and so `_icloud_download` routes it to the Photos downloader.
+      * `remote_parent_path` is "Photos" so the camera roll lands in a
+        dedicated synthetic subfolder under the "iCloud Drive" root.
+
+    The `service.photos.all.photos` generator paginates internally
+    (100 assets/page) and de-dupes by id — we iterate it to exhaustion
+    (NO slice / cap) so the WHOLE library is enumerated, not the first
+    page. A defensive MAX_ASSETS cap guards against a pathological
+    never-ending generator, set well above any plausible library.
+    """
+    def _walk_sync() -> list[dict]:
+        service, _root = _icloud_service_and_root(link)
+        out: list[dict] = []
+        asset_cache: dict = {}
+        _ICLOUD_PHOTO_ASSET_CACHE[link.id] = asset_cache
+
+        try:
+            all_album = service.photos.all
+        except Exception:
+            # Accessing `.photos` can raise if the account has never
+            # enabled iCloud Photos, or pyicloud can't reach the
+            # CloudKit photos zone. That's not fatal to the overall
+            # sync — the Drive walk still ran — so log + return empty.
+            logger.exception(
+                "icloud: service.photos unavailable for link=%s "
+                "(iCloud Photos may be disabled on this account)",
+                link.id,
+            )
+            return out
+
+        MAX_ASSETS = 500_000
+        count = 0
+        try:
+            for asset in all_album.photos:
+                count += 1
+                if count > MAX_ASSETS:
+                    logger.warning(
+                        "icloud: photos walk capped at %d assets for "
+                        "link=%s", MAX_ASSETS, link.id,
+                    )
+                    break
+                try:
+                    asset_id = asset.id
+                    if not asset_id:
+                        continue
+                    try:
+                        name = asset.filename
+                    except Exception:
+                        # filenameEnc missing — synthesize a stable
+                        # name from the id so the file still ingests.
+                        name = f"{asset_id}.jpg"
+                    remote_id = f"{_ICLOUD_PHOTO_ID_PREFIX}{asset_id}"
+                    asset_cache[asset_id] = asset
+                    out.append({
+                        "remote_id": remote_id,
+                        "name": name,
+                        "mime_type": None,
+                        "modified_at": _icloud_photo_modified(asset),
+                        "remote_path": name,
+                        "remote_parent_path": _ICLOUD_PHOTOS_FOLDER,
+                        # iCloud Photos exposes no usable content hash
+                        # via pyicloud — (size, asset_date) drives the
+                        # change detection, same as the Drive path.
+                        "sha256": None,
+                        "size_bytes": _icloud_photo_size(asset),
+                    })
+                except Exception:
+                    logger.exception(
+                        "icloud: error processing photo asset for link=%s",
+                        link.id,
+                    )
+                    continue
+        except Exception:
+            # A mid-iteration failure (network blip, expired token)
+            # shouldn't discard the assets we already collected — return
+            # what we have so a partial library still syncs and the next
+            # run resumes.
+            logger.exception(
+                "icloud: photos enumeration interrupted at %d assets "
+                "for link=%s — returning partial list", count, link.id,
+            )
+        return out
+
+    return await _asyncio_icloud.to_thread(_walk_sync)
+
+
+async def _icloud_photo_download(link: "CloudLink", entry: dict) -> bytes:
+    """Fetch the original bytes of a single iCloud Photos asset.
+
+    Resolves the asset from the per-link cache populated during the
+    Photos walk (fast path — no re-enumeration). On a cache miss
+    (cache evicted between walk + download, e.g. a long sync that
+    crossed the service TTL) we re-walk the library once to repopulate
+    it. `PhotoAsset.download("original")` returns None when the
+    original version is missing (Apple "Optimize Storage" evicted it);
+    we return b"" so the VLT-1 dataless guard in the sync loop counts +
+    skips it cleanly instead of crashing.
+    """
+    def _dl_sync() -> bytes:
+        remote_id = entry.get("remote_id") or ""
+        asset_id = remote_id[len(_ICLOUD_PHOTO_ID_PREFIX):]
+        cache = _ICLOUD_PHOTO_ASSET_CACHE.get(link.id) or {}
+        asset = cache.get(asset_id)
+        if asset is None:
+            # Cache miss — repopulate by re-walking. Rare; only when the
+            # service cache TTL lapsed between enumeration and this
+            # download.
+            service, _root = _icloud_service_and_root(link)
+            fresh: dict = {}
+            try:
+                for a in service.photos.all.photos:
+                    try:
+                        fresh[a.id] = a
+                    except Exception:
+                        continue
+            except Exception:
+                logger.exception(
+                    "icloud: photo re-walk failed for link=%s id=%s",
+                    link.id, asset_id,
+                )
+            _ICLOUD_PHOTO_ASSET_CACHE[link.id] = fresh
+            asset = fresh.get(asset_id)
+        if asset is None:
+            logger.warning(
+                "icloud: photo asset %s not found for link=%s",
+                asset_id, link.id,
+            )
+            return b""
+        # Prefer the full-resolution original. download() already passes
+        # stream=True internally and returns response.raw.read(), so the
+        # SYNC-4 (missing stream) class of bug doesn't apply here.
+        try:
+            data = asset.download("original")
+        except Exception:
+            logger.exception(
+                "icloud: photo download(original) failed for %s", asset_id,
+            )
+            data = None
+        if not data:
+            # Evicted / dataless asset, or original version absent. Let
+            # the caller's VLT-1 guard handle the empty blob.
+            return b""
+        if not isinstance(data, (bytes, bytearray)):
+            data = bytes(data)
+        return bytes(data)
+
+    return await _asyncio_icloud.to_thread(_dl_sync)
+
+
 async def _icloud_folder_stats(link: "CloudLink") -> dict:
     """File count + total bytes for the storage-panel linked-services
-    row. Same shape as the other `_*_folder_stats` helpers."""
-    entries = await _icloud_collect_entries(link)
+    row. Same shape as the other `_*_folder_stats` helpers. Counts BOTH
+    the Drive tree AND the Photos library so the panel reflects the
+    user's full iCloud footprint, not just the Files app."""
+    drive_entries = await _icloud_collect_entries(link)
+    try:
+        photo_entries = await _icloud_collect_photo_entries(link)
+    except Exception:
+        logger.exception("icloud_folder_stats: photos walk failed")
+        photo_entries = []
+    entries = drive_entries + photo_entries
     return {
         "file_count": len(entries),
         "total_bytes": sum(int(e.get("size_bytes") or 0) for e in entries),
@@ -1539,7 +1775,28 @@ async def sync_user_provider(
     elif provider == "dropbox":
         entries = await _dropbox_collect_entries(refresh_token)
     elif provider == "icloud":
+        # SYNC-6 — iCloud has TWO independent stores: Drive (Files app,
+        # `service.drive`) and Photos (camera roll, `service.photos`).
+        # The original sync walked only Drive, so a user's photos never
+        # came across ("doesn't get everything"). Enumerate both and
+        # merge. The Photos walk is best-effort: if iCloud Photos is
+        # disabled on the account (or unreachable), the Drive entries
+        # still sync rather than failing the whole run.
         entries = await _icloud_collect_entries(link)
+        try:
+            photo_entries = await _icloud_collect_photo_entries(link)
+        except Exception:
+            logger.exception(
+                "cloud_sync: icloud photos enumeration failed for "
+                "link=%s — syncing Drive entries only this run",
+                link.id,
+            )
+            photo_entries = []
+        entries = entries + photo_entries
+        logger.info(
+            "cloud_sync: icloud link=%s enumerated drive=%d photos=%d",
+            link.id, len(entries) - len(photo_entries), len(photo_entries),
+        )
     elif provider == "proton_drive":
         entries = await _proton_drive_collect_entries(link)
     elif provider == "mega":
@@ -1607,6 +1864,17 @@ async def sync_user_provider(
     # or a re-pull). Counted separately so the sync summary can show
     # "deduplicated N" rather than silently dropping them.
     skipped_duplicate = 0
+    # HARDENING — files the LISTING already reports as larger than the
+    # per-file upload cap (`settings.upload_max_bytes`). We skip these
+    # BEFORE downloading so a single multi-GB Drive/Dropbox/iCloud file
+    # can't be buffered whole into the sync worker's RAM only to be
+    # rejected by store_upload's identical size check afterwards. The
+    # downstream `store_upload` cap is the authoritative enforcement;
+    # this gate is purely a pre-download OOM guard that avoids fetching
+    # bytes we will certainly reject. Counted separately from quota
+    # skips so the summary distinguishes "too big for any plan" from
+    # "no room left in your quota".
+    skipped_too_large = 0
     conflicts: list[str] = []
 
     from backend.upload_validation import UploadValidationError
@@ -1760,6 +2028,53 @@ async def sync_user_provider(
                     "budget_remaining": budget_remaining,
                     "quota_bytes": quota_bytes,
                 },
+            )
+            continue
+
+        # HARDENING — pre-download per-file size cap. The listing's
+        # `size_bytes` (Drive `size`, Dropbox `size`, iCloud asset
+        # size, rclone `Size`) lets us reject a file that exceeds
+        # `settings.upload_max_bytes` BEFORE we fetch a single byte.
+        # Every provider download path here buffers the WHOLE file into
+        # RAM (Drive's MediaIoBaseDownload → buf.getvalue(), Dropbox's
+        # r.content, rclone cat → bytes, pyicloud raw.read()), so
+        # without this gate a 5 GB remote file would be fully buffered
+        # into the worker's memory only for store_upload's identical cap
+        # to reject it — a needless OOM risk + wasted bandwidth.
+        # store_upload remains the authoritative enforcement (this is a
+        # best-effort early-out gated on the size the listing reports);
+        # entries with a missing/zero size still fall through and are
+        # caught by the post-download `len(blob)` checks below + the
+        # validator. Wrapped so a malformed entry can't crash the loop.
+        try:
+            max_file_bytes = int(getattr(settings, "upload_max_bytes", 0) or 0)
+        except Exception:
+            max_file_bytes = 0
+        if max_file_bytes and entry_size > max_file_bytes:
+            skipped_too_large += 1
+            try:
+                await add_audit(
+                    session,
+                    user_id=user_id,
+                    action="cloud.sync.skipped_too_large",
+                    details={
+                        "provider": provider,
+                        "remote_id": entry["remote_id"],
+                        "remote_path": entry.get("remote_path"),
+                        "entry_size_bytes": entry_size,
+                        "upload_max_bytes": max_file_bytes,
+                        "reason": "exceeds_per_file_cap_predownload",
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "cloud_sync: audit for oversized skip failed (%s)",
+                    entry.get("remote_id"),
+                )
+            logger.info(
+                "cloud_sync: skipping %s %r — listing size %d B exceeds "
+                "per-file cap %d B (not downloading)",
+                provider, entry.get("name"), entry_size, max_file_bytes,
             )
             continue
 
@@ -2045,11 +2360,12 @@ async def sync_user_provider(
     logger.info(
         "cloud_sync: sync user=%s provider=%s seen=%d pulled=%d "
         "skipped=%d skipped_quota=%d skipped_dataless=%d "
-        "skipped_unsupported=%d skipped_duplicate=%d conflicts=%d "
-        "budget_remaining=%d",
+        "skipped_unsupported=%d skipped_duplicate=%d skipped_too_large=%d "
+        "conflicts=%d budget_remaining=%d",
         user_id, provider, seen, pulled, skipped_unchanged,
         skipped_over_quota, skipped_dataless, skipped_unsupported,
-        skipped_duplicate, len(conflicts), budget_remaining,
+        skipped_duplicate, skipped_too_large, len(conflicts),
+        budget_remaining,
     )
     return {
         "seen": seen,
@@ -2059,6 +2375,7 @@ async def sync_user_provider(
         "skipped_dataless": skipped_dataless,
         "skipped_unsupported": skipped_unsupported,
         "skipped_duplicate": skipped_duplicate,
+        "skipped_too_large": skipped_too_large,
         "conflicts": len(conflicts),
         "conflict_remote_ids": conflicts,
         "provider": provider,
@@ -2619,9 +2936,30 @@ def _drive_client(refresh_token: str):
         # scopes intentionally omitted — see docstring above.
     )
     creds.refresh(Request())
-    # cache_discovery=False silences a stale-cache warning that fires
-    # on every cold start otherwise.
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+    # Pin a finite socket timeout on the Drive transport. httplib2 (what
+    # googleapiclient uses under the hood) has NO default socket timeout,
+    # so a Drive node that accepts the TCP connection then stalls would
+    # otherwise wedge this worker thread indefinitely — the CS10 retry
+    # wrapper only re-fires on an HTTP status code, never on a silent
+    # hang. We build an AuthorizedHttp wrapping an httplib2.Http with the
+    # configured read timeout; on any import/construction hiccup we fall
+    # back to the plain (untimed) build so a thin deploy still works.
+    timeout = max(1.0, float(getattr(settings, "cloud_sync_drive_http_timeout_seconds", 120.0)))
+    try:
+        import httplib2  # type: ignore
+        from google_auth_httplib2 import AuthorizedHttp  # type: ignore
+
+        authed_http = AuthorizedHttp(creds, http=httplib2.Http(timeout=timeout))
+        # cache_discovery=False silences a stale-cache warning that fires
+        # on every cold start otherwise.
+        return build("drive", "v3", http=authed_http, cache_discovery=False)
+    except Exception:
+        logger.warning(
+            "cloud_sync: could not install Drive socket timeout shim; "
+            "falling back to untimed transport",
+            exc_info=True,
+        )
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _drive_list_images(drive) -> Iterable[dict]:
