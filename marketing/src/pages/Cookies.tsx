@@ -58,13 +58,16 @@ export default function Cookies() {
           <p style={{ marginTop: 12 }}>
             neuthek is an AI-aware personal cloud storage product in
             active development. Semantic search via OpenCLIP
-            embeddings, content-aware compression, opt-in face
-            recognition with a BIPA-compliant consent flow, and
-            one-way ingest from five external clouds (Google Drive,
-            Dropbox, iCloud, Proton Drive, MEGA). Two delivery modes
-            planned: open-source self-host (free) and managed hosted
-            (waitlist). Encryption is in transit + at rest today; end
-            -to-end encryption is on the roadmap. Cookie posture
+            embeddings, a fitted in-browser viewer for 50+ file types,
+            a zero-knowledge end-to-end-encrypted Vault, content-aware
+            compression, opt-in face recognition with a BIPA-compliant
+            consent flow, and one-way read-only ingest from Google
+            Drive (further cloud connectors in development). Two
+            delivery modes planned: open-source self-host (free) and
+            managed hosted (waitlist). The Vault is end-to-end
+            encrypted today; the rest is encrypted in transit + at
+            rest, with end-to-end encryption beyond the Vault on the
+            roadmap. Cookie posture
             below applies to the marketing site you're reading right
             now and (separately) to the hosted application when it
             opens.

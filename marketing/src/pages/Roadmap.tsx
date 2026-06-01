@@ -49,7 +49,7 @@ const SHIPPED: Item[] = [
   },
   {
     t: "An end-to-end encrypted Vault the server can't read",
-    d: "The Vault is a drive-like, end-to-end encrypted store: files of any type in nested folders, plus secure items — passwords, notes, crypto seed phrases, cards/IDs. Everything is encrypted in your browser with a key derived from your master password (PBKDF2-SHA256 → AES-256-GCM; files use a random per-file key, chunked) before upload. The server only ever stores ciphertext — your master password and keys never reach it, so even a full database compromise reveals nothing, and no AI ever touches Vault contents. You can share a single item with another account by sealing it to their key on your device (no comments, no public links, revocable anytime). Auto-locks on idle and sign-out.",
+    d: "The Vault is a drive-like, end-to-end encrypted store: files of any type in nested folders, plus secure items — passwords, notes, crypto seed phrases, cards/IDs. Everything is encrypted in your browser with a key derived from your master password (PBKDF2-SHA256 → AES-256-GCM; files use a random per-file key, chunked) before upload. The server only ever stores ciphertext — your master password and keys never reach it, so even a full database compromise reveals nothing, and no AI ever touches Vault contents. New: drop a .vcf, a password export, a card, or a note and it's parsed client-side into a structured item. Share a single item by sealing it to another account's key, or via a public link scoped to just that item — both stay end-to-end encrypted and revocable anytime. Auto-locks on idle and sign-out.",
   },
 
   // --- Product & UX ---
@@ -62,8 +62,8 @@ const SHIPPED: Item[] = [
     d: "Looking for \"IMG_0420\"? Found. Looking for \"cozy\"? Also found. Two different ways of finding things, blended into one ranked list.",
   },
   {
-    t: "Open anything without downloading",
-    d: "Images, PDFs, source code in ~40 languages, GPS pins on a map — all preview in the browser. No download-just-to-see.",
+    t: "A viewer for every file type",
+    d: "50+ file types open in a fitted in-browser viewer — code in 100+ languages with find-in-file, GitHub-style Markdown, live spreadsheets (xlsx/xls/ods) with sheet tabs, interactive 3D models, an EPUB reader, Jupyter notebooks, JSON/YAML/XML trees, CSV grids, browsable archives, fonts, contact + calendar cards — alongside images, video, audio, and PDF. No download-just-to-see.",
   },
   {
     t: "Pick the best of a burst",
@@ -91,11 +91,19 @@ const SHIPPED: Item[] = [
   },
   {
     t: "Face grouping if you want it",
-    d: "Off by default. When you turn it on, faces cluster into Me + people you tag. Embeddings stay on your server; revoking consent deletes them immediately.",
+    d: "Off by default. When you turn it on, faces cluster into Me + people you tag — now with fewer false splits, merge + reassign to fix a mis-group, and a durable \"not a person\" (mark a poster or reflection and it stays marked). Embeddings stay on your server; revoking consent deletes them immediately.",
   },
   {
-    t: "Pull from Google Drive, Dropbox, iCloud, Proton Drive, and MEGA",
-    d: "Five external clouds wired up. Google Drive + Dropbox use OAuth read-only; iCloud uses Apple-ID with HSA-2 push + SMS fallback; Proton and MEGA use email + password through rclone. Hourly background sync, conflict banner when local and remote diverge. AI features off by default; opt in per source.",
+    t: "A faster, smoother photo map",
+    d: "Geotagged photos plotted on a real map with pins virtualized and reused across pan/zoom instead of redrawn from scratch — clustering at low zoom, click-to-open at high zoom, smooth even on large libraries.",
+  },
+  {
+    t: "Tags from your AI summaries",
+    d: "Descriptive tags are auto-derived from each file's AI summary — \"whiteboard\", \"receipt\", \"golden retriever\" become clickable filters with no manual tagging.",
+  },
+  {
+    t: "Pull from Google Drive (more connectors in progress)",
+    d: "Google Drive sync is fully wired: read-only OAuth (drive.readonly — never writes back), encrypted refresh tokens, hourly background sync, and a conflict banner when local and remote diverge. AI features off by default; opt in per source. Connectors for Dropbox, iCloud (Apple-ID + HSA-2), Proton Drive, and MEGA are scaffolded in the same framework and being finished ahead of launch.",
   },
   {
     t: "Sign in with Google",
@@ -120,6 +128,14 @@ const SHIPPED: Item[] = [
     d: "The AI processing queue serves every user in rotation. A bulk job from one account doesn't starve the others.",
   },
   {
+    t: "A crash-safe job queue",
+    d: "Failed jobs retry with backoff, terminal failures land in a dead-letter lane instead of wedging a slot, self-healing reapers re-queue work orphaned by a crashed worker, and a per-job watchdog kills anything that hangs past its time budget. One poison file can't stall the pipeline.",
+  },
+  {
+    t: "Per-user storage quotas with backpressure",
+    d: "A real ceiling per account. Hit it and work is refused cleanly with an \"over quota\" signal the UI acts on, so a runaway import can't fill the disk.",
+  },
+  {
     t: "AI features can't be abused",
     d: "Every heavy AI endpoint has a per-user hourly cap. Generous for everyday use; painful to script.",
   },
@@ -141,7 +157,7 @@ const SHIPPED: Item[] = [
   },
   {
     t: "FAQ that AI engines can quote",
-    d: "22 Q&As with structured data so ChatGPT, Perplexity, and Google can deep-link individual answers.",
+    d: "A comprehensive FAQ with structured data so ChatGPT, Perplexity, and Google can deep-link individual answers.",
   },
   {
     t: "Brand identity locked in",
@@ -235,7 +251,7 @@ const PLANNED: Item[] = [
   },
   {
     t: "Easy migration for teams",
-    d: "Bulk import from SMB / NAS plus the cloud providers we already sync (Google Drive, Dropbox, iCloud, Proton, MEGA). Per-source consent scopes so legal can sign off per dataset. Migration dry-run before you commit.",
+    d: "Bulk import from SMB / NAS plus the cloud connectors (Google Drive today; Dropbox, iCloud, Proton, MEGA as they land). Per-source consent scopes so legal can sign off per dataset. Migration dry-run before you commit.",
   },
   {
     t: "Pricing announced with launch",
@@ -299,7 +315,7 @@ export default function Roadmap() {
   usePageSeo({
     title: "Roadmap — what's shipped, what's coming — neuthek",
     description:
-      "Plain-English roadmap: ~35 shipped capabilities (semantic search, content-aware compression, five-provider cloud sync, BIPA-compliant face recognition, passwordless sign-in, TOTP + recovery codes), ~9 in active development, ~13 planned including end-to-end encryption.",
+      "Plain-English roadmap: shipped capabilities (semantic search, a viewer for 50+ file types, a zero-knowledge encrypted vault with auto-import, content-aware compression, Google Drive sync, BIPA-compliant face recognition, a crash-safe job queue, per-user quotas), several in active development, more planned including end-to-end encryption beyond the vault.",
     path: "/roadmap",
     jsonLd: [
       webPage({

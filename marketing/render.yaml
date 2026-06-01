@@ -46,3 +46,11 @@ services:
       - key: ADMIN_PASS
         # SET THIS IN THE RENDER DASHBOARD — sync:false keeps it out of git.
         sync: false
+      - key: INTERNAL_API_TOKEN
+        # Shared secret for service-to-service calls from the main neuthek
+        # backend (POST /api/internal/newsletter/subscribe, used when an
+        # app user ticks the newsletter opt-in). Must match
+        # MARKETING_INTERNAL_TOKEN on the app backend. Empty disables the
+        # internal API (returns 503). SET THIS IN THE RENDER DASHBOARD —
+        # sync:false keeps it out of git.
+        sync: false

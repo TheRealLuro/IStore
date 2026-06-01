@@ -245,7 +245,10 @@ async function sendNewsletterEmail({ to, subject, html, text, unsubUrl }) {
     }
     return { sent: true };
   } catch (err) {
-    console.error(`[newsletter] Resend network error for ${to}`, err);
+    // `to` is request-controlled — keep it OUT of the format-string
+    // (first) argument so a `%s`/`%o` in the address can't reinterpret
+    // the `err` operand (CWE-134). Pass it as a data argument instead.
+    console.error("[newsletter] Resend network error for %s", to, err);
     return { sent: false, reason: "resend-network" };
   }
 }
@@ -307,6 +310,13 @@ try {
 }
 const ADMIN_PASS = process.env.ADMIN_PASS || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
+// Shared secret for service-to-service calls from the main neuthek
+// backend (e.g. POST /api/internal/newsletter/subscribe when an app
+// user ticks the newsletter box). Must match NEUTHEK_INTERNAL_TOKEN /
+// MARKETING_INTERNAL_TOKEN on the app side. Empty disables the internal
+// API entirely (returns 503) so a misconfigured deploy can't accept
+// unauthenticated cross-service writes.
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 // Keep in sync with the WaitlistUseCase union in src/api.ts and the
 // <option> list in src/pages/Waitlist.tsx. Anything not in this set
@@ -523,6 +533,35 @@ if (DATABASE_URL) {
         [id]
       );
       return rows[0] || null;
+    },
+    async subscribeFromApp({ email, source }) {
+      // Cross-service opt-in from the main neuthek app. Unlike the public
+      // waitlist signup, the caller (the app backend) has ALREADY
+      // password-authenticated the account, so the address is proven —
+      // we mark the row verified=true immediately and skip the
+      // confirm-your-email round trip. Idempotent: re-ticking the box
+      // upserts in place (ON CONFLICT) with no duplicate row, keeps the
+      // first newsletter_consent_at, and clears any prior unsubscribe so
+      // a re-opt-in actually re-subscribes. The `source` defaults to
+      // 'neuthek-app' but is NOT overwritten on an existing waitlist row
+      // (a waitlist signer who also opts in from the app keeps
+      // 'marketing-site' as their origin).
+      const { rows } = await pool.query(
+        `INSERT INTO waitlist_signups
+           (email, source, newsletter_opt_in, newsletter_consent_at,
+            verified, verified_at)
+         VALUES ($1, $2, true, now(), true, now())
+         ON CONFLICT (email) DO UPDATE
+           SET newsletter_opt_in = true,
+               newsletter_consent_at =
+                 COALESCE(waitlist_signups.newsletter_consent_at, now()),
+               unsubscribed_at = NULL,
+               verified = true,
+               verified_at = COALESCE(waitlist_signups.verified_at, now())
+         RETURNING id, email, newsletter_consent_at`,
+        [email, source || "neuthek-app"]
+      );
+      return rows[0];
     },
     async listNewsletterRecipients(slug) {
       // Eligible recipients: verified, opted-in, not unsubscribed, and
@@ -742,6 +781,40 @@ if (DATABASE_URL) {
       ).get(id);
       return row || null;
     },
+    async subscribeFromApp({ email, source }) {
+      // SQLite mirror of the Postgres method above. The app backend has
+      // already authenticated the account, so we mark verified=1 and
+      // skip the email-confirm round trip. Idempotent on the email
+      // UNIQUE constraint: re-ticking upserts in place, keeps the first
+      // newsletter_consent_at, and clears any prior unsubscribe.
+      const now = new Date().toISOString();
+      const existing = db.prepare(
+        "SELECT id, newsletter_consent_at, verified_at FROM waitlist_signups WHERE email = ?"
+      ).get(email);
+      if (existing) {
+        db.prepare(
+          `UPDATE waitlist_signups
+           SET newsletter_opt_in = 1,
+               newsletter_consent_at = COALESCE(newsletter_consent_at, ?),
+               unsubscribed_at = NULL,
+               verified = 1,
+               verified_at = COALESCE(verified_at, ?)
+           WHERE id = ?`
+        ).run(now, now, existing.id);
+        return {
+          id: existing.id,
+          email,
+          newsletter_consent_at: existing.newsletter_consent_at || now,
+        };
+      }
+      const info = db.prepare(
+        `INSERT INTO waitlist_signups
+           (email, source, newsletter_opt_in, newsletter_consent_at,
+            verified, verified_at)
+         VALUES (?, ?, 1, ?, 1, ?)`
+      ).run(email, source || "neuthek-app", now, now);
+      return { id: Number(info.lastInsertRowid), email, newsletter_consent_at: now };
+    },
     async listNewsletterRecipients(slug) {
       const rows = db.prepare(
         `SELECT w.id, w.email
@@ -946,6 +1019,67 @@ app.post("/api/waitlist/signup", makeRateLimit({
     return res.status(500).json({ ok: false, detail: "signup failed" });
   }
 });
+
+// ----- Internal: subscribe an app user to the newsletter -----
+// Service-to-service endpoint called by the main neuthek backend when a
+// signed-in (already password-authenticated) user ticks the newsletter
+// opt-in. Because the caller has proven the user owns the address, the
+// row is created/updated as verified=true — no confirm-email round trip.
+//
+// Auth is a constant-time bearer-token compare against INTERNAL_API_TOKEN
+// (NOT the admin Basic Auth, and NOT public). The token is shared with
+// the app backend out of band. Rate-limited per IP as defence in depth
+// even though only the backend should ever reach it.
+function internalAuth(req, res, next) {
+  if (!INTERNAL_API_TOKEN) {
+    return res.status(503).json({
+      ok: false,
+      detail: "Internal API is not configured. Set INTERNAL_API_TOKEN in env.",
+    });
+  }
+  const header = req.headers.authorization || "";
+  const presented = header.startsWith("Bearer ") ? header.slice(7) : "";
+  // Constant-time compare. Buffers must be equal length for
+  // timingSafeEqual; bail early (still after the length check, which is
+  // not itself a timing oracle on the secret) when they differ.
+  const a = Buffer.from(presented);
+  const b = Buffer.from(INTERNAL_API_TOKEN);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    const ip = clientIp(req);
+    rateLimit({ key: `internal:${ip}`, limit: 5, windowMs: 60_000 });
+    return res.status(401).json({ ok: false, detail: "bad token" });
+  }
+  next();
+}
+
+app.post(
+  "/api/internal/newsletter/subscribe",
+  makeRateLimit({
+    limit: 60,
+    windowMs: 60_000,
+    detail: "Too many internal subscribe requests.",
+  }),
+  internalAuth,
+  async (req, res) => {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const source = String(req.body?.source || "neuthek-app").slice(0, 64);
+    if (!isEmailShaped(email)) {
+      return res.status(422).json({ ok: false, detail: "invalid email" });
+    }
+    try {
+      const row = await store.subscribeFromApp({ email, source });
+      return res.json({
+        ok: true,
+        id: row.id,
+        email: row.email,
+        newsletter_consent_at: row.newsletter_consent_at,
+      });
+    } catch (err) {
+      console.error("[newsletter] internal subscribe failed", err);
+      return res.status(500).json({ ok: false, detail: "subscribe failed" });
+    }
+  }
+);
 
 // ----- Verify endpoint (clicked from the email link) -----
 // The SPA at /waitlist/verify will call this and show a result page.
@@ -1190,7 +1324,11 @@ app.post("/api/admin/newsletter/test", adminRateLimit, adminAuth, async (req, re
   const slug = String(req.body?.slug || "").trim();
   const to = String(req.body?.to || "").trim();
   if (!slug) return res.status(400).json({ ok: false, detail: "missing slug" });
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+  // Use the shared `isEmailShaped` gate (length-cap THEN linear
+  // EMAIL_RE). The previous inline `/^[^@\s]+@[^@\s]+\.[^@\s]+$/` had an
+  // ambiguous final `[^@\s]+` segment (`.` ∈ the class) and ran on
+  // uncontrolled `to` with no length bound → polynomial backtracking.
+  if (!isEmailShaped(to)) {
     return res.status(400).json({ ok: false, detail: "invalid email" });
   }
   const entry = UPDATE_INDEX.find((u) => u.slug === slug);
