@@ -1,0 +1,22 @@
+# Eval DATA is never committed — it's user-provided test documents (status
+# reports, pitch decks, photos) and generated overlays/figures derived from
+# them. Only the harness SCRIPTS (*.py, Dockerfile) belong in git.
+in/
+in_core/
+in_cmp/
+in_status/
+in_one/
+out/
+out_core/
+out_one/
+out_status/
+*.pdf
+*.heic
+*.heif
+*.png
+*.jpg
+*.jpeg
+*.webp
+# Run-artifact JSONs (chrF numbers etc.) — regenerate via the scripts.
+quant_accuracy/r8bit.json
+quant_accuracy/r4bit.json
