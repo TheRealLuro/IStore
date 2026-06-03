@@ -158,6 +158,7 @@ LIMITATIONS (honest notes)
 from __future__ import annotations
 
 import asyncio
+import os
 import base64
 import json
 import logging
@@ -290,7 +291,9 @@ _SNAPSHOT_MAX_PAGES = 6
 #   * cap the TOTAL embedded images translated per document — a slide deck or a
 #     scan-heavy report could otherwise hold dozens of large rasters, each an
 #     OCR+inpaint pass on the busy card;
-_MAX_EMBEDDED_IMAGES = 12
+# Sub-project A: raised for the 12 GB box (was 12, sized for the 8 GB 4060).
+# Env-overridable. The wall-clock budget below still bounds the stage.
+_MAX_EMBEDDED_IMAGES = int(os.environ.get("FIGURE_OCR_MAX", "40"))
 #   * skip anything too small to plausibly hold READABLE text (icons, bullets,
 #     rule lines, logos, decorative glyphs) — both the raw pixel size of the
 #     extracted image AND its placed size on the page must clear this bar, so a
@@ -317,7 +320,18 @@ _MAX_EMBEDDED_IMAGE_BYTES = 24 * 1024 * 1024
 # and finalize the (already text-translated) PDF. On the 12GB box OCR is fast
 # enough that this rarely trips; on 8GB it bounds the tail so the doc returns
 # promptly with whatever figures we managed.
-_FIGURES_TOTAL_BUDGET_S = 75.0
+_FIGURES_TOTAL_BUDGET_S = float(os.environ.get("FIGURE_OCR_BUDGET_S", "240"))
+# Sub-project A: process figures CONCURRENTLY (bounded) on the 12 GB GPU's
+# headroom instead of strictly one-at-a-time. Each figure keeps its own per-image
+# deadline; the semaphore caps in-flight GPU work (default 2 — conservative given
+# the fleet nearly fills the card).
+_FIGURE_CONCURRENCY = int(os.environ.get("FIGURE_OCR_CONCURRENCY", "2"))
+# Use the 4-way orientation sweep for figures (was single-orientation for speed
+# on 8 GB). The 0-degree early-exit keeps upright figures at a single pass, so
+# this only costs extra on genuinely rotated/ambiguous figures.
+_FIGURE_FOUR_WAY = os.environ.get(
+    "FIGURE_OCR_FOUR_WAY", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # Leading bullet / number marker we KEEP verbatim and translate only the rest.
 # Covers bullet glyphs and dotted/numbered markers ("1.", "2.1", "3.2.4",
@@ -712,7 +726,9 @@ def _translate_embedded_image_sync(img_bytes: bytes, target: str) -> Optional[by
     try:
         # OCR: decode bytes → orientation → regions. Single-orientation +
         # bounded decode (the streaming default) so one figure can't spin.
-        img, best_k, best_img, regions = _ti_ocr_stage(img_bytes)
+        img, best_k, best_img, regions = _ti_ocr_stage(
+            img_bytes, four_way=_FIGURE_FOUR_WAY
+        )
     except Exception:
         logger.exception("translate-pdf: embedded-image OCR failed; skipping")
         return None
@@ -900,60 +916,83 @@ async def _translate_embedded_images(doc, target: str) -> int:
         )
         return 0
 
-    replaced = 0
-    attempted = 0
+    # Sub-project A: process figures CONCURRENTLY (bounded) on the 12 GB GPU's
+    # headroom. PyMuPDF docs are NOT thread-safe, so we (1) extract all figure
+    # bytes serially, (2) OCR+translate+render concurrently (pure on bytes,
+    # bounded by a semaphore), then (3) reinsert into the doc serially. Each
+    # figure keeps its own per-image deadline + try/except, and the overall
+    # wall-clock budget still bounds the whole stage.
     deadline = time.monotonic() + _FIGURES_TOTAL_BUDGET_S
+
+    # (1) Extract bytes serially from the shared fitz doc.
+    extracted: list[tuple] = []
     for t in targets:
-        # Stop the figure stage once the overall budget is spent so an
-        # image-heavy doc returns promptly instead of grinding figure-by-figure
-        # while the loader spins. Whatever we've translated so far stands; the
-        # rest keep their original-language figure (the text is already done).
-        if time.monotonic() >= deadline:
-            logger.info(
-                "translate-pdf: embedded-image budget (%.0fs) reached after "
-                "%d/%d figure(s) attempted (%d translated); finalizing with the "
-                "remaining figures untranslated.",
-                _FIGURES_TOTAL_BUDGET_S, attempted, len(targets), replaced,
-            )
-            break
-        attempted += 1
-        pidx, xref, rect = t["page"], t["xref"], t["rect"]
         try:
-            img_bytes = await asyncio.to_thread(
-                _extract_image_bytes_sync, doc, xref
-            )
-            if not img_bytes:
-                continue
-            # OCR + translate + inpaint + render, under the SAME 45s deadline the
-            # standalone in-image path uses, so one figure can never hang the doc.
-            png = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _translate_embedded_image_sync, img_bytes, target
-                ),
-                timeout=_TI_OCR_DEADLINE_S,
-            )
-            if not png:
-                # No text in the figure, or the pipeline returned nothing → leave
-                # the original image untouched.
-                continue
-            await asyncio.to_thread(
-                _reinsert_translated_image, doc, pidx, rect, png
-            )
-            replaced += 1
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "translate-pdf: embedded image (page %s xref %s) exceeded %.0fs; "
-                "skipping",
-                pidx, xref, _TI_OCR_DEADLINE_S,
-            )
-            continue
+            b = await asyncio.to_thread(_extract_image_bytes_sync, doc, t["xref"])
+            if b:
+                extracted.append((t["page"], t["rect"], b))
         except Exception:
-            # One image failing must NEVER break the translate-pdf stream.
             logger.exception(
-                "translate-pdf: embedded image (page %s xref %s) failed; skipping",
-                pidx, xref,
+                "translate-pdf: embedded image extract failed (page %s xref %s); "
+                "skipping", t.get("page"), t.get("xref"),
             )
+    attempted = len(extracted)
+
+    # (2) OCR + translate + render concurrently, bounded by the semaphore.
+    sem = asyncio.Semaphore(max(1, _FIGURE_CONCURRENCY))
+
+    async def _render_one(pidx, rect, img_bytes):
+        if time.monotonic() >= deadline:
+            return None
+        async with sem:
+            if time.monotonic() >= deadline:
+                return None
+            try:
+                png = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _translate_embedded_image_sync, img_bytes, target
+                    ),
+                    timeout=_TI_OCR_DEADLINE_S,
+                )
+                return (pidx, rect, png) if png else None
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "translate-pdf: embedded image (page %s) exceeded %.0fs; "
+                    "skipping", pidx, _TI_OCR_DEADLINE_S,
+                )
+                return None
+            except Exception:
+                # One figure failing must NEVER break the translate-pdf stream.
+                logger.exception(
+                    "translate-pdf: embedded image (page %s) OCR/translate "
+                    "failed; skipping", pidx,
+                )
+                return None
+
+    rendered = await asyncio.gather(
+        *(_render_one(p, r, b) for (p, r, b) in extracted)
+    )
+
+    # (3) Reinsert results into the doc serially (fitz is not thread-safe).
+    replaced = 0
+    for item in rendered:
+        if item is None:
             continue
+        pidx, rect, png = item
+        try:
+            await asyncio.to_thread(_reinsert_translated_image, doc, pidx, rect, png)
+            replaced += 1
+        except Exception:
+            logger.exception(
+                "translate-pdf: embedded image reinsert failed; skipping"
+            )
+
+    if time.monotonic() >= deadline and replaced < attempted:
+        logger.info(
+            "translate-pdf: embedded-image budget (%.0fs) reached; translated "
+            "%d/%d figure(s), remainder left untranslated.",
+            _FIGURES_TOTAL_BUDGET_S, replaced, len(targets),
+        )
     if replaced:
         logger.info(
             "translate-pdf: translated %d/%d embedded image(s)",

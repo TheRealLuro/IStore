@@ -7,6 +7,7 @@ the upload pipeline or semantic search.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -412,24 +413,47 @@ def get_trocr():
 
     from backend.config import settings
 
-    device = "cpu"  # FORCED — never touch the GPU (see docstring).
     model_name = getattr(
         settings, "trocr_model_name", "microsoft/trocr-base-handwritten"
     )
-
-    # fp32 on CPU (CPU has no usable fp16 path); low_cpu_mem_usage=False forces
-    # full materialization so a later .to() can't hit the meta-tensor error
-    # (mirrors every other loader here).
-    model = VisionEncoderDecoderModel.from_pretrained(
-        model_name, torch_dtype=torch.float32, low_cpu_mem_usage=False
-    )
-    model = _materialize_to(model, device).eval()
+    # Sub-project A: TrOCR may now run RESIDENT ON THE GPU — the 12 GB 5070 has
+    # the headroom the 8 GB 4060 lacked, and GPU TrOCR is ~10x faster per line.
+    # OCR_TROCR_DEVICE = auto|cuda|cpu; `auto` -> cuda when available. Registered
+    # evictable, and falls back to CPU on any CUDA load failure so a full card
+    # never breaks handwriting OCR (it just runs slower).
+    pref = os.environ.get("OCR_TROCR_DEVICE", "auto").strip().lower()
+    want_cuda = (pref == "cuda") or (pref == "auto" and get_device() == "cuda")
+    device = "cuda" if want_cuda else "cpu"
+    try:
+        if device == "cuda":
+            _vram.register("trocr", est_gb=0.6, evictable=True,
+                           cache_clear=get_trocr.cache_clear)
+            _vram.ensure_room(0.6)
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        model = VisionEncoderDecoderModel.from_pretrained(
+            model_name, torch_dtype=dtype, low_cpu_mem_usage=False
+        )
+        model = _materialize_to(model, device).eval()
+    except Exception:
+        try:
+            import logging
+            logging.getLogger(__name__).warning(
+                "trocr: GPU load failed; CPU fallback", exc_info=True)
+        except Exception:
+            pass
+        device = "cpu"
+        model = VisionEncoderDecoderModel.from_pretrained(
+            model_name, torch_dtype=torch.float32, low_cpu_mem_usage=False
+        )
+        model = _materialize_to(model, device).eval()
     processor = TrOCRProcessor.from_pretrained(model_name)
 
     for p in model.parameters():
         p.requires_grad_(False)
 
     _report_loaded("trocr", device)
+    if device == "cuda":
+        _vram.mark_resident("trocr"); _vram.touch("trocr")
     return model, processor, device
 
 
