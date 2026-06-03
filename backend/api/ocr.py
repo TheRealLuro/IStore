@@ -1028,19 +1028,40 @@ def _get_nllb():
             get_device,
         )
 
+        from backend.vision import vram_manager as _vram
+        from backend.vision.quant import nllb_quant_config
+
         device = get_device()
         model_name = _nllb_model_name()
-        dtype = torch.float16 if device == "cuda" else torch.float32
-        # low_cpu_mem_usage=False mirrors the other loaders in runtime.py:
-        # it forces full (non-meta) materialization so the later .to(device)
-        # can't hit the meta-tensor NotImplementedError.
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            model_name, torch_dtype=dtype, low_cpu_mem_usage=False
-        )
-        model = _materialize_to(model, device).eval()
+
+        def _reset_nllb_cache():
+            global _NLLB_CACHE
+            _NLLB_CACHE = None
+
+        _vram.register("nllb", est_gb=1.2, evictable=False,
+                       cache_clear=_reset_nllb_cache)
+        quant = nllb_quant_config() if device == "cuda" else None
+        if quant is not None:
+            _vram.ensure_room(1.2)
+            # bnb 8-bit: pin to GPU 0, no post-hoc .to() (bnb rejects the move).
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name, quantization_config=quant, device_map={"": 0},
+                torch_dtype=torch.float16,
+            ).eval()
+        else:
+            if device == "cuda":
+                _vram.ensure_room(1.2)
+            dtype = torch.float16 if device == "cuda" else torch.float32
+            # low_cpu_mem_usage=False forces full (non-meta) materialization so
+            # the later .to(device) can't hit the meta-tensor error.
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name, torch_dtype=dtype, low_cpu_mem_usage=False
+            )
+            model = _materialize_to(model, device).eval()
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         for p in model.parameters():
             p.requires_grad_(False)
+        _vram.mark_resident("nllb"); _vram.touch("nllb")
         try:
             _report_loaded("nllb-200", device)
         except Exception:

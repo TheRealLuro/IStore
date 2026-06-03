@@ -502,7 +502,11 @@ def _build_madlad():
     tokenizer = AutoTokenizer.from_pretrained(name)
 
     if device == "cuda":
-        # Quantize so the 3B model fits the 8 GB GPU alongside Florence+CLIP.
+        # Quantize so the 3B model fits the GPU alongside Florence+CLIP.
+        from backend.vision import vram_manager as _vram
+        _need = 1.8 if _load_4bit() else 3.5
+        _vram.register("translator_madlad", est_gb=_need, evictable=False)
+        _vram.ensure_room(_need)
         if _load_4bit():
             quant = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -541,6 +545,12 @@ def _build_madlad():
     except Exception:
         pass
     logger.info("translate_engine: loaded %s on %s", label, device)
+    try:
+        from backend.vision import vram_manager as _vram
+        if device == "cuda":
+            _vram.mark_resident("translator_madlad"); _vram.touch("translator_madlad")
+    except Exception:
+        pass
     return model, tokenizer
 
 

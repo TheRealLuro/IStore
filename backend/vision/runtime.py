@@ -182,6 +182,20 @@ def _materialize_to(model, device):
             raise
 
 
+from backend.vision import vram_manager as _vram
+
+
+def _managed_load(key: str, est_gb: float, evictable: bool, cache_clear) -> None:
+    """Register a getter with the VRAM manager and free GPU room before a load.
+
+    Called at the top of each model getter body (which runs only on a cache
+    miss = an actual load). Pair with `_vram.mark_resident`/`touch` after load.
+    """
+    _vram.register(key, est_gb=est_gb, evictable=evictable, cache_clear=cache_clear)
+    if get_device() == "cuda":
+        _vram.ensure_room(est_gb)
+
+
 @lru_cache(maxsize=1)
 def get_clip():
     """Load OpenCLIP image+text model and tokenizer once.
@@ -195,6 +209,7 @@ def get_clip():
     from backend.config import settings
 
     device = get_device()
+    _managed_load("clip", 1.75, True, get_clip.cache_clear)
     model, _, preprocess = open_clip.create_model_and_transforms(
         settings.clip_model_name,
         pretrained=settings.clip_pretrained,
@@ -209,6 +224,7 @@ def get_clip():
         p.requires_grad_(False)
 
     _report_loaded("clip", device)
+    _vram.mark_resident("clip"); _vram.touch("clip")
     return model, preprocess, tokenizer, device
 
 
@@ -253,6 +269,7 @@ def get_doc_summarizer():
     model_name = getattr(
         settings, "summarizer_model_name", "sshleifer/distilbart-cnn-12-6"
     )
+    _managed_load("doc_summarizer", 0.3, True, get_doc_summarizer.cache_clear)
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     # `low_cpu_mem_usage=False` forces transformers to materialize the
@@ -270,6 +287,7 @@ def get_doc_summarizer():
         p.requires_grad_(False)
 
     _report_loaded("doc_summarizer", device)
+    _vram.mark_resident("doc_summarizer"); _vram.touch("doc_summarizer")
     return model, tokenizer, device
 
 
@@ -300,6 +318,7 @@ def get_florence2():
 
     device = get_device()
     model_name = settings.caption_model_name
+    _managed_load("florence2", 1.14, False, get_florence2.cache_clear)
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     # Florence-2's bundled modeling code predates the `_supports_sdpa`
@@ -356,6 +375,7 @@ def get_florence2():
         p.requires_grad_(False)
 
     _report_loaded("florence2", device)
+    _vram.mark_resident("florence2"); _vram.touch("florence2")
     return model, processor, device
 
 
@@ -433,6 +453,7 @@ def get_caption_model():
 
     device = get_device()
     model_name = settings.caption_fallback_model_name
+    _managed_load("caption", 0.87, True, get_caption_model.cache_clear)
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     model = BlipForConditionalGeneration.from_pretrained(
@@ -445,6 +466,7 @@ def get_caption_model():
         p.requires_grad_(False)
 
     _report_loaded("caption_fallback", device)
+    _vram.mark_resident("caption"); _vram.touch("caption")
     return model, processor, device
 
 
@@ -470,16 +492,30 @@ def get_summary_rewriter():
     device = get_device()
     model_name = settings.rewriter_model_name
 
-    dtype = torch.float16 if device == "cuda" else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype, low_cpu_mem_usage=False
-    )
-    model = _materialize_to(model, device).eval()
+    from backend.vision.quant import rewriter_quant_config
+    quant = rewriter_quant_config() if device == "cuda" else None
+    if quant is not None:
+        _vram.register("rewriter", est_gb=1.0, evictable=False,
+                       cache_clear=get_summary_rewriter.cache_clear)
+        _vram.ensure_room(1.0)
+        # bnb path: device_map pins to GPU 0; NO low_cpu_mem_usage / post .to().
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, quantization_config=quant, device_map={"": 0},
+            torch_dtype=torch.float16,
+        ).eval()
+    else:
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        _managed_load("rewriter", 3.0, False, get_summary_rewriter.cache_clear)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=dtype, low_cpu_mem_usage=False
+        )
+        model = _materialize_to(model, device).eval()
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     for p in model.parameters():
         p.requires_grad_(False)
 
+    _vram.mark_resident("rewriter"); _vram.touch("rewriter")
     _report_loaded("qwen", device)
     return model, tokenizer, device
 
