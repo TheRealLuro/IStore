@@ -258,7 +258,7 @@ export function CloudSyncPanel() {
 
   if (error) {
     return (
-      <div style={{ padding: 18 }}>
+      <div className="csync">
         <div className="set-note" data-tone="error">
           <Icon name="alert" size={14}/>
           <span>Could not load cloud links. {error.message || ""}</span>
@@ -268,9 +268,9 @@ export function CloudSyncPanel() {
   }
   if (isLoading) {
     return (
-      <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div className="csync">
         {[0, 1].map((i) => (
-          <div key={i} className="set-skel" style={{ height: 96, borderRadius: 12 }}/>
+          <div key={i} className="set-skel" style={{ height: 104, borderRadius: 14 }}/>
         ))}
       </div>
     );
@@ -279,88 +279,86 @@ export function CloudSyncPanel() {
   const connected = new Set(links.map((l) => l.provider));
 
   return (
-    <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ fontSize: 13, color: "var(--ink-3)", lineHeight: 1.5 }}>
-        Pull-only. Files synced from these sources never get sent back; we never
-        write to your remote storage. AI features (summaries, face recognition,
-        semantic search) are <strong>off by default</strong> on synced files
-        per the source's Limited Use policy — flip them on per source below.
+    <div className="csync">
+      <div className="csync__intro">
+        <span className="csync__intro-icon"><Icon name="shield" size={15}/></span>
+        <span>
+          Pull-only. Files synced from these sources never get sent back;
+          neuthek never writes to your remote storage. AI features
+          (summaries, face recognition, semantic search) are{" "}
+          <strong>off by default</strong> on synced files per the source's
+          Limited Use policy — flip them on per source below.
+        </span>
       </div>
 
-      {/* Existing links */}
+      {/* Connected sources */}
+      {links.length > 0 && (
+        <div className="csync__group-label">Connected</div>
+      )}
       {links.map((link) => {
         const meta = PROVIDER_META[link.provider] || { label: link.provider };
         const conflicts = conflictsByLink[link.id] || [];
+        const statusTone =
+          link.status === "error" ? "error"
+          : link.status === "conflicts" ? "warn"
+          : "ok";
+        const statusLabel =
+          link.status === "error" ? "Error"
+          : link.status === "conflicts" ? "Conflicts"
+          : "Connected";
+        const opted = readAiOpted(link);
         return (
-          <div
-            key={link.id}
-            style={{
-              padding: 14,
-              borderRadius: 12,
-              border: "1px solid var(--line)",
-              background: "var(--surface)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Icon name="cloud" size={16}/>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{meta.label}</div>
-                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                  Last synced {fmtRel(link.last_synced_at)} ·
-                  {link.status === "active" && <> <span style={{ color: "var(--success)" }}>healthy</span></>}
-                  {link.status === "conflicts" && <> <span style={{ color: "var(--warning)" }}>conflicts</span></>}
-                  {link.status === "error" && <> <span style={{ color: "var(--danger)" }}>error</span></>}
+          <div key={link.id} className="csync-card" data-status={statusTone}>
+            <div className="csync-card__head">
+              <span className="csync-card__icon"><Icon name="cloud" size={16}/></span>
+              <div className="csync-card__id">
+                <div className="csync-card__name">{meta.label}</div>
+                <div className="csync-card__meta">
+                  Last synced {fmtRel(link.last_synced_at)}
                 </div>
               </div>
-              <button
-                className="btn btn--secondary btn--sm"
-                onClick={() => onSync(link)}
-                disabled={busy === link.id}
-              >
-                <Icon name="refresh" size={12}/>{" "}
-                {busy === link.id ? "Syncing…" : "Sync now"}
-              </button>
-              <button
-                className="btn btn--ghost btn--sm"
-                onClick={() => onDisconnect(link)}
-              >
-                Disconnect
-              </button>
+              <span className="csync-status" data-tone={statusTone}>
+                <span className="csync-status__dot"/>
+                {statusLabel}
+              </span>
+              <div className="csync-card__actions">
+                <button
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => onSync(link)}
+                  disabled={busy === link.id}
+                >
+                  <Icon name="refresh" size={12}/>{" "}
+                  {busy === link.id ? "Syncing…" : "Sync now"}
+                </button>
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => onDisconnect(link)}
+                >
+                  Disconnect
+                </button>
+              </div>
             </div>
 
             {/* §C2 conflict banner */}
             {conflicts.length > 0 && (
-              <div
-                role="alert"
-                style={{
-                  padding: 10,
-                  background: "var(--danger-soft, rgba(255,180,40,0.10))",
-                  border: "1px solid var(--warning)",
-                  borderRadius: 8,
-                  fontSize: 12,
-                  color: "var(--ink)",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <div role="alert" className="csync-conflicts">
+                <div className="csync-conflicts__head">
                   <Icon name="alert" size={12}/>
                   <strong>{conflicts.length} files weren't synced</strong>
                 </div>
-                <div style={{ color: "var(--ink-3)", marginBottom: 6 }}>
+                <div className="csync-conflicts__desc">
                   We refused to overwrite your local edits. Open the
                   remote file in {meta.label} and rename / re-upload
                   it manually, or delete the local copy and re-sync.
                 </div>
-                <ul style={{ margin: 0, paddingLeft: 18, listStyle: "disc" }}>
+                <ul className="csync-conflicts__list">
                   {conflicts.slice(0, 5).map((c, i) => (
-                    <li key={i} className="mono" style={{ fontSize: 11 }}>
+                    <li key={i} className="mono">
                       {c.remote_path || c.remote_id}
                     </li>
                   ))}
                   {conflicts.length > 5 && (
-                    <li style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                    <li className="csync-conflicts__more">
                       …and {conflicts.length - 5} more.
                     </li>
                   )}
@@ -369,68 +367,45 @@ export function CloudSyncPanel() {
             )}
 
             {/* AI opt-in toggle */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "6px 8px",
-                background: "var(--surface-2)",
-                borderRadius: 6,
-              }}
-            >
-              <div style={{ flex: 1, fontSize: 12.5 }}>
-                <div><strong>Enable AI features for {meta.label} files</strong></div>
-                <div style={{ color: "var(--ink-3)", fontSize: 11 }}>
+            <div className="csync-ai" data-on={opted === true ? "true" : "false"}>
+              <span className="csync-ai__icon"><Icon name="sparkles" size={14}/></span>
+              <div className="csync-ai__body">
+                <div className="csync-ai__title">Enable AI features for {meta.label} files</div>
+                <div className="csync-ai__desc">
                   Off by default. Turning this on runs summarization +
                   face scan on every file synced from this source.
                 </div>
               </div>
-              {(() => {
-                const opted = readAiOpted(link);
-                return (
-                  <>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={opted === true}
-                      onClick={() => onToggleAi(link, true)}
-                      className={opted === true ? "btn btn--primary btn--sm" : "btn btn--secondary btn--sm"}
-                    >
-                      {opted === true ? "Enabled ✓" : "Enable"}
-                    </button>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={opted === false}
-                      onClick={() => onToggleAi(link, false)}
-                      className={opted === false ? "btn btn--secondary btn--sm" : "btn btn--ghost btn--sm"}
-                    >
-                      {opted === false ? "Paused ✓" : "Pause"}
-                    </button>
-                  </>
-                );
-              })()}
+              <div className="csync-ai__seg" role="group" aria-label={`AI features for ${meta.label}`}>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={opted === true}
+                  onClick={() => onToggleAi(link, true)}
+                  className="csync-ai__opt"
+                  data-active={opted === true ? "true" : "false"}
+                >
+                  {opted === true ? "On" : "Enable"}
+                </button>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={opted === false}
+                  onClick={() => onToggleAi(link, false)}
+                  className="csync-ai__opt"
+                  data-active={opted === false ? "true" : "false"}
+                >
+                  {opted === false ? "Paused" : "Pause"}
+                </button>
+              </div>
             </div>
           </div>
         );
       })}
 
-      {/* Connect buttons */}
-      <div
-        style={{
-          marginTop: 6,
-          padding: 14,
-          borderRadius: 12,
-          border: "1px dashed var(--line)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        <div style={{ fontSize: 13, fontWeight: 600 }}>Connect a source</div>
-        <ProviderCatalog connected={connected} onConnect={onConnect}/>
-      </div>
+      {/* Connect a new source */}
+      <div className="csync__group-label">{links.length > 0 ? "Add another source" : "Connect a source"}</div>
+      <ProviderCatalog connected={connected} onConnect={onConnect}/>
 
       {/* §C4.6 — iCloud Drive connect modal. Lives here (not as a
           sibling to the panel) so it shares the QueryClient
@@ -1095,30 +1070,16 @@ function ProviderCatalog({ connected, onConnect }) {
 
   if (isLoading || !data) {
     return (
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-        gap: 8,
-        marginTop: 6,
-      }}>
+      <div className="csync-catalog">
         {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="set-skel" style={{ height: 52, borderRadius: 10 }}/>
+          <div key={i} className="set-skel" style={{ height: 58, borderRadius: 12 }}/>
         ))}
       </div>
     );
   }
 
   return (
-    // §C7 — tighter grid: the cards collapsed to single-line
-    // header+chip after the blurb removal, so we can fit more per
-    // row. min-width drops from 180 → 220 (wider rows + fewer
-    // visual seams when 5 cards wrap to two rows of 2+3).
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-      gap: 8,
-      marginTop: 6,
-    }}>
+    <div className="csync-catalog">
       {data.map((p) => (
         <ProviderCard
           key={p.id}
@@ -1147,20 +1108,11 @@ const AUTH_SHAPE_LABEL = {
 function ProviderCard({ provider, connected, onConnect }) {
   const isAvailable = provider.status === "available";
   const isNeedsSetup = provider.status === "needs_setup";
-  const isComingSoon = provider.status === "coming_soon";
 
-  // Status chip palette + label. Connected state takes precedence
-  // over the catalog status so the user sees green-Connected on
-  // their actively-linked providers without having to read the
-  // sub-row first.
-  const chipColor =
-    connected ? "var(--success)" :
-    isAvailable ? "var(--ink-2, var(--ink-3))" :
-    isNeedsSetup ? "var(--warning, #f59e0b)" :
-    "var(--ink-3)";
-  const chipBg =
-    connected ? "var(--success-soft, color-mix(in oklab, var(--success) 12%, transparent))" :
-    "var(--surface-2)";
+  // Status chip label. Connected state takes precedence over the
+  // catalog status so the user sees Connected on their actively-linked
+  // providers without having to read the sub-row first. The chip's
+  // color + the card's affordance are driven by data-state in CSS.
   const chipLabel =
     connected ? "Connected" :
     isAvailable ? "Available" :
@@ -1174,70 +1126,39 @@ function ProviderCard({ provider, connected, onConnect }) {
     AUTH_SHAPE_LABEL[provider.auth_shape || "oauth"] ||
     "Cloud sync";
 
+  const clickable = isAvailable && !connected;
   const onClick = () => {
-    if (!isAvailable || connected) return;
+    if (!clickable) return;
     onConnect();
   };
 
+  // State drives styling via data-state so hover/affordance live in CSS
+  // (no JS mouse handlers). Connected wins over the catalog status.
+  const state =
+    connected ? "connected" :
+    isAvailable ? "available" :
+    isNeedsSetup ? "needs-setup" :
+    "coming-soon";
+
   return (
-    <div
+    <button
+      type="button"
       onClick={onClick}
       title={provider.blurb || undefined}
-      style={{
-        padding: "10px 12px",
-        background: "var(--surface)",
-        border: "1px solid var(--line)",
-        borderRadius: 10,
-        cursor: isAvailable && !connected ? "pointer" : "default",
-        opacity: isComingSoon ? 0.55 : 1,
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        transition: "border-color 120ms ease, background 120ms ease",
-      }}
-      onMouseEnter={(e) => {
-        if (isAvailable && !connected) {
-          e.currentTarget.style.borderColor = "var(--ink-2, var(--ink-3))";
-          e.currentTarget.style.background = "var(--surface-2)";
-        }
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = "var(--line)";
-        e.currentTarget.style.background = "var(--surface)";
-      }}
+      className="csync-provider"
+      data-state={state}
+      disabled={!clickable}
+      aria-label={clickable ? `Connect ${provider.name}` : `${provider.name} — ${chipLabel}`}
     >
-      <Icon name="cloud" size={14} style={{ color: "var(--ink-3)", flexShrink: 0 }}/>
-      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>
-        <div style={{
-          fontSize: 13,
-          fontWeight: 600,
-          color: "var(--ink)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}>
-          {provider.name}
-        </div>
-        <div style={{
-          fontSize: 11,
-          color: "var(--ink-3)",
-          marginTop: 1,
-        }}>
-          {subtitle}
-        </div>
-      </div>
-      <span style={{
-        fontSize: 10,
-        padding: "2px 8px",
-        borderRadius: 999,
-        background: chipBg,
-        color: chipColor,
-        fontWeight: 600,
-        letterSpacing: 0.02,
-        flexShrink: 0,
-      }}>
+      <span className="csync-provider__icon"><Icon name="cloud" size={15}/></span>
+      <span className="csync-provider__id">
+        <span className="csync-provider__name">{provider.name}</span>
+        <span className="csync-provider__sub">{subtitle}</span>
+      </span>
+      <span className="csync-provider__chip" data-state={state}>
+        {connected && <span className="csync-provider__chip-dot"/>}
         {chipLabel}
       </span>
-    </div>
+    </button>
   );
 }

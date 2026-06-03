@@ -59,11 +59,34 @@ function installToastDedup(): void {
     loading: ToastFn;
   };
   const tw = toast as ToastWithLevels;
+  // Coerce a non-string, non-React-element message to a string. A FastAPI
+  // error `detail` can be an ARRAY of objects (422) or a bare object; handing
+  // that to react-hot-toast throws "Objects are not valid as a React child",
+  // and since the Toaster renders at the root that would blank the whole app.
+  const toMessage = (msg: unknown): unknown => {
+    if (msg == null || typeof msg === "string") return msg;
+    if (React.isValidElement(msg)) return msg;
+    if (Array.isArray(msg)) {
+      return msg
+        .map((m) =>
+          m && typeof m === "object"
+            ? String((m as Record<string, unknown>).msg ?? JSON.stringify(m))
+            : String(m),
+        )
+        .join("; ");
+    }
+    if (typeof msg === "object") {
+      const o = msg as Record<string, unknown>;
+      return String(o.msg ?? o.detail ?? o.message ?? JSON.stringify(o));
+    }
+    return String(msg);
+  };
   const wrap = (kind: "error" | "success" | "loading"): ToastFn => {
     const original = tw[kind].bind(toast) as ToastFn;
     return (msg: unknown, opts: Record<string, unknown> = {}) => {
-      const id = (opts.id as string) || `${kind}:${hashMessage(msg)}`;
-      return original(msg, { ...opts, id });
+      const safe = toMessage(msg);
+      const id = (opts.id as string) || `${kind}:${hashMessage(safe)}`;
+      return original(safe, { ...opts, id });
     };
   };
   tw.error = wrap("error");
@@ -141,11 +164,108 @@ const queryClient = new QueryClient({
   },
 });
 
+// App-wide crash guard. Before this, a single component throwing during
+// render (e.g. a temporal-dead-zone ReferenceError) unmounted the entire
+// React tree and left a BLACK SCREEN with nothing to act on. This boundary
+// catches any render error below it and shows a recoverable card instead —
+// the app degrades to a message + Reload, never a silent void.
+type AppErrorBoundaryProps = { children: React.ReactNode };
+type AppErrorBoundaryState = { error: Error | null };
+
+class AppErrorBoundary extends React.Component<
+  AppErrorBoundaryProps,
+  AppErrorBoundaryState
+> {
+  constructor(props: AppErrorBoundaryProps) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    console.error("neuthek: unhandled render error", error, info);
+  }
+  render(): React.ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 24,
+          background: "var(--bg, #0b0b0c)",
+          color: "var(--ink, #e9e9ea)",
+          fontFamily: "Geist, system-ui, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 440,
+            width: "100%",
+            textAlign: "center",
+            background: "var(--surface, #161618)",
+            border: "1px solid var(--line, rgba(255,255,255,0.08))",
+            borderRadius: 16,
+            padding: "28px 24px",
+          }}
+        >
+          <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 8 }}>
+            Something went wrong
+          </div>
+          <div
+            style={{ fontSize: 13, opacity: 0.7, marginBottom: 20, lineHeight: 1.5 }}
+          >
+            neuthek hit an unexpected error and stopped rendering this view.
+            Reloading usually clears it.
+          </div>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              appearance: "none",
+              border: "none",
+              borderRadius: 10,
+              padding: "10px 18px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              background: "var(--ink, #111)",
+              color: "var(--surface, #fff)",
+            }}
+          >
+            Reload neuthek
+          </button>
+          {this.state.error.message && (
+            <pre
+              style={{
+                marginTop: 18,
+                textAlign: "left",
+                fontSize: 11,
+                opacity: 0.55,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                maxHeight: 120,
+                overflow: "auto",
+              }}
+            >
+              {String(this.state.error.message)}
+            </pre>
+          )}
+        </div>
+      </div>
+    );
+  }
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      {bootstrap()}
-      <Toaster
+      <AppErrorBoundary>
+        {bootstrap()}
+        <Toaster
         position="bottom-right"
         toastOptions={{
           style: {
@@ -158,7 +278,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             fontFamily: "Geist, system-ui, sans-serif",
           },
         }}
-      />
+        />
+      </AppErrorBoundary>
     </QueryClientProvider>
   </React.StrictMode>,
 );

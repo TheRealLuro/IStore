@@ -10,6 +10,8 @@ import { EditableName } from "./nameable-chip.jsx";
 import { deleteFile, originalUrl, fetchAsBlobUrl, toggleStar } from "@/api/files";
 import { attachImageTag, detachImageTag } from "@/api/tags";
 import { CommentPanel } from "./comment-panel.jsx";
+import { ImageToolRail, OcrOverlay, useImageOcr, DocToolRail, useDocumentText, useDocTranslation, DocTranslatedView, useImageTranslation, ImageTranslatedBar } from "./image-tool-rail.jsx";
+import { DocTranslateLoader, SCRIBE_PHRASES } from "./neuthek-loader.jsx";
 import { listShares } from "@/api/shares";
 import { PdfPageStack } from "./pdf-stack.jsx";
 import { ShareModal } from "./share-modal.jsx";
@@ -44,6 +46,207 @@ const TAG_SUGGESTIONS = [
   "Favorite", "To review", "Shared", "Archived", "Private", "WIP",
   "Work", "Personal", "Travel", "Family", "Reference", "Receipt",
 ];
+
+// ── Center translated-PDF view (over the PDF page stack) ─────────────────────
+// For PDFs the FINAL translation is the REAL PDF returned by the backend with
+// only its text translated IN PLACE (exact layout/images/positions) — NOT a
+// clean re-render. We do NOT show that PDF in the browser's native PDF viewer
+// anymore (an <iframe src="blob:…"> rendered Chrome's PDF chrome — toolbar,
+// thumbnail rail, a tiny default zoom — which looked off-brand). Instead, both
+// while translating AND once done, we render the STREAMED EXACT PAGE IMAGES — the
+// real rendered translated pages — as a clean scrollable STACK of white page
+// "sheets" centered on the app's dark backdrop, matching the rest of the modal
+// (the same `.nk-xlate__pages` look the live render uses). The full-fidelity PDF
+// is still one click away via Download PDF (the real `pdf_b64` blob).
+//
+// FLOW:
+//   • While TRANSLATING — the translate-pdf stream emits page-snapshot lines
+//     ({i,n,page,pages,page_png_b64}); the hook decodes each to an object URL and
+//     keeps the LATEST snapshot per page in `pageImages`, which we hand to
+//     DocTranslateLoader. The loader shows its centered warming card (logo +
+//     localized scribe phrases + progress) UNTIL progress ≥25% (the hook gates
+//     early snapshots), then swaps to the pages with the branded loader compacted
+//     into a slim progress STRIP on top. The page does NOT auto-scroll.
+//     (`streamBlocks`/`streamText` remain a fallback for an older backend that
+//     emits block text but no snapshots.)
+//   • When DONE — the SAME page images (now the fully-translated pages, latest
+//     snapshot per page) render as the final stack in the app's own style, with a
+//     thin top bar carrying the language pair, a Download PDF button (real blob),
+//     and the Show original ⇄ Show translation toggle.
+//
+// Defensive: `t` may be a partially-initialized hook value, so every field is
+// read with a fallback (the stream can emit a line with a missing field, and a
+// future refactor must not be able to blank-screen this overlay). `streamBlocks`
+// / `streamText` may be undefined on an older/stale hook shape — coalesce both.
+function TranslatedPdfView({ t }) {
+  const tt = t || {};
+  const translating = !!tt.translating;
+  const done = !!tt.done;
+  const progress = tt.progress || { done: 0, total: 0 };
+  const langs = tt.langs || null;
+  const showTranslation = !!tt.showTranslation;
+  const toggleView = tt.toggleView;
+  const translatedPdfBlob = tt.translatedPdfBlob || null;
+  const loaderPhrases = tt.loaderPhrases;
+  // The STREAMED EXACT PAGE IMAGES — object URLs of the real rendered document
+  // pages translated so far (exact layout), indexed by 0-based page. This drives
+  // BOTH the live render (while translating) AND the final stack (once done): the
+  // latest snapshot per page is the fully-translated render of that page. May be
+  // absent on a partially-built hook — default to empty.
+  const pageImages = Array.isArray(tt.pageImages) ? tt.pageImages : [];
+  // The live formatted blocks ([{text, kind}]) + flat-text fallback. Kept ONLY
+  // as a fallback for an older backend that streams block text but no page
+  // snapshots; the page images above are PREFERRED by the loader. Either may be
+  // absent on a partially-built hook — default to empty so the loader simply
+  // shows its warming card instead of throwing.
+  const streamBlocks = Array.isArray(tt.streamBlocks) ? tt.streamBlocks : [];
+  const streamText = typeof tt.streamText === "string" ? tt.streamText : "";
+
+  // The final page sheets — drop holes (pages that never streamed a snapshot),
+  // keeping each page's index for a stable key. When some pages lack an image we
+  // simply show what's available; the Download still gives the full PDF.
+  const finalPages = pageImages
+    .map((url, page) => ({ url, page }))
+    .filter((p) => typeof p.url === "string" && p.url);
+
+  const pair =
+    langs && (langs.source || langs.target)
+      ? `${langs.source || "Detected"} → ${langs.target || ""}`.trim()
+      : null;
+
+  // 25% PREVIEW GATE (CHANGE 2): while translating, show ONLY the branded loader
+  // (logo + phrases + progress) until the stream is ~25% done, THEN start showing
+  // the streamed pages. We gate purely at the DISPLAY layer — below 25% we hand
+  // the loader EMPTY page/block/text props so it renders its centered warming
+  // card; at/after 25% we pass the real streamed content through. (The hook keeps
+  // accumulating snapshots regardless, so the FINISHED stack still has every page
+  // even when a short doc's only snapshot arrives before the 25% mark.)
+  const pTotal = progress?.total || 0;
+  const pDone = progress?.done || 0;
+  const pct = pTotal > 0 ? (pDone / pTotal) * 100 : 0;
+  const pastGate = pct >= 25;
+  const gatedPageImages = pastGate ? pageImages : [];
+  const gatedBlocks = pastGate ? streamBlocks : [];
+  const gatedText = pastGate ? streamText : "";
+
+  // Download the REAL translated PDF (the `pdf_b64` blob — full fidelity, exact
+  // layout/text-in-place), named after nothing in particular here (the left
+  // panel's download names it by file + language; this is the quick grab from the
+  // result view). Creates a temp object URL + <a download>, revoked shortly after.
+  const downloadPdf = () => {
+    if (!translatedPdfBlob) {
+      toast.error("The translated PDF isn’t ready yet.");
+      return;
+    }
+    try {
+      const url = URL.createObjectURL(translatedPdfBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "translated.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch {
+      toast.error("Could not download the translated PDF.");
+    }
+  };
+
+  // WHILE TRANSLATING: the live render (`.nk-xlate--live`, opaque) fully covers
+  // the still-mounted original PdfPageStack. Once DONE the final page-image stack
+  // fills the body below the toggle bar — app-styled, no browser PDF chrome.
+  return (
+    <div
+      className="doc-translated doc-translated--pdf"
+      aria-label="Translated PDF"
+    >
+      {/* The top status bar is only meaningful once the translation is done.
+          WHILE translating, the live render's own strip carries progress, so we
+          drop this bar. */}
+      {!translating && done && (
+        <div className="doc-translated__bar">
+          <div className="doc-translated__bar-left">
+            {pair && <span className="doc-translated__pair">{pair}</span>}
+            <span className="doc-translated__progress">Translated</span>
+          </div>
+          <div className="doc-translated__bar-actions">
+            {translatedPdfBlob && (
+              <button
+                type="button"
+                className="chip-toggle"
+                onClick={downloadPdf}
+                title="Download the translated PDF — exact copy, text in place"
+              >
+                <Icon name="download" size={12} />
+                Download PDF
+              </button>
+            )}
+            <button
+              type="button"
+              className="chip-toggle"
+              onClick={toggleView}
+              aria-pressed={showTranslation}
+              title="Toggle original / translation"
+            >
+              <Icon name="refresh" size={12} />
+              {showTranslation ? "Show original" : "Show translation"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* WHILE TRANSLATING: the STREAMED EXACT PAGE IMAGES — the real rendered
+          document pages (exact layout) translated so far — fill a scrollable
+          area, progressively translating, with the branded loader compacted into
+          the slim top strip. The display gate above feeds the loader empty props
+          below 25%, so it shows its centered warming card until progress ≥25%,
+          then swaps to the pages. `behindBlocks`/`behindText` are only a fallback
+          for an older backend that emits block text but no page snapshots. The
+          page does NOT auto-scroll. */}
+      {translating && (
+        <DocTranslateLoader
+          className="nk-xlate--overlay"
+          progress={progress}
+          pair={pair}
+          phrases={loaderPhrases}
+          pageImages={gatedPageImages}
+          behindBlocks={gatedBlocks}
+          behindText={gatedText}
+        />
+      )}
+
+      {/* DONE: the FINAL translated-page stack — clean white sheets centered on
+          the app's dark backdrop (same look as the original PdfPageStack / the
+          live render), NO browser PDF chrome. When some pages lack a streamed
+          image we show what's available; the Download above still gives the full
+          PDF. If NONE streamed (a backend that emitted only the final blob), we
+          point the user at Download. */}
+      {!translating && done && (
+        <div className="doc-translated__scroll">
+          {finalPages.length > 0 ? (
+            <div className="nk-xlate__pages">
+              {finalPages.map((p) => (
+                <img
+                  key={p.page}
+                  src={p.url}
+                  className="nk-xlate__page-img"
+                  alt={`Translated page ${p.page + 1}`}
+                  draggable="false"
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="doc-translated__placeholder">
+              {translatedPdfBlob
+                ? "Your translated PDF is ready — use Download PDF above to open it."
+                : "No translated pages to show."}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Per-face correction chip for the preview's "People in this photo"
 // section. Displays the existing avatar + inline-rename name, and adds
@@ -292,7 +495,7 @@ function FaceChip({ face, file, people, onDeletePerson }) {
   );
 }
 
-export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, activePerson, people, onDeletePerson }) {
+export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, activePerson, people, onDeletePerson, onBestOf }) {
   const qc = useQueryClient();
   const [tags, setTags] = useStateP2([]);
   const [draft, setDraft] = useStateP2("");
@@ -317,18 +520,36 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
     });
   };
 
-  // Esc closes lightbox first, then preview
+  // Left tool-bubble rail state (image lightbox), declared up here because
+  // the Esc-handler effect just below depends on them (referencing them
+  // later in the file caused a temporal-dead-zone crash). One tool open at
+  // a time: comments uses commentsExpanded; activeTool drives info/text.
+  const [commentsExpanded, setCommentsExpanded] = useStateP2(true);
+  const [activeTool, setActiveTool] = useStateP2(null); // null | "info" | "text"
+
+  // Esc order in the image lightbox: minimize an open tool panel first
+  // (rail pattern — Esc tucks the tool back into its bubble), THEN close
+  // the lightbox, THEN close the preview. Outside the lightbox it just
+  // closes the preview as before.
   useEffectP2(() => {
     if (!file) return;
     const onKey = (e) => {
-      if (e.key === "Escape") {
-        if (lightbox) setLightbox(false);
-        else onClose && onClose();
+      if (e.key !== "Escape") return;
+      if (lightbox) {
+        if (activeTool || commentsExpanded) {
+          // Tuck whichever tool is open back into its bubble.
+          setActiveTool(null);
+          setCommentsExpanded(false);
+        } else {
+          setLightbox(false);
+        }
+      } else {
+        onClose && onClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [file, lightbox, onClose]);
+  }, [file, lightbox, onClose, activeTool, commentsExpanded]);
 
   // Re-seed tags + star state when the file changes. We depend on the
   // STRINGIFIED tag list (not the array ref) so when the React-Query
@@ -527,7 +748,14 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
   // full-display surface opens. Auto-collapses to the bubble during
   // video playback (see videoFocusMode below); the user can click
   // the bubble to expand again while the video keeps playing.
-  const [commentsExpanded, setCommentsExpanded] = useStateP2(true);
+  // LEFT TOOL-BUBBLE RAIL (image lightbox). commentsExpanded + activeTool
+  // are declared earlier (the Esc-handler effect above depends on them); the
+  // rail keeps the open tools mutually exclusive — one panel at a time.
+  // showOcrBoxes toggles the on-image highlight overlay; ocrLineIdx links a
+  // hovered text line to its box (and back). All declared unconditionally
+  // before the early `if (!file)` return below.
+  const [showOcrBoxes, setShowOcrBoxes] = useStateP2(true);
+  const [ocrLineIdx, setOcrLineIdx] = useStateP2(null);
   // Video focus mode — true while a video is actively playing.
   // Drives:
   //   - .lightbox--focus (pure-black backdrop, hides everything but
@@ -546,12 +774,39 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
     setHtmlModal(false); setSpreadsheetModal(false);
     setCommentsExpanded(true);
     setVideoFocusMode(false);
+    // Reset the rail to "all minimized" for the new file so info/text
+    // panels and the OCR overlay don't leak across files.
+    setActiveTool(null);
+    setShowOcrBoxes(true);
+    setOcrLineIdx(null);
     // Reset the "mark as containing a person" control to idle on every
     // file change. Without this, an "empty" result (a manual detect that
     // found no faces) from one file leaked onto the NEXT file, so the
     // prompt appeared even on files that already have a detected face.
     setRedetectState("idle");
   }, [file?.id]);
+  // Image lightbox opens with EVERYTHING minimized to bubbles (the rail's
+  // default state — "the file is the focus"). The shared `commentsExpanded`
+  // defaults open for the OTHER surfaces (PDF/video/etc., which keep their
+  // auto-expanded comment panel), so we explicitly collapse it + clear the
+  // info/text tool the moment the image lightbox opens. Only runs on the
+  // false→true edge so the user can freely open a tool afterward.
+  useEffectP2(() => {
+    if (lightbox) {
+      setCommentsExpanded(false);
+      setActiveTool(null);
+    }
+  }, [lightbox]);
+  // Document surfaces (PDF / code / markdown) open with the rail fully
+  // minimized too — same "the file is the focus" default as the image
+  // lightbox. Only runs on the false→true edge so the user can freely open
+  // a tool afterward.
+  useEffectP2(() => {
+    if (pdfModal || codeModal || markdownModal) {
+      setCommentsExpanded(false);
+      setActiveTool(null);
+    }
+  }, [pdfModal, codeModal, markdownModal]);
   // When the video modal closes (Esc, click-outside, X), drop focus
   // mode so re-opening another surface starts at "normal lightbox."
   useEffectP2(() => {
@@ -570,18 +825,31 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
   // panel-close handler. We already have an Esc listener for the
   // image lightbox + preview; each modal needs its own capture-phase
   // listener so it can swallow the event first.
+  // Doc-surface Esc order mirrors the image lightbox: if a rail tool
+  // (info / text) or the comments panel is open, Esc tucks it back into
+  // its bubble FIRST; only a second Esc closes the modal.
   useEffectP2(() => {
     if (!pdfModal) return;
-    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setPdfModal(false); } };
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if (activeTool || commentsExpanded) { setActiveTool(null); setCommentsExpanded(false); }
+      else setPdfModal(false);
+    };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [pdfModal]);
+  }, [pdfModal, activeTool, commentsExpanded]);
   useEffectP2(() => {
     if (!codeModal) return;
-    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setCodeModal(false); } };
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if (activeTool || commentsExpanded) { setActiveTool(null); setCommentsExpanded(false); }
+      else setCodeModal(false);
+    };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [codeModal]);
+  }, [codeModal, activeTool, commentsExpanded]);
   useEffectP2(() => {
     if (!videoModal) return;
     const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setVideoModal(false); } };
@@ -614,10 +882,15 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
   }, [vcfModal]);
   useEffectP2(() => {
     if (!markdownModal) return;
-    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setMarkdownModal(false); } };
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if (activeTool || commentsExpanded) { setActiveTool(null); setCommentsExpanded(false); }
+      else setMarkdownModal(false);
+    };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [markdownModal]);
+  }, [markdownModal, activeTool, commentsExpanded]);
   useEffectP2(() => {
     if (!dataTreeModal) return;
     const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setDataTreeModal(false); } };
@@ -666,6 +939,51 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [htmlModal]);
+
+  // OCR for the Text tool. Unconditional hook; the underlying query only
+  // fires when the image lightbox is open AND the Text bubble is active,
+  // so opening any other surface never triggers Florence-2. Cached per
+  // image id in TanStack Query, so re-opening the Text tool is instant.
+  // Exclude SVG: it's categorized `image` but is a vector the OCR
+  // raster path (PIL + Florence) can't open, so don't fire a doomed call.
+  const ocrQuery = useImageOcr(
+    file?.id,
+    isImage && !isSvgFile,
+    lightbox && activeTool === "text",
+  );
+
+  // Whether a DOCUMENT surface (PDF / Office-as-PDF / code / markdown) is
+  // open. These get the same left tool-rail as the image lightbox, with a
+  // "Translate document" tool instead of OCR. Declared before the early
+  // return so the doc-text hook below stays unconditional.
+  const docSurfaceOpen = pdfModal || codeModal || markdownModal;
+
+  // Full document text for the Translate tool. Unconditional hook; the
+  // underlying GET /images/{id}/text only fires when a doc surface is open
+  // AND the Translate ("text") bubble is active — so opening a document
+  // never extracts text until the user asks. Cached per file id.
+  const docTextQuery = useDocumentText(
+    file?.id,
+    docSurfaceOpen && activeTool === "text",
+  );
+
+  // Shared document-translation state. Instantiated ONCE here (unconditional
+  // hook — declared before the early return) so the LEFT Translate panel and
+  // the CENTER translated-document view read the SAME translation. The left
+  // panel (DocToolRail → DocTextToolPanel) drives it; the center shows the
+  // result. The 3rd arg routes PDFs to the EXACT-COPY path: the backend returns
+  // the ORIGINAL PDF with only its text translated IN PLACE, and we render THAT
+  // real PDF in the same viewer (NOT the structured clean re-render that
+  // DocTranslatedView builds — that path stays for txt/docx/etc.).
+  const docTranslation = useDocTranslation(file?.id, docTextQuery?.data?.text || "", isPdf);
+
+  // Shared IN-IMAGE translation state. Instantiated ONCE here (unconditional
+  // hook — declared before the early return) so the LEFT Text panel and the
+  // MAIN image view read the SAME translation: the panel drives Translate +
+  // Download + the toggle; the main view renders the translated PNG in place of
+  // the original <img>. Resets/aborts itself when the file id changes.
+  const imageTranslation = useImageTranslation(file?.id);
+
   if (!file) return null;
 
   // Tag changes here persist to the backend via /images/{id}/tags so
@@ -715,20 +1033,80 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
     }
   };
 
-  // Compose the lightbox className once — the modifiers depend on
-  // comment-panel expanded state (drops the 360px left padding when
-  // the panel is just a bubble) and on videoFocusMode (paints the
-  // backdrop pure black so the eye lands on the video). Used on
-  // every modal surface so the behavior is consistent.
+  // Whether ANY left-edge panel is expanded (so the lightbox content
+  // shifts right to clear it). Comments works on every surface; the
+  // info/text tools only render in the image lightbox, where activeTool
+  // tracks them. On non-image surfaces activeTool is always null, so this
+  // reduces to the old `commentsExpanded`-only behavior — unchanged.
+  const leftPanelOpen = commentsExpanded || activeTool != null;
+
+  // Compose the lightbox className once — the modifiers depend on whether
+  // a left panel is expanded (drops the 360px left padding when only
+  // bubbles show) and on videoFocusMode (paints the backdrop pure black so
+  // the eye lands on the video). Used on every modal surface.
   const lightboxClass = [
     "lightbox",
-    commentsExpanded ? "lightbox--comments" : "lightbox--bubble",
+    leftPanelOpen ? "lightbox--comments" : "lightbox--bubble",
     videoFocusMode ? "lightbox--focus" : "",
   ].filter(Boolean).join(" ");
 
+  // Rail bubble toggle — enforces one-tool-at-a-time. Comments uses its
+  // own expanded flag (the existing CommentPanel); info/text use
+  // activeTool. Selecting one closes the others.
+  const handleToolSelect = (id) => {
+    if (id === "comments") {
+      setCommentsExpanded((open) => {
+        const next = !open;
+        if (next) setActiveTool(null); // close info/text when comments opens
+        return next;
+      });
+      return;
+    }
+    // info / text
+    setActiveTool((cur) => {
+      const next = cur === id ? null : id;
+      if (next) setCommentsExpanded(false); // close comments when these open
+      return next;
+    });
+  };
+
+  // The rail belongs to the IMAGE lightbox specifically (the OCR overlay
+  // needs the rendered image). Other surfaces keep the plain comment
+  // bubble/panel exactly as before.
+  const railActive = activeTool || (commentsExpanded ? "comments" : null);
+  const showImageRail = lightbox && (isImage || isSvgFile);
+  // Whether the MAIN image view should currently show the TRANSLATED render
+  // (text translated in place) instead of the original photo. True only when a
+  // translated image exists AND the user hasn't toggled back to the original.
+  const showImageTranslation =
+    !!imageTranslation.translatedUrl && imageTranslation.showTranslation;
+  // Document surfaces (PDF / Office-as-PDF / code / markdown) get the same
+  // left tool-rail, with a "Translate document" tool in place of OCR. The
+  // rail + its panels are position:fixed, so it's rendered once at the top
+  // level (below) gated on this flag.
+  const showDocRail = docSurfaceOpen;
+
+  // Whether ANY full-display surface (lightbox or a viewer modal) is open. Used
+  // to neutralize the dim backdrop's click-to-close while a surface — and its
+  // translate panel / in-progress translation — is up, so an accidental click
+  // on the chrome can't tear it all down. Each surface keeps its own X + Esc.
+  const anySurfaceOpen =
+    lightbox || pdfModal || codeModal || videoModal || audioModal || csvModal ||
+    icsModal || vcfModal || markdownModal || dataTreeModal || notebookModal ||
+    model3dModal || fontModal || ebookModal || archiveModal || htmlModal ||
+    spreadsheetModal;
+
   return (
     <React.Fragment>
-    <div className="preview-backdrop" onClick={onClose}/>
+    {/* Dim backdrop behind the right-hand DETAILS aside. It only closes the
+        preview when NO full-display surface is open — once a lightbox / viewer
+        modal (and its translate panel / running translation) is up, a stray
+        click on the chrome must NOT tear it down. Each surface still has its
+        own X button + Esc. */}
+    <div
+      className="preview-backdrop"
+      onClick={anySurfaceOpen ? undefined : onClose}
+    />
     {/* §G2 — comment panel only renders while a full-display
         surface is open. Shared across image lightbox, PDF modal,
         and code modal so every shareable file type gets the same
@@ -744,26 +1122,149 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       ownerUserId={file.user_id || user?.id}
       open={lightbox || pdfModal || codeModal || videoModal || audioModal || csvModal || icsModal || vcfModal || markdownModal || dataTreeModal || notebookModal || model3dModal || fontModal || ebookModal || archiveModal || htmlModal || spreadsheetModal}
       expanded={commentsExpanded}
-      onToggleExpanded={setCommentsExpanded}
+      onToggleExpanded={(next) => {
+        // Keep the rail mutually exclusive: opening comments closes the
+        // info/text tools. Closing just collapses. (No-op for non-image
+        // surfaces where activeTool stays null.)
+        setCommentsExpanded(next);
+        if (next) setActiveTool(null);
+      }}
+      // In the image lightbox AND on document surfaces the rail owns the
+      // comments bubble, so hide the CommentPanel's own floating bubble to
+      // avoid a duplicate. On every other surface it keeps its self-
+      // contained bubble.
+      hideBubble={showImageRail || showDocRail}
     />
     {lightbox && (file.thumb || isSvgFile) && (
-      <div className={lightboxClass} onClick={() => setLightbox(false)}>
+      // Click-outside no longer closes the lightbox — ONLY the X button (below)
+      // or Esc do, so an incidental click on the dim area (or switching tabs)
+      // can't dismiss the image / its translate panel mid-work.
+      <div className={lightboxClass}>
         <button className="lightbox__close" aria-label="Close" onClick={(e) => { e.stopPropagation(); setLightbox(false); }}>
           <Icon name="x" size={18}/>
         </button>
-        {/* SVG loads the original vector (inert <img>); raster images use
-            the full-res served variant. */}
-        <AuthedImg
-          url={isSvgFile ? originalUrl(file.id) : (file.thumbFull || file.thumb)}
-          className="lightbox__img"
-          alt={file.name}
-          onClick={(e) => e.stopPropagation()}
-          style={isSvgFile ? { background: "#fff" } : undefined}
+        {/* LEFT TOOL-BUBBLE RAIL — comments / info / text, one at a time.
+            Comments is driven by commentsExpanded (the CommentPanel above
+            renders the expanded panel); info/text render their own panels
+            from inside the rail component. */}
+        <ImageToolRail
+          file={file}
+          active={railActive}
+          onSelect={handleToolSelect}
+          commentCount={undefined}
+          // "Best of" bubble — only when the parent wired a handler AND the
+          // open file is a raster image (SVG has no CLIP embedding / burst
+          // group). Hands the file up so the parent fetches its similar
+          // group and opens the shared BestOfModal.
+          onBestOf={onBestOf && isImage ? () => onBestOf(file) : undefined}
+          ocrQuery={ocrQuery}
+          showBoxes={showOcrBoxes}
+          onToggleBoxes={() => setShowOcrBoxes((v) => !v)}
+          activeLineIdx={ocrLineIdx}
+          onHoverLine={setOcrLineIdx}
+          translation={imageTranslation}
         />
+        {/* Image STAGE — a wrapper that hugs the rendered <img> so the OCR
+            overlay (normalized 0..1 boxes) can be placed as percentages and
+            stays aligned at any zoom/letterbox. SVG loads the original
+            vector (inert <img>); raster images use the full-res variant.
+            Clicking the file tucks any open tool back into its bubble (the
+            rail's minimize-on-file-click behavior) without closing the
+            lightbox; the backdrop click still closes it. */}
+        <div
+          className="lb-stage"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (activeTool || commentsExpanded) {
+              setActiveTool(null);
+              setCommentsExpanded(false);
+            }
+          }}
+        >
+          <AuthedImg
+            url={isSvgFile ? originalUrl(file.id) : (file.thumbFull || file.thumb)}
+            className="lightbox__img"
+            alt={file.name}
+            // Branded loader while the full-res blob loads, so opening — or
+            // switching to — a file shows a clean "loading" beat instead of a
+            // blank flash. Delayed in CSS, so an instant cache hit never shows
+            // it.
+            loader
+            style={isSvgFile ? { background: "#fff", display: "block" } : { display: "block" }}
+          />
+          {/* TRANSLATED IMAGE — overlays the original (which stays mounted, so
+              the toggle flips back instantly with no reload). The stage is
+              sized to the original <img>, so an absolutely-positioned image
+              filling the stage exactly covers it (same dimensions). Only shown
+              while the user is viewing the translation. */}
+          {showImageTranslation && (
+            <img
+              src={imageTranslation.translatedUrl}
+              className="lightbox__img img-translated__img"
+              alt={`${file.name} — translated`}
+            />
+          )}
+          {/* OCR highlight boxes — hidden while the translated image is shown
+              (the boxes map the ORIGINAL text positions, which no longer
+              apply to the re-rendered translation). */}
+          {activeTool === "text" && !showImageTranslation && showOcrBoxes && ocrQuery?.data?.boxes && (
+            <OcrOverlay
+              lines={ocrQuery.data.lines}
+              activeIdx={ocrLineIdx}
+              onHoverBox={setOcrLineIdx}
+            />
+          )}
+          {/* While the image is translating: the SAME branded loader the
+              document/PDF flow now uses — the neuthek logo + cycling localized
+              scribe phrases + the real `i / n` progress bar (driven by each OCR
+              region's {i,n}), centered over a softly-dimmed original photo
+              (nk-xlate--overlay). No reflowed text page is rendered — the
+              original photo stays visible underneath until, on done, the
+              rendered translated PNG swaps in place. */}
+          {activeTool === "text" && imageTranslation.translating && (
+            <DocTranslateLoader
+              className="nk-xlate--overlay"
+              progress={imageTranslation.progress}
+              phrases={(imageTranslation.loaderPhrases && imageTranslation.loaderPhrases.length) ? imageTranslation.loaderPhrases : SCRIBE_PHRASES}
+              pair={
+                imageTranslation.langs &&
+                (imageTranslation.langs.source || imageTranslation.langs.target)
+                  ? `${imageTranslation.langs.source || "Detected"} → ${imageTranslation.langs.target || ""}`.trim()
+                  : null
+              }
+            />
+          )}
+          {/* Status bar — language pair + Translating indicator + the
+              Show original ⇄ Show translation toggle. Only while the Text tool
+              is open AND a translation exists or is in flight. */}
+          {activeTool === "text" && (imageTranslation.translatedUrl || imageTranslation.translating) && (
+            <ImageTranslatedBar t={imageTranslation} />
+          )}
+        </div>
       </div>
     )}
+    {/* LEFT TOOL-BUBBLE RAIL for DOCUMENT surfaces (PDF / Office-as-PDF /
+        code / markdown). Same one-panel-at-a-time UX as the image lightbox,
+        with a "Translate document" tool in place of OCR. The rail + its
+        panels are position:fixed, so it's rendered once here and overlays
+        whichever doc modal is open. Comments is driven by commentsExpanded
+        (the CommentPanel above renders the expanded panel); info/text render
+        their own panels from inside the rail. */}
+    {showDocRail && (
+      <DocToolRail
+        file={file}
+        active={railActive}
+        onSelect={handleToolSelect}
+        commentCount={undefined}
+        docQuery={docTextQuery}
+        translation={docTranslation}
+      />
+    )}
     {pdfModal && isPdf && (
-      <div className={lightboxClass} onClick={() => setPdfModal(false)}>
+      // Click-outside no longer closes the modal — only the X button / Esc do,
+      // so a stray click on the dim area (or a tab switch) can't dismiss the
+      // document and its translate panel / running translation.
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">
@@ -790,19 +1291,34 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
               <Icon name="x" size={14}/>
             </button>
           </div>
-          <div className="pdf-modal__body">
+          <div className="pdf-modal__body pdf-modal__body--translatable">
             {/* Server-rasterized page stack (PyMuPDF → JPEG per page,
                 lazy-loaded into a themed scroll container). Replaces the
                 old iframe-into-PDFium approach so the scrollbar belongs
                 to us and every page is visible in one continuous scroll
-                instead of paginated under PDFium's `view=Fit` mode. */}
+                instead of paginated under PDFium's `view=Fit` mode.
+                Kept MOUNTED under the translated overlay so flipping back
+                to the original preserves scroll position. */}
             <PdfPageStack fileId={file.id}/>
+            {/* CENTER translated PDF — the EXACT-COPY translated PDF (real
+                layout, text in place), rendered in the browser's native PDF
+                viewer (iframe) IN PLACE of the original. Mounted while
+                translating (progress overlay over the still-visible original)
+                and once done (the translated PDF). The toggle flips between the
+                original PdfPageStack and this translated PDF. NOT the clean
+                re-render (DocTranslatedView) — that path is only for non-PDFs. */}
+            {docTranslation.showTranslation &&
+              (docTranslation.translating || docTranslation.done) && (
+              <TranslatedPdfView t={docTranslation}/>
+            )}
           </div>
         </div>
       </div>
     )}
     {codeModal && isCode && (
-      <div className={lightboxClass} onClick={() => setCodeModal(false)}>
+      // Click-outside no longer closes the modal — only the X button / Esc do
+      // (keeps the translate panel + any running translation alive).
+      <div className={lightboxClass}>
         <div className="pdf-modal pdf-modal--code" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon">
@@ -829,19 +1345,22 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
               <Icon name="x" size={14}/>
             </button>
           </div>
-          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+          <div className="pdf-modal__body pdf-modal__body--translatable" style={{ background: "var(--surface)" }}>
             <CodePreview
               fileId={file.id}
               mime={file.mime_type_original}
               byteSize={file.byteSize}
               filename={file.name}
             />
+            {docTranslation.showTranslation && (
+              <DocTranslatedView t={docTranslation}/>
+            )}
           </div>
         </div>
       </div>
     )}
     {videoModal && isVideoFile && (
-      <div className={lightboxClass} onClick={() => setVideoModal(false)}>
+      <div className={lightboxClass}>
         <VideoPlayer
           fileId={file.id}
           fileName={file.name}
@@ -851,7 +1370,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {audioModal && isAudioFile && (
-      <div className={lightboxClass} onClick={() => setAudioModal(false)}>
+      <div className={lightboxClass}>
         <AudioPlayer
           fileId={file.id}
           fileName={file.name}
@@ -861,7 +1380,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {csvModal && isCsvFile && (
-      <div className={lightboxClass} onClick={() => setCsvModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="spreadsheet" size={14}/></span>
@@ -881,7 +1400,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {icsModal && isIcsFile && (
-      <div className={lightboxClass} onClick={() => setIcsModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="calendar" size={14}/></span>
@@ -901,7 +1420,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {vcfModal && isVcfFile && (
-      <div className={lightboxClass} onClick={() => setVcfModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="contact" size={14}/></span>
@@ -921,8 +1440,10 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {markdownModal && isMarkdownFile && (
-      <div className={lightboxClass} onClick={() => setMarkdownModal(false)}>
-        <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+      // Click-outside disabled — only the X button / Esc close (keeps the
+      // translate panel + any running translation alive).
+      <div className={lightboxClass}>
+        <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="document" size={14}/></span>
             <div className="pdf-modal__name">{file.name}</div>
@@ -934,14 +1455,17 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
               <Icon name="x" size={14}/>
             </button>
           </div>
-          <div className="pdf-modal__body" style={{ background: "var(--surface)" }}>
+          <div className="pdf-modal__body pdf-modal__body--translatable" style={{ background: "var(--surface)" }}>
             <MarkdownViewer fileId={file.id} fileName={file.name}/>
+            {docTranslation.showTranslation && (
+              <DocTranslatedView t={docTranslation}/>
+            )}
           </div>
         </div>
       </div>
     )}
     {dataTreeModal && isDataTreeFile && (
-      <div className={lightboxClass} onClick={() => setDataTreeModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="code" size={14}/></span>
@@ -961,7 +1485,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {notebookModal && isNotebookFile && (
-      <div className={lightboxClass} onClick={() => setNotebookModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="code" size={14}/></span>
@@ -981,7 +1505,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {model3dModal && isModel3dFile && (
-      <div className={lightboxClass} onClick={() => setModel3dModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="cube" size={14}/></span>
@@ -1001,7 +1525,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {spreadsheetModal && isSpreadsheetFile && (
-      <div className={lightboxClass} onClick={() => setSpreadsheetModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="spreadsheet" size={14}/></span>
@@ -1021,7 +1545,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {fontModal && isFontFile && (
-      <div className={lightboxClass} onClick={() => setFontModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="type" size={14}/></span>
@@ -1041,7 +1565,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {ebookModal && isEbookFile && (
-      <div className={lightboxClass} onClick={() => setEbookModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="book" size={14}/></span>
@@ -1061,7 +1585,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {archiveModal && isArchiveFile && (
-      <div className={lightboxClass} onClick={() => setArchiveModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="archive" size={14}/></span>
@@ -1081,7 +1605,7 @@ export function PreviewPanel({ file, onClose, onOpenAccount, onRename, user, act
       </div>
     )}
     {htmlModal && isHtmlFile && (
-      <div className={lightboxClass} onClick={() => setHtmlModal(false)}>
+      <div className={lightboxClass}>
         <div className="pdf-modal pdf-modal--fill" onClick={(e) => e.stopPropagation()}>
           <div className="pdf-modal__head">
             <span className="pdf-modal__icon"><Icon name="code" size={14}/></span>

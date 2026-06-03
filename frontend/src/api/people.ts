@@ -130,3 +130,51 @@ export const detectAndLabel = (image_ids: string[], display_name: string) =>
     images_scanned: number;
     new_faces: number;
   }>("/people/detect-and-label", { image_ids, display_name });
+
+// Sprint I #7 / D8 — "Find more photos of this person." One candidate
+// face surfaced by the re-detection KNN. `face_id` is what the confirm
+// call targets (reassignFace below); `image_id` is the source photo;
+// `similarity` is the cosine similarity (0..1) to the person's nearest
+// anchor face — higher is more confident.
+export interface RedetectCandidate {
+  face_id: number;
+  detection_id: number | null;
+  image_id: string;
+  cluster_id: number | null;
+  similarity: number;
+  bbox: [number, number, number, number] | null;
+  detection_confidence: number | null;
+}
+
+export interface RedetectResponse {
+  person_id: number;
+  display_name: string | null;
+  threshold: number;
+  /** How many real anchor embeddings the person had to match against. 0
+   *  → the person has no usable face embedding yet (scan more first). */
+  anchor_count: number;
+  /** Library images never face-scanned (no embedding to match). A hint
+   *  for the FE to nudge a backfill; the result never waits on these. */
+  unscanned_count: number;
+  count: number;
+  candidates: RedetectCandidate[];
+}
+
+// Re-match a named person across the whole library and return ranked
+// candidate faces that were never auto-assigned to them. Instant
+// (synchronous pgvector KNN over existing embeddings). Owner-scoped —
+// 404s for an unknown / foreign / unnamed person. CONFIRMING a candidate
+// reuses `reassignFace(face_id, personId)`; rejecting just drops it from
+// the review grid (a rejected candidate stays an unlabeled face).
+export const findMorePhotosOfPerson = (
+  personId: number,
+  opts: { limit?: number; threshold?: number } = {},
+) => {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set("limit", String(opts.limit));
+  if (opts.threshold != null) qs.set("threshold", String(opts.threshold));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return api.post<RedetectResponse>(
+    `/people/${personId}/find-more${suffix}`,
+  );
+};

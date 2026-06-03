@@ -245,6 +245,19 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    # NVIDIA GPU passthrough. The OCR + translate endpoints (Florence-2 +
+    # NLLB-200) run inference IN this API container, so without the GPU they
+    # fall back to CPU and a document translate crawls (minutes vs seconds).
+    # Same reservation as the ml-worker; the 8 GB 4060 has ample headroom
+    # (models are fp16 + lazy-loaded, and translate runs during interactive
+    # use when the worker is usually idle).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   # ML worker — runs in its own container so Florence-2 / Qwen /
   # RetinaFace inference doesn't hold the API container's GIL. The
@@ -352,6 +365,84 @@ services:
       - rclone_configs:/var/neuthek/rclone
     command: ["python", "-m", "backend.worker.main"]
 
+  # SFTP gateway — the read+write SSH/SFTP server (backend/sftp_server.py)
+  # that lets a user mount their neuthek drive (sshfs / WinSCP / Finder /
+  # `sftp` CLI) and read AND upload files. Runs as its OWN container,
+  # ISOLATED from the API: an SFTP bug can't churn the live `--reload`
+  # uvicorn process (a prior in-API attempt caused an outage). It does NOT
+  # build with the [ml] extras — uploads still go through the full
+  # validation + EXIF-strip + quota + store_upload pipeline; the vision
+  # (CLIP/face) enrichment is simply skipped (store_upload degrades
+  # gracefully when torch isn't importable), so an SFTP-uploaded image
+  # lands as a valid Image row without AI tags until a later backfill.
+  sftp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # No INSTALL_ML — the gateway only needs the upload pipeline +
+      # asyncssh, not the multi-GB model stack.
+    container_name: neuthek-sftp
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      APP_ENV: dev
+      # Same DB / Redis / MinIO wiring as the API: the write path needs
+      # Postgres (Image rows + RLS), MinIO (blobs), and Redis (failed-auth
+      # lockout counters shared with the web auth path).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
+      DATABASE_URL_SYNC: postgresql+psycopg2://${POSTGRES_USER:-neuthek}:${POSTGRES_PASSWORD:-neuthek}@postgres:5432/${POSTGRES_DB:-neuthek}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-neuthek}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-neuthekpass}
+      MINIO_SECURE: "false"
+      MINIO_BUCKET_ORIGINALS: ${MINIO_BUCKET_ORIGINALS:-neuthek-originals}
+      MINIO_BUCKET_SERVED:    ${MINIO_BUCKET_SERVED:-neuthek-served}
+      MINIO_BUCKET_FACES:     ${MINIO_BUCKET_FACES:-neuthek-faces}
+      MINIO_BUCKET_QUARANTINE: ${MINIO_BUCKET_QUARANTINE:-neuthek-quarantine}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-CHANGE-IN-PROD}
+      # In-CONTAINER listener bind. 0.0.0.0 is required so the Docker
+      # port-forward (which arrives on the bridge IP, NOT the container's
+      # loopback) reaches the server — same rationale as the frontend's
+      # `--host 0.0.0.0`. The SECURITY boundary is the HOST port mapping
+      # below (127.0.0.1 only); the server code additionally defaults to
+      # 127.0.0.1 for bare-metal / host-network runs. An operator exposing
+      # the gateway deliberately would widen BOTH this and the host map.
+      SFTP_BIND: ${SFTP_BIND:-0.0.0.0}
+      SFTP_PORT: "2222"
+      # Host hint + port the /sftp/info API hands the user for mount
+      # commands. PUBLIC_HOST stays `localhost` because the port is
+      # loopback-bound; an operator exposing it sets these to the real host.
+      SFTP_PUBLIC_HOST: ${SFTP_PUBLIC_HOST:-localhost}
+      SFTP_PUBLIC_PORT: ${SFTP_PUBLIC_PORT:-2222}
+      # Persistent host key path (on the named volume below) so clients'
+      # known_hosts pinning survives restarts.
+      SFTP_HOST_KEY_PATH: /var/neuthek/sftp/ssh_host_ed25519_key
+      SFTP_LOG_LEVEL: ${SFTP_LOG_LEVEL:-INFO}
+    ports:
+      # LOOPBACK-ONLY host bind — the real LAN-exposure boundary. Only
+      # clients on this host can reach the gateway; mount via
+      # `sftp -P 2222 you@localhost`. Widen deliberately (behind your own
+      # bastion/VPN) only if you intend remote SFTP.
+      - "127.0.0.1:2222:2222"
+    volumes:
+      # Source bind-mount so edits to backend/sftp_server.py take effect on
+      # the next `docker restart neuthek-sftp` (the server runs WITHOUT
+      # --reload — it's a long-lived listener, restart to pick up changes).
+      - ./backend:/app/backend
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini:ro
+      # Persistent SSH host key — survives restarts so clients don't get a
+      # host-key-changed warning on every redeploy.
+      - sftp_hostkey:/var/neuthek/sftp
+    command: ["python", "-m", "backend.sftp_server"]
+
   # Frontend dev server — Vite with HMR, source bind-mounted so file
   # saves on the host trigger a browser reload. node_modules lives in
   # an anonymous volume so the container's installed deps don't get
@@ -430,3 +521,9 @@ volumes:
   # pyicloud_cookies — backend writes during /cloud/{provider}/start,
   # worker reads during the hourly sweep.
   rclone_configs:
+  # SFTP-1 — persistent SSH host key for the SFTP gateway. Docker-managed
+  # named volume (NOT a host bind) so the ed25519 host key generated on
+  # first boot survives `docker compose down/up`; without it every restart
+  # would regenerate the key and clients would see a host-key-changed
+  # warning. Mounted only by the `sftp` service.
+  sftp_hostkey:

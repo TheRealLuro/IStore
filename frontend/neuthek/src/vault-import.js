@@ -177,22 +177,29 @@ function rowToPassword(row, map, fallbackTitle) {
   };
 }
 
-// Parse a delimited (CSV/TSV) password export. Returns [] when it doesn't look
-// like a credential export.
+// Parse a delimited (CSV/TSV) password export into { items, skipped }, where
+// `skipped` counts data rows we couldn't turn into a login (blank rows, a
+// repeated header line, or a row with neither a username nor a password).
+// `items` is [] when the file doesn't look like a credential export at all
+// (no password column) — the caller then falls back to a plain file upload.
 function importPasswordCsv(text, fallbackTitle) {
   const delim = pickDelimiter(text);
   const rows = parseDelimited(text, delim).filter((r) => r.some((c) => clean(c) !== ""));
-  if (rows.length < 2) return [];
+  if (rows.length < 2) return { items: [], skipped: 0 };
   const map = passwordHeaderMap(rows[0]);
-  if (!map) return [];
+  if (!map) return { items: [], skipped: 0 };
   const out = [];
+  let skipped = 0;
   for (let i = 1; i < rows.length; i++) {
     const pw = rowToPassword(rows[i], map, fallbackTitle);
     // Skip blank/again-header rows; require something secret-ish to import.
-    if (!pw.password && !pw.username) continue;
+    if (!pw.password && !pw.username) {
+      skipped++;
+      continue;
+    }
     out.push({ kind: "password", data: pw });
   }
-  return out;
+  return { items: out, skipped };
 }
 
 // Map a single JSON login object (already key-aliased shapes from Bitwarden /
@@ -266,12 +273,15 @@ function jsonObjToCard(obj, fallbackTitle) {
 // JSON dispatcher (passwords or cards, single object or array, Bitwarden)
 // ---------------------------------------------------------------------------
 
+// Parse a JSON export into { items, skipped }. `skipped` counts candidate
+// records that carried neither a usable login nor a card. `items` is [] when
+// the text isn't JSON / isn't an object-or-array of records at all.
 function importJson(text, fallbackTitle) {
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return [];
+    return { items: [], skipped: 0 };
   }
   // Normalize to a flat array of candidate record objects. Bitwarden wraps its
   // logins in `{ items: [...] }`; some tools use `{ logins: [...] }`.
@@ -280,9 +290,10 @@ function importJson(text, fallbackTitle) {
   else if (parsed && Array.isArray(parsed.items)) records = parsed.items;
   else if (parsed && Array.isArray(parsed.logins)) records = parsed.logins;
   else if (parsed && typeof parsed === "object") records = [parsed];
-  else return [];
+  else return { items: [], skipped: 0 };
 
   const out = [];
+  let skipped = 0;
   for (const rec of records) {
     // Prefer card when the record clearly carries a card number; else login.
     const card = jsonObjToCard(rec, fallbackTitle);
@@ -292,8 +303,9 @@ function importJson(text, fallbackTitle) {
     }
     const pw = jsonObjToPassword(rec, fallbackTitle);
     if (pw) out.push({ kind: "password", data: pw });
+    else skipped++;
   }
-  return out;
+  return { items: out, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -406,16 +418,18 @@ export function isImportableExt(name = "") {
   return STRUCTURED_EXTS.has(ext(name)) || looksLikeSshFilename(name);
 }
 
-// Parse a file's TEXT into an array of { kind, data } structured items, or
-// return null when it shouldn't / can't be imported structurally (caller then
-// uploads it as a normal encrypted file). Pure + synchronous — the caller has
-// already read the text off the Blob.
+// Core router → { items, skipped }. `items` is the array of { kind, data }
+// structured records; `skipped` counts rows/records that parsed but couldn't be
+// mapped to an item (blank CSV rows, unmappable JSON entries). `items` is []
+// when the file isn't structured data we should import at all. Pure +
+// synchronous — the caller has already read the text off the Blob.
 //
 //   name : original filename (drives extension routing + fallback titles)
 //   text : the decoded UTF-8 contents
-export function parseImportableFile(name, text) {
+function routeImportableFile(name, text) {
   const e = ext(name);
   const title = baseName(name);
+  const none = { items: [], skipped: 0 };
 
   // SSH key → ssh_key item. Checked FIRST and by CONTENT (a PEM/OpenSSH key
   // header or a public-key line), so a key saved with any name — extensionless
@@ -423,35 +437,69 @@ export function parseImportableFile(name, text) {
   // a key-ish name but no key content falls through to the normal handlers.
   if (looksLikeSshFilename(name) || SSH_PRIVATE_RE.test(text) || SSH_PUBLIC_RE.test(text)) {
     const items = importSshKey(text, title, name);
-    if (items.length) return items;
+    if (items.length) return { items, skipped: 0 };
   }
 
   // vCard → contacts / cards
   if (e === "vcf" || e === "vcard") {
-    const items = importVcards(text);
-    return items.length ? items : null;
+    return { items: importVcards(text), skipped: 0 };
   }
 
-  // JSON → password / card exports
+  // JSON → password / card exports (already returns { items, skipped })
   if (e === "json") {
-    const items = importJson(text, title);
-    return items.length ? items : null;
+    return importJson(text, title);
   }
 
   // CSV / TSV → only import when it's recognizably a password export; an
   // arbitrary spreadsheet CSV is NOT a secret and should upload as a file.
+  // (already returns { items, skipped })
   if (e === "csv" || e === "tsv") {
-    const items = importPasswordCsv(text, title);
-    return items.length ? items : null;
+    return importPasswordCsv(text, title);
   }
 
   // Plain text / markdown → secure note
   if (e === "txt" || e === "text" || e === "md" || e === "markdown") {
-    const items = importNote(text, title);
-    return items.length ? items : null;
+    return { items: importNote(text, title), skipped: 0 };
   }
 
-  return null;
+  return none;
+}
+
+// Parse a file's TEXT into an array of { kind, data } structured items, or
+// return null when it shouldn't / can't be imported structurally (caller then
+// uploads it as a normal encrypted file). Back-compat shape used by the
+// upload-auto-import fallback path.
+export function parseImportableFile(name, text) {
+  const { items } = routeImportableFile(name, text);
+  return items.length ? items : null;
+}
+
+// Parse a file's TEXT into { items, skipped } for the explicit "Import from
+// file" flow, which previews the counts and reports skipped rows before
+// encrypting. `items` is [] when there's nothing structured to import.
+export function parseImportableFileWithStats(name, text) {
+  return routeImportableFile(name, text);
+}
+
+// Human counts-by-kind for an import preview, e.g. "3 passwords · 1 note".
+// Pure presentation — pluralizes and orders the kinds the import can produce.
+const KIND_LABELS = {
+  password: ["password", "passwords"],
+  note: ["note", "notes"],
+  contact: ["contact", "contacts"],
+  card: ["card", "cards"],
+  ssh_key: ["SSH key", "SSH keys"],
+};
+export function summarizeImport(items = []) {
+  const counts = {};
+  for (const it of items) counts[it.kind] = (counts[it.kind] || 0) + 1;
+  return Object.keys(KIND_LABELS)
+    .filter((k) => counts[k])
+    .map((k) => {
+      const [one, many] = KIND_LABELS[k];
+      const n = counts[k];
+      return `${n} ${n === 1 ? one : many}`;
+    });
 }
 
 // How many bytes we're willing to read as text for structured import. A

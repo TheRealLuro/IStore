@@ -15,9 +15,20 @@ from backend.api.faces import router as faces_router
 from backend.api.feedback import router as feedback_router
 from backend.api.folders import router as folders_router
 from backend.api.images import router as images_router
+from backend.api.ocr import router as ocr_router
+from backend.api.doctext import router as doctext_router
+from backend.api.translate_stream import router as translate_stream_router
+from backend.api.tts import router as tts_router
+from backend.api.translate_doc import router as translate_doc_router
+from backend.api.translate_doc import render_router as render_translated_pdf_router
+from backend.api.translate_image import router as translate_image_router
+from backend.api.translate_langs import router as translate_langs_router
+from backend.api.translate_pdf import router as translate_pdf_router
+from backend.similar import router as similar_router
 from backend.api.people import router as people_router
 from backend.api.search import router as search_router
 from backend.api.shares import router as shares_router
+from backend.api.sftp import router as sftp_router
 from backend.api.storage import router as storage_router
 from backend.api.tags import folder_attach_router as tag_folder_attach_router
 from backend.api.tags import image_attach_router as tag_image_attach_router
@@ -27,6 +38,7 @@ from backend.api.email_link import router as email_link_router
 from backend.api.two_factor import auth_router as two_factor_auth_router
 from backend.api.two_factor import router as two_factor_router
 from backend.auth.google_sso import router as google_sso_router
+from backend.auth.apple_sso import router as apple_sso_router
 from backend.auth.users import auth_backend, cookie_auth_backend, fastapi_users
 from backend.config import settings
 from backend.consent import router as consent_router
@@ -112,6 +124,38 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
     asyncio.create_task(_prewarm_clip())
+
+    # Pre-warm NLLB-200 (document/image translate) + Florence-2 (OCR) so the
+    # FIRST "Translate document" / "Text in image" request doesn't pay a ~40 s
+    # cold model-load in the request process — the streaming translator
+    # otherwise shows a dead "Translating…" until the weights land. Same
+    # background-thread pattern as CLIP above: the API serves immediately while
+    # they warm, and a translate/OCR that arrives mid-warmup shares the
+    # in-flight load instead of starting a second one. Broad except so an
+    # [ml]-less build doesn't fail startup.
+    async def _prewarm_translate_ocr():
+        try:
+            # Warm the Apache-2.0 translation engine (MADLAD-400 + Opus-MT) —
+            # the live path. NOT NLLB (which is CC-BY-NC and now only a
+            # fallback), so we don't pin its ~1.2GB of VRAM that MADLAD needs.
+            from backend.api.translate_engine import get_translator, translate_text
+            await asyncio.to_thread(get_translator)
+            # Run ONE throwaway translation so the quantization kernels finish
+            # autotuning HERE (startup, in the background) instead of on the
+            # user's first "Translate" — that autotune was the long "warming
+            # up" stall. After this the model is fully hot + resident.
+            await asyncio.to_thread(translate_text, "hello world", "es")
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "translate-engine prewarm failed; will warm on first request",
+                exc_info=True,
+            )
+        try:
+            from backend.vision.runtime import get_florence2
+            await asyncio.to_thread(get_florence2)
+        except Exception:
+            pass
+    asyncio.create_task(_prewarm_translate_ocr())
 
     # §B4 — daily retention sweeper. Before this lived in the
     # lifespan the 30-day original-TTL sweep was only reachable via
@@ -286,7 +330,10 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["X-Original-Expired"],
+        # X-Source-Lang / X-Target-Lang let the in-image translate UI read the
+        # detected→target language pair cross-origin; without exposing them the
+        # browser hides them and the FE falsely reports "no text found".
+        expose_headers=["X-Original-Expired", "X-Source-Lang", "X-Target-Lang"],
     )
 
     # CORS-on-500: FastAPI's default 500 handler is invoked from
@@ -386,23 +433,67 @@ def create_app() -> FastAPI:
     # Google Sign-In: /auth/google/login → consent screen,
     # /auth/google/callback → JWT in URL fragment.
     app.include_router(google_sso_router)
+    # Sign in with Apple — mirror of the Google SSO surface (/auth/apple/*).
+    # Stays "not configured" (503) until the APPLE_* settings are present.
+    app.include_router(apple_sso_router)
     app.include_router(
         fastapi_users.get_users_router(UserRead, UserUpdate),
         prefix="/users",
         tags=["users"],
     )
     app.include_router(images_router)
+    app.include_router(ocr_router)
+    # Full document text (Phase 1 of doc translation): GET /images/{id}/text
+    # → extracted full text so the preview's Translate tool can render the
+    # whole document in any of the 200 NLLB languages.
+    app.include_router(doctext_router)
+    # Streaming document translation (NDJSON) — the translated text fills in
+    # live, chunk-by-chunk, so a long document never feels frozen.
+    app.include_router(translate_stream_router)
+    # Structured document translation: typed blocks (title/heading/bullet/para)
+    # streamed for an in-place, format-preserving render in the center view, +
+    # a translated-PDF render endpoint (POST /render-translated-pdf) for download.
+    app.include_router(translate_doc_router)
+    app.include_router(render_translated_pdf_router)
+    # In-image text translation (Google-Lens style): POST /images/{id}/translate-image
+    # detects text regions, erases the original, renders the translation in place.
+    # Same router also serves POST /images/{id}/translate-image-stream, the NDJSON
+    # variant that streams each region's translated text live then the final PNG.
+    app.include_router(translate_image_router)
+    # Exact-copy PDF translation: POST /images/{id}/translate-pdf redacts the
+    # original text in place and reinserts the translation, preserving the real
+    # page layout, images, colors, and positions.
+    app.include_router(translate_pdf_router)
+    # Supported-language catalogue: GET /translate/languages → the full
+    # [{"code","name"}] list the engine can produce (source of truth for the
+    # FE language picker). Every code is validated through resolve_target so the
+    # FE can never send an unmapped code → no silent-English fallback.
+    app.include_router(translate_langs_router)
+    # Server-side neural TTS (Piper) — POST /tts/speak returns audio/wav for a
+    # text chunk in any supported language, so the "Listen" reader has a clear,
+    # human voice independent of the user's installed OS voices.
+    app.include_router(tts_router)
+    app.include_router(similar_router)
     # Browsable archive viewer — list an owned archive's contents and
     # extract a single inner file for inline preview. Read-only sibling
     # of backend.archive_upload (shares its safety inspection).
     app.include_router(archives_router)
     app.include_router(shares_router)
+    # SFTP access management (per-user keys + SFTP password + connect info).
+    # The SFTP SERVER itself runs in its own `sftp` compose service
+    # (backend.sftp_server); this router only manages credentials.
+    app.include_router(sftp_router)
     app.include_router(folders_router)
     app.include_router(search_router)
     app.include_router(storage_router)
     app.include_router(consent_router)
     app.include_router(people_router)
     app.include_router(faces_router)
+    # Person re-detection — "Find more photos of this person": instant,
+    # owner-scoped pgvector KNN over existing face embeddings. Confirming a
+    # candidate reuses the IDOR-safe PATCH /people/faces/{id} reassign handler.
+    from backend.api.person_redetect import router as person_redetect_router
+    app.include_router(person_redetect_router)
     app.include_router(account_router)
     app.include_router(two_factor_router)
     app.include_router(two_factor_auth_router)

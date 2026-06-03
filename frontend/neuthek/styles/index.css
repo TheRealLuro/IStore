@@ -15,14 +15,18 @@
 @import "../styles-settings-v2.css";
 @import "../styles-settings-v3.css";
 @import "../styles-settings-v4.css";
+@import "../styles-settings-v5.css";
 @import "../styles-map4.css";
 @import "../styles-vault.css";
 @import "../styles-facechip.css";
 @import "../styles-face-modal.css";
+@import "../styles-find-more.css";
 @import "../styles-markdown.css";
 @import "../styles-model3d.css";
 @import "../styles-spreadsheet.css";
 @import "../styles-viewers.css";
+@import "../styles-tool-rail.css";
+@import "../styles-loader.css";
 
 /* Default Geist as the app font now that the inline `style="font-family"`
    on <body> in the prototype HTML is gone. */

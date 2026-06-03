@@ -452,3 +452,408 @@ html[data-theme="dark"] .set-skel {
 .appset .stat-grid { min-width: 0; }
 .appset .stat-tile { min-width: 0; }
 .appset .stat-tile__value { overflow-wrap: anywhere; }
+
+/* ----------------------------------------------------------------
+   12. SFTP access tab ("Mount as a drive").
+   Visual-only; selectors map to the markup in SftpPanel
+   (account-panels.jsx). Reuses the existing tokens + det-card so it
+   sits inside the same card rhythm as every other settings surface.
+   ---------------------------------------------------------------- */
+
+/* 3-step quick guide strip. */
+.sftp-steps {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 14px 16px;
+  margin-bottom: 22px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--set-card-radius);
+  background: var(--surface-2);
+}
+.sftp-steps__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.sftp-steps__num {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 999px;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-3);
+  color: var(--ink-2);
+}
+.sftp-steps__item[data-done="true"] .sftp-steps__num {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.sftp-steps__title { font-size: 12.5px; font-weight: 550; letter-spacing: -0.006em; }
+.sftp-steps__desc { font-size: 11px; color: var(--ink-3); line-height: 1.4; }
+.sftp-steps__sep {
+  width: 1px; align-self: stretch; margin: 2px 14px;
+  background: var(--line-2);
+}
+@media (max-width: 560px) {
+  .sftp-steps { flex-direction: column; gap: 12px; }
+  .sftp-steps__sep { display: none; }
+}
+
+/* Connection key/value grid. */
+.sftp-conn { display: flex; flex-direction: column; gap: 2px; }
+.sftp-conn__field {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  min-width: 0;
+}
+.sftp-conn__field + .sftp-conn__field { border-top: 1px solid var(--line-2); }
+.sftp-conn__label {
+  font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600;
+}
+.sftp-conn__val {
+  font-size: 13px; color: var(--ink); min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sftp-conn__copy { padding: 4px 7px !important; }
+
+/* Quota mini-bar inside the connection card. */
+.sftp-quota {
+  margin-top: 14px; padding-top: 14px;
+  border-top: 1px solid var(--line-2);
+}
+.sftp-quota__head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 12px; font-size: 12px; color: var(--ink-2);
+}
+.sftp-quota__head .mono { font-variant-numeric: tabular-nums; color: var(--ink-3); }
+.sftp-quota__bar {
+  height: 6px; margin-top: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--surface-3);
+}
+.sftp-quota__fill { height: 100%; background: var(--ink-2); border-radius: 4px; }
+.sftp-quota__note { font-size: 11px; color: var(--ink-3); margin-top: 7px; line-height: 1.45; }
+
+/* Copy-paste command line. */
+.sftp-cmd + .sftp-cmd { margin-top: 14px; }
+.sftp-cmd__title { font-size: 12px; font-weight: 500; color: var(--ink-2); margin-bottom: 6px; }
+.sftp-cmd__row {
+  display: flex; align-items: stretch; gap: 8px;
+}
+.sftp-cmd__code {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+  font-size: 12.5px; line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere; white-space: pre-wrap;
+}
+html[data-theme="dark"] .sftp-cmd__code { background: rgba(255,255,255,0.05); }
+.sftp-cmd__copy { flex-shrink: 0; align-self: stretch; }
+.sftp-cmd__hint { font-size: 11px; color: var(--ink-3); margin-top: 6px; line-height: 1.45; }
+/* Secondary "…or" command under a step (e.g. Windows `type` view-it). */
+.sftp-cmd__alt-label { font-size: 11px; color: var(--ink-3); margin: 8px 0 5px; line-height: 1.4; }
+.sftp-cmd__row--alt { margin-top: 0; }
+
+/* Per-OS "click-down" command area: a segmented OS selector, then only
+   the selected OS's steps. Decluttering mechanism for the Connect card. */
+.sftp-cmds__lead {
+  font-size: 12px; color: var(--ink-3); line-height: 1.5;
+  margin-bottom: 14px;
+}
+.sftp-os { display: flex; flex-direction: column; }
+/* Segmented control: three equal pills in a single bordered track. */
+.sftp-os__tabs {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 3px;
+  padding: 3px;
+  margin-bottom: 16px;
+  border-radius: 11px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-2);
+}
+html[data-theme="dark"] .sftp-os__tabs { background: rgba(255,255,255,0.05); }
+.sftp-os__tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.006em;
+  color: var(--ink-3);
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+.sftp-os__tab:hover { color: var(--ink-2); }
+.sftp-os__tab[data-active="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 0 0 1px var(--line-2);
+}
+html[data-theme="dark"] .sftp-os__tab[data-active="true"] {
+  background: rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.96);
+  box-shadow: none;
+}
+.sftp-os__tab:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+html[data-theme="dark"] .sftp-os__tab:focus-visible { outline-color: rgba(255,255,255,0.78); }
+.sftp-os__body { min-width: 0; }
+@media (max-width: 420px) {
+  .sftp-os__tab { padding: 7px 8px; font-size: 12px; }
+}
+
+/* "No key yet?" helper block. */
+.sftp-nokey { margin-top: 10px; }
+.sftp-nokey__head {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 12.5px; color: var(--ink-2); line-height: 1.45;
+  margin-bottom: 14px;
+}
+.sftp-nokey__icon { color: var(--ink-3); flex-shrink: 0; margin-top: 1px; }
+
+/* Password section. */
+.sftp-pw__title {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13.5px; font-weight: 550;
+}
+.sftp-pw__desc { font-size: 12px; color: var(--ink-3); line-height: 1.5; margin-top: 6px; }
+
+/* Textarea in the add-key form uses the .input shell but needs a
+   monospace face + room for a pasted key. */
+.appset textarea.input.mono {
+  font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-height: 64px;
+}
+
+/* Calm trust line under the SFTP intro (security reassurance). */
+.sftp-intro-trust {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 10px !important;
+  font-size: 12.5px; line-height: 1.5;
+  color: var(--ink-2);
+}
+.sftp-intro-trust svg { flex-shrink: 0; margin-top: 2px; color: var(--success); }
+
+/* ----------------------------------------------------------------
+   13. Cloud sync tab.
+   Visual-only; selectors map to the markup in CloudSyncPanel
+   (cloud-sync-panel.jsx). Replaces the old inline-styled cards with
+   the same card rhythm, tones, and state language used everywhere
+   else in settings — clean connected/disconnected provider cards.
+   ---------------------------------------------------------------- */
+.csync {
+  display: flex; flex-direction: column; gap: 12px;
+}
+
+/* Intro / posture line — reads like the privacy stance card, quiet. */
+.csync__intro {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--set-card-radius);
+  border: 1px solid var(--line-2);
+  background: var(--surface-2);
+  font-size: 12.5px; line-height: 1.5; color: var(--ink-2);
+}
+.csync__intro-icon { flex-shrink: 0; color: var(--ink-3); margin-top: 1px; }
+
+/* Small uppercase group label between the connected list + the catalog. */
+.csync__group-label {
+  font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
+  font-weight: 600; color: var(--ink-3);
+  margin: 8px 2px 0;
+}
+
+/* A connected-source card. */
+.csync-card {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--set-card-radius);
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+}
+html[data-theme="dark"] .csync-card {
+  background: rgba(255,255,255,0.02);
+  border-color: rgba(255,255,255,0.06);
+}
+.csync-card[data-status="error"]   { border-color: color-mix(in oklab, var(--danger) 32%, var(--line-2)); }
+.csync-card[data-status="warn"]    { border-color: color-mix(in oklab, var(--warning) 32%, var(--line-2)); }
+
+.csync-card__head {
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+}
+.csync-card__icon {
+  width: 34px; height: 34px; border-radius: 9px;
+  display: grid; place-items: center; flex-shrink: 0;
+  background: var(--surface-3); color: var(--ink-2);
+}
+html[data-theme="dark"] .csync-card__icon { background: rgba(255,255,255,0.06); }
+.csync-card__id { flex: 1; min-width: 0; }
+.csync-card__name { font-size: 14px; font-weight: 600; letter-spacing: -0.008em; color: var(--ink); }
+.csync-card__meta { font-size: 12px; color: var(--ink-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.csync-card__actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Status pill on the card head. */
+.csync-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.01em;
+  padding: 3px 9px; border-radius: 999px; flex-shrink: 0;
+}
+.csync-status__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.csync-status[data-tone="ok"]    { color: var(--success); background: var(--success-soft); }
+.csync-status[data-tone="warn"]  { color: var(--warning); background: var(--warning-soft); }
+.csync-status[data-tone="error"] { color: var(--danger);  background: var(--danger-soft); }
+
+/* Conflict banner inside a card. */
+.csync-conflicts {
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in oklab, var(--warning) 30%, transparent);
+  font-size: 12px; color: var(--ink);
+}
+.csync-conflicts__head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--warning); }
+.csync-conflicts__head strong { color: var(--ink); }
+.csync-conflicts__desc { color: var(--ink-2); margin-bottom: 6px; line-height: 1.45; }
+.csync-conflicts__list { margin: 0; padding-left: 18px; list-style: disc; }
+.csync-conflicts__list li { font-size: 11px; }
+.csync-conflicts__more { list-style: none; margin-left: -18px; color: var(--ink-3); }
+
+/* AI opt-in row inside a card — a clean two-state segmented control. */
+.csync-ai {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+}
+.csync-ai[data-on="true"] {
+  background: color-mix(in oklab, #8e5cff 9%, var(--surface-2));
+  border-color: color-mix(in oklab, #8e5cff 28%, var(--line-2));
+}
+.csync-ai__icon {
+  width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--surface-3); color: var(--ink-3);
+}
+.csync-ai[data-on="true"] .csync-ai__icon {
+  background: color-mix(in oklab, #8e5cff 18%, var(--surface-3));
+  color: #8e5cff;
+}
+.csync-ai__body { flex: 1; min-width: 0; }
+.csync-ai__title { font-size: 12.5px; font-weight: 550; color: var(--ink); }
+.csync-ai__desc { font-size: 11px; color: var(--ink-3); margin-top: 2px; line-height: 1.4; }
+
+/* Segmented On / Pause control. */
+.csync-ai__seg {
+  display: inline-grid; grid-auto-flow: column; gap: 3px;
+  padding: 3px; border-radius: 9px; flex-shrink: 0;
+  background: var(--surface-3); border: 1px solid var(--line-2);
+}
+html[data-theme="dark"] .csync-ai__seg { background: rgba(255,255,255,0.05); }
+.csync-ai__opt {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  padding: 5px 12px; border-radius: 7px; font: inherit;
+  font-size: 12px; font-weight: 550; color: var(--ink-3);
+  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+.csync-ai__opt:hover { color: var(--ink-2); }
+.csync-ai__opt[data-active="true"] {
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08), inset 0 0 0 1px var(--line-2);
+}
+html[data-theme="dark"] .csync-ai__opt[data-active="true"] {
+  background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.96); box-shadow: none;
+}
+.csync-ai__opt:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+html[data-theme="dark"] .csync-ai__opt:focus-visible { outline-color: rgba(255,255,255,0.78); }
+
+/* Provider catalog grid (Connect a source). */
+.csync-catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 8px;
+}
+
+/* One provider card — a real button so keyboard + focus work. */
+.csync-provider {
+  appearance: none; text-align: left; font: inherit;
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--ink);
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+html[data-theme="dark"] .csync-provider { background: rgba(255,255,255,0.02); border-color: rgba(255,255,255,0.06); }
+.csync-provider[data-state="available"] { cursor: pointer; }
+.csync-provider[data-state="available"]:hover {
+  border-color: var(--ink-3);
+  background: var(--surface-2);
+}
+.csync-provider[data-state="available"]:focus-visible {
+  outline: 2px solid var(--ink); outline-offset: 2px;
+}
+html[data-theme="dark"] .csync-provider[data-state="available"]:focus-visible { outline-color: rgba(255,255,255,0.78); }
+.csync-provider[data-state="connected"] {
+  cursor: default;
+  border-color: color-mix(in oklab, var(--success) 30%, var(--line-2));
+  background: color-mix(in oklab, var(--success) 5%, var(--surface));
+}
+.csync-provider[data-state="coming-soon"] { cursor: default; opacity: 0.55; }
+.csync-provider[data-state="needs-setup"] { cursor: default; }
+.csync-provider:disabled { /* keep visuals; affordance handled per-state */ }
+
+.csync-provider__icon {
+  width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--surface-3); color: var(--ink-3);
+}
+html[data-theme="dark"] .csync-provider__icon { background: rgba(255,255,255,0.06); }
+.csync-provider[data-state="connected"] .csync-provider__icon {
+  background: var(--success-soft); color: var(--success);
+}
+.csync-provider__id { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.csync-provider__name {
+  font-size: 13px; font-weight: 600; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.csync-provider__sub { font-size: 11px; color: var(--ink-3); margin-top: 1px; }
+
+.csync-provider__chip {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-3);
+}
+.csync-provider__chip-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.csync-provider__chip[data-state="connected"] { background: var(--success-soft); color: var(--success); }
+.csync-provider__chip[data-state="needs-setup"] { background: var(--warning-soft); color: var(--warning); }
+
+@media (max-width: 480px) {
+  .csync-card__head { gap: 10px; }
+  .csync-card__actions { width: 100%; }
+  .csync-card__actions .btn { flex: 1; }
+  .csync-ai { flex-wrap: wrap; }
+  .csync-ai__seg { width: 100%; }
+  .csync-ai__opt { width: 100%; }
+}

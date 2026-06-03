@@ -25,6 +25,18 @@ export default defineConfig({
     // accessed through the published port; allow anything since we're
     // a dev-only inner network.
     host: true,
+    // Allow this dev server to be embedded in an iframe from any origin
+    // (preview tooling / wrappers). Dev-only — the production CSP is set
+    // at the SPA edge (F10).
+    headers: {
+      "Content-Security-Policy": "frame-ancestors *",
+      // Opt this dev server in to being reached from a less-private
+      // (public) context — the server half of Chrome's Private/Local
+      // Network Access gate. Dev-only; the browser still enforces a
+      // user-permission prompt on top of this.
+      "Access-Control-Allow-Private-Network": "true",
+      "Access-Control-Allow-Origin": "*",
+    },
   },
   build: {
     outDir: "dist",

@@ -17,6 +17,15 @@ import toast from "react-hot-toast";
 import { Icon } from "./icons.jsx";
 import { Modal, ModalClose } from "./primitives.jsx";
 import { safeHref } from "./safe-href.js";
+// Shared per-type viewers so a decrypted vault file gets the SAME rich
+// preview a normal drive file would — routed by the same extension
+// taxonomy. These all accept already-in-memory text/cards (no fileId
+// fetch), which is exactly what the vault has after decrypting the blob
+// on-device.
+import { fileTypeInfo } from "./file-types.js";
+import { CodeView, mimeFromFilename } from "./code-preview.jsx";
+import { parseVcf, VcfCards, classifyVcf, VcfVariantTable } from "./vcf-viewer.jsx";
+import { MarkdownInline } from "./markdown-viewer.jsx";
 
 import {
   getVaultMeta,
@@ -78,6 +87,8 @@ import {
 import {
   isImportableExt,
   parseImportableFile,
+  parseImportableFileWithStats,
+  summarizeImport,
   MAX_IMPORT_TEXT_BYTES,
 } from "./vault-import.js";
 
@@ -362,6 +373,35 @@ function previewKind(mime = "") {
   if (m.startsWith("text/") && m !== "text/html") return "text";
   if (m === "application/json") return "text";
   return "none";
+}
+
+// Richer routing for the vault: after decrypting on-device we have the
+// plaintext bytes in memory, so we can hand a `.vcf` / `.md` / code /
+// config / csv file to the SAME per-type viewer the drive uses (the
+// shared parsers/renderers all accept text, not a fileId). We route on
+// the FILENAME's extension first (the drive's `file-types.js` taxonomy —
+// stable and unambiguous), then fall back to the MIME-based previewKind
+// for image/video/audio/pdf and unmapped text.
+//
+// Security note: we keep the existing guard that HTML / SVG are NOT
+// rendered as live markup. Markdown is rendered through the gallery's
+// sanitized pipeline (rehype-sanitize strips scripts / unsafe hrefs), and
+// code/text/vcf are escaped by their viewers — none inject document HTML.
+function richPreviewKind(name = "", mime = "") {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  const kind = fileTypeInfo(ext).kind;
+  if (kind === "vcf") return "vcf";
+  if (kind === "markdown") return "markdown";
+  // Code / config / data / csv / notebook → the syntax-highlighted
+  // CodeView (gutter, find-in-file, copy, wrap). `txt`/`log` map to
+  // `code` in the catalog too, so plain text gets the nicer viewer.
+  if (kind === "code" || kind === "datatree" || kind === "csv" || kind === "notebook") return "code";
+  // Fall back to MIME-based routing for the media kinds + unmapped text.
+  const base = previewKind(mime);
+  // An unmapped extension whose MIME is text/* (and not html) should also
+  // reach CodeView rather than the bare <pre>.
+  if (base === "text") return "code";
+  return base; // image | video | audio | pdf | none
 }
 
 // Recipient-side: decrypt a SHARED file. The per-file key + metadata come from
@@ -816,7 +856,9 @@ function VaultHome() {
   const [viewer, setViewer] = useState(null); // decrypted file row being previewed
   const [shareItem, setShareItem] = useState(null); // item being shared (owner)
   const [uploading, setUploading] = useState(0); // in-flight upload count
+  const [importFile, setImportFile] = useState(null); // File awaiting the import confirm
   const fileInputRef = useRef(null);
+  const importInputRef = useRef(null);
 
   // Count of items shared WITH me — drives the tab badge. SharedWithMe reuses
   // the same query key, so the cache is shared.
@@ -1118,6 +1160,19 @@ function VaultHome() {
     refresh();
   };
 
+  // VLT-7 — explicit "Import from file" picker. Unlike Upload (which silently
+  // auto-imports recognized data files), this routes the chosen file into the
+  // ImportModal, which parses it CLIENT-SIDE, previews the counts, and only
+  // then encrypts + creates each item. We just capture the File here.
+  const onPickImport = (e) => {
+    const file = (e.target.files || [])[0] || null;
+    e.target.value = "";
+    if (file) {
+      touchVault();
+      setImportFile(file);
+    }
+  };
+
   const loading =
     itemsQ.isLoading || foldersQ.isLoading || items === null || folders === null;
   if (loading) {
@@ -1145,6 +1200,15 @@ function VaultHome() {
         multiple
         hidden
         onChange={onPickFiles}
+      />
+      <input
+        ref={importInputRef}
+        type="file"
+        hidden
+        // The structured-data formats the import understands. The modal
+        // re-validates by content, so this only filters the OS picker.
+        accept=".csv,.tsv,.txt,.text,.md,.markdown,.json,.vcf,.vcard,.pem,.pub,.key,.ppk"
+        onChange={onPickImport}
       />
       <div className="vault-tabs">
         <button
@@ -1229,6 +1293,13 @@ function VaultHome() {
         >
           <Icon name="upload" size={14} />{" "}
           {uploading > 0 ? `Uploading ${uploading}…` : "Upload"}
+        </button>
+        <button
+          className="btn btn--secondary"
+          onClick={() => importInputRef.current?.click()}
+          title="Import passwords or notes from a file"
+        >
+          <Icon name="download" size={14} /> Import from file
         </button>
         <button className="btn btn--primary" onClick={() => setAddOpen(true)}>
           <Icon name="plus" size={14} /> Add
@@ -1379,6 +1450,15 @@ function VaultHome() {
           refresh();
         }}
       />
+      <ImportModal
+        file={importFile}
+        folderId={currentFolder}
+        onClose={() => setImportFile(null)}
+        onDone={() => {
+          setImportFile(null);
+          refresh();
+        }}
+      />
       <NewFolderModal
         open={newFolderOpen}
         parentId={currentFolder}
@@ -1452,13 +1532,23 @@ function VaultHome() {
 // via `loadBlob()` (owner or recipient path), render the right inline preview,
 // and let the footer (`actions`) trigger a Download of the decrypted blob.
 function FileViewerModal({ open, sourceId, title = "File", mime, size, loadBlob, actions, onClose }) {
-  const [state, setState] = useState("loading"); // loading|locked|error|image|video|audio|pdf|text|nopreview
+  const [state, setState] = useState("loading"); // loading|locked|error|image|video|audio|pdf|text|code|markdown|vcf|vcf-variant|nopreview
   const [url, setUrl] = useState(null);
   const [text, setText] = useState("");
+  const [cards, setCards] = useState(null); // parsed vCards (vcf kind)
+  const [truncated, setTruncated] = useState(false);
+  // Rendered ↔ raw toggle for the markdown kind (parity with the drive's
+  // MarkdownViewer). Reset on each open / file change.
+  const [mdRaw, setMdRaw] = useState(false);
   const blobRef = useRef(null);
   const urlRef = useRef(null);
   const loadRef = useRef(loadBlob);
   loadRef.current = loadBlob;
+
+  // 5 MB ceiling on inline text/code/markdown so a huge decrypted file
+  // can't freeze the tab; the viewers show a truncation banner and the
+  // user can always Download the full plaintext.
+  const TEXT_CAP = 5 * 1024 * 1024;
 
   useEffect(() => {
     if (!open || !sourceId) return;
@@ -1466,19 +1556,58 @@ function FileViewerModal({ open, sourceId, title = "File", mime, size, loadBlob,
     setState("loading");
     setUrl(null);
     setText("");
+    setCards(null);
+    setTruncated(false);
+    setMdRaw(false);
     blobRef.current = null;
-    const kind = previewKind(mime);
+    const kind = richPreviewKind(title, mime);
     (async () => {
       try {
         const blob = await loadRef.current();
         if (cancelled) return;
         blobRef.current = blob;
-        if (kind === "text") {
+        if (kind === "vcf") {
           const t = await blob.text();
           if (cancelled) return;
-          // Cap what we render so a huge text file can't freeze the tab.
-          setText(t.length > 200_000 ? t.slice(0, 200_000) + "\n…" : t);
-          setState("text");
+          // The `.vcf` extension is shared by vCard (contacts) and genomics
+          // Variant Call Format. Classify first so a vault-stored variant file
+          // gets the same labelled data table the drive viewer renders.
+          const cls = classifyVcf(t);
+          if (cls === "variant") {
+            // Hand the raw decrypted text to the shared variant table (it
+            // parses + caps internally). Stored in `text` state.
+            setText(t);
+            setState("vcf-variant");
+          } else {
+            const parsed = parseVcf(t);
+            if (parsed.length) {
+              setCards(parsed);
+              setState("vcf");
+            } else {
+              // Parsed to zero contacts — instead of a dead "no contacts"
+              // wall, fall back to the raw DECRYPTED text so the content is
+              // always visible (and it's immediately obvious whether
+              // decryption produced a real vCard or garbage bytes).
+              setText(t.length > TEXT_CAP ? t.slice(0, TEXT_CAP) : t);
+              setTruncated(t.length > TEXT_CAP);
+              setState("code");
+            }
+          }
+        } else if (kind === "code" || kind === "markdown") {
+          // Decode the plaintext, capping the rendered size.
+          const buf = await blob.arrayBuffer();
+          if (cancelled) return;
+          let bytes = new Uint8Array(buf);
+          let wasTrunc = false;
+          if (bytes.byteLength > TEXT_CAP) {
+            bytes = bytes.slice(0, TEXT_CAP);
+            wasTrunc = true;
+          }
+          const t = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+          if (cancelled) return;
+          setText(t);
+          setTruncated(wasTrunc);
+          setState(kind);
         } else if (kind === "none") {
           setState("nopreview");
         } else {
@@ -1499,7 +1628,7 @@ function FileViewerModal({ open, sourceId, title = "File", mime, size, loadBlob,
       }
       blobRef.current = null;
     };
-  }, [open, sourceId, mime]);
+  }, [open, sourceId, mime, title]);
 
   if (!open) return null;
   const save = () => {
@@ -1523,9 +1652,35 @@ function FileViewerModal({ open, sourceId, title = "File", mime, size, loadBlob,
                 {[formatBytes(size), mime].filter(Boolean).join(" · ")}
               </div>
             </div>
+            {/* Raw ↔ rendered toggle for decrypted markdown (parity with
+                the drive viewer). */}
+            {state === "markdown" && (
+              <button
+                type="button"
+                className="vault-viewer__md-toggle mono"
+                onClick={() => setMdRaw((v) => !v)}
+                aria-pressed={mdRaw}
+                title={mdRaw ? "Show rendered Markdown" : "Show raw source"}
+              >
+                {mdRaw ? "Rendered" : "Raw"}
+              </button>
+            )}
           </div>
 
-          <div className="vault-viewer__stage">
+          <div
+            className={
+              "vault-viewer__stage" +
+              // Rich viewers (code / markdown / vcf / vcf-variant) manage
+              // their own width + scroll, so switch the stage from the
+              // centered media layout to a stretched, full-height block.
+              (state === "code" || state === "vcf" || state === "vcf-variant" || (state === "markdown" && !mdRaw)
+                ? " vault-viewer__stage--rich"
+                : "") +
+              (state === "code" || (state === "markdown" && mdRaw)
+                ? " vault-viewer__stage--code"
+                : "")
+            }
+          >
             {state === "loading" && (
               <div className="vault-viewer__msg">Decrypting…</div>
             )}
@@ -1554,8 +1709,57 @@ function FileViewerModal({ open, sourceId, title = "File", mime, size, loadBlob,
                 sandbox=""
               />
             )}
-            {state === "text" && (
-              <pre className="vault-viewer__text">{text}</pre>
+            {/* Code / config / data / csv / plain text → the same
+                syntax-highlighted CodeView the drive uses. */}
+            {state === "code" && (
+              <CodeView
+                text={text}
+                filename={title}
+                mime={mimeFromFilename(title)}
+                byteSize={size}
+                truncated={truncated}
+              />
+            )}
+            {/* Markdown → rendered through the drive's sanitized pipeline,
+                or raw source via CodeView when toggled. */}
+            {state === "markdown" && (
+              mdRaw ? (
+                <CodeView
+                  text={text}
+                  filename={title}
+                  mime={mimeFromFilename(title)}
+                  byteSize={size}
+                  truncated={truncated}
+                />
+              ) : (
+                <div className="vault-viewer__md markdown-body">
+                  {truncated && (
+                    <div className="vault-viewer__md-banner">
+                      Showing the first 5 MB of a larger file.
+                    </div>
+                  )}
+                  <MarkdownInline text={text} />
+                </div>
+              )
+            )}
+            {/* vCard → the same contact card the drive renders. */}
+            {state === "vcf" && (
+              <div className="vault-viewer__vcf vcf-viewer">
+                <div className="vcf-viewer__body">
+                  <VcfCards cards={cards} />
+                </div>
+              </div>
+            )}
+            {/* Genomics Variant Call Format → the same labelled data table
+                the drive viewer renders (shared component, one parser).
+                Rendered directly inside the full-height `vault-viewer__vcf`
+                wrapper (NOT the padded `vcf-viewer__body`) so the table's own
+                flex layout + internal scroll resolve against a definite
+                height. */}
+            {state === "vcf-variant" && (
+              <div className="vault-viewer__vcf vcf-viewer" style={{ overflow: "hidden" }}>
+                <VcfVariantTable text={text} />
+              </div>
             )}
             {state === "nopreview" && (
               <div className="vault-viewer__msg">
@@ -2349,6 +2553,272 @@ function AddItemModal({ open, folderId = null, onClose, onSaved }) {
           </button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ImportModal — VLT-7: import a structured data file into the vault.
+//
+// The whole pipeline runs on this device:
+//   1. read the chosen file's text (file.text())
+//   2. parse + map it CLIENT-SIDE (parseImportableFileWithStats) into the
+//      vault's item plaintext shapes — no key, no network here
+//   3. PREVIEW the counts ("Import 3 passwords · 1 note?") + skipped rows
+//   4. on confirm, encrypt EACH record with the vault key (encryptItem) and
+//      POST only (nonce, ciphertext) via createVaultItem — the exact same
+//      client-side-encrypt path the manual "Add" flow uses
+//
+// The server only ever sees ciphertext, so the zero-knowledge guarantee is
+// preserved. The parsed plaintext is held only in component state and is
+// nulled out as soon as the import finishes or the modal closes.
+// ---------------------------------------------------------------------------
+
+function ImportModal({ file, folderId = null, onClose, onDone }) {
+  // phase: reading | ready | empty | toobig | error
+  const [phase, setPhase] = useState("reading");
+  const [records, setRecords] = useState(null); // [{ kind, data }] — PLAINTEXT
+  const [skipped, setSkipped] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0); // items encrypted so far
+
+  // Parse the file CLIENT-SIDE the moment it's chosen. Keyed on the File
+  // identity so re-picking re-parses. Everything here is local: read text →
+  // map to item shapes. Nothing is encrypted or sent yet.
+  useEffect(() => {
+    if (!file) return;
+    let cancelled = false;
+    setPhase("reading");
+    setRecords(null);
+    setSkipped(0);
+    setProgress(0);
+    (async () => {
+      if (file.size > MAX_IMPORT_TEXT_BYTES) {
+        if (!cancelled) setPhase("toobig");
+        return;
+      }
+      let text;
+      try {
+        text = await file.text();
+      } catch {
+        if (!cancelled) setPhase("error");
+        return;
+      }
+      if (cancelled) return;
+      let parsed;
+      try {
+        parsed = parseImportableFileWithStats(file.name, text);
+      } catch {
+        parsed = { items: [], skipped: 0 };
+      }
+      // Drop the raw text reference now that it's been mapped — keep only the
+      // structured records we're about to encrypt.
+      text = null;
+      if (cancelled) return;
+      if (!parsed.items.length) {
+        setPhase("empty");
+        setSkipped(parsed.skipped || 0);
+      } else {
+        setRecords(parsed.items);
+        setSkipped(parsed.skipped || 0);
+        setPhase("ready");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [file]);
+
+  const counts = useMemo(() => summarizeImport(records || []), [records]);
+
+  const close = () => {
+    // Clear any parsed plaintext from memory on the way out.
+    setRecords(null);
+    setSkipped(0);
+    setProgress(0);
+    setPhase("reading");
+    onClose?.();
+  };
+
+  const runImport = async () => {
+    const recs = records;
+    if (!recs || !recs.length || busy) return;
+    const key = getVaultKey();
+    if (!key) {
+      toast.error("Vault locked");
+      return;
+    }
+    touchVault();
+    setBusy(true);
+    const t = toast.loading(`Importing ${recs.length}…`);
+    let ok = 0;
+    let failed = 0;
+    try {
+      for (let i = 0; i < recs.length; i++) {
+        try {
+          // Encrypt on this device, then send only (nonce, ciphertext) — the
+          // server never sees the imported login/note plaintext. Same path as
+          // the manual Add flow (encryptItem + createVaultItem).
+          const sealed = await encryptItem(key, recs[i].data);
+          await createVaultItem({
+            kind: recs[i].kind,
+            nonce: sealed.nonce,
+            ciphertext: sealed.ciphertext,
+            folder_id: folderId,
+          });
+          ok++;
+        } catch {
+          failed++;
+        }
+        setProgress(i + 1);
+        toast.loading(`Importing ${i + 1}/${recs.length}…`, { id: t });
+      }
+      if (ok && !failed) {
+        toast.success(ok === 1 ? "Imported 1 item" : `Imported ${ok} items`, { id: t });
+      } else if (ok && failed) {
+        toast.success(`Imported ${ok}, ${failed} failed`, { id: t });
+      } else {
+        toast.error("Couldn’t import any items", { id: t });
+      }
+    } finally {
+      // Wipe the plaintext records regardless of outcome.
+      setRecords(null);
+      setBusy(false);
+      if (ok) onDone?.();
+      else onClose?.();
+    }
+  };
+
+  if (!file) return null;
+
+  return (
+    <Modal open={!!file} onClose={close} size="md" labelledBy="vault-import-title">
+      <ModalClose onClose={close} />
+      <div className="vault-modal-form">
+        <div className="vault-modal-scroll">
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span className="vault-row__icon" data-kind="file">
+              <Icon name="download" size={18} />
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <h2 id="vault-import-title" style={{ margin: 0, fontSize: 18 }}>
+                Import from file
+              </h2>
+              <div
+                style={{ fontSize: 12, color: "var(--ink-3)" }}
+                className="vault-truncate"
+              >
+                {file.name}
+              </div>
+            </div>
+          </div>
+
+          {phase === "reading" && (
+            <div className="vault-detail-row__value" style={{ padding: "8px 0" }}>
+              Reading file…
+            </div>
+          )}
+
+          {phase === "toobig" && (
+            <div className="vault-field__err">
+              That file is larger than {formatBytes(MAX_IMPORT_TEXT_BYTES)}. Import
+              is for small password / note exports — store a large file with
+              Upload instead.
+            </div>
+          )}
+
+          {phase === "error" && (
+            <div className="vault-field__err">Couldn’t read that file.</div>
+          )}
+
+          {phase === "empty" && (
+            <div className="vault-detail-row__value" style={{ padding: "8px 0", display: "block" }}>
+              <p style={{ margin: "0 0 8px" }}>
+                Nothing to import from this file.
+              </p>
+              <p style={{ margin: 0, color: "var(--ink-3)", fontSize: 13 }}>
+                Supported: a password export (CSV/TSV/JSON from Chrome, Firefox,
+                Bitwarden, 1Password…), a notes file (.txt / .md), a vCard
+                (.vcf), or an SSH key. To store this as a file instead, use
+                Upload.
+                {skipped > 0
+                  ? ` ${skipped} ${skipped === 1 ? "row was" : "rows were"} skipped.`
+                  : ""}
+              </p>
+            </div>
+          )}
+
+          {phase === "ready" && (
+            <>
+              <div className="vault-import-note">
+                <Icon name="lock" size={15} />
+                <div>
+                  Each item is encrypted on this device before it’s saved — the
+                  import never sends your passwords or notes anywhere in the
+                  clear.
+                </div>
+              </div>
+              <div className="vault-detail-row">
+                <span className="vault-detail-row__label">Ready to import</span>
+                <div className="vault-detail-row__value">
+                  <span>{counts.join(" · ")}</span>
+                </div>
+              </div>
+              {skipped > 0 && (
+                <div className="vault-detail-row">
+                  <span className="vault-detail-row__label">Skipped</span>
+                  <div className="vault-detail-row__value">
+                    <span style={{ color: "var(--ink-3)" }}>
+                      {skipped} {skipped === 1 ? "row" : "rows"} couldn’t be read
+                      and {skipped === 1 ? "was" : "were"} skipped.
+                    </span>
+                  </div>
+                </div>
+              )}
+              <div className="vault-detail-row" style={{ borderBottom: "none" }}>
+                <span className="vault-detail-row__label">Preview</span>
+                <ul className="vault-import-preview">
+                  {(records || []).slice(0, 8).map((r, i) => (
+                    <li key={i} className="vault-import-preview__item">
+                      <span className="vault-row__icon" data-kind={r.kind}>
+                        <Icon name={KIND_META[r.kind]?.icon || "document"} size={13} />
+                      </span>
+                      <span className="vault-import-preview__title">
+                        {r.data?.title || "(untitled)"}
+                      </span>
+                      <span className="vault-import-preview__kind">
+                        {KIND_META[r.kind]?.label || r.kind}
+                      </span>
+                    </li>
+                  ))}
+                  {(records || []).length > 8 && (
+                    <li className="vault-import-preview__more">
+                      + {(records || []).length - 8} more
+                    </li>
+                  )}
+                </ul>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="vault-modal-actions">
+          <button type="button" className="btn btn--secondary" onClick={close} disabled={busy}>
+            {phase === "ready" ? "Cancel" : "Close"}
+          </button>
+          {phase === "ready" && (
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={runImport}
+              disabled={busy || !records?.length}
+            >
+              {busy
+                ? `Importing ${progress}/${records?.length || 0}…`
+                : `Import ${records?.length || 0} ${records?.length === 1 ? "item" : "items"}`}
+            </button>
+          )}
+        </div>
+      </div>
     </Modal>
   );
 }

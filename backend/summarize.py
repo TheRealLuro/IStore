@@ -815,26 +815,250 @@ def _dispatch(
     # Catch-all for "other" — archives (.zip, .tar.gz, etc.) and any
     # mime type we don't have a dedicated summarizer for. Without this,
     # the row's `summary` stays NULL forever and the progress banner
-    # is stuck at N-1 of N. We emit a minimal description derived from
-    # the filename + ext so the row counts as summarized and the FE
-    # can search by the filename.
-    return _summarize_other(image)
+    # is stuck at N-1 of N. Archives now describe their inner listing
+    # (#184); anything unreadable falls back to a filename-derived stub.
+    return _summarize_other(image, raw_bytes)
 
 
-def _summarize_other(image: Image) -> SummaryResult:
+def _summarize_other(image: Image, raw_bytes: bytes | None = None) -> SummaryResult:
+    """Summarize an "other" blob — archives (.zip/.tar/.tar.gz) and any
+    mime without a dedicated summarizer.
+
+    #184 — archives now describe their CONTENTS, not just the filename.
+    We read the inner listing (zip via stdlib zipfile, tar/tgz via
+    tarfile) and infer what the archive HOLDS — "Zip archive of a React
+    project", "Zip archive of 40 photos", "Tar archive of Python source
+    (12 files)" — so semantic search can surface it by what's inside.
+    Falls back to the filename-derived stub when we can't read the
+    listing (encrypted zip, unknown format, bytes unavailable).
+    """
     fname = image.original_filename or "file"
-    stem = fname.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
+    lower = fname.lower()
     ext = (fname.rsplit(".", 1)[-1].lower() if "." in fname else "") or ""
-    ext_label = {
-        "zip": "Archive (.zip)",
-        "tar": "Archive (.tar)",
-        "gz":  "Archive (.gz)",
-        "rar": "Archive (.rar)",
-        "7z":  "Archive (.7z)",
-    }.get(ext, ext.upper() if ext else "File")
+    # Stem for the "Named '<x>'" suffix — strip a compound archive
+    # extension (.tar.gz / .tar.bz2) fully so we don't show "project.tar".
+    stem_src = fname
+    for compound in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2"):
+        if lower.endswith(compound):
+            stem_src = fname[: -len(compound)]
+            break
+    else:
+        stem_src = fname.rsplit(".", 1)[0] if "." in fname else fname
+    stem = stem_src.replace("_", " ").replace("-", " ").strip()
+    # Compound tar extensions read as "Tar archive" regardless of the
+    # final compression suffix (.tar.gz is a tarball, not a lone gzip).
+    if lower.endswith((".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2")):
+        ext_label = "Tar archive"
+    else:
+        ext_label = {
+            "zip": "Zip archive",
+            "tar": "Tar archive",
+            "gz":  "Gzip archive",
+            "bz2": "Bzip2 archive",
+            "rar": "RAR archive",
+            "7z":  "7-Zip archive",
+            "epub": "EPUB e-book",
+        }.get(ext, ext.upper() + " file" if ext else "File")
+
+    names: list[str] = []
+    if raw_bytes:
+        try:
+            if lower.endswith(".zip") or lower.endswith(".epub"):
+                names = _list_zip_members(raw_bytes)
+            elif (lower.endswith(".tar") or lower.endswith(".tar.gz")
+                  or lower.endswith(".tgz") or lower.endswith(".tar.bz2")
+                  or lower.endswith(".gz") or lower.endswith(".bz2")):
+                names = _list_tar_members(raw_bytes)
+        except Exception:
+            logger.exception("archive listing failed for %s", fname)
+            names = []
+
+    if names:
+        descr, signals = _describe_archive_contents(names)
+        summary = f"{ext_label} containing {descr}."
+        if stem:
+            summary += f" Named '{stem}'."
+        topic = (f"{ext_label}: {descr}")[:90]
+        points: list[str] = [f"{len(names)} entries"]
+        # Surface a few representative inner names for the preview panel
+        # + so FTS indexes them.
+        sample = [n for n in names if not n.endswith("/")][:6]
+        if sample:
+            points.append("Includes: " + ", ".join(
+                n.rsplit("/", 1)[-1] for n in sample
+            ))
+        # Stash inner-name + project signals so search's haystack
+        # (signals.concepts) indexes the archive's contents.
+        image.__dict__["summary_signals"] = {
+            "kind": "archive",
+            "entry_count": len(names),
+            "concepts": signals[:20],
+        }
+        return SummaryResult(
+            topic=topic or ext_label, summary=summary, points=points[:5],
+            content_type="archive",
+        )
+
+    # No listing — filename-only stub (prior behavior, slightly richer).
     topic = stem[:80] if stem else ext_label
     summary = f"{ext_label} — {stem}." if stem else f"{ext_label}."
-    return SummaryResult(topic=topic or "File", summary=summary, points=[])
+    return SummaryResult(
+        topic=topic or "File", summary=summary, points=[],
+        content_type="archive" if ext in {
+            "zip", "tar", "gz", "tgz", "bz2", "rar", "7z", "epub"
+        } else None,
+    )
+
+
+def _list_zip_members(raw: bytes, cap: int = 2000) -> list[str]:
+    """Inner file names of a zip (also used for .epub). Returns [] on any
+    failure (encrypted, truncated, not a zip). Caps the list so a zip
+    with 100k entries doesn't balloon memory."""
+    import zipfile
+    out: list[str] = []
+    try:
+        with zipfile.ZipFile(BytesIO(raw)) as zf:
+            for info in zf.infolist():
+                out.append(info.filename)
+                if len(out) >= cap:
+                    break
+    except Exception:
+        return []
+    return out
+
+
+def _list_tar_members(raw: bytes, cap: int = 2000) -> list[str]:
+    """Inner file names of a tar / tar.gz / tar.bz2. Returns [] on any
+    failure. `tarfile` auto-detects the compression from the stream."""
+    import tarfile
+    out: list[str] = []
+    try:
+        with tarfile.open(fileobj=BytesIO(raw), mode="r:*") as tf:
+            for member in tf:
+                out.append(member.name)
+                if len(out) >= cap:
+                    break
+    except Exception:
+        return []
+    return out
+
+
+# Inner-file extension → coarse content bucket, for describing what an
+# archive holds ("photos", "source code", "documents", …).
+_ARCHIVE_BUCKETS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("photos", frozenset({
+        "jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "bmp",
+        "tiff", "raw", "cr2", "nef", "dng",
+    })),
+    ("videos", frozenset({"mp4", "mov", "avi", "mkv", "webm", "m4v"})),
+    ("audio files", frozenset({"mp3", "m4a", "wav", "flac", "ogg", "aac"})),
+    ("documents", frozenset({
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt",
+        "txt", "rtf", "csv", "md",
+    })),
+    ("source code", frozenset({
+        "py", "js", "ts", "tsx", "jsx", "go", "rs", "java", "kt", "rb",
+        "php", "c", "h", "cpp", "cs", "swift", "scala", "sh", "sql",
+    })),
+    ("images / assets", frozenset({"svg", "ico", "ttf", "woff", "woff2"})),
+)
+
+# Signature files that identify a project type from the inner listing.
+_ARCHIVE_PROJECT_MARKERS: tuple[tuple[str, str], ...] = (
+    ("package.json", "a Node.js / JavaScript project"),
+    ("tsconfig.json", "a TypeScript project"),
+    ("requirements.txt", "a Python project"),
+    ("pyproject.toml", "a Python project"),
+    ("setup.py", "a Python project"),
+    ("cargo.toml", "a Rust project"),
+    ("go.mod", "a Go project"),
+    ("pom.xml", "a Java / Maven project"),
+    ("build.gradle", "a Gradle project"),
+    ("gemfile", "a Ruby project"),
+    ("composer.json", "a PHP project"),
+    ("dockerfile", "a Dockerized project"),
+    ("index.html", "a website / web project"),
+)
+
+
+def _describe_archive_contents(names: list[str]) -> tuple[str, list[str]]:
+    """Return (human description, signal-tokens) for an archive listing.
+
+    Recognizes a project type from marker files first ("a React
+    project"), otherwise describes by the dominant inner content bucket
+    ("40 photos", "Python source and documents"). The signal-token list
+    feeds search's concept haystack so the archive is findable by what it
+    contains.
+    """
+    files = [n for n in names if not n.endswith("/")]
+    base_lower = [n.rsplit("/", 1)[-1].lower() for n in files]
+
+    # Project detection — react gets special-cased off package.json + a
+    # jsx/tsx presence; otherwise the first matching marker wins.
+    has_react = any(
+        b in ("package.json",) for b in base_lower
+    ) and any(
+        n.lower().endswith((".jsx", ".tsx")) for n in files
+    )
+    project: Optional[str] = None
+    if has_react:
+        project = "a React project"
+    else:
+        marker_set = set(base_lower)
+        for marker, label in _ARCHIVE_PROJECT_MARKERS:
+            if marker in marker_set:
+                project = label
+                break
+
+    # Content buckets by extension frequency.
+    counts: dict[str, int] = {}
+    for b in base_lower:
+        ext = b.rsplit(".", 1)[-1] if "." in b else ""
+        for bucket, exts in _ARCHIVE_BUCKETS:
+            if ext in exts:
+                counts[bucket] = counts.get(bucket, 0) + 1
+                break
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+
+    n_files = len(files)
+    signals: list[str] = []
+    if project:
+        signals.append(project.replace("a ", "").replace("an ", ""))
+
+    # Compose the description.
+    if project and ranked:
+        top_bucket = ranked[0][0]
+        descr = project
+        # Add a photo/media count when that's clearly the bulk.
+        if top_bucket in ("photos", "videos", "audio files") and ranked[0][1] >= 3:
+            descr = f"{project} with {ranked[0][1]} {top_bucket}"
+    elif project:
+        descr = project
+    elif ranked:
+        top_bucket, top_n = ranked[0]
+        # Pure single-bucket archive → "40 photos".
+        if len(ranked) == 1 or ranked[0][1] >= 3 * (ranked[1][1] if len(ranked) > 1 else 1):
+            descr = f"{top_n} {top_bucket}" if top_bucket in (
+                "photos", "videos", "audio files"
+            ) else top_bucket
+        else:
+            # Mixed → name the top two buckets.
+            descr = " and ".join(b for b, _ in ranked[:2])
+        signals.extend(b for b, _ in ranked[:3])
+    else:
+        descr = f"{n_files} files" if n_files else "files"
+
+    # Always add the top few inner file extensions as signal tokens so
+    # search can hit "zip with .py files".
+    ext_tokens = []
+    for b in base_lower:
+        if "." in b:
+            ext_tokens.append(b.rsplit(".", 1)[-1])
+    for t in ext_tokens[:10]:
+        if t and t not in signals:
+            signals.append(t)
+
+    return descr, signals
 
 
 # --- image -----------------------------------------------------------------
@@ -2876,14 +3100,605 @@ def dedup_captions(captions: list[str], threshold: float = 0.82) -> list[str]:
     return kept
 
 
+# --- code ------------------------------------------------------------------
+#
+# Source files arrive as category="document" with a `text/x-<lang>` MIME
+# (upload_validation._CODE_EXTS). Before #184 the doc path only routed a
+# handful of structured-text extensions (.txt/.md/.csv/.json/...) through
+# the plaintext extractor, so a `.py`/`.js`/`.go`/`.java` file fell
+# through to the thin "Document: <stem>." stub — no language, no purpose,
+# nothing searchable. We now detect the language from the extension /
+# MIME and infer the file's PURPOSE from its imports + top-level defs +
+# docstring, producing summaries like
+#   "Python script for machine-learning model training (uses pytorch,
+#    numpy, pandas)."
+# that semantic search can surface by topic, not just by filename.
+
+# Extension → human-readable language name. Mirrors the curated
+# `_CODE_EXTS` map in upload_validation but maps to a display language
+# rather than a MIME. Kept deliberately broad so the common languages
+# all get a real "<Language> …" lead instead of the generic stub.
+_CODE_EXT_LANG: dict[str, str] = {
+    "py": "Python", "pyi": "Python", "ipynb": "Jupyter notebook",
+    "js": "JavaScript", "mjs": "JavaScript", "cjs": "JavaScript",
+    "jsx": "JavaScript (React)", "ts": "TypeScript", "tsx": "TypeScript (React)",
+    "vue": "Vue", "svelte": "Svelte", "astro": "Astro",
+    "rb": "Ruby", "php": "PHP", "java": "Java", "kt": "Kotlin",
+    "kts": "Kotlin", "scala": "Scala", "swift": "Swift", "go": "Go",
+    "rs": "Rust", "c": "C", "h": "C header", "cpp": "C++", "cc": "C++",
+    "cxx": "C++", "hpp": "C++ header", "cs": "C#", "dart": "Dart",
+    "lua": "Lua", "r": "R", "pl": "Perl", "sh": "Shell script",
+    "bash": "Shell script", "zsh": "Shell script", "fish": "Shell script",
+    "ps1": "PowerShell script", "sql": "SQL", "clj": "Clojure",
+    "cljs": "ClojureScript", "ex": "Elixir", "exs": "Elixir",
+    "elm": "Elm", "erl": "Erlang", "hs": "Haskell", "ml": "OCaml",
+    "fs": "F#", "nim": "Nim", "zig": "Zig", "cr": "Crystal",
+    "groovy": "Groovy", "gradle": "Gradle build", "jl": "Julia",
+    "sol": "Solidity", "tf": "Terraform", "hcl": "HCL", "nix": "Nix",
+    "pas": "Pascal", "f90": "Fortran", "asm": "Assembly", "s": "Assembly",
+    "vala": "Vala", "hx": "Haxe", "rkt": "Racket", "scm": "Scheme",
+    "lisp": "Lisp", "el": "Emacs Lisp", "coffee": "CoffeeScript",
+    "m": "Objective-C / MATLAB", "mm": "Objective-C++",
+    "css": "CSS", "scss": "SCSS stylesheet", "sass": "Sass stylesheet",
+    "less": "Less stylesheet", "html": "HTML", "htm": "HTML",
+    "xml": "XML", "yaml": "YAML config", "yml": "YAML config",
+    "toml": "TOML config", "ini": "INI config", "cfg": "config",
+    "conf": "config", "properties": "properties config", "env": "environment config",
+    "dockerfile": "Dockerfile", "makefile": "Makefile", "cmake": "CMake build",
+    "graphql": "GraphQL schema", "gql": "GraphQL schema", "proto": "Protocol Buffers schema",
+    "diff": "diff / patch", "patch": "diff / patch", "tex": "LaTeX",
+    "rst": "reStructuredText", "adoc": "AsciiDoc",
+    "bat": "Batch script", "cmd": "Batch script", "vim": "Vimscript",
+    "tcl": "Tcl", "awk": "AWK script", "lean": "Lean", "agda": "Agda",
+}
+
+# Extensions / language names we treat as CODE (purpose-inferred) rather
+# than prose documents. Plain text / markdown / data files (.txt, .md,
+# .csv, .json, .log) keep the existing prose-document LLM path because
+# their bodies summarize well as natural language. Everything in
+# `_CODE_EXT_LANG` that isn't pure config/markup data is code-like.
+_NON_CODE_TEXT_EXTS: frozenset[str] = frozenset({
+    "txt", "md", "markdown", "csv", "tsv", "json", "jsonc", "json5",
+    "log", "rst", "adoc", "asciidoc", "tex", "latex",
+})
+
+# import-statement patterns per language family → pull the imported
+# module / package names out of a code file's head so we can name the
+# libraries it uses ("uses pytorch, numpy"). Best-effort regexes; a
+# language we don't have a pattern for just yields no libs (the summary
+# still leads with the language + any top-level defs).
+_IMPORT_PATTERNS: tuple[tuple[str, str], ...] = (
+    # Python:  import x / from x import y
+    ("python", r"^\s*(?:from|import)\s+([a-zA-Z_][\w.]*)"),
+    # JS/TS:   import ... from 'x'  /  require('x')
+    ("js", r"""(?:from|require\()\s*['"]([^'"]+)['"]"""),
+    # Go:      import "x"
+    ("go", r"""^\s*(?:import\s+)?["']([\w./-]+)["']"""),
+    # Java/Kotlin/Scala:  import a.b.c
+    ("java", r"^\s*import\s+(?:static\s+)?([a-zA-Z_][\w.]*)"),
+    # Rust:    use a::b
+    ("rust", r"^\s*use\s+([a-zA-Z_][\w:]*)"),
+    # C/C++:   #include <x> / #include "x"
+    ("c", r"""^\s*#\s*include\s*[<"]([^>"]+)[>"]"""),
+    # Ruby:    require 'x'
+    ("ruby", r"""^\s*require(?:_relative)?\s+['"]([^'"]+)['"]"""),
+)
+
+# Library / framework name → the kind of work it signals. Lets the
+# heuristic say "for machine-learning model training" / "web server" /
+# "data analysis" when the LLM is unavailable, instead of only listing
+# raw module names. Substring match against the lower-cased import set.
+_LIB_PURPOSE: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("torch", "tensorflow", "keras", "sklearn", "scikit", "xgboost",
+      "lightgbm", "transformers", "jax", "fastai", "onnx", "openvino"),
+     "machine-learning / AI model work"),
+    (("numpy", "pandas", "scipy", "matplotlib", "seaborn", "polars",
+      "statsmodels", "plotly"),
+     "data analysis / scientific computing"),
+    (("flask", "fastapi", "django", "express", "koa", "nestjs", "gin",
+      "fiber", "actix", "rails", "sinatra", "spring", "starlette",
+      "aiohttp", "tornado"),
+     "a web server / API backend"),
+    (("react", "vue", "angular", "svelte", "next", "nuxt", "preact",
+      "solid-js"),
+     "a web front-end / UI"),
+    (("pytest", "unittest", "jest", "mocha", "vitest", "junit",
+      "rspec", "cypress", "playwright", "selenium"),
+     "automated tests"),
+    (("requests", "httpx", "axios", "urllib", "aiohttp", "fetch"),
+     "HTTP requests / API calls"),
+    (("sqlalchemy", "psycopg2", "asyncpg", "pymongo", "redis",
+      "sqlite3", "prisma", "mongoose", "gorm", "diesel"),
+     "database access"),
+    (("boto3", "google.cloud", "azure", "kubernetes", "docker",
+      "terraform", "ansible"),
+     "cloud / infrastructure automation"),
+    (("argparse", "click", "typer", "cobra", "commander"),
+     "a command-line tool"),
+    (("selenium", "scrapy", "beautifulsoup", "bs4", "playwright",
+      "puppeteer"),
+     "web scraping / browser automation"),
+    (("discord", "telegram", "slack", "telethon", "tweepy"),
+     "a chat / social bot"),
+    (("pygame", "arcade", "pyglet", "godot", "unity"),
+     "a game"),
+)
+
+# Top-level definition patterns per language family — gives the summary a
+# few concrete symbol names ("defines train_model, evaluate, DataLoader")
+# which are exactly the terms a developer searches by.
+_DEF_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("python", r"^\s*(?:async\s+)?def\s+([a-zA-Z_]\w*)"),
+    ("python", r"^\s*class\s+([a-zA-Z_]\w*)"),
+    ("js", r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z_$]\w*)"),
+    ("js", r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([a-zA-Z_$]\w*)"),
+    ("js", r"^\s*(?:export\s+)?const\s+([a-zA-Z_$]\w*)\s*=\s*(?:async\s*)?\("),
+    ("go", r"^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)"),
+    ("go", r"^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)"),
+    ("rust", r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_]\w*)"),
+    ("rust", r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([a-zA-Z_]\w*)"),
+    ("java", r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:class|interface|enum)\s+([A-Za-z_]\w*)"),
+    ("ruby", r"^\s*(?:def|class|module)\s+([A-Za-z_]\w*)"),
+)
+
+
+def _code_language(filename: str, mime: str | None) -> Optional[str]:
+    """Human language name for a code file, or None when it isn't code.
+
+    Resolves by extension first (most reliable), then basename
+    (Dockerfile / Makefile), then the `text/x-<lang>` MIME the upload
+    pipeline assigned. Returns None for prose/data text the caller
+    should keep on the normal document path.
+    """
+    name = (filename or "").lower()
+    base = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    ext = base.rsplit(".", 1)[-1] if "." in base else ""
+    if ext in _NON_CODE_TEXT_EXTS:
+        return None
+    if ext and ext in _CODE_EXT_LANG:
+        return _CODE_EXT_LANG[ext]
+    # Basename match (no extension): Dockerfile, Makefile, …
+    stem = base.split(".", 1)[0]
+    if stem in _CODE_EXT_LANG:
+        return _CODE_EXT_LANG[stem]
+    # MIME fallback: text/x-python → "python", for a code file whose
+    # extension we didn't recognize but whose upload MIME names the
+    # language. Deliberately RESTRICTED to a known code-language allow-
+    # list — a blind `text/x-*` → title-case would mis-route data text
+    # MIMEs like `text/x-vcard` / `text/x-ics` / `text/calendar` to the
+    # code path. Those return None here and fall through to the prose-
+    # document summarizer instead.
+    m = (mime or "").lower().split(";")[0].strip()
+    _MIME_LANG = {
+        "javascript": "JavaScript", "css": "CSS", "html": "HTML",
+        "xml": "XML", "python": "Python", "typescript": "TypeScript",
+        "shellscript": "Shell script", "csharp": "C#", "c++": "C++",
+        "ruby": "Ruby", "php": "PHP", "java": "Java", "kotlin": "Kotlin",
+        "scala": "Scala", "swift": "Swift", "go": "Go", "rust": "Rust",
+        "c": "C", "sql": "SQL", "perl": "Perl", "lua": "Lua",
+        "r": "R", "dart": "Dart", "haskell": "Haskell", "elixir": "Elixir",
+        "clojure": "Clojure", "scss": "SCSS stylesheet", "sass": "Sass stylesheet",
+        "less": "Less stylesheet", "powershell": "PowerShell script",
+        "dockerfile": "Dockerfile", "makefile": "Makefile",
+        "objectivec": "Objective-C", "toml": "TOML config",
+        "yaml": "YAML config",
+    }
+    if m.startswith("text/x-") or m in (
+        "text/javascript", "text/css", "text/html", "text/xml",
+    ):
+        token = m.split("/", 1)[-1].replace("x-", "")
+        return _MIME_LANG.get(token)
+    return None
+
+
+def _family_for_lang(lang: str) -> str:
+    """Map a display language to the regex-family key used by the
+    import/def pattern tables ("Python (React)" → "python")."""
+    low = lang.lower()
+    if low.startswith("python") or "jupyter" in low:
+        return "python"
+    if any(k in low for k in ("javascript", "typescript", "vue", "svelte", "react")):
+        return "js"
+    if low.startswith("go"):
+        return "go"
+    if low.startswith("rust"):
+        return "rust"
+    if any(k in low for k in ("java", "kotlin", "scala")):
+        return "java"
+    if low == "c" or any(k in low for k in ("c++", "c header", "objective")):
+        return "c"
+    if low.startswith("ruby"):
+        return "ruby"
+    return ""
+
+
+def _extract_code_facts(
+    text: str, family: str,
+) -> tuple[list[str], list[str], Optional[str]]:
+    """Return (libraries, top_level_defs, leading_docstring/comment).
+
+    All best-effort regex scans over the file head. `family` selects the
+    import + def patterns; an unknown family yields empty lib/def lists
+    (the summary still leads with the language). The docstring/comment is
+    the first block comment or module docstring — often a one-line
+    description of what the file does.
+    """
+    head = text[:8000]
+    lines = head.splitlines()
+
+    # Libraries — run only the patterns for this family (plus the C
+    # include pattern which is unambiguous) over the head.
+    libs: list[str] = []
+    seen_lib: set[str] = set()
+    for fam, pat in _IMPORT_PATTERNS:
+        if fam != family:
+            continue
+        rx = re.compile(pat, re.MULTILINE)
+        for mobj in rx.finditer(head):
+            raw = (mobj.group(1) or "").strip()
+            if not raw:
+                continue
+            if family == "go":
+                # Go module paths: the LAST path segment is the package
+                # name a developer recognizes (github.com/gin-gonic/gin →
+                # gin; net/http → http; ./util → util).
+                token = raw.strip("'\"").rstrip("/").split("/")[-1]
+            elif family == "js":
+                # JS specifiers: drop relative imports entirely (./foo,
+                # ../bar — not libraries). For a scoped package keep the
+                # scope's package (@tanstack/react-query → react-query);
+                # otherwise the first path segment is the package
+                # (lodash/debounce → lodash; react → react).
+                spec = raw.strip("'\"")
+                if spec.startswith("."):
+                    continue
+                if spec.startswith("@"):
+                    parts = spec.split("/")
+                    token = parts[1] if len(parts) > 1 else parts[0].lstrip("@")
+                else:
+                    token = spec.split("/")[0]
+            else:
+                # Python/Java/Rust/C: the FIRST segment is the top-level
+                # package (numpy.linalg → numpy; a::b → a; stdio.h → stdio).
+                token = raw.split(".")[0].split("/")[0].split("::")[0]
+            token = token.strip().strip("'\"")
+            low = token.lower()
+            if not low or len(low) < 2 or low in seen_lib:
+                continue
+            # Skip relative / stdlib-noise imports that aren't useful tags.
+            if low in {
+                # Python stdlib noise
+                "os", "sys", "re", "io", "abc", "std", "self",
+                "__future__", "typing", "dataclasses", "enum",
+                "functools", "itertools", "collections", "pathlib",
+                "json", "math", "time", "datetime", "logging",
+                "subprocess", "uuid", "random", "string", "warnings",
+                # Go stdlib noise
+                "fmt", "errors", "context", "strings", "strconv",
+                "bytes", "bufio", "http", "net", "sort", "sync",
+                # JS/Node stdlib / relative noise
+                "path", "fs", "url", "util", "events", "stream",
+            }:
+                continue
+            seen_lib.add(low)
+            libs.append(token)
+            if len(libs) >= 12:
+                break
+
+    # Top-level definitions.
+    defs: list[str] = []
+    seen_def: set[str] = set()
+    for fam, pat in _DEF_PATTERNS:
+        if fam != family:
+            continue
+        rx = re.compile(pat, re.MULTILINE)
+        for mobj in rx.finditer(head):
+            name = (mobj.group(1) or "").strip()
+            low = name.lower()
+            if not name or low in seen_def or len(name) < 2:
+                continue
+            seen_def.add(low)
+            defs.append(name)
+            if len(defs) >= 12:
+                break
+
+    # Leading docstring / comment — first meaningful prose in the file.
+    doc: Optional[str] = None
+    # Python / shell-style module docstring or # comment block.
+    mdoc = re.search(r'^\s*(?:"""|\'\'\')(.+?)(?:"""|\'\'\')', head, re.DOTALL)
+    if mdoc:
+        doc = mdoc.group(1).strip()
+    if not doc:
+        # `#` is a COMMENT in Python/shell/Ruby/YAML but a PREPROCESSOR
+        # directive in C/C++/Objective-C (`#include`, `#define`). Only
+        # treat `#` as a comment marker for the non-C families so we
+        # don't slurp `#include <stdio.h>` into the description.
+        hash_is_comment = family != "c"
+        markers = ["//", "/*", "*", ";;", "--"]
+        if hash_is_comment:
+            markers.append("#")
+        comment_lines: list[str] = []
+        for ln in lines[:40]:
+            s = ln.strip()
+            if s.startswith(tuple(markers)):
+                cleaned = s.lstrip("#/*;-").strip()
+                if cleaned and not cleaned.lower().startswith(
+                    ("!", "-*-", "noqa", "type:", "pylint", "eslint",
+                     "prettier", "coding:", "copyright", "spdx",
+                     "include", "define", "pragma", "ifndef", "ifdef",
+                     "endif", "import")
+                ):
+                    comment_lines.append(cleaned)
+            elif s and comment_lines:
+                break
+            if len(comment_lines) >= 4:
+                break
+        if comment_lines:
+            doc = " ".join(comment_lines)
+    if doc:
+        doc = re.sub(r"\s+", " ", doc).strip()
+        if len(doc) > 300:
+            doc = doc[:300].rsplit(" ", 1)[0] + "…"
+    return libs, defs, doc
+
+
+def _heuristic_code_summary(
+    lang: str, libs: list[str], defs: list[str], doc: Optional[str],
+    fname: str,
+) -> str:
+    """Build a useful, searchable code summary without the LLM.
+
+    Composes "<Language> <kind> <purpose> (uses <libs>). Defines <defs>."
+    so a developer can find the file by its job and its libraries even
+    when Qwen is unavailable. Falls back to language + filename when we
+    have nothing else — still better than "Document: <stem>."
+    """
+    # Purpose phrase from libraries, if any library family matches.
+    low_libs = {l.lower() for l in libs}
+    purpose = ""
+    for keys, phrase in _LIB_PURPOSE:
+        if any(any(k in lib for lib in low_libs) for k in keys):
+            purpose = phrase
+            break
+
+    # "script" vs "module" vs "stylesheet" — small nicety from the
+    # language label itself. Labels that already carry their own kind
+    # (e.g. "Shell script", "YAML config", "Dockerfile") get no suffix.
+    low = lang.lower()
+    if low == "css":
+        kind = "stylesheet"
+    elif any(k in low for k in (
+        "stylesheet", "config", "dockerfile", "makefile", "schema",
+        "build", "script", "notebook", "header",
+    )):
+        # Label already carries its own kind word — don't double it.
+        kind = ""
+    else:
+        kind = "source file"
+
+    lead = lang if not kind else f"{lang} {kind}"
+    sentence = lead
+    if purpose:
+        sentence += f" for {purpose}"
+    if libs:
+        sentence += f" (uses {', '.join(libs[:6])})"
+    sentence = sentence.rstrip() + "."
+
+    extra = ""
+    if defs:
+        extra = " Defines " + ", ".join(defs[:6]) + "."
+    desc = ""
+    if doc:
+        # The file's own description leads when present — most reliable
+        # statement of purpose. Keep it to one sentence.
+        first = re.split(r"(?<=[.!?])\s", doc, maxsplit=1)[0].strip()
+        if first and len(first) >= 12:
+            desc = " " + (first if first[-1] in ".!?" else first + ".")
+
+    out = (sentence + extra + desc).strip()
+    if not out or out == ".":
+        stem = _filename_stem(fname)
+        return f"{lang} file{(' — ' + stem) if stem else ''}."
+    return out
+
+
+def _summarize_code(
+    image: Image, text: str, lang: str,
+) -> SummaryResult:
+    """Summarize a source-code file: detect language + infer purpose.
+
+    Prefers a code-aware Qwen rewrite (rich, natural) and falls back to
+    the deterministic `_heuristic_code_summary` so the result is always
+    useful and searchable. Tags = language + libraries so search can
+    facet by stack ("python", "pytorch"); content_type stays "code".
+    """
+    fname = image.original_filename or ""
+    family = _family_for_lang(lang)
+    libs, defs, doc = _extract_code_facts(text, family)
+
+    heuristic = _heuristic_code_summary(lang, libs, defs, doc, fname)
+
+    # Try the LLM for a more natural one-liner. We feed it the language,
+    # the extracted facts, and a head of the source — same Qwen the doc
+    # path uses. On any failure we keep the heuristic (already useful).
+    summary = _llm_code_summary(text, fname, lang, libs, defs, doc) or heuristic
+
+    # Topic — short, search-friendly. Prefer an LLM topic; fall back to
+    # "<Language> · <stem>".
+    stem = _filename_stem(fname)
+    topic = _llm_compose_doc_topic(text[:2000], fname) or (
+        f"{lang} · {stem}" if stem else lang
+    )
+
+    # Tags: language token(s) + libraries. Lower-cased, deduped. These
+    # are written by `_mark_done`'s adjective-tag path normally, but code
+    # summaries rarely contain adjectives, so we surface the stack here
+    # via summary_signals (search reads signals.concepts) AND ensure the
+    # libs appear in the summary text (they already do) so FTS hits them.
+    tag_set: list[str] = []
+    seen: set[str] = set()
+    for t in [lang.split()[0]] + libs:
+        tl = t.lower().strip()
+        if tl and tl not in seen:
+            seen.add(tl)
+            tag_set.append(tl)
+
+    points: list[str] = []
+    if defs:
+        points.append("Defines: " + ", ".join(defs[:6]))
+    if libs:
+        points.append("Libraries: " + ", ".join(libs[:6]))
+    loc = text.count("\n") + 1
+    points.append(f"~{loc} lines")
+
+    # Stash the code facts in summary_signals so search's haystack
+    # (which reads signals.concepts) indexes the library + symbol names
+    # even when they don't survive into the trimmed summary text.
+    concepts = tag_set + [d.lower() for d in defs[:8]]
+    image.__dict__["summary_signals"] = {
+        "kind": "code",
+        "language": lang,
+        "libraries": libs[:12],
+        "defs": defs[:12],
+        "concepts": concepts[:20],
+    }
+
+    return SummaryResult(
+        topic=topic or stem or lang,
+        summary=summary,
+        points=points[:5],
+        content_type="code",
+    )
+
+
+def _llm_code_summary(
+    text: str, filename: str, lang: str,
+    libs: list[str], defs: list[str], doc: Optional[str],
+) -> Optional[str]:
+    """Qwen2.5-Instruct one-liner describing what a code file is FOR.
+
+    Returns None when the rewriter is disabled / unavailable; the caller
+    keeps the deterministic heuristic in that case. Guides the model with
+    the pre-extracted facts so even a small checkpoint produces a
+    purpose-first sentence ("Python script that trains a CNN image
+    classifier with PyTorch") rather than echoing code lines.
+    """
+    if not settings.rewriter_enabled:
+        return None
+    try:
+        import torch  # type: ignore
+
+        from backend.vision.runtime import get_summary_rewriter
+
+        model, tokenizer, device = get_summary_rewriter()
+
+        head = text[:6000]
+        facts: list[str] = [f"Language: {lang}"]
+        if libs:
+            facts.append("Imports/libraries: " + ", ".join(libs[:12]))
+        if defs:
+            facts.append("Top-level definitions: " + ", ".join(defs[:12]))
+        if doc:
+            facts.append("File's own description/comment: " + doc)
+
+        instructions = (
+            "Write ONE short, search-friendly sentence (under 30 words) "
+            "describing what this source-code file IS and what it is FOR "
+            "— the kind of thing a developer would type into a search bar "
+            "months later to find it. Start with the programming language "
+            "and the file's role (script, module, component, test, config). "
+            "Name the concrete purpose and the key libraries/frameworks it "
+            "uses. Example: 'Python script for training a machine-learning "
+            "image classifier using PyTorch and torchvision.' Do NOT quote "
+            "code verbatim, do NOT list every function, and do NOT begin "
+            "with 'This file' or 'The code'. Output only the sentence."
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write concise, factual one-line descriptions of "
+                    "source-code files. You never invent libraries or "
+                    "behavior that isn't in the input."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    instructions
+                    + f"\n\nFilename: {filename}\n"
+                    + "\n".join(facts)
+                    + f"\n\nSource (head):\n{head}"
+                ),
+            },
+        ]
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=3500
+        ).to(device)
+        prompt_len = inputs.input_ids.shape[1]
+        with torch.no_grad():
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=80,
+                do_sample=False,
+                num_beams=1,
+                pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        new_ids = out_ids[0][prompt_len:]
+        reply = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+        reply = re.sub(r"\s+", " ", reply).strip().strip('"').strip("'").strip()
+        reply = reply.lstrip("-•*").strip()
+        # Reject body-text leaks (the model copied a code line) and
+        # over-long rambles.
+        if not reply or len(reply) > 400:
+            return None
+        if _looks_like_body_excerpt(reply, head):
+            return None
+        if reply[-1] not in ".!?":
+            reply = reply.rstrip(",;:") + "."
+        return reply[0].upper() + reply[1:]
+    except Exception:
+        logger.exception("qwen: code summary failed")
+        return None
+
+
 # --- document --------------------------------------------------------------
 
 
 def _summarize_document(
     image: Image, raw_bytes: bytes
 ) -> Optional[SummaryResult]:
-    text, topic = _extract_doc_text(image.original_filename or "", raw_bytes)
     fname = image.original_filename or ""
+
+    # #184 — CODE files (`.py`/`.js`/`.go`/...) arrive as documents but
+    # need language + purpose inference, not prose summarization. Detect
+    # the language up front; when it IS code, extract its text and route
+    # to the code summarizer. Non-code text / PDFs / Office docs fall
+    # through to the existing prose-document path below.
+    code_lang = _code_language(fname, image.mime_type_original)
+    if code_lang is not None:
+        try:
+            code_text = _extract_code_source(fname, raw_bytes)
+        except Exception:
+            logger.exception("code extract failed for %s", fname)
+            code_text = ""
+        if code_text.strip():
+            return _summarize_code(image, code_text, code_lang)
+        # Empty / unreadable code file — still emit a language-led stub
+        # so it's better than "Document: <stem>." and stays searchable.
+        return SummaryResult(
+            topic=(f"{code_lang} · {_filename_stem(fname)}"
+                   if _filename_stem(fname) else code_lang),
+            summary=_heuristic_code_summary(code_lang, [], [], None, fname),
+            points=[],
+            content_type="code",
+        )
+
+    text, topic = _extract_doc_text(fname, raw_bytes, image.mime_type_original)
     if not text.strip():
         return SummaryResult(
             topic=topic or _filename_stem(fname) or "Document",
@@ -3052,24 +3867,90 @@ def _looks_like_body_excerpt(summary: str, body: str) -> bool:
 
 
 def _extract_doc_text(
-    filename: str, raw: bytes
+    filename: str, raw: bytes, mime: str | None = None,
 ) -> tuple[str, Optional[str]]:
-    """Return (text, topic). Topic falls back to None when nothing usable."""
+    """Return (text, topic). Topic falls back to None when nothing usable.
+
+    #184 — broadened so ANY textual document (not just a hardcoded list)
+    gets summarized: after the binary-format handlers (pdf/docx/xlsx) we
+    fall back to plaintext extraction for anything whose MIME is `text/*`
+    / a structured-text type, OR that decodes cleanly as UTF-8 text. This
+    is what lets `.vcf` (vCard), `.ics` (calendar), `.rtf`, and other
+    text formats produce a real summary instead of the "Document: <stem>."
+    stub. Genuinely-binary blobs (a 3D `.stl`, a `.obj` mesh) still return
+    ("", None) and the caller emits the filename fallback.
+    """
     name = filename.lower()
+    m = (mime or "").lower().split(";")[0].strip()
     try:
-        if name.endswith(".pdf"):
+        if name.endswith(".pdf") or m == "application/pdf":
             return _extract_pdf(raw)
-        if name.endswith(".docx"):
+        if name.endswith(".docx") or m == (
+            "application/vnd.openxmlformats-officedocument"
+            ".wordprocessingml.document"
+        ):
             return _extract_docx(raw)
-        if name.endswith((".xlsx", ".xls")):
+        if name.endswith((".xlsx", ".xls")) or m in (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        ):
             return _extract_xlsx(raw)
+        if name.endswith((".pptx", ".ppt")) or m in (
+            "application/vnd.openxmlformats-officedocument"
+            ".presentationml.presentation",
+            "application/vnd.ms-powerpoint",
+        ):
+            return _extract_pptx(raw)
+        # Known structured-text extensions (fast path — no decode probe).
         if name.endswith((".txt", ".md", ".csv", ".log", ".json", ".tsv",
                           ".yaml", ".yml", ".toml", ".ini", ".sql", ".html",
-                          ".htm", ".xml")):
+                          ".htm", ".xml", ".rtf", ".vcf", ".ics", ".rst")):
+            return _extract_plaintext(raw, filename)
+        # MIME-driven text fallback: any text/* (incl. text/x-vcard,
+        # text/calendar, text/x-<anything>) is plaintext-extractable.
+        if m.startswith("text/") or m in (
+            "application/json", "application/xml", "application/x-yaml",
+            "application/rtf",
+        ):
+            return _extract_plaintext(raw, filename)
+        # Last resort: probe whether the bytes are UTF-8 text. If a high
+        # fraction decode without replacement, treat as plaintext — this
+        # catches text formats we have no extension/MIME mapping for at
+        # all. Binary meshes / blobs fail the probe and fall through.
+        if _looks_like_text(raw):
             return _extract_plaintext(raw, filename)
     except Exception:
         logger.exception("doc extract failed for %s", filename)
     return "", None
+
+
+def _looks_like_text(raw: bytes, sample: int = 4096) -> bool:
+    """Heuristic: do the first `sample` bytes look like UTF-8 text?
+
+    A NUL byte is a strong binary signal (text files almost never contain
+    one). Otherwise we decode the sample as UTF-8 and require that very
+    few characters are replacement/control chars. Conservative on purpose
+    — a false positive just produces a slightly noisy plaintext summary,
+    while a false negative falls back to the harmless filename stub.
+    """
+    if not raw:
+        return False
+    chunk = raw[:sample]
+    if b"\x00" in chunk:
+        return False
+    try:
+        decoded = chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    if not decoded:
+        return False
+    # Count control chars (excluding common whitespace). A real text file
+    # has almost none.
+    ctrl = sum(
+        1 for c in decoded
+        if ord(c) < 32 and c not in "\t\n\r\f\v"
+    )
+    return (ctrl / len(decoded)) < 0.02
 
 
 def _extract_pdf(raw: bytes) -> tuple[str, Optional[str]]:
@@ -3216,6 +4097,53 @@ def _extract_xlsx(raw: bytes) -> tuple[str, Optional[str]]:
     return text, topic
 
 
+def _extract_pptx(raw: bytes) -> tuple[str, Optional[str]]:
+    """Extract slide titles, body text, and speaker notes from a .pptx.
+
+    python-pptx reads OOXML PowerPoint only; a legacy binary .ppt raises,
+    which the caller's `except` turns into the harmless filename stub.
+    """
+    from pptx import Presentation  # type: ignore
+
+    prs = Presentation(BytesIO(raw))
+    lines: list[str] = []
+    topic: Optional[str] = None
+    for idx, slide in enumerate(prs.slides):
+        title_txt = ""
+        try:
+            if slide.shapes.title is not None and slide.shapes.title.text.strip():
+                title_txt = slide.shapes.title.text.strip()
+        except (AttributeError, ValueError):
+            title_txt = ""
+        lines.append(
+            f"# Slide {idx + 1}: {title_txt}" if title_txt
+            else f"# Slide {idx + 1}"
+        )
+        if title_txt and topic is None:
+            topic = title_txt[:120]
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            for para in shape.text_frame.paragraphs:
+                txt = "".join(run.text for run in para.runs).strip()
+                if txt and txt != title_txt:
+                    lines.append(txt)
+        try:
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes:
+                    lines.append(f"(notes) {notes}")
+        except (AttributeError, ValueError):
+            pass
+    text = "\n".join(lines)
+    if topic is None:
+        for ln in lines:
+            if not ln.startswith("# Slide"):
+                topic = ln[:120]
+                break
+    return text, topic
+
+
 def _extract_plaintext(raw: bytes, filename: str) -> tuple[str, Optional[str]]:
     text = raw.decode("utf-8", errors="replace")
     topic: Optional[str] = None
@@ -3227,6 +4155,40 @@ def _extract_plaintext(raw: bytes, filename: str) -> tuple[str, Optional[str]]:
     if not topic:
         topic = filename.rsplit(".", 1)[0]
     return text, topic
+
+
+def _extract_code_source(filename: str, raw: bytes) -> str:
+    """Decode a source-code file to text for the code summarizer.
+
+    UTF-8 with replacement so a stray non-UTF-8 byte never crashes the
+    job. `.ipynb` is JSON — pull just the source cells (markdown + code)
+    so the summarizer sees the notebook's actual content, not the JSON
+    envelope. Everything else is read as plain text and capped so a
+    100k-line generated file doesn't blow the regex scans (the head is
+    where imports / top-level defs / the module docstring live anyway).
+    """
+    name = (filename or "").lower()
+    if name.endswith(".ipynb"):
+        try:
+            import json as _json
+            nb = _json.loads(raw.decode("utf-8", errors="replace"))
+            parts: list[str] = []
+            for cell in nb.get("cells", [])[:200]:
+                src = cell.get("source") or []
+                if isinstance(src, list):
+                    parts.append("".join(src))
+                elif isinstance(src, str):
+                    parts.append(src)
+            joined = "\n\n".join(p for p in parts if p.strip())
+            if joined.strip():
+                return joined[:60000]
+        except Exception:
+            logger.exception("ipynb parse failed for %s", filename)
+        # Fall through to raw text on any parse failure.
+    text = raw.decode("utf-8", errors="replace")
+    # Cap — the head carries the signal; a giant minified bundle or
+    # generated lockfile would otherwise feed 5 MB into the regex scans.
+    return text[:120000]
 
 
 # --- extractive summarization ---------------------------------------------

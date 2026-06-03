@@ -81,6 +81,149 @@ async def _process_summarize(session_factory, image_id: UUID) -> None:
     async with session_factory() as s:
         await summarize_image_id(s, image_id)
 
+    # #174 — visual near-duplicate dedup. Runs AFTER summarize has
+    # persisted its embedding so the row's CLIP vector is in place. The
+    # image-space `clip_embedding` itself is written at UPLOAD time (see
+    # backend/image.py::store_upload); by the time the summarize job runs
+    # it's already committed on the row, so this read-then-merge is safe.
+    # Fully guarded — a dedup failure must never affect the summarize
+    # result that just landed.
+    try:
+        await _dedup_image_against_oldest(session_factory, image_id)
+    except Exception:
+        logger.exception("worker.dedup: failed for %s", image_id)
+
+
+# #174 — embedding-based visual dedup threshold. Cosine SIMILARITY in
+# [0,1]; the CLIP vectors are L2-normalised (vision/pipeline.py) so
+# similarity == 1 - cosine_distance, matching the search code's
+# `sim = 1.0 - dist` convention (api/search.py::_clip_search). 0.98 is
+# deliberately conservative — it fires only on near-IDENTICAL images
+# (the iCloud "lp_image.heic" logo saved 33× case), NOT on merely
+# similar scenes. Raising it makes dedup stricter; lowering it risks
+# false merges of distinct-but-alike photos.
+#
+# Two-tier, FILENAME-AWARE rule so we catch re-saves of the SAME file
+# without merging genuinely-distinct burst shots (e.g. IMG_9852 vs
+# IMG_9853 sit at ~0.98 cosine but are sequential captures the user wants
+# to keep):
+#   * EXACT     — cosine >= 0.995 merges regardless of filename (a true
+#     duplicate / the same photo re-imported under a different name);
+#   * SAME-NAME — cosine >= 0.98 merges ONLY when the base filename matches
+#     (the "same logo saved many times as lp_image.heic" case).
+DEDUP_COSINE_THRESHOLD = 0.98     # same-base-filename re-saves
+DEDUP_EXACT_THRESHOLD = 0.995     # near-exact dup, any filename
+
+
+async def _dedup_image_against_oldest(session_factory, image_id: UUID) -> None:
+    """If an OLDER near-identical image of the same user already exists,
+    fold the just-processed image into it.
+
+    Mirrors the content-hash dedup in cloud_sync.py (the `dup_image_id`
+    block ~L2202): repoint every CloudFile off the duplicate onto the
+    surviving image, THEN soft-delete the duplicate. Because the next
+    sync's skip-check (cloud_sync.py ~L1970-1984) only skips a remote
+    file when its CloudFile points at a LIVE (deleted_at IS NULL) image,
+    repointing to the survivor — which we never touch the blob of — is
+    what stops the same logo re-importing on every sync.
+
+    Guards:
+      * same user only;
+      * skip entirely if the image has no `clip_embedding`;
+      * pick the OLDEST other match and only merge when it is strictly
+        older than this image (uploaded_at, id tiebreak) — so we always
+        keep the original and delete the newcomer, never the reverse;
+      * never reads or mutates the survivor's blob.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sa_update
+
+    from backend.models import CloudFile, Image
+
+    async with session_factory() as s:
+        x = (
+            await s.execute(select(Image).where(Image.id == image_id))
+        ).scalar_one_or_none()
+        if x is None or x.deleted_at is not None:
+            return
+        if x.clip_embedding is None:
+            # No visual vector (e.g. skip_ai_training source, or a
+            # non-image category that never gets a CLIP embedding) —
+            # nothing to compare against. Hash-dedup already covers
+            # byte-identical files; embedding dedup simply doesn't apply.
+            return
+
+        # Cosine distance against the SAME column + operator the semantic
+        # search uses (Image.clip_embedding.cosine_distance). Threshold in
+        # distance space: similarity >= T  <=>  distance <= (1 - T).
+        import re as _re
+
+        from sqlalchemy import and_, func, or_
+
+        samename_max = 1.0 - DEDUP_COSINE_THRESHOLD   # 0.02 distance
+        exact_max = 1.0 - DEDUP_EXACT_THRESHOLD       # 0.005 distance
+        # Base filename (last extension stripped, lower-cased). The SQL
+        # regexp below MUST mirror this so the same-name tier agrees in
+        # both spaces.
+        x_base = _re.sub(r"\.[^.]+$", "", x.original_filename or "").lower()
+        cand_base = func.lower(
+            func.regexp_replace(Image.original_filename, r"\.[^.]+$", "")
+        )
+        dist = Image.clip_embedding.cosine_distance(x.clip_embedding)
+        candidate = (
+            await s.execute(
+                select(Image.id, Image.uploaded_at, dist.label("distance"))
+                .where(
+                    Image.user_id == x.user_id,
+                    Image.id != x.id,
+                    Image.deleted_at.is_(None),
+                    Image.clip_embedding.is_not(None),
+                    or_(
+                        # near-exact dup, any filename
+                        dist <= exact_max,
+                        # looser, but only for a same-base-filename re-save
+                        and_(dist <= samename_max, cand_base == x_base),
+                    ),
+                )
+                # Oldest first; id tiebreak keeps it deterministic when
+                # two rows share a timestamp (common for a batch import).
+                .order_by(Image.uploaded_at.asc(), Image.id.asc())
+                .limit(1)
+            )
+        ).first()
+        if candidate is None:
+            return
+
+        y_id, y_uploaded_at, distance = candidate
+        # Only merge into a STRICTLY-OLDER survivor. If the only match is
+        # newer than this image, this image IS the original — leave it,
+        # and the newer one will fold into it when its own job runs.
+        x_key = (x.uploaded_at, x.id)
+        y_key = (y_uploaded_at, y_id)
+        if not (y_key < x_key):
+            return
+
+        similarity = 1.0 - float(distance)
+
+        # Repoint FIRST (so the survivor is live + linked before the dup
+        # disappears), THEN soft-delete — same ordering as the cloud_sync
+        # hash-dedup block. We deliberately do NOT touch remote_modified /
+        # sha256 / last_synced_at: the skip-check matches on remote_modified,
+        # so leaving it intact is what makes the next sync skip the file.
+        await s.execute(
+            sa_update(CloudFile)
+            .where(CloudFile.local_image_id == x.id)
+            .values(local_image_id=y_id)
+        )
+        x.deleted_at = datetime.now(timezone.utc)
+        await s.commit()
+
+        logger.info(
+            "dedup: merged image %s into %s (cosine=%.4f)",
+            x.id, y_id, similarity,
+        )
+
 
 async def _process_face_scan(session_factory, user_id: UUID, image_id: UUID) -> None:
     from backend.consent import is_consent_active
@@ -295,9 +438,15 @@ async def _process_transcode_video(
         if image.original_blob_key is None:
             # Already transcoded (or original expired) — nothing to do.
             return
-        if image.category not in {"video", "audio"}:
-            logger.warning(
-                "worker.transcode: %s has category %r, skipping",
+        if image.category != "video":
+            # HLS transcode is video-ONLY — `_probe_source` raises "no video
+            # stream" on anything without a video track. Audio is served
+            # straight from its original (no HLS ladder), so an audio file
+            # reaching here was mis-enqueued; skip it cleanly instead of
+            # raising (which logged an error AND left the row in a state the
+            # stuck-job reaper kept re-enqueueing — a noisy fail loop).
+            logger.info(
+                "worker.transcode: %s is category %r (not video) — skipping HLS",
                 image_id, image.category,
             )
             return

@@ -83,6 +83,21 @@ RUN if [ "$INSTALL_ML" = "1" ]; then \
         punkt_tab averaged_perceptron_tagger_eng wordnet omw-1.4 ; \
     fi
 
+# HUGGINGFACE MODEL WEIGHTS — NOT baked into the image (by design).
+# Every HF model (Florence-2, MADLAD-400, NLLB, Qwen, the summarizer, and now
+# TrOCR handwriting `microsoft/trocr-base-handwritten`, ~330 MB) is loaded from
+# the cache at ${HF_HOME}=/models, which docker-compose ALWAYS mounts — either
+# the host's ~/.cache/huggingface bind mount or the `model_cache` named volume.
+# A bind/volume mount SHADOWS anything baked into the image's /models, so baking
+# weights would be dead image weight that the mount hides at runtime. Instead
+# the weights download lazily into that persistent cache on first use and are
+# pre-warmed at startup in the background (see backend/app.py
+# `_prewarm_translate_ocr`, which now also warms TrOCR on CPU), so the first
+# handwriting OCR / in-image translate doesn't pay the download or load. The
+# transformers `TrOCRProcessor` + `VisionEncoderDecoderModel` classes and their
+# deps (`sentencepiece` — already required by NLLB/MADLAD) ship via the [ml]
+# extras installed above; no new pip dependency is needed for TrOCR.
+
 
 # ---------- Stage 2: runtime ----------
 FROM python:3.12-slim AS runtime
@@ -102,6 +117,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #                    Bookworm's ffmpeg ships libx264 + built-in aac;
 #                    h264_nvenc is available when the ml-worker has
 #                    NVIDIA passthrough enabled per docker-compose.yml.
+#   espeak-ng      — TIER-2 universal TTS fallback (backend/api/tts.py).
+#                    GPL-3.0 formant synthesizer covering ~100+ languages
+#                    (the long tail Piper's ~50 neural voices don't reach:
+#                    Welsh, Hindi, Vietnamese, Maori, Yoruba, …). CPU-only
+#                    subprocess (`espeak-ng -v <code> -w out.wav <text>`); no
+#                    GPU, no Python deps. Bundles its own espeak-ng-data voice
+#                    tables. Robotic but intelligible — used only when no Piper
+#                    voice exists for the requested language.
 #   libreoffice-*  — headless Office→PDF conversion for in-app document
 #                    viewing (backend/worker/main.py:_process_convert_office
 #                    runs `soffice --headless --convert-to pdf`). The
@@ -126,6 +149,7 @@ RUN apt-get update \
          libpq5 curl ca-certificates unzip \
          libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
          ffmpeg \
+         espeak-ng \
          libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
          fonts-liberation fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
@@ -185,9 +209,9 @@ RUN mkdir -p /models && chown neuthek:neuthek /models
 # both directories hold session-trust / rclone-credential blobs:
 # the encryption-at-rest layer is the encrypted DB column, but
 # defence-in-depth here keeps another process on the host out.
-RUN mkdir -p /var/neuthek/pyicloud /var/neuthek/rclone \
+RUN mkdir -p /var/neuthek/pyicloud /var/neuthek/rclone /var/neuthek/sftp \
     && chown -R neuthek:neuthek /var/neuthek \
-    && chmod 700 /var/neuthek/pyicloud /var/neuthek/rclone
+    && chmod 700 /var/neuthek/pyicloud /var/neuthek/rclone /var/neuthek/sftp
 
 # Drop privileges. Every command from here runs as neuthek (UID 1000).
 USER neuthek

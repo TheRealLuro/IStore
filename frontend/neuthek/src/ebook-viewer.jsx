@@ -20,8 +20,20 @@ import { fetchMediaBlob, originalMediaUrl } from "@/api/files";
 import { ViewerError } from "./viewer-states.jsx";
 
 // Reader font-size presets (percent applied to epubjs's base). The
-// reader remembers the choice across page turns within a session.
-const FONT_STEPS = [90, 100, 110, 125, 140];
+// reader remembers the choice across page turns AND across reopens via
+// localStorage.
+const FONT_STEPS = [80, 90, 100, 110, 125, 140, 160];
+const FONT_KEY = "neuthek.ebook.fontPct";
+
+// Read the persisted reading size (clamped to a known step) so reopening
+// a book restores the last size. Defaults to 100%.
+function readFontPct() {
+  try {
+    const n = parseInt(localStorage.getItem(FONT_KEY) || "", 10);
+    if (FONT_STEPS.includes(n)) return n;
+  } catch { /* private browsing */ }
+  return 100;
+}
 
 // Dark theme injected into every rendered section's iframe. epubjs
 // scopes these rules inside the section document, so we restate the
@@ -49,6 +61,10 @@ export function EbookViewer({ fileId, fileName }) {
   // the prev/next handlers can reach the live instances.
   const bookRef = useRef(null);
   const renditionRef = useRef(null);
+  // Mirror of fontPct so the once-registered content hook (which closes
+  // over load-time scope) always re-applies the LATEST size on each new
+  // section iframe, not a stale value.
+  const fontPctRef = useRef(readFontPct());
 
   const [status, setStatus] = useState("loading"); // loading | ready | error
   const [error, setError] = useState(null);
@@ -56,7 +72,7 @@ export function EbookViewer({ fileId, fileName }) {
   const [showToc, setShowToc] = useState(false);
   const [label, setLabel] = useState(""); // current chapter / location label
   const [progress, setProgress] = useState(0); // 0..1 across the book
-  const [fontPct, setFontPct] = useState(100); // reader font scale
+  const [fontPct, setFontPct] = useState(readFontPct); // reader font scale (persisted)
   const [attempt, setAttempt] = useState(0); // bumped by Retry
 
   useEffect(() => {
@@ -115,6 +131,17 @@ export function EbookViewer({ fileId, fileName }) {
 
         rendition.themes.register("neuthek-dark", DARK_THEME);
         rendition.themes.select("neuthek-dark");
+        // Apply the persisted reading size BEFORE first paint so the book
+        // opens at the user's chosen size, not the 100% base.
+        try { rendition.themes.fontSize(`${fontPctRef.current}%`); } catch {}
+        // epubjs renders each spine section into its OWN iframe; the
+        // fontSize override is per-rendition but must be re-asserted as new
+        // section iframes mount, or the size silently resets to base when
+        // the reader turns into a fresh chapter. Re-apply on every content
+        // render so the chosen size sticks across page/chapter turns.
+        rendition.hooks.content.register(() => {
+          try { rendition.themes.fontSize(`${fontPctRef.current}%`); } catch {}
+        });
 
         await rendition.display();
         if (destroyed) return;
@@ -168,8 +195,12 @@ export function EbookViewer({ fileId, fileName }) {
   }, [fileId, attempt]);
 
   // Apply the reader font scale to the live rendition whenever it changes
-  // (epubjs exposes a per-rendition fontSize override).
+  // (epubjs exposes a per-rendition fontSize override). Also mirror it to
+  // the ref the content hook reads, and persist the choice so reopening
+  // the book restores it.
   useEffect(() => {
+    fontPctRef.current = fontPct;
+    try { localStorage.setItem(FONT_KEY, String(fontPct)); } catch { /* private browsing */ }
     if (status !== "ready") return;
     try { renditionRef.current?.themes?.fontSize(`${fontPct}%`); } catch {}
   }, [fontPct, status]);
@@ -244,10 +275,13 @@ export function EbookViewer({ fileId, fileName }) {
             type="button"
             className="ebook-viewer__fontbtn mono"
             onClick={cycleFont}
-            title={`Reading size — ${fontPct}%`}
+            title={`Reading size — ${fontPct}% (click to change)`}
             aria-label={`Reading size ${fontPct}%, click to change`}
           >
-            A<span className="ebook-viewer__fontbtn-sm">A</span>
+            <span className="ebook-viewer__fontbtn-aa" aria-hidden="true">
+              A<span className="ebook-viewer__fontbtn-sm">A</span>
+            </span>
+            <span className="ebook-viewer__fontbtn-pct">{fontPct}%</span>
           </button>
         )}
         {status === "ready" && progress > 0 && (

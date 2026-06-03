@@ -21,6 +21,7 @@ import {
   ExportModal,
 } from "./policies.jsx";
 import { Sidebar, GalleryView, EmptyGallery } from "./gallery.jsx";
+import { NeuthekLoader } from "./neuthek-loader.jsx";
 import { UploadModal } from "./upload.jsx";
 import { PreviewPanel } from "./preview.jsx";
 import { VaultPanel } from "./vault-panel.jsx";
@@ -28,6 +29,7 @@ import { AccountModal } from "./account.jsx";
 import { AuthScreen } from "./auth.jsx";
 import { RenameModal } from "./rename.jsx";
 import { BestOfModal } from "./bestof.jsx";
+import { FindMorePhotosModal } from "./person-find-more.jsx";
 // MapView (Leaflet, ~100 KB) and AdminOverlay (admin-only) are heavy chunks
 // that most users never need on first paint. Lazy-load them so the initial
 // bundle drops below the 500 KB warning. React.Suspense fallbacks render a
@@ -45,7 +47,7 @@ import {
   listFiles, getImageGeo, servedUrl, renameImage,
   getSummarizeProgress, searchSemantic, getFacets,
   bulkDelete, bulkRestore, bulkMove, createFolderWithImages,
-  clearSearchHistory, backfillImagePlaces,
+  clearSearchHistory, backfillImagePlaces, getSimilarImages,
 } from "@/api/files";
 import { createShare, buildShareUrlWithEmail, listIncomingShares } from "@/api/shares";
 import { eraseImageCaches } from "./cache-eraser.js";
@@ -61,6 +63,9 @@ import { formatDistanceToNowStrict } from "date-fns";
 // `RECENT_SEARCHES` seed list is intentionally NOT imported — a fresh
 // account should start empty and grow as the user actually searches.
 const SEARCH_HISTORY_KEY = "neuthek.recentSearches";
+// Stable empty list for the (now-disabled) in-search command palette, so
+// the keyboard-nav row count has a constant array identity to lean on.
+const EMPTY_COMMANDS = [];
 function loadRecentSearches() {
   try {
     const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
@@ -2049,8 +2054,18 @@ export function App() {
   // the person picker (no filter applied); set = show photos of person.
   const [peopleFilter, setPeopleFilter] = useStateApp(null);
   const enterFolder = (folder) => {
+    // Build the breadcrumb from the folder we're *actually* in: only extend
+    // the trail when the last crumb is the current folder (a true descent).
+    // If the folder was opened from another context (root list after a
+    // sidebar nav, search, a different cloud root, etc.) the stale trail
+    // would fabricate a false nested path like "Google Drive > iCloud Drive"
+    // — start a fresh trail in that case.
+    setFolderPath((p) => {
+      const lastId = p.length ? p[p.length - 1].id : null;
+      const crumb = { id: folder.id, name: folder.name };
+      return lastId === folderId ? [...p, crumb] : [crumb];
+    });
     setFolderId(folder.id);
-    setFolderPath((p) => [...p, { id: folder.id, name: folder.name }]);
     setCurrentFolderCount(typeof folder.item_count === "number" ? folder.item_count : null);
     setSelectedFile(null);
   };
@@ -2066,6 +2081,25 @@ export function App() {
     // Crumb/ancestor count isn't in hand → unknown (heuristic pager).
     setCurrentFolderCount(null);
     setSelectedFile(null);
+  };
+
+  // Canonical "navigate to a top-level view" reset. Extracted from the
+  // Sidebar's inline onView so the sidebar AND the command palette
+  // (⌘K) drive identical state — switching tabs clears the search,
+  // selection, people-drill, folder context, type pill, and page so a
+  // stale scope never bleeds across views. `setPage` is defined further
+  // down; it's in scope by the time any handler fires (closures capture
+  // the latest binding), so referencing it here is safe.
+  const goToView = (v) => {
+    setView(v);
+    setQuery("");
+    setSelectedFile(null);
+    setPeopleFilter(null);
+    setFolderId(null);
+    setFolderPath([]);
+    setCurrentFolderCount(null);
+    setTypeFilter("all");
+    setPage(0);
   };
 
   // search history (clearable) — sourced from localStorage so the list
@@ -2086,6 +2120,20 @@ export function App() {
   useEffectApp(() => () => {
     if (searchBlurTimer.current) clearTimeout(searchBlurTimer.current);
   }, []);
+
+  // ── Command palette (⌘K) ────────────────────────────────────────
+  // The topbar search doubles as a command palette: as the user types,
+  // keyword-matched COMMANDS (navigate, filter, sort, upload, open
+  // Settings, jump to a person) surface above the live FILE results.
+  // `paletteOpen` controls whether the dropdown is showing; it's set by
+  // focusing the input, by ⌘K, and cleared on blur/Escape/run.
+  // `highlightIdx` is the keyboard cursor across the flattened list of
+  // actionable rows (commands first, then a single "search files" row).
+  // The input element ref lets ⌘K focus + select the field from
+  // anywhere on the page.
+  const searchInputRef = useRefApp(null);
+  const [paletteOpen, setPaletteOpen] = useStateApp(false);
+  const [highlightIdx, setHighlightIdx] = useStateApp(0);
 
   // FAB scroll-to-top — the actual scroll container is .gallery, not .main
   const mainRef = useRefApp(null);
@@ -2211,6 +2259,20 @@ export function App() {
   const [showRename, setShowRename] = useStateApp(false);
   const [renameFile, setRenameFile] = useStateApp(null);
   const [showBestOf, setShowBestOf] = useStateApp(false);
+  // Sprint I #7 / D8 — "Find more photos of this person." Holds the
+  // { personId, name } whose re-detection candidate-review modal is open
+  // (null = closed). Set from the person drill-in header's "Find more
+  // photos" button.
+  const [findMoreTarget, setFindMoreTarget] = useStateApp(null);
+  // Feature #172 — "Best of anywhere." When best-of is launched from a
+  // single photo (the preview tool-rail bubble or a gallery card's "Find
+  // best of similar"), we pull that photo's near-duplicate group and feed
+  // THOSE ids to the shared BestOfModal — distinct from `multiSelected`,
+  // which still drives the modal when it's opened from the multi-select
+  // bar. `bestOfBusy` gates the bubble/menu while the similar-group fetch
+  // is in flight so a double-click can't fire two overlapping runs.
+  const [bestOfIds, setBestOfIds] = useStateApp(null); // string[] | null
+  const [bestOfBusy, setBestOfBusy] = useStateApp(false);
   const [showAdmin, setShowAdmin] = useStateApp(false);
   const [showNewFolder, setShowNewFolder] = useStateApp(false);
 
@@ -2346,6 +2408,15 @@ export function App() {
   const {
     data: pageFiles = [],
     isFetching: filesFetching,
+    // First-load signal for THIS query key. With `keepPreviousData` below,
+    // `isLoading` (= pending with no cached data for the current key) is true
+    // only when the slice the user just navigated to — a new folder, category,
+    // or filter — has nothing cached yet; it's false on an instant cache hit or
+    // a background refetch (those keep `isFetching` true but `isLoading` false).
+    // This is what lets us show the branded loader on a folder/filter SWITCH
+    // (where stale rows are still mounted via the placeholder) without flashing
+    // it on cached navigation.
+    isLoading: filesIsLoading,
   } = useQuery({
     queryKey: ["files", filesQueryFilters, page],
     queryFn: () =>
@@ -2893,6 +2964,43 @@ export function App() {
   };
 
   const handleRename = (f) => { setRenameFile(f); setShowRename(true); };
+
+  // Feature #172 — "Best of anywhere." Launch best-of on ONE photo by
+  // pulling its visually-similar / burst group (NEW owner-scoped
+  // GET /images/{id}/similar, pgvector KNN) and feeding those ids to the
+  // shared BestOfModal. Reachable from the preview tool-rail bubble AND a
+  // gallery card's quick menu, so best-of no longer needs a multi-select.
+  const handleBestOfSimilar = async (f) => {
+    if (!f?.id || bestOfBusy) return;
+    setBestOfBusy(true);
+    try {
+      // First pass at the tight near-duplicate threshold. If the photo has
+      // no burst siblings (only the anchor comes back), retry once with a
+      // looser gate so a near-miss still gives the user something to
+      // compare — best-of needs at least 2 to do anything.
+      let group = await getSimilarImages(f.id);
+      if (group.count < 2) {
+        group = await getSimilarImages(f.id, { threshold: 0.7 });
+      }
+      const ids = (group.results || []).map((r) => r.image_id);
+      if (ids.length < 2) {
+        toast(
+          "No similar shots found for this photo. Best-of compares near-duplicates — try a burst.",
+          { icon: "🔍" },
+        );
+        return;
+      }
+      // Close the lightbox/preview so the modal (z-9001) isn't covered by
+      // the lightbox (z-9020), then open best-of on the similar group.
+      setSelectedFile(null);
+      setBestOfIds(ids);
+      setShowBestOf(true);
+    } catch (e) {
+      toast.error(e?.detail || e?.message || "Could not find similar shots.");
+    } finally {
+      setBestOfBusy(false);
+    }
+  };
   const saveRename = async (newName) => {
     if (!renameFile) return;
     try {
@@ -2919,13 +3027,262 @@ export function App() {
     setShowHistory(false);
   };
 
+  // ── Command palette: the command set ────────────────────────────
+  // Every command points at a handler that ALREADY exists for the
+  // sidebar / pills / buttons — the palette is a thin keyboard front
+  // door, it never reinvents the action. `run()` is the side-effect;
+  // `keywords` is the match surface (extra synonyms beyond the visible
+  // label, e.g. "preferences" → Open Settings). `group` buckets the
+  // row under a header. Closing the palette is handled centrally in
+  // `runCommand` so individual commands don't each have to remember.
+  const closePalette = () => {
+    setPaletteOpen(false);
+    setShowHistory(false);
+    setHighlightIdx(0);
+    // Drop focus so the dropdown doesn't immediately re-open from the
+    // input's onFocus when a command navigates but keeps the field
+    // mounted (e.g. "Open Settings" leaves the gallery in place).
+    try { searchInputRef.current?.blur(); } catch {}
+  };
+  const runCommand = (cmd) => {
+    if (!cmd) return;
+    closePalette();
+    // Commands that move the user off a file-search context clear the
+    // query so the topbar title + gallery don't keep showing stale
+    // "N results". Navigation commands set clearQuery; pure-toggle
+    // commands (sort) leave the query untouched.
+    if (cmd.clearQuery) setQuery("");
+    cmd.run();
+  };
+
+  const paletteCommands = useMemoApp(() => {
+    const cmds = [];
+    // — Navigation: one "Go to X" per top-level view. goToView is the
+    //   same reset the sidebar runs, so these behave identically to a
+    //   sidebar click (clears folder/pill/page, etc.).
+    const NAV = [
+      { id: "gallery", label: "All files",  icon: "library",  kw: "files all home library gallery" },
+      { id: "photos",  label: "Photos",     icon: "image",    kw: "photos images pictures" },
+      { id: "videos",  label: "Videos",     icon: "video",    kw: "videos movies clips" },
+      { id: "docs",    label: "Documents",  icon: "document", kw: "documents docs files pdf" },
+      { id: "starred", label: "Starred",    icon: "star",     kw: "starred favorites favourites" },
+      { id: "people",  label: "People",     icon: "users",    kw: "people faces persons" },
+      { id: "places",  label: "Map",        icon: "map",      kw: "map places location geo" },
+      { id: "shared",  label: "Shared",     icon: "share",    kw: "shared sharing links" },
+      { id: "trash",   label: "Trash",      icon: "trash",    kw: "trash bin deleted recycle" },
+      { id: "vault",   label: "Vault",      icon: "lock",     kw: "vault secure encrypted private" },
+    ];
+    for (const n of NAV) {
+      cmds.push({
+        id: `view:${n.id}`,
+        group: "Navigate",
+        icon: n.icon,
+        label: `Go to ${n.label}`,
+        keywords: `go to ${n.label} ${n.kw} navigate open`,
+        clearQuery: true,
+        run: () => goToView(n.id),
+      });
+    }
+    // — Open Settings (the Account modal, profile tab). Settings is a
+    //   modal, not a view, so it routes through openAccount, not goToView.
+    cmds.push({
+      id: "settings",
+      group: "Navigate",
+      icon: "settings",
+      label: "Open Settings",
+      keywords: "settings preferences account profile config options",
+      run: () => openAccount("profile"),
+    });
+
+    // — Type filters. Only meaningful inside the gallery list, so each
+    //   first switches to the All-files view (goToView resets the pill
+    //   to "all" + page to 0) and THEN applies the chosen pill. Without
+    //   the goToView hop, picking "Filter: Videos" while on, say, the
+    //   People view would set a pill that view never reads.
+    const FILTERS = [
+      { id: "image", label: "Photos", icon: "image", kw: "photos images pictures" },
+      { id: "video", label: "Videos", icon: "video", kw: "videos movies" },
+      { id: "doc",   label: "Documents", icon: "document", kw: "documents docs pdf" },
+      { id: "audio", label: "Audio", icon: "audio", kw: "audio sound music mp3" },
+    ];
+    for (const f of FILTERS) {
+      cmds.push({
+        id: `filter:${f.id}`,
+        group: "Filter",
+        icon: f.icon,
+        label: `Filter: ${f.label}`,
+        keywords: `filter ${f.label} ${f.kw} only show type`,
+        run: () => { goToView("gallery"); setTypeFilter(f.id); },
+      });
+    }
+
+    // — Sort. Maps 1:1 to the existing (sort key, dir) pair the
+    //   SortDropdown drives; the gallery + backend both read these.
+    const SORTS = [
+      { id: "recent-desc", label: "Sort by date (newest)", key: "recent", dir: "desc", kw: "date recent newest time" },
+      { id: "recent-asc",  label: "Sort by date (oldest)", key: "recent", dir: "asc",  kw: "date oldest time" },
+      { id: "name-asc",    label: "Sort by name (A→Z)",    key: "name",   dir: "asc",  kw: "name alphabetical a z" },
+      { id: "name-desc",   label: "Sort by name (Z→A)",    key: "name",   dir: "desc", kw: "name alphabetical z a" },
+    ];
+    for (const s of SORTS) {
+      cmds.push({
+        id: `sort:${s.id}`,
+        group: "Sort",
+        icon: "sort",
+        label: s.label,
+        keywords: `sort order ${s.label} ${s.kw}`,
+        run: () => { setSort(s.key); setSortDir(s.dir); },
+      });
+    }
+
+    // — Actions: the topbar/sidebar buttons, reachable by keyword.
+    cmds.push({
+      id: "action:upload",
+      group: "Actions",
+      icon: "upload",
+      label: "Upload files",
+      keywords: "upload add import new files",
+      run: () => setShowUpload(true),
+    });
+    cmds.push({
+      id: "action:new-folder",
+      group: "Actions",
+      icon: "folderPlus",
+      label: "New folder",
+      keywords: "new folder create directory",
+      run: () => setShowNewFolder(true),
+    });
+
+    // — People quick-jumps. Cheap: peopleResp is already loaded for the
+    //   People view / sidebar count, so we just surface the first
+    //   handful of named persons. Picking one lands on the People view
+    //   drilled into that person (same as the People picker's onPick).
+    for (const p of (peopleResp?.persons || []).slice(0, 6)) {
+      cmds.push({
+        id: `person:${p.id}`,
+        group: "People",
+        icon: "users",
+        label: p.display_name,
+        // Person rows only surface when the query actually looks like a
+        // name match — hidden from the empty-state suggestions so they
+        // don't crowd out the core commands.
+        keywords: `person ${p.display_name} people face`,
+        personJump: true,
+        clearQuery: true,
+        run: () => {
+          goToView("people");
+          setPeopleFilter({ personId: p.id, clusterId: null, name: p.display_name });
+        },
+      });
+    }
+
+    return cmds;
+  }, [peopleResp]);
+
+  // Keyword matcher. A command matches when EVERY whitespace-separated
+  // token in the query is a substring of its (label + keywords) haystack
+  // — so "go vid" matches "Go to Videos" but "xyz" matches nothing.
+  // Ranking: exact label-prefix first, then label-substring, then the
+  // rest, so the most literal match floats to the top of its group.
+  const matchedCommands = useMemoApp(() => {
+    const raw = query.trim().toLowerCase();
+    if (!raw) {
+      // Empty/just-opened: a curated starter set (no person rows).
+      const suggestIds = new Set([
+        "view:photos", "view:videos", "view:docs", "view:people",
+        "view:places", "settings", "action:upload",
+      ]);
+      return paletteCommands.filter(c => suggestIds.has(c.id));
+    }
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    const scored = [];
+    for (const c of paletteCommands) {
+      const label = c.label.toLowerCase();
+      const hay = `${label} ${c.keywords}`.toLowerCase();
+      if (!tokens.every(tok => hay.includes(tok))) continue;
+      // Person rows are noisy in short queries — require the query to be
+      // at least 2 chars AND hit the label, not just the generic
+      // "person people face" keywords every person row shares.
+      if (c.personJump && !(raw.length >= 2 && label.includes(raw))) continue;
+      let rank = 2;
+      if (label.startsWith(raw)) rank = 0;
+      else if (label.includes(raw)) rank = 1;
+      scored.push({ c, rank });
+    }
+    scored.sort((a, b) => a.rank - b.rank);
+    // Cap so the dropdown never runs away; commands are the headline of
+    // the palette, files fill the rest below.
+    return scored.slice(0, 8).map(s => s.c);
+  }, [query, paletteCommands]);
+
+  // The command list is intentionally NOT surfaced in the topbar search
+  // dropdown — it's a pure search box again (file names / AI summaries /
+  // contents), with a recent-searches history when empty. The command
+  // definitions (`paletteCommands` / `matchedCommands`) are kept computed
+  // but unrendered: the backend command routes + these handlers are
+  // reserved for a future SFTP CLI / agentic surface, and several `run()`
+  // bodies double as the canonical reset for the sidebar/pills. Flip this
+  // to re-enable the in-search command palette.
+  const SHOW_PALETTE_COMMANDS = false;
+  // Only commands actually offered in the dropdown participate in keyboard
+  // nav. With the palette disabled this is always empty, so ↑/↓/Enter only
+  // ever drive the single "search files" row.
+  const shownCommands = SHOW_PALETTE_COMMANDS ? matchedCommands : EMPTY_COMMANDS;
+
+  // Flattened keyboard-navigable rows: every shown command, then a
+  // single "Search files for …" row when the query is non-empty (that
+  // row runs the existing file search). highlightIdx indexes into this.
+  const hasSearchRow = query.trim().length > 0;
+  const paletteRowCount = shownCommands.length + (hasSearchRow ? 1 : 0);
+
+  // Keep the highlight in range as the matched set shrinks/grows while
+  // typing. Reset to the top whenever the query changes so the first
+  // (best-ranked) row is always pre-selected.
+  useEffectApp(() => { setHighlightIdx(0); }, [query]);
+
+  // Run whatever row the keyboard cursor is on. Index < command count
+  // → run that command; the trailing index → fire the file search. With
+  // the command palette disabled, shownCommands is empty so this always
+  // falls through to the file search.
+  const runHighlighted = () => {
+    if (highlightIdx < shownCommands.length) {
+      runCommand(shownCommands[highlightIdx]);
+    } else {
+      // The "search files" row (or plain Enter): submit the semantic
+      // file search — exactly the behavior the search box always had.
+      closePalette();
+      submitSearch();
+    }
+  };
+
+  // Global ⌘K / Ctrl+K: open + focus + select the search field from
+  // anywhere. preventDefault stops the browser's own ⌘K (address-bar
+  // focus in some browsers). Bound once for the app's lifetime.
+  useEffectApp(() => {
+    const onKey = (e) => {
+      const isK = (e.key === "k" || e.key === "K");
+      if (isK && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const el = searchInputRef.current;
+        if (el) {
+          el.focus();
+          el.select();
+        }
+        setPaletteOpen(true);
+        setShowHistory(false);
+        setHighlightIdx(0);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   if (authLoading) {
-    return (
-      <div style={{ display: "grid", placeItems: "center", height: "100vh",
-                    color: "var(--ink-3)", fontFamily: "Geist, system-ui" }}>
-        Loading…
-      </div>
-    );
+    // Initial app bootstrap — auth + first data are still resolving.
+    // The branded full-screen loader (neuthek mark drawing inside its
+    // ring) stands in for the old bare "Loading…" so the first paint
+    // feels intentional instead of blank.
+    return <NeuthekLoader full size={112} cycle />;
   }
   if (!signedIn) {
     return (
@@ -3009,6 +3366,26 @@ export function App() {
   const showEmpty = empty || trashIsEmpty || (
     files.length === 0 && !query && view !== "people" && !hasFoldersInScope
   );
+  // First-paint of the file list: the paged gallery query has NO cached
+  // rows for the slice the user is looking at — either the very first load,
+  // or a fresh navigation to a folder / category / filter we haven't fetched
+  // yet. Without this we'd either flash the EmptyGallery upload-hero for a
+  // beat before the rows land (read as "you have no files"), or — because the
+  // query keeps the PREVIOUS slice's rows on screen while the next loads
+  // (`keepPreviousData`) — leave the STALE folder's content sitting there,
+  // janky and "dirty", until the new rows arrive. Show the branded loader
+  // instead. Gated on `filesIsLoading` (pending with no cached data for the
+  // current key) rather than `filesFetching`, so it fires on a folder/filter
+  // SWITCH (stale rows still mounted) but NOT on an instant cache hit or a
+  // quiet background refetch. Scoped to the paged file views (gallery /
+  // photos / videos / docs); other views (people / starred / trash / places /
+  // shared) load their own arrays and keep their existing states. Search has
+  // its own loading affordance, so we don't gate on it here.
+  const isPagedFileView =
+    view === "gallery" || view === "photos" ||
+    view === "videos" || view === "docs";
+  const galleryInitialLoading =
+    isPagedFileView && filesIsLoading && !query;
   const densityGap = t.density === "compact" ? 10 : t.density === "comfy" ? 22 : 16;
   const isMap = view === "places";
 
@@ -3018,23 +3395,15 @@ export function App() {
       <style>{`.gallery__grid { gap: ${densityGap}px; }`}</style>
       <Sidebar
         view={view}
-        onView={(v) => {
-          setView(v);
-          setQuery("");
-          setSelectedFile(null);
-          setPeopleFilter(null);
-          // Switching sidebar tabs resets the gallery's folder context +
-          // category pill + page, so a folder you'd drilled into, a stray
-          // "Photos" filter, or page 7 doesn't silently persist when you
-          // come back to Files. Users: "when I am in a folder then click
-          // the left bar sections it still says I'm in the folder I was in
-          // previously" / "when one of the [type] pills is selected it
-          // stays even after switching tabs."
-          setFolderId(null);
-          setCurrentFolderCount(null);
-          setTypeFilter("all");
-          setPage(0);
-        }}
+        // Switching sidebar tabs resets the gallery's folder context +
+        // category pill + page (via the shared goToView helper), so a
+        // folder you'd drilled into, a stray "Photos" filter, or page 7
+        // doesn't silently persist when you come back to Files. Users:
+        // "when I am in a folder then click the left bar sections it
+        // still says I'm in the folder I was in previously" / "when one
+        // of the [type] pills is selected it stays even after switching
+        // tabs." The command palette (⌘K) reuses the same goToView.
+        onView={goToView}
         onUpload={() => setShowUpload(true)}
         onAccount={() => openAccount("profile")}
         // Pill is shown only when there are undecided consent scopes.
@@ -3069,12 +3438,56 @@ export function App() {
           <div className="search" style={{ position: "relative" }}>
             <Icon name="search" size={14} style={{ color: "var(--ink-3)" }}/>
             <input
-              placeholder='Search across all your files — "sunset", "lease", "Stardew"…'
+              // §search-autofill — Chrome's password manager was treating
+              // this bare anonymous text input as the "username" target for
+              // the Settings password form and dumping the account email in
+              // here. Lock it down: type=search + a non-credential name +
+              // autoComplete off, plus the password-manager opt-out data
+              // attrs (1Password / LastPass / Bitwarden honor these). This
+              // input is intentionally NOT inside any <form>, so it shares
+              // no form scope with the password fields.
+              type="search"
+              name="neuthek-search"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              data-1p-ignore
+              data-lpignore="true"
+              data-form-type="other"
+              ref={searchInputRef}
+              placeholder='Search file names, AI summaries, and contents…'
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onFocus={() => setShowHistory(true)}
-              onBlur={() => { searchBlurTimer.current = setTimeout(() => setShowHistory(false), 160); }}
-              onKeyDown={(e) => { if (e.key === "Enter") submitSearch(); if (e.key === "Escape") { setQuery(""); setShowHistory(false); } }}
+              onFocus={() => { setPaletteOpen(true); setShowHistory(true); }}
+              onBlur={() => {
+                // Defer the close so a mousedown on a palette row (which
+                // blurs the input) still lands on that row's onClick.
+                searchBlurTimer.current = setTimeout(() => {
+                  setShowHistory(false);
+                  setPaletteOpen(false);
+                }, 160);
+              }}
+              onKeyDown={(e) => {
+                // ↑/↓ move the highlight across the flattened palette
+                // rows (commands + the trailing "search files" row);
+                // Enter runs the highlighted row; Escape closes the
+                // palette (and clears the query when one is present, so
+                // a second Esc fully resets — matching the old behavior).
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  if (paletteRowCount > 0) setHighlightIdx(i => (i + 1) % paletteRowCount);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  if (paletteRowCount > 0) setHighlightIdx(i => (i - 1 + paletteRowCount) % paletteRowCount);
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  runHighlighted();
+                } else if (e.key === "Escape") {
+                  if (query) setQuery("");
+                  closePalette();
+                }
+              }}
             />
             {query
               ? <button
@@ -3088,64 +3501,96 @@ export function App() {
                 </button>
               : <span className="search__hint">⌘ K</span>}
 
-            {/* History dropdown is only useful BEFORE the user starts
-                typing. Once `query` is non-empty, the gallery below
-                shows the live search results — keeping the dropdown
-                open at that point covered the results and forced a
-                blur-then-refocus to actually see them. Now: dropdown
-                shows on focus with empty query (history + tip) and
-                hides as soon as the user types. */}
-            {showHistory && !query && history.length > 0 && (
-              <div className="search-history" onMouseDown={(e) => e.preventDefault()}>
-                <div className="search-history__semantic">
-                  <Icon name="sparkles" size={11}/>
-                  Semantic search reads file names, AI summaries, and contents — across every folder.
-                </div>
-                {history.length > 0 && (
-                  <>
-                    <div className="search-history__head">
-                      <span className="search-history__title">Recent searches</span>
-                    </div>
-                    {history.map((h, i) => (
-                      <button key={i} className="search-history__item"
-                              onClick={() => { setQuery(h); submitSearch(h); }}>
-                        <Icon name="history" size={13} style={{ color: "var(--ink-3)" }}/>
-                        <span>{h}</span>
-                        <span className="search-history__item-x"
-                              onClick={(e) => { e.stopPropagation(); setHistory(hist => hist.filter((_, j) => j !== i)); }}>
-                          <Icon name="x" size={11}/>
-                        </span>
-                      </button>
-                    ))}
-                    {/* §C1.4 — Clear history affordance at the dropdown
-                        bottom. Hits `DELETE /search/history` for the
-                        audit trail, then wipes localStorage. The button
-                        used to live in the header but the spec calls
-                        for the bottom position. */}
+            {/* ── Search dropdown ────────────────────────────────────
+                The topbar search is a plain file search: typing a query
+                searches file names, AI summaries, and contents across
+                every folder (surfaced as one actionable FILES row that
+                commits the search; results paint in the gallery below).
+                When the query is empty we show the user's recent
+                searches. (The ⌘K command list was retired from this UI;
+                its handlers/backend routes are kept for a future CLI /
+                agentic surface — see SHOW_PALETTE_COMMANDS above.)
+                onMouseDown preventDefault keeps the input focused so a
+                row click doesn't blur-close the panel before it fires. */}
+            {paletteOpen && (
+              <div className="cmdk" onMouseDown={(e) => e.preventDefault()}>
+                {/* FILES — the existing semantic search, surfaced as one
+                    actionable row. The actual results paint in the
+                    gallery below (duplicating thumbnails here would be
+                    heavy + redundant); this row is the keyboard target
+                    that commits the search. Only shown with a query. */}
+                {hasSearchRow && (
+                  <div className="cmdk__group">
+                    <div className="cmdk__group-head">Files</div>
                     <button
-                      className="search-history__clear search-history__clear--bottom"
-                      onClick={async () => {
-                        try { await clearSearchHistory(); } catch { /* offline ok */ }
-                        setHistory([]);
-                        setShowHistory(false);
-                      }}
-                      style={{
-                        width: "100%",
-                        marginTop: 4,
-                        padding: "8px 10px",
-                        textAlign: "left",
-                        fontSize: 12,
-                        color: "var(--ink-3)",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        borderRadius: 6,
-                      }}
+                      type="button"
+                      className="cmdk__row"
+                      data-active={highlightIdx === shownCommands.length}
+                      onMouseEnter={() => setHighlightIdx(shownCommands.length)}
+                      onClick={() => { closePalette(); submitSearch(); }}
                     >
-                      <Icon name="trash" size={12}/> Clear history
+                      <Icon name="search" size={14} className="cmdk__row-icon"/>
+                      <span className="cmdk__row-label">
+                        Search files for “{query.trim()}”
+                      </span>
+                      <span className="cmdk__row-group">Enter</span>
                     </button>
+                  </div>
+                )}
+
+                {/* Empty-query helpers: a one-line search tip + the
+                    user's recent searches (restored history). */}
+                {!hasSearchRow && (
+                  <>
+                    <div className="cmdk__semantic">
+                      <Icon name="sparkles" size={11}/>
+                      Search file names, AI summaries, and contents across every folder.
+                    </div>
+                    {history.length > 0 && (
+                      <div className="cmdk__group">
+                        <div className="cmdk__group-head">Recent searches</div>
+                        {history.map((h, i) => (
+                          <button key={i} type="button" className="cmdk__row"
+                                  onClick={() => { setQuery(h); submitSearch(h); }}>
+                            <Icon name="history" size={13} className="cmdk__row-icon"/>
+                            <span className="cmdk__row-label">{h}</span>
+                            <span
+                              className="cmdk__row-x"
+                              role="button"
+                              tabIndex={-1}
+                              aria-label={`Remove ${h} from recent searches`}
+                              onClick={(e) => { e.stopPropagation(); setHistory(hist => hist.filter((_, j) => j !== i)); }}
+                            >
+                              <Icon name="x" size={11}/>
+                            </span>
+                          </button>
+                        ))}
+                        {/* §C1.4 — Clear history: hits DELETE /search/history
+                            for the audit trail, then wipes localStorage. */}
+                        <button
+                          type="button"
+                          className="cmdk__clear"
+                          onClick={async () => {
+                            try { await clearSearchHistory(); } catch { /* offline ok */ }
+                            setHistory([]);
+                          }}
+                        >
+                          <Icon name="trash" size={12}/> Clear history
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
+
+                {/* With a query, the Files row above always lets the user
+                    commit the search. With no query and no history the
+                    search tip above keeps the panel non-empty. */}
+
+                <div className="cmdk__footer">
+                  <span><kbd>↑</kbd><kbd>↓</kbd> to navigate</span>
+                  <span><kbd>↵</kbd> to search</span>
+                  <span><kbd>esc</kbd> to close</span>
+                </div>
               </div>
             )}
           </div>
@@ -3352,6 +3797,21 @@ export function App() {
                 onDeletePerson={handleDeletePerson}
                 onNotAPerson={handleNotAPerson}
               />
+            : galleryInitialLoading
+            ? (
+                // First load of this slice — branded loader in place of the
+                // grid so opening the app, OR switching into a not-yet-cached
+                // folder / category / filter, shows a clean "loading" beat
+                // instead of an empty page or the previous folder's stale,
+                // janky rows. Inline (not full-screen): the sidebar, topbar,
+                // and folder breadcrumb stay painted around it; the cycling
+                // crafty line gives it the same branded feel as the initial
+                // app load. Subtle: it only appears when there's genuinely no
+                // cached data for the current view (not on instant cache hits).
+                <div style={{ display: "grid", placeItems: "center", minHeight: "52vh" }}>
+                  <NeuthekLoader size={84} cycle />
+                </div>
+              )
             : showEmpty
               ? (view === "trash"
                   ? <div className="empty">
@@ -3410,11 +3870,18 @@ export function App() {
                   onTypeFilter={setTypeFilter}
                   onSelect={(f) => setSelectedFile(prev => prev?.id === f.id ? null : f)}
                   onRename={handleRename}
+                  // #172 — "Find best of similar" from a photo card's menu.
+                  onBestOf={handleBestOfSimilar}
                   folderId={folderId}
                   onEnterFolder={enterFolder}
                   peopleFilter={peopleFilter}
                   onClearPeopleFilter={() => setPeopleFilter(null)}
                   onPersonPick={(p) => setPeopleFilter(p)}
+                  // Sprint I #7 / D8 — open the re-detection candidate
+                  // review for the person currently drilled into.
+                  onFindMore={({ personId, name }) =>
+                    setFindMoreTarget({ personId, name })
+                  }
                 />}
         </>
         )}
@@ -3437,6 +3904,9 @@ export function App() {
         }
         onClose={() => setSelectedFile(null)}
         onRename={handleRename}
+        // #172 — the preview tool-rail "Best of" bubble. Pulls the open
+        // photo's similar group + opens the shared best-of comparison.
+        onBestOf={handleBestOfSimilar}
         user={user}
         // People context — when the gallery is drilled into a specific
         // person, the preview surfaces a "Delete this person" action
@@ -3475,14 +3945,29 @@ export function App() {
       <RenameModal open={showRename} file={renameFile} onClose={() => setShowRename(false)} onSave={saveRename}/>
       <BestOfModal
         open={showBestOf}
-        onClose={() => setShowBestOf(false)}
-        // When the user opens this from the multi-select bar, hand
-        // the modal the actual selection so it can call the real
-        // /images/best-of endpoint instead of the upload/sample demo.
-        imageIds={Array.from(multiSelected)}
-        // After a successful keep, the losers are already in Trash —
-        // clear the gallery's multi-select so the bar reflects reality.
-        onAfterKeep={() => clearMultiSelected()}
+        onClose={() => { setShowBestOf(false); setBestOfIds(null); }}
+        // Two ways in:
+        //   - Multi-select bar → use the live selection (multiSelected).
+        //   - Single photo (#172, preview rail bubble / gallery card "Find
+        //     best of similar") → `bestOfIds` holds the photo's fetched
+        //     near-duplicate group; prefer it when present.
+        // Either way the modal calls the real /images/best-of endpoint.
+        imageIds={bestOfIds || Array.from(multiSelected)}
+        // After a successful keep, the losers are already in Trash. Clear
+        // the similar-group set and the gallery multi-select so neither
+        // bar/modal reflects stale ids.
+        onAfterKeep={() => { clearMultiSelected(); setBestOfIds(null); }}
+      />
+      {/* Sprint I #7 / D8 — "Find more photos of this person." Re-detects
+          the drilled-into person across the library (instant pgvector
+          KNN) and lets the user confirm/reject candidate faces. Confirming
+          assigns each via reassignFace, then invalidates the people/files/
+          facets caches so the person's count + gallery update in place. */}
+      <FindMorePhotosModal
+        open={!!findMoreTarget}
+        personId={findMoreTarget?.personId}
+        personName={findMoreTarget?.name}
+        onClose={() => setFindMoreTarget(null)}
       />
       <React.Suspense fallback={null}>
         {showAdmin && <AdminOverlay open={showAdmin} onClose={() => setShowAdmin(false)}/>}

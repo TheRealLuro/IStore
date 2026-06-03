@@ -984,7 +984,18 @@ a.vcf-row__val:hover { border-bottom-color: var(--ink-3); }
   transition: background 120ms var(--vw-ease), color 120ms var(--vw-ease), border-color 120ms var(--vw-ease);
 }
 .ebook-viewer__fontbtn:hover { background: var(--surface-3); color: var(--ink); border-color: var(--line); }
+.ebook-viewer__fontbtn-aa { display: inline-flex; align-items: baseline; gap: 1px; }
 .ebook-viewer__fontbtn-sm { font-size: 10px; }
+/* Live reading-size percentage beside the "Aa" glyph so the control
+   reads as "Aa 100%" and the number updates as the size cycles. */
+.ebook-viewer__fontbtn-pct {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  margin-left: 4px;
+  align-self: center;
+}
+.ebook-viewer__fontbtn:hover .ebook-viewer__fontbtn-pct { color: var(--ink-2); }
 .ebook-viewer__progress {
   flex: none;
   height: 2px;

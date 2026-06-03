@@ -268,7 +268,12 @@ async def upload_image(
     # etc.), so the worker re-encodes to H.264 + AAC + faststart so
     # the stream endpoint serves a universally-playable copy. Per
     # user policy the original is dropped after the transcode lands.
-    if image.category in {"video", "audio"}:
+    # Only VIDEO is re-encoded — the worker's pipeline is HLS (it probes for
+    # a video stream). Audio (mp3/m4a/wav/flac) plays in the browser straight
+    # from its original, so it must NOT be enqueued here: doing so made every
+    # audio upload fail transcode with "no video stream", then the stuck-job
+    # reaper re-enqueued it forever (a noisy fail loop). Audio is served as-is.
+    if image.category == "video":
         await _enqueue_or_inline_fallback(
             jobs.enqueue_transcode_video, user.id, image.id,
             # No inline fallback: ffmpeg might not be available in the

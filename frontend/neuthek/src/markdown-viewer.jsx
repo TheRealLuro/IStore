@@ -290,7 +290,12 @@ function CodeBlock({ lang, text }) {
 // to the container width. `pre` is a pass-through so <CodeBlock> is the
 // sole <pre> element (no nested <pre><pre>); `code` splits inline (chip)
 // from fenced (highlighted) rendering.
-const MD_COMPONENTS = {
+// Exported so OTHER hosts that already hold the markdown TEXT (e.g. the
+// archive viewer previewing a `.md` from inside a zip) can render through
+// the EXACT same pipeline — same fenced-code highlighting, same safe-href
+// links, same image guard — instead of duplicating renderers or falling
+// back to raw source. Pair it with MD_SANITIZE_SCHEMA + remarkGfm.
+export const MD_COMPONENTS = {
   // react-markdown passes a `node` (the HAST node) into every custom
   // renderer; we strip it before spreading the rest onto the DOM element
   // so React doesn't warn about an unknown `node` attribute.
@@ -347,6 +352,25 @@ const MD_COMPONENTS = {
     return <CodeBlock lang={lang} text={raw} />;
   },
 };
+
+// Render an in-memory Markdown STRING through the full pipeline (GFM,
+// sanitize, fenced-code highlighting, safe links). Exported so other
+// hosts that already hold the text — the archive inner-file preview and
+// the encrypted Vault's decrypted `.md` — render identically to the
+// gallery viewer without re-wiring the plugins or duplicating renderers.
+// The caller wraps it in a `.markdown-body` scroll container.
+export function MarkdownInline({ text }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[[rehypeSanitize, MD_SANITIZE_SCHEMA]]}
+      components={MD_COMPONENTS}
+      skipHtml
+    >
+      {text || ""}
+    </ReactMarkdown>
+  );
+}
 
 export function MarkdownViewer({ fileId, fileName }) {
   const [text, setText] = useState(null);
@@ -425,14 +449,7 @@ export function MarkdownViewer({ fileId, fileName }) {
           </pre>
         ) : (
           <div className="md-viewer__rendered markdown-body">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[[rehypeSanitize, MD_SANITIZE_SCHEMA]]}
-              components={MD_COMPONENTS}
-              skipHtml
-            >
-              {text}
-            </ReactMarkdown>
+            <MarkdownInline text={text} />
           </div>
         )}
       </div>

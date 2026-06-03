@@ -6,6 +6,10 @@ import { Icon } from "./icons.jsx";
 import { Switch as SwitchSP, Collapsible } from "./primitives.jsx";
 import { getStorageUsage, freeOriginalsNow, freeQualityVariants, getRetentionPolicy, setRetentionPolicy } from "@/api/storage";
 import { getProviderFolderStats } from "@/api/cloud";
+import {
+  getSftpInfo, listSftpKeys, addSftpKey, deleteSftpKey,
+  setSftpPassword, clearSftpPassword,
+} from "@/api/sftp";
 import { getSubscription, openPortal } from "@/api/billing";
 import {
   getRecoveryCodesStatus, regenerateRecoveryCodes, updateMe, login,
@@ -99,7 +103,8 @@ function PasswordPage({ onBack }) {
   // fastapi-users' PATCH /users/me doesn't take a current-password arg
   // (the server can't verify it without re-auth), so we re-auth first via
   // /auth/jwt/login. Reject if it fails. Then call updateMe with password.
-  const submit = async () => {
+  const submit = async (e) => {
+    e?.preventDefault?.();
     if (!valid || busy || !userEmail) return;
     setBusy(true);
     try {
@@ -123,7 +128,29 @@ function PasswordPage({ onBack }) {
 
   return (
     <DetSection title="Update password">
-      <div className="det-card">
+      {/* §search-autofill — Wrap the password fields in their own <form>
+          with a visually-hidden username input carrying the account email.
+          This gives Chrome's password manager a self-contained credential
+          pair (username + password) right here, so it no longer walks the
+          document and dumps the email into the topbar search box. */}
+      <form className="det-card" onSubmit={submit}>
+        {/* Hidden-but-present username field. Must stay in the DOM (not
+            display:none, which some managers skip) for Chrome to pair it
+            with the password inputs — so we visually clip it instead. */}
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value={userEmail || ""}
+          readOnly
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{
+            position: "absolute", width: 1, height: 1, padding: 0,
+            margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)",
+            whiteSpace: "nowrap", border: 0,
+          }}
+        />
         <div className="det-field">
           <label className="det-field__label">Current password</label>
           <input className="input" type="password" value={cur} onChange={e => setCur(e.target.value)} placeholder="Enter your current password" autoComplete="current-password"/>
@@ -152,12 +179,12 @@ function PasswordPage({ onBack }) {
           {cf && nw !== cf && <div className="det-field__hint" style={{ color: "var(--danger)" }}>Passwords don't match.</div>}
         </div>
         <div className="det-actions">
-          <button className="btn btn--primary" disabled={!valid || busy} onClick={submit}>
+          <button type="submit" className="btn btn--primary" disabled={!valid || busy}>
             {busy ? "Updating…" : "Update password"}
           </button>
-          <button className="btn btn--ghost" onClick={onBack} disabled={busy}>Cancel</button>
+          <button type="button" className="btn btn--ghost" onClick={onBack} disabled={busy}>Cancel</button>
         </div>
-      </div>
+      </form>
     </DetSection>
   );
 }
@@ -271,6 +298,7 @@ function TotpDisableForm({ onDone }) {
   const [busy, setBusy] = useStateSP(false);
   const qc = useQueryClient();
   const setUser = useAuthStore((s) => s.setUser);
+  const userEmail = useAuthStore((s) => s.user?.email);
   const submit = async (e) => {
     e.preventDefault();
     if (busy) return;
@@ -298,6 +326,23 @@ function TotpDisableForm({ onDone }) {
   };
   return (
     <form onSubmit={submit} style={{ display: "grid", gap: 8 }}>
+      {/* §search-autofill — hidden username pairs the password field below
+          with the account inside this form, so Chrome's manager doesn't
+          reach out to the topbar search input. */}
+      <input
+        type="text"
+        name="username"
+        autoComplete="username"
+        value={userEmail || ""}
+        readOnly
+        tabIndex={-1}
+        aria-hidden="true"
+        style={{
+          position: "absolute", width: 1, height: 1, padding: 0,
+          margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap", border: 0,
+        }}
+      />
       <input
         inputMode="numeric"
         placeholder="Current 6-digit code"
@@ -1516,11 +1561,11 @@ export function SecurityPanel({ twoFA, setTwoFA, Row, Chev }) {
         </div>
       </div>
 
-      <Collapsible label="Two-factor" defaultOpen id="sec-2fa">
+      <Collapsible label="Two-factor" id="sec-2fa" alwaysOpen>
         <TwoFactorPage/>
       </Collapsible>
 
-      <Collapsible label="Active devices" id="sec-devices">
+      <Collapsible label="Active devices" id="sec-devices" alwaysOpen>
         <DevicesPage/>
       </Collapsible>
     </>
@@ -1590,7 +1635,7 @@ export function NotificationsPanel() {
         </div>
       ) : (
         <>
-          <Collapsible label="Channels" defaultOpen count={(data?.kinds || []).length} id="notif-channels">
+          <Collapsible label="Channels" count={(data?.kinds || []).length} id="notif-channels" alwaysOpen>
             <div className="det-card" style={{ padding: 0 }}>
               <table className="admin-table admin-table--compact" style={{ width: "100%" }}>
                 <thead>
@@ -1809,7 +1854,7 @@ export function PlaybackPanel() {
         </div>
       </div>
 
-      <Collapsible label="Autoplay with sound" defaultOpen count={2} id="pb-autoplay">
+      <Collapsible label="Autoplay with sound" count={2} id="pb-autoplay" alwaysOpen>
         <div className="applist">
           <_Row icon="play" tone="sky" title="Videos start with sound"
                 desc={videoAutoplay
@@ -1824,7 +1869,7 @@ export function PlaybackPanel() {
         </div>
       </Collapsible>
 
-      <Collapsible label="Streaming quality" defaultOpen count={PB_PRESETS.length} id="pb-quality">
+      <Collapsible label="Streaming quality" count={PB_PRESETS.length} id="pb-quality" alwaysOpen>
         <div className="applist">
           {PB_PRESETS.map((p) => (
             <_Row
@@ -1860,7 +1905,7 @@ export function PlaybackPanel() {
         </DetExplain>
       </Collapsible>
 
-      <Collapsible label="Default playback speed" count={PB_SPEEDS.length} id="pb-speed">
+      <Collapsible label="Default playback speed" count={PB_SPEEDS.length} id="pb-speed" alwaysOpen>
         <div className="applist">
           {PB_SPEEDS.map((s) => (
             <_Row
@@ -1887,6 +1932,735 @@ export function PlaybackPanel() {
               }
             />
           ))}
+        </div>
+      </Collapsible>
+    </>
+  );
+}
+
+
+// ---------- SFTP access ("Mount as a drive") ----------
+//
+// The /sftp/* backend (backend/api/sftp.py + backend/sftp_server.py)
+// exposes a read+write SFTP server, but until now there was no UI to
+// register an SSH key — so the feature was unreachable. This panel is
+// that UI. Goal: make setup obvious enough that a non-technical user
+// can mount their library as a drive in three steps.
+//
+//   1. Create + add a dedicated `neuthek` public key — keys are primary,
+//      and a dedicated key never clashes with keys the user already has.
+//   2. Copy a connection command (prefilled with host/port/email + the
+//      dedicated key via -i).
+//   3. Mount.
+//
+// The SFTP password is offered as a clearly-secondary fallback for
+// clients that can't do key auth. Connection details + the ready
+// commands come straight from GET /sftp/info so the FE never has to
+// reconstruct the host/port/username or the per-platform command shape.
+
+// One-line client-side sanity check so the user gets instant feedback
+// before the round-trip. The authoritative parse happens server-side
+// (asyncssh.import_public_key); this only catches the obvious "that's a
+// private key" / "that's not a key at all" cases so we can disable the
+// button and show a hint. Accept the OpenSSH public-key key-types the
+// server understands.
+const _SSH_PUBKEY_RE =
+  /^(ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s+[A-Za-z0-9+/]+=*(\s+.*)?$/;
+function looksLikePublicKey(s) {
+  const raw = (s || "").trim();
+  if (!raw) return false;
+  if (/PRIVATE KEY/i.test(raw)) return false; // never let a private key through
+  return _SSH_PUBKEY_RE.test(raw);
+}
+
+// Small inline "copy to clipboard" button with a transient "Copied"
+// affordance. Used on the keygen command + every connect command so the
+// user never has to hand-select text. Falls back gracefully if the
+// async clipboard API is unavailable (older/insecure contexts) via a
+// hidden textarea + execCommand.
+function CopyButton({ text, label = "Copy", className = "btn btn--ghost btn--sm" }) {
+  const [copied, setCopied] = useStateSP(false);
+  const doCopy = async () => {
+    const value = String(text ?? "");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      toast.error("Couldn't copy — select the text and copy manually.");
+    }
+  };
+  return (
+    <button type="button" className={className} onClick={doCopy} aria-label={label}>
+      <Icon name={copied ? "check" : "copy"} size={12}/>
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+// A labelled command line with a monospace block + copy button. The
+// command is selectable AND one-click copyable. `mono` text wraps with
+// overflow-wrap:anywhere (set in CSS) so long emails/paths never cause a
+// sideways scrollbar.
+function CommandLine({ title, command, hint, alt, altLabel }) {
+  return (
+    <div className="sftp-cmd">
+      {title && <div className="sftp-cmd__title">{title}</div>}
+      <div className="sftp-cmd__row">
+        <code className="sftp-cmd__code mono">{command}</code>
+        <CopyButton text={command} className="btn btn--ghost btn--sm sftp-cmd__copy"/>
+      </div>
+      {alt && (
+        <>
+          {altLabel && <div className="sftp-cmd__alt-label">{altLabel}</div>}
+          <div className="sftp-cmd__row sftp-cmd__row--alt">
+            <code className="sftp-cmd__code mono">{alt}</code>
+            <CopyButton text={alt} className="btn btn--ghost btn--sm sftp-cmd__copy"/>
+          </div>
+        </>
+      )}
+      {hint && <div className="sftp-cmd__hint">{hint}</div>}
+    </div>
+  );
+}
+
+// ---- Per-OS command set ----------------------------------------------
+// The connect / clipboard commands are built ON THE CLIENT from the
+// host / port / username in GET /sftp/info, NOT from the backend's
+// `commands` strings — the backend ships a single-quoted POSIX `sftp`
+// line and a WinSCP hint, neither of which is correct Windows Command
+// Prompt (CMD) syntax. Building them here lets us (a) guarantee CMD-only
+// commands on Windows and (b) keep every command prefilled with the
+// real address. `windows` deliberately uses %USERPROFILE% + `clip` /
+// `type` (CMD built-ins) — never PowerShell.
+//
+// DEDICATED KEY: every step uses a key named `neuthek` (not the default
+// `id_ed25519`) so the commands are safe for people who ALREADY have
+// SSH keys — generating, copying, and connecting all reference the same
+// dedicated file, so we never clobber an existing key and never guess
+// which of several keys to send. The keygen `-f` writes it, the copy
+// reads `<that>.pub`, and the connect `-i` points at the private half.
+const SFTP_OSES = [
+  { id: "windows", label: "Windows" },
+  { id: "macos",   label: "macOS" },
+  { id: "linux",   label: "Linux" },
+];
+
+// Detect the user's OS so the selector opens on the right tab. Prefer
+// the modern userAgentData.platform, fall back to navigator.platform,
+// then the UA string. Defaults to "windows" if nothing matches.
+function detectOs() {
+  let p = "";
+  try {
+    p = (navigator.userAgentData?.platform
+      || navigator.platform
+      || navigator.userAgent
+      || "").toLowerCase();
+  } catch { p = ""; }
+  if (/mac|iphone|ipad|ipod|darwin/.test(p)) return "macos";
+  if (/linux|x11|cros|android/.test(p))      return "linux";
+  if (/win/.test(p))                         return "windows";
+  return "windows";
+}
+
+// Build the ordered list of setup steps for one OS, each a copy-buttoned
+// command line prefilled with the connection address. host/port/username
+// come straight from /sftp/info.
+//
+// Every step references a DEDICATED key named `neuthek` so the flow is
+// robust for people who already have other SSH keys: the keygen writes
+// `neuthek` via `-f`, the copy reads `neuthek.pub`, and the connect
+// points `-i` at the same private `neuthek` file. Nothing touches the
+// default `id_ed25519`, so existing keys are never overwritten and the
+// server is always offered exactly the key we just created. The `-C`
+// comment stamps the user's email onto the key so it's recognizable in
+// the keys list later.
+function sftpStepsForOs(os, { username, host, port }) {
+  const addr = `${username}@${host}`;  // e.g. you@example.com@your-host
+  // Per-OS path to the dedicated private key. The matching public key
+  // is always `<keyPath>.pub`. The connect line references the private
+  // half with -i so ssh offers exactly this key.
+  if (os === "windows") {
+    // CMD ONLY — no PowerShell. %USERPROFILE%\.ssh\neuthek(.pub).
+    const keyPath = "%USERPROFILE%\\.ssh\\neuthek";
+    const connect = `sftp -i ${keyPath} -P ${port} ${addr}`;
+    return {
+      steps: [
+        {
+          title: "1. Create a dedicated neuthek key (press Enter at every prompt)",
+          command: `ssh-keygen -t ed25519 -f ${keyPath} -C "neuthek ${username}"`,
+          hint: "Press Enter to accept an empty passphrase. If it asks to overwrite an existing neuthek key, that's safe — type y to reuse the same dedicated key. Your other SSH keys are untouched.",
+        },
+        {
+          title: "2. Copy your PUBLIC key to the clipboard",
+          command: `clip < ${keyPath}.pub`,
+          altLabel: "…or view it and copy the whole line by hand:",
+          alt: `type ${keyPath}.pub`,
+          hint: "Then paste the whole line into the box above (it starts with “ssh-ed25519 AAAA…” and ends with your email).",
+        },
+        {
+          title: "3. Connect (run in Command Prompt)",
+          command: connect,
+          hint: "Windows 10/11 ships OpenSSH, so this runs as-is in Command Prompt (cmd.exe). Prefer a GUI? WinSCP (winscp.net) does drag-and-drop: New Site → SFTP, host " + host + ", port " + port + ", user " + username + ", then Advanced → SSH → Authentication → Private key file → " + keyPath + " (WinSCP offers to convert it to its .ppk format — accept).",
+        },
+      ],
+    };
+  }
+  if (os === "macos") {
+    const keyPath = "~/.ssh/neuthek";
+    const connect = `sftp -i ${keyPath} -P ${port} ${addr}`;
+    return {
+      steps: [
+        {
+          title: "1. Create a dedicated neuthek key (press Enter at every prompt)",
+          command: `ssh-keygen -t ed25519 -f ${keyPath} -C "neuthek ${username}"`,
+          hint: "Press Enter to accept an empty passphrase. If it asks to overwrite an existing neuthek key, type y to reuse it — your other keys (like id_ed25519) are left alone.",
+        },
+        {
+          title: "2. Copy your PUBLIC key to the clipboard",
+          command: `pbcopy < ${keyPath}.pub`,
+          hint: "Then paste it into the box above (it starts with “ssh-ed25519 AAAA…” and ends with your email).",
+        },
+        {
+          title: "3. Connect",
+          command: connect,
+          hint: "Or in Finder: Go → Connect to Server (⌘K), enter sftp://" + addr + ":" + port + "/ (Finder uses your default keychain key — the terminal command above is the reliable path).",
+        },
+      ],
+    };
+  }
+  // linux
+  const keyPath = "~/.ssh/neuthek";
+  const connect = `sftp -i ${keyPath} -P ${port} ${addr}`;
+  return {
+    steps: [
+      {
+        title: "1. Create a dedicated neuthek key (press Enter at every prompt)",
+        command: `ssh-keygen -t ed25519 -f ${keyPath} -C "neuthek ${username}"`,
+        hint: "Press Enter to accept an empty passphrase. If it asks to overwrite an existing neuthek key, type y to reuse it — your other keys are left alone.",
+      },
+      {
+        title: "2. Copy your PUBLIC key to the clipboard",
+        command: `xclip -selection clipboard < ${keyPath}.pub`,
+        hint: `No xclip? Print it instead: cat ${keyPath}.pub — then select and copy the whole line above.`,
+      },
+      {
+        title: "3. Connect",
+        command: connect,
+        hint: "Or mount your whole library at ~/neuthek with SSHFS (needs the sshfs package) — see the optional step below.",
+      },
+      {
+        title: "Optional — mount as a folder (SSHFS)",
+        command: `sshfs -p ${port} -o IdentityFile=${keyPath},reconnect '${addr}:/' ~/neuthek`,
+        hint: "Browse your library in your file manager at ~/neuthek. Unmount with: fusermount -u ~/neuthek",
+      },
+    ],
+  };
+}
+
+// A click-down (collapsible-by-tab) command area: a segmented OS selector
+// across the top, then ONLY the selected OS's steps below. Defaults to
+// the detected OS. All steps are copy-buttoned and prefilled from the
+// connection info. Used both for first-time key setup and reconnecting.
+function OsCommands({ info }) {
+  const [os, setOs] = useStateSP(detectOs);
+  const steps = sftpStepsForOs(os, info).steps;
+  return (
+    <div className="sftp-os">
+      <div className="sftp-os__tabs" role="tablist" aria-label="Operating system">
+        {SFTP_OSES.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            role="tab"
+            aria-selected={os === o.id}
+            className="sftp-os__tab"
+            data-active={os === o.id ? "true" : "false"}
+            onClick={() => setOs(o.id)}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <div className="sftp-os__body" role="tabpanel">
+        {steps.map((s, i) => (
+          <CommandLine
+            key={i}
+            title={s.title}
+            command={s.command}
+            hint={s.hint}
+            alt={s.alt}
+            altLabel={s.altLabel}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SftpKeyRow({ k, onDelete, busy }) {
+  const added = (() => {
+    try { return new Date(k.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
+    catch { return ""; }
+  })();
+  const lastUsed = (() => {
+    if (!k.last_used_at) return "never used yet";
+    try { return `last used ${new Date(k.last_used_at).toLocaleDateString()}`; }
+    catch { return ""; }
+  })();
+  return (
+    <div className="applist__row" style={{ alignItems: "flex-start" }}>
+      <div className="applist__row-icon" data-tone="green">
+        <Icon name="key" size={14}/>
+      </div>
+      <div className="applist__row-body" style={{ minWidth: 0 }}>
+        <div className="applist__row-title" style={{ wordBreak: "break-word" }}>
+          {k.label || "SSH key"}
+        </div>
+        <div className="applist__row-desc">
+          <span className="mono" style={{ wordBreak: "break-all" }}>{k.fingerprint}</span>
+          <br/>
+          Added {added}{added ? " · " : ""}{lastUsed}
+        </div>
+      </div>
+      <div className="applist__row-tail">
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => onDelete(k)}
+          disabled={busy}
+          aria-label={`Remove key ${k.label || k.fingerprint}`}
+          title="Remove this key"
+        >
+          <Icon name="x" size={13}/>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function SftpPanel({ user }) {
+  const qc = useQueryClient();
+
+  // Connection info — host / port / username (= account email) +
+  // ready-to-paste commands. The whole "Connection" + "Commands" surface
+  // hangs off this single response.
+  const { data: info, isLoading: infoLoading, error: infoError } = useQuery({
+    queryKey: ["sftp-info"],
+    queryFn: getSftpInfo,
+    staleTime: 60_000,
+  });
+  const { data: keys, isLoading: keysLoading } = useQuery({
+    queryKey: ["sftp-keys"],
+    queryFn: listSftpKeys,
+    staleTime: 30_000,
+  });
+  // Storage quota — relevant because SFTP uploads count against it. Reuse
+  // the same cache key the Plan card uses so there's no extra fetch.
+  const { data: usage } = useQuery({
+    queryKey: ["storage-usage"],
+    queryFn: getStorageUsage,
+    staleTime: 30_000,
+  });
+
+  // Prefer the server's username (it IS user.email server-side, but read
+  // it from /sftp/info so the displayed value matches exactly what the
+  // SFTP server authenticates). Fall back to the user prop while loading.
+  const username = info?.username || user?.email || "you@example.com";
+  const host = info?.host || "localhost";
+  const port = info?.port || 2222;
+  const keyCount = keys?.length ?? info?.key_count ?? 0;
+  const hasKey = keyCount > 0;
+  const passwordSet = info?.password_set ?? false;
+
+  // --- Add-key form state ---
+  const [keyText, setKeyText] = useStateSP("");
+  const [keyLabel, setKeyLabel] = useStateSP("");
+  const [addBusy, setAddBusy] = useStateSP(false);
+  const trimmed = keyText.trim();
+  const keyValid = looksLikePublicKey(keyText);
+  // Distinguish "empty" (no error, just disabled) from "non-empty but
+  // wrong" (show the inline error) so the user isn't scolded before typing.
+  const keyError =
+    trimmed.length === 0 ? null
+    : /PRIVATE KEY/i.test(trimmed) ? "That's a PRIVATE key. Paste your PUBLIC key — the one-line contents of the .pub file."
+    : !keyValid ? "That doesn't look like an OpenSSH public key. It should start with `ssh-ed25519` (or ssh-rsa / ecdsa-…)."
+    : null;
+
+  const [delBusy, setDelBusy] = useStateSP(false);
+
+  const onAddKey = async (e) => {
+    e?.preventDefault?.();
+    if (addBusy || !keyValid) return;
+    setAddBusy(true);
+    try {
+      await addSftpKey(keyText, keyLabel);
+      toast.success("SSH key added. You can connect now.");
+      setKeyText("");
+      setKeyLabel("");
+      qc.invalidateQueries({ queryKey: ["sftp-keys"] });
+      qc.invalidateQueries({ queryKey: ["sftp-info"] });
+    } catch (err) {
+      // Backend returns friendly 400/409 detail (private key, unparseable,
+      // duplicate) — surface it verbatim.
+      toast.error(err?.detail || "Could not add that key.");
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const onDeleteKey = async (k) => {
+    if (delBusy) return;
+    if (!window.confirm(`Remove this SSH key (${k.fingerprint})? Any device using it will lose SFTP access.`)) return;
+    setDelBusy(true);
+    try {
+      await deleteSftpKey(k.id);
+      toast.success("Key removed.");
+      qc.invalidateQueries({ queryKey: ["sftp-keys"] });
+      qc.invalidateQueries({ queryKey: ["sftp-info"] });
+    } catch (err) {
+      toast.error(err?.detail || "Could not remove the key.");
+    } finally {
+      setDelBusy(false);
+    }
+  };
+
+  // --- SFTP password (secondary) ---
+  const [pwOpen, setPwOpen] = useStateSP(false);
+  const [pw, setPw] = useStateSP("");
+  const [pwBusy, setPwBusy] = useStateSP(false);
+  const pwValid = pw.length >= 10; // backend min_length=10 + strength policy
+  const onSavePassword = async (e) => {
+    e?.preventDefault?.();
+    if (pwBusy || !pwValid) return;
+    setPwBusy(true);
+    try {
+      await setSftpPassword(pw);
+      toast.success(passwordSet ? "SFTP password updated." : "SFTP password set.");
+      setPw("");
+      setPwOpen(false);
+      qc.invalidateQueries({ queryKey: ["sftp-info"] });
+    } catch (err) {
+      toast.error(err?.detail || "Could not set the SFTP password.");
+    } finally {
+      setPwBusy(false);
+    }
+  };
+  const onClearPassword = async () => {
+    if (pwBusy) return;
+    if (!window.confirm("Clear the SFTP password? Password sign-in will be disabled; your SSH keys keep working.")) return;
+    setPwBusy(true);
+    try {
+      await clearSftpPassword();
+      toast.success("SFTP password cleared.");
+      qc.invalidateQueries({ queryKey: ["sftp-info"] });
+    } catch (err) {
+      toast.error(err?.detail || "Could not clear the password.");
+    } finally {
+      setPwBusy(false);
+    }
+  };
+
+  // Connection address, prefilled into every per-OS command (built
+  // client-side in sftpStepsForOs — see OsCommands). Memoize so the
+  // command strings are stable across renders.
+  const cmdInfo = useMemoSP(
+    () => ({ username, host, port }),
+    [username, host, port],
+  );
+
+  // Storage quota line for the header card.
+  const used = usage?.used_bytes ?? 0;
+  const quota = usage?.quota_bytes ?? 0;
+  const quotaPct = quota > 0 ? Math.min(100, (used / quota) * 100) : 0;
+
+  return (
+    <>
+      <div className="appset__main-head">
+        <div>
+          <h3>Mount as a drive (SFTP)</h3>
+          <p>
+            Reach your whole library over SFTP — browse, download, and
+            upload files straight from Finder, Windows Explorer, or the
+            terminal, no browser needed. Add an SSH key, copy a command,
+            mount. {info?.read_only
+              ? "This server is read-only: you can download but not upload over SFTP."
+              : "Uploads over SFTP go through the same validation and quota as the web uploader."}
+          </p>
+          <p className="sftp-intro-trust">
+            <Icon name="shield" size={13}/>
+            <span>
+              Keys are the safe way in: your private key stays on your
+              computer and is never uploaded — neuthek only ever sees the
+              public half you paste below.
+            </span>
+          </p>
+        </div>
+      </div>
+
+      {infoError && (
+        <div className="set-note" data-tone="error" style={{ marginBottom: 16 }}>
+          <Icon name="alert" size={14}/>
+          Couldn't load SFTP details. The SFTP service may be disabled on
+          this deployment — ask your administrator.
+        </div>
+      )}
+
+      {/* 3-step quick guide so the path is obvious at a glance. */}
+      <div className="sftp-steps">
+        <div className="sftp-steps__item" data-done={hasKey}>
+          <span className="sftp-steps__num">{hasKey ? <Icon name="check" size={13}/> : 1}</span>
+          <div>
+            <div className="sftp-steps__title">Add your key</div>
+            <div className="sftp-steps__desc">Paste your public key below.</div>
+          </div>
+        </div>
+        <div className="sftp-steps__sep"/>
+        <div className="sftp-steps__item">
+          <span className="sftp-steps__num">2</span>
+          <div>
+            <div className="sftp-steps__title">Copy a command</div>
+            <div className="sftp-steps__desc">Pick your platform, hit Copy.</div>
+          </div>
+        </div>
+        <div className="sftp-steps__sep"/>
+        <div className="sftp-steps__item">
+          <span className="sftp-steps__num">3</span>
+          <div>
+            <div className="sftp-steps__title">Mount</div>
+            <div className="sftp-steps__desc">Paste in a terminal or your file app.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ---- Connection card: host / port / username + quota ---- */}
+      <Collapsible label="Connection" count={3} id="sftp-conn" alwaysOpen>
+        <div className="det-card">
+          <div className="sftp-conn">
+            <div className="sftp-conn__field">
+              <span className="sftp-conn__label">Host</span>
+              <span className="sftp-conn__val mono">{host}</span>
+              <CopyButton text={host} label="" className="btn btn--ghost btn--sm sftp-conn__copy"/>
+            </div>
+            <div className="sftp-conn__field">
+              <span className="sftp-conn__label">Port</span>
+              <span className="sftp-conn__val mono">{port}</span>
+              <CopyButton text={String(port)} label="" className="btn btn--ghost btn--sm sftp-conn__copy"/>
+            </div>
+            <div className="sftp-conn__field">
+              <span className="sftp-conn__label">Username</span>
+              <span className="sftp-conn__val mono" style={{ wordBreak: "break-all" }}>{username}</span>
+              <CopyButton text={username} label="" className="btn btn--ghost btn--sm sftp-conn__copy"/>
+            </div>
+            <div className="sftp-conn__field">
+              <span className="sftp-conn__label">Auth</span>
+              <span className="sftp-conn__val" style={{ fontVariantNumeric: "tabular-nums" }}>
+                {hasKey
+                  ? `${keyCount} SSH key${keyCount === 1 ? "" : "s"}`
+                  : "No key yet"}
+                {passwordSet ? " · password set" : ""}
+              </span>
+              <span/>
+            </div>
+          </div>
+          {quota > 0 && (
+            <div className="sftp-quota">
+              <div className="sftp-quota__head">
+                <span>Storage used</span>
+                <span className="mono">{fmtBytes(used)} of {fmtBytes(quota)} · {quotaPct.toFixed(0)}%</span>
+              </div>
+              <div className="sftp-quota__bar">
+                <div className="sftp-quota__fill" style={{ width: `${quotaPct}%` }}/>
+              </div>
+              <div className="sftp-quota__note">
+                {info?.read_only
+                  ? "Downloads don't change this."
+                  : "Anything you upload over SFTP counts toward this quota, just like the web app."}
+              </div>
+            </div>
+          )}
+        </div>
+      </Collapsible>
+
+      {/* ---- Public keys: add + list (primary auth) ---- */}
+      <Collapsible label="SSH keys (recommended)" count={keyCount} id="sftp-keys" alwaysOpen>
+        <form className="det-card" onSubmit={onAddKey}>
+          <div className="det-field">
+            <label className="det-field__label" htmlFor="sftp-key-text">Public key</label>
+            <textarea
+              id="sftp-key-text"
+              className="input mono"
+              rows={3}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA… you@laptop"
+              value={keyText}
+              onChange={(e) => setKeyText(e.target.value)}
+              style={{ resize: "vertical", wordBreak: "break-all", lineHeight: 1.45 }}
+            />
+            {keyError
+              ? <div className="det-field__hint" style={{ color: "var(--danger)" }}>{keyError}</div>
+              : <div className="det-field__hint">Paste the one-line contents of your <code>neuthek.pub</code> file (the dedicated key from the <strong>Connect</strong> steps below). The matching private key never leaves your machine.</div>}
+          </div>
+          <div className="det-field">
+            <label className="det-field__label" htmlFor="sftp-key-label">Label (optional)</label>
+            <input
+              id="sftp-key-label"
+              className="input"
+              placeholder="e.g. Work MacBook"
+              value={keyLabel}
+              maxLength={200}
+              onChange={(e) => setKeyLabel(e.target.value)}
+            />
+          </div>
+          <div className="det-actions">
+            <button type="submit" className="btn btn--primary" disabled={!keyValid || addBusy}>
+              {addBusy ? "Adding…" : "Add key"}
+            </button>
+            <span className="det-actions__sep"/>
+          </div>
+        </form>
+
+        {/* "No key yet?" pointer — the actual keygen + copy commands live
+            in the Connect section's OS picker below (so they're correct
+            per-OS and not duplicated here). They create a DEDICATED
+            `neuthek` key so nothing clashes with keys you already have. */}
+        <div className="det-card sftp-nokey">
+          <div className="sftp-nokey__head">
+            <span className="sftp-nokey__icon"><Icon name="info" size={14}/></span>
+            <span>No key yet? Open <strong>Connect</strong> below, pick your operating system, then run step 1 (creates a dedicated <code>neuthek</code> key — safe even if you already have other keys) and step 2 (copies it). Paste the whole line (it starts with “ssh-ed25519 AAAA…”) into the box above.</span>
+          </div>
+        </div>
+
+        {/* Registered keys list. */}
+        <div className="det-card" style={{ padding: 0, marginTop: 10 }}>
+          {keysLoading ? (
+            <div style={{ padding: "14px 16px" }}>
+              {[0, 1].map((i) => <div key={i} className="set-skel set-skel--line" style={{ width: `${70 - i * 15}%` }}/>)}
+            </div>
+          ) : hasKey ? (
+            <div className="applist" style={{ borderRadius: 12 }}>
+              {keys.map((k) => (
+                <SftpKeyRow key={k.id} k={k} onDelete={onDeleteKey} busy={delBusy}/>
+              ))}
+            </div>
+          ) : (
+            <div className="set-empty">
+              <span className="set-empty__icon"><Icon name="key" size={16}/></span>
+              <span className="set-empty__title">No SSH keys yet</span>
+              <span className="set-empty__desc">Add one above to unlock SFTP access. Keys are the safest way in — no password to leak.</span>
+            </div>
+          )}
+        </div>
+      </Collapsible>
+
+      {/* ---- Connect: per-OS click-down, prefilled with host/port/email.
+              Pick an OS → see just that OS's generate-key / copy-key /
+              connect commands. Windows commands are CMD-only. ---- */}
+      <Collapsible label="Connect" count={SFTP_OSES.length} id="sftp-connect" alwaysOpen>
+        {infoLoading && !info ? (
+          <div className="det-card">
+            {[0, 1, 2].map((i) => <div key={i} className="set-skel set-skel--line" style={{ width: `${80 - i * 12}%` }}/>)}
+          </div>
+        ) : (
+          <div className="det-card sftp-cmds">
+            <div className="sftp-cmds__lead">
+              Choose your operating system, then run each command in order
+              with the <strong>Copy</strong> button — every command is
+              already filled in with your address and a dedicated{" "}
+              <code>neuthek</code> key, so there's nothing to edit and
+              nothing to clash with keys you already have. After step 2,
+              paste the <strong>whole line</strong> into the Public key
+              box above.
+            </div>
+            <OsCommands info={cmdInfo}/>
+            {!hasKey && (
+              <div className="set-note" data-tone="warn" style={{ marginTop: 14 }}>
+                <Icon name="alert" size={14}/>
+                Add an SSH key above first — without a key (or the SFTP
+                password below) the server will refuse the connection.
+              </div>
+            )}
+          </div>
+        )}
+      </Collapsible>
+
+      {/* ---- SFTP password (clearly secondary fallback) ---- */}
+      <Collapsible label="Password sign-in (advanced)" count={1} id="sftp-password" alwaysOpen>
+        <div className="det-card">
+          <div className="sftp-pw__intro">
+            <div className="sftp-pw__title">
+              SFTP password
+              <StatusPill tone={passwordSet ? "green" : "ink"}>
+                {passwordSet ? "Set" : "Not set"}
+              </StatusPill>
+            </div>
+            <div className="sftp-pw__desc">
+              Optional. A dedicated password for clients that can't use SSH
+              keys. It's a <strong>separate</strong> secret from your account
+              login and is sent to the server on every connect — keys are
+              safer, so use this only if you must.
+            </div>
+          </div>
+
+          {pwOpen ? (
+            <form onSubmit={onSavePassword} style={{ marginTop: 12 }}>
+              {/* Hidden username so password managers pair the field with
+                  the right account rather than scraping the page. */}
+              <input
+                type="text" name="username" autoComplete="username"
+                value={username} readOnly tabIndex={-1} aria-hidden="true"
+                style={{ position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}
+              />
+              <div className="det-field">
+                <label className="det-field__label" htmlFor="sftp-pw">New SFTP password</label>
+                <input
+                  id="sftp-pw"
+                  className="input"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="At least 10 characters"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                />
+                <div className="det-field__hint">
+                  Minimum 10 characters. The same strength rules as your
+                  account password apply — trivial passwords are rejected.
+                </div>
+              </div>
+              <div className="det-actions">
+                <button type="submit" className="btn btn--primary" disabled={!pwValid || pwBusy}>
+                  {pwBusy ? "Saving…" : (passwordSet ? "Update password" : "Set password")}
+                </button>
+                <button type="button" className="btn btn--ghost" onClick={() => { setPwOpen(false); setPw(""); }} disabled={pwBusy}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="det-actions" style={{ borderTop: 0, paddingTop: 12, marginTop: 4 }}>
+              <button type="button" className="btn btn--secondary" onClick={() => setPwOpen(true)}>
+                {passwordSet ? "Change password" : "Set a password"}
+              </button>
+              {passwordSet && (
+                <button type="button" className="btn btn--ghost" style={{ color: "var(--danger)" }} onClick={onClearPassword} disabled={pwBusy}>
+                  {pwBusy ? "Working…" : "Clear password"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </Collapsible>
     </>
@@ -1983,40 +2757,22 @@ export function PlanCard() {
             ))}
         </div>
       )}
-      <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+      <div className="det-actions det-actions--plain" style={{ marginTop: 16 }}>
         {tier === "free" ? (
-          <a
-            href="/billing"
-            style={{
-              display: "inline-block", padding: "10px 16px",
-              borderRadius: 8, background: "var(--ink)", color: "var(--surface)",
-              textDecoration: "none", fontSize: 13, fontWeight: 600,
-            }}
-          >
+          <a href="/billing" className="btn btn--primary">
             Upgrade plan
           </a>
         ) : (
           <>
             <button
+              type="button"
+              className="btn btn--primary"
               onClick={onManage}
-              style={{
-                padding: "10px 16px", borderRadius: 8, border: "none",
-                background: "var(--ink)", color: "var(--surface)",
-                fontSize: 13, fontWeight: 600, cursor: "pointer",
-              }}
               disabled={!sub?.stripe_configured}
             >
               Manage subscription
             </button>
-            <a
-              href="/billing"
-              style={{
-                display: "inline-block", padding: "10px 16px",
-                borderRadius: 8, border: "1px solid var(--line)",
-                background: "transparent", color: "var(--ink)",
-                textDecoration: "none", fontSize: 13, fontWeight: 600,
-              }}
-            >
+            <a href="/billing" className="btn btn--secondary">
               Change plan
             </a>
           </>

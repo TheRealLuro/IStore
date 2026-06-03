@@ -465,6 +465,47 @@
   line-height: 1.5;
   color: var(--ink-2);
 }
+
+/* Rich inline viewers (CodeView / rendered Markdown / vCard cards) need a
+   stretched, full-height block instead of the centered media flexbox so
+   they can own their width + internal scroll. A fixed viewport height
+   gives CodeView (height:100%) a box to fill. */
+.vault-viewer__stage--rich {
+  display: block;
+  align-items: stretch;
+  justify-content: stretch;
+  /* Definite height (so CodeView's height:100% fills it) but bounded so
+     the modal header + footer always fit inside the modal's
+     max-height:calc(100% - 64px) and never clip. */
+  height: min(64vh, calc(100vh - 230px));
+  min-height: 240px;
+  padding: 0;
+  overflow: hidden;          /* the child manages its own scroll */
+  background: var(--surface);
+}
+/* CodeView paints its own surface + scrollbars edge-to-edge. */
+.vault-viewer__stage--code { padding: 0; }
+.vault-viewer__stage--code .code-preview { height: 100%; border-radius: var(--radius-2, 12px); }
+/* Rendered Markdown: scroll inside the stage, readable padding + width. */
+.vault-viewer__md { height: 100%; overflow: auto; padding: 22px 26px; }
+.vault-viewer__md .markdown-body,
+.vault-viewer__md.markdown-body { max-width: 820px; margin: 0 auto; }
+.vault-viewer__md-banner {
+  margin: -6px 0 14px; padding: 7px 11px; font-size: 11.5px;
+  color: var(--ink-3); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--radius-1, 8px);
+}
+/* vCard card list scrolls inside the stage. */
+.vault-viewer__vcf { height: 100%; overflow: auto; width: 100%; }
+.vault-viewer__vcf .vcf-viewer__body { padding: 16px 18px; }
+/* Raw/Rendered markdown toggle in the viewer header. */
+.vault-viewer__md-toggle {
+  margin-left: auto; flex-shrink: 0; font-size: 11px; padding: 4px 10px;
+  cursor: pointer; color: var(--ink-3); background: transparent;
+  border: 1px solid var(--line); border-radius: 7px;
+}
+.vault-viewer__md-toggle[aria-pressed="true"] { color: var(--ink); background: var(--surface-2); }
+.vault-viewer__md-toggle:hover { color: var(--ink); }
 .vault-viewer__msg {
   color: var(--ink-3);
   font-size: 14px;
@@ -490,6 +531,65 @@
 }
 .vault-field-row .vault-field { flex: 1; min-width: 0; }
 .vault-warn--tight { margin: 0; }
+
+/* ---- import-from-file (VLT-7) ---- */
+.vault-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Neutral, reassuring info note (NOT the red .vault-warn) — used for the
+   "encrypted on this device" line in the import preview. */
+.vault-import-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px 13px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2, 10px);
+}
+.vault-import-note svg { flex: 0 0 auto; margin-top: 1px; color: var(--ink-3); }
+.vault-import-preview {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.vault-import-preview__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-2, 10px);
+}
+.vault-import-preview__item:nth-child(odd) { background: var(--surface-2); }
+.vault-import-preview__title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vault-import-preview__kind {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.vault-import-preview__more {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
 
 .vault-seed { display: flex; flex-direction: column; gap: 12px; }
 .vault-seed__bar {

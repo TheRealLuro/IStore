@@ -68,6 +68,10 @@ export const Icon = ({ name, size = 16, strokeWidth = 1.6, ...props }) => {
     database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></>,
     play: <><polygon points="5 3 19 12 5 21 5 3"/></>,
     pause: <><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></>,
+    // Stop glyph — a filled-ish rounded square; used by the document TTS reader.
+    square: <><rect x="5" y="5" width="14" height="14" rx="2"/></>,
+    // Headphones glyph — the "Listen" affordance on the document Translate panel.
+    headphones: <><path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="2" y="14" width="5" height="7" rx="1.5"/><rect x="17" y="14" width="5" height="7" rx="1.5"/></>,
     stack: <><polyline points="2 7 12 12 22 7"/><polyline points="2 12 12 17 22 12"/><polyline points="2 17 12 22 22 17"/><polyline points="2 7 12 2 22 7"/></>,
     history: <><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></>,
     target: <><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></>,

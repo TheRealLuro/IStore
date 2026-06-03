@@ -348,6 +348,26 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
     window.location.href = `${API_BASE_URL}/auth/google/login`;
   };
 
+  // Sign in with Apple is gated on the backend being configured (Apple
+  // Developer creds + an https return URL present). Until then the button
+  // shows a friendly "coming soon" rather than bouncing to an error.
+  const [appleEnabled, setAppleEnabled] = useStateA(false);
+  useEffectA(() => {
+    let alive = true;
+    fetch(`${API_BASE_URL}/auth/apple/enabled`)
+      .then((r) => (r.ok ? r.json() : { enabled: false }))
+      .then((d) => { if (alive) setAppleEnabled(!!(d && d.enabled)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const startAppleSignIn = () => {
+    // Same hard-navigation pattern as Google. Apple POSTs the callback to
+    // the backend (form_post); the backend 302s the SPA back to
+    // /#sso_token=… (or #sso_error / #sso_totp), handled by the mount
+    // effect for both providers.
+    window.location.href = `${API_BASE_URL}/auth/apple/login`;
+  };
+
   // rotate the feature pitch
   useEffectA(() => {
     if (mode === "signin") return;
@@ -659,7 +679,7 @@ export function AuthScreen({ onSignedIn, tweaks = {}, theme = "light", setTheme 
           <button
             type="button"
             className="btn btn--secondary btn--lg auth__social"
-            onClick={() => toast("Apple sign-in is coming soon. Use Google or email for now.", { icon: "🍎" })}
+            onClick={appleEnabled ? startAppleSignIn : () => toast("Sign in with Apple turns on once it's connected — use Google or email for now.", { icon: "🍎" })}
             disabled={submitting}
           >
             <svg width="14" height="16" viewBox="0 0 14 17" aria-hidden="true" fill="currentColor">

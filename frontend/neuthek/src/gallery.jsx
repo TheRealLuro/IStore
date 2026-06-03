@@ -386,7 +386,7 @@ function FileRow({ f, selected, multiSelected, onClick, onMultiSelectToggle, onR
   );
 }
 
-function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelected, onMultiSelectToggle }) {
+function FileCard({ f, selected, onClick, query, onRename, onShare, onBestOf, multiSelected, onMultiSelectToggle }) {
   const qc = useQueryClient();
   const [menuOpen, setMenuOpen] = useStateG(false);
   // §C1.6 — tag picker anchored to the menu's "Tags…" row. We track
@@ -520,6 +520,22 @@ function FileCard({ f, selected, onClick, query, onRename, onShare, multiSelecte
             >
               <span className="cardmenu__icon"><Icon name="pin" size={14}/></span>Tags…
             </button>
+            {/* Find best of similar — only for images (needs a CLIP
+                embedding / burst group). Opens the shared best-of
+                comparison on this photo's near-duplicate group via the
+                parent. Reachable from the grid without a multi-select. */}
+            {isImage && onBestOf && (
+              <button
+                className="cardmenu__item"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                  onBestOf(f);
+                }}
+              >
+                <span className="cardmenu__icon"><Icon name="wand" size={14}/></span>Find best of similar
+              </button>
+            )}
             <button
               className="cardmenu__item"
               onClick={async () => {
@@ -874,9 +890,13 @@ export function GalleryView({
   // (paginated) page's row counts.
   categoryCounts = null,
   typeFilter = "all", onTypeFilter, onRename,
+  // Feature #172 — "Find best of similar" entry point on a photo card's
+  // quick menu. Opens the shared best-of comparison on that photo's
+  // near-duplicate group (parent fetches the group + drives BestOfModal).
+  onBestOf,
   folderId = null, onEnterFolder,
   view = "gallery",
-  peopleFilter = null, onClearPeopleFilter, onPersonPick,
+  peopleFilter = null, onClearPeopleFilter, onPersonPick, onFindMore,
   // Multi-select. `multiSelected` is a Set<string> of file ids; the
   // card check button toggles entries via `onMultiSelectToggle`.
   // Passing both as nullable means screens that don't want multi-
@@ -1026,6 +1046,27 @@ export function GalleryView({
             <span>Photo(s) this <strong>unnamed person</strong> was found in — name them to group all their photos</span>
           )}
           <span style={{ flex: 1 }}/>
+          {/* "Find more photos of this person" (Sprint I #7 / D8). Only
+              for a NAMED person — re-detection re-matches an identity the
+              user already named across their library and surfaces faces
+              that were never auto-grouped, as confirm/reject candidates.
+              An unnamed cluster has no identity to re-match yet, so the
+              action is hidden there. */}
+          {peopleFilter?.personId && onFindMore && (
+            <button
+              type="button"
+              onClick={() =>
+                onFindMore({
+                  personId: peopleFilter.personId,
+                  name: peopleFilter.name,
+                })
+              }
+              className="btn btn--secondary btn--sm"
+              title={`Re-scan your library for more photos of ${peopleFilter.name || "this person"}`}
+            >
+              <Icon name="sparkles" size={12}/> Find more photos
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onClearPeopleFilter && onClearPeopleFilter()}
@@ -1144,6 +1185,7 @@ export function GalleryView({
           onMultiSelectToggle={onMultiSelectToggle}
           onRename={onRename}
           onShare={setShareTarget}
+          onBestOf={onBestOf}
           query={query}
         />
       )}
@@ -1196,7 +1238,7 @@ export function GalleryView({
 //      took the per-move cost from ~12 ms to ~0.5 ms on a 200-card
 //      grid.
 function MarqueeGrid({
-  layoutMode, filtered, selected, multiSelected, onSelect, onMultiSelectToggle, onRename, onShare, query,
+  layoutMode, filtered, selected, multiSelected, onSelect, onMultiSelectToggle, onRename, onShare, onBestOf, query,
 }) {
   const gridRef = useRefG(null);
   const rectElRef = useRefG(null);
@@ -1209,6 +1251,31 @@ function MarqueeGrid({
     let scrollRafId = 0;
     let lastClientX = 0;
     let lastClientY = 0;
+
+    // The page ships with `html { zoom: 0.8 }` (see styles/index.css).
+    // Under CSS `zoom`, the two inputs to the marquee math live in
+    // DIFFERENT coordinate spaces:
+    //   - getBoundingClientRect() is reported in the *zoomed* (visual)
+    //     space — already multiplied by the zoom factor.
+    //   - pointer clientX/clientY AND element scrollLeft/scrollTop are
+    //     reported in the *layout* (unzoomed) space.
+    // Subtracting one from the other (clientX - rect.left, or adding
+    // scrollLeft to a rect) mixes scales, so the drawn rectangle and
+    // the cursor diverge by `1/zoom` per pixel of travel — the box
+    // "slowly gets further and further" the more you drag. We collapse
+    // everything into the zoomed/visual space by dividing the
+    // layout-space inputs (client coords + scroll) by the zoom factor,
+    // matching the space getBoundingClientRect() already uses.
+    // Read live (fallback 1) so a browser without CSS `zoom`, or a
+    // future change to the zoom value, just works.
+    const readZoom = () => {
+      const z = parseFloat(getComputedStyle(document.documentElement).zoom);
+      return z && isFinite(z) && z > 0 ? z : 1;
+    };
+    // Scroll offset of `sc`, expressed in the zoomed/visual space so it
+    // composes with getBoundingClientRect() values.
+    const scrollXZ = (sc, z) => (sc === window ? window.scrollX : sc.scrollLeft) / z;
+    const scrollYZ = (sc, z) => (sc === window ? window.scrollY : sc.scrollTop) / z;
 
     // The grid lives inside a scrollable container (usually the
     // gallery main column). Walk up until we find one with a real
@@ -1269,8 +1336,13 @@ function MarqueeGrid({
       // so a drag that barely grazes a card still picks it up.
       const box = grid.getBoundingClientRect();
       const scroller = findScroller();
-      const sx = scroller === window ? window.scrollX : scroller.scrollLeft;
-      const sy = scroller === window ? window.scrollY : scroller.scrollTop;
+      // All terms below are in the zoomed/visual space: box.* comes
+      // from getBoundingClientRect (already zoomed) and the scroll
+      // offsets are divided by zoom to match it. Card rects are cached
+      // in this same space, so the hit-test later is exact.
+      const z = readZoom();
+      const sx = scrollXZ(scroller, z);
+      const sy = scrollYZ(scroller, z);
       const baseLeft = box.left + sx;
       const baseTop = box.top + sy;
       const out = [];
@@ -1290,11 +1362,16 @@ function MarqueeGrid({
     };
 
     // Convert a pointer event's clientX/Y → coordinates in the grid's
-    // document space (so they stay valid across page scrolls).
+    // document space (so they stay valid across page scrolls). Pointer
+    // clientX/Y arrive in layout space; divide by zoom to land in the
+    // same zoomed/visual space as baseLeft/baseTop and the card rects,
+    // otherwise the anchor and the live point use inconsistent scales
+    // and the box drifts off the cursor the further you drag.
     const ptrToGridCoords = (clientX, clientY, scroller, baseLeft, baseTop) => {
-      const sx = scroller === window ? window.scrollX : scroller.scrollLeft;
-      const sy = scroller === window ? window.scrollY : scroller.scrollTop;
-      return { x: clientX + sx - baseLeft, y: clientY + sy - baseTop };
+      const z = readZoom();
+      const sx = scrollXZ(scroller, z);
+      const sy = scrollYZ(scroller, z);
+      return { x: clientX / z + sx - baseLeft, y: clientY / z + sy - baseTop };
     };
 
     // Auto-scroll loop — runs continuously while the pointer sits
@@ -1493,6 +1570,7 @@ function MarqueeGrid({
           onMultiSelectToggle={onMultiSelectToggle}
           onRename={onRename}
           onShare={onShare}
+          onBestOf={onBestOf}
         />
       ))}
       {/* Marquee rectangle. Painted via direct DOM mutation

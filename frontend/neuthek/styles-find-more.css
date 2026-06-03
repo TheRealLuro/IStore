@@ -1,0 +1,323 @@
+/* ============================================================
+   "Find more photos of this person" — candidate review modal
+   ------------------------------------------------------------
+   Sprint I #7 / D8. A centered modal (overlay + card) modeled on
+   .facefix-modal / .share-modal so it feels native, plus a
+   responsive candidate grid of source-photo thumbnails with a
+   face-crop chip, a similarity badge, and a per-card select /
+   reject affordance.
+
+   The app is monochrome; the "accent" is var(--ink). Everything
+   here is scoped to `.findmore-*` so nothing else is affected.
+
+   This file is @imported from styles/index.css next to
+   styles-face-modal.css.
+   ============================================================ */
+
+/* ---- Overlay (dim backdrop, click-to-close) ---------------- */
+.findmore-modal__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 9600;
+  padding: 20px;
+  animation: bd-fade 180ms ease-out;
+}
+
+/* ---- Modal card -------------------------------------------- */
+.findmore-modal {
+  width: min(860px, 96vw);
+  max-height: 86vh;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3, 14px);
+  padding: 20px 22px 18px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0; /* let the grid flex-child scroll */
+  animation: findmore-pop 160ms var(--ease, cubic-bezier(0.22, 1, 0.36, 1));
+}
+@keyframes findmore-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- Header ------------------------------------------------ */
+.findmore-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+.findmore-modal__head-text {
+  flex: 1;
+  min-width: 0;
+}
+.findmore-modal__kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+.findmore-modal__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: 2px;
+  letter-spacing: -0.2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.findmore-modal__close {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+.findmore-modal__close:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.findmore-modal__close:disabled { opacity: 0.4; cursor: default; }
+
+/* ---- Sub-line ---------------------------------------------- */
+.findmore-modal__sub {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.45;
+}
+.findmore-modal__sub--err { color: var(--danger); }
+
+/* ---- Toolbar (select-all + scan hint) ---------------------- */
+.findmore-modal__toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 2px;
+}
+.findmore-modal__selectall {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  user-select: none;
+}
+.findmore-modal__selectall input { cursor: pointer; accent-color: var(--ink); }
+.findmore-modal__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+/* ---- Body / scroll container ------------------------------- */
+.findmore-modal__body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  margin-right: -4px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+  overscroll-behavior: contain;
+}
+.findmore-modal__body::-webkit-scrollbar { width: 10px; }
+.findmore-modal__body::-webkit-scrollbar-track { background: transparent; }
+.findmore-modal__body::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.findmore-modal__body::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
+  background-clip: padding-box;
+}
+
+/* ---- Candidate grid ---------------------------------------- */
+.findmore-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.findmore-card {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 120ms var(--ease), transform 120ms var(--ease);
+}
+.findmore-card:hover { transform: translateY(-1px); }
+.findmore-card--on { border-color: var(--ink); }
+
+.findmore-card__thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--surface-3);
+}
+.findmore-card__thumb-img {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+}
+
+/* Unselected cards dim slightly so the kept set reads at a glance. */
+.findmore-card:not(.findmore-card--on) .findmore-card__thumb-img {
+  filter: saturate(0.85) brightness(0.92);
+}
+
+/* Face-crop chip — which face in the photo matched. */
+.findmore-card__face {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background-size: cover;
+  background-position: center;
+  background-color: var(--surface-2);
+  box-shadow: 0 0 0 2px var(--surface), 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+/* Similarity badge. */
+.findmore-card__score {
+  position: absolute;
+  left: 7px;
+  top: 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.62);
+  padding: 2px 7px;
+  border-radius: 999px;
+  backdrop-filter: blur(2px);
+}
+
+/* Selection check (top-right). */
+.findmore-card__check {
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  color: #fff;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease);
+}
+.findmore-card__check--on {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+/* Reject (remove from results) — hover/focus reveal. */
+.findmore-card__reject {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: opacity 120ms var(--ease), transform 120ms var(--ease),
+    background 120ms var(--ease);
+}
+.findmore-card:hover .findmore-card__reject,
+.findmore-card__reject:focus-visible {
+  opacity: 1;
+  transform: none;
+}
+.findmore-card__reject:hover {
+  background: var(--danger, #d33);
+}
+.findmore-card__reject:disabled { opacity: 0; }
+
+/* ---- Loading / empty states -------------------------------- */
+.findmore-modal__loading,
+.findmore-modal__empty {
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.findmore-modal__spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2.5px solid var(--line-2);
+  border-top-color: var(--ink);
+  animation: findmore-spin 720ms linear infinite;
+}
+.findmore-modal__spinner--sm {
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+  border-top-color: var(--surface);
+  border-color: color-mix(in oklab, var(--surface) 45%, transparent);
+  border-top-color: var(--surface);
+}
+@keyframes findmore-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---- Footer ------------------------------------------------ */
+.findmore-modal__foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  margin-top: 2px;
+  padding-top: 12px;
+}
+.findmore-modal__foot .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}

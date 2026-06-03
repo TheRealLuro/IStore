@@ -63,6 +63,15 @@ dependencies = [
     # in the image, but pinned here so it can never silently disappear from a
     # rebuild and leave the SVG sanitizer unable to import (it fails closed).
     "lxml>=5.0",
+    # asyncssh — pure-Python async SSH/SFTP server powering the read-only
+    # SFTP gateway (backend/sftp_server.py), which exposes a user's
+    # folders/files as a mountable filesystem (sshfs / WinSCP / Finder /
+    # `sftp` CLI). Runs as its own compose service (`sftp`) on port 2222,
+    # loopback-bound by default. Pinned so a transport/crypto behaviour
+    # change can't silently alter the auth surface; depends on
+    # `cryptography` (already pulled via the unconditional [cloud] install
+    # in the Dockerfile) for key handling.
+    "asyncssh==2.21.0",
     # python-calamine — Rust `calamine` binding (MIT/Apache-2.0) that reads
     # ALL spreadsheet formats from one library: modern `.xlsx`, legacy binary
     # `.xls` (BIFF), OpenDocument `.ods`, plus `.xlsm`/`.xlsb`. Powers the
@@ -113,6 +122,30 @@ ml = [
     "einops>=0.8.0",
     "timm>=1.0.11",
     "accelerate>=1.0.0",
+    # OCR "Text" tool translate → Meta NLLB-200 (facebook/nllb-200-
+    # distilled-600M), a dedicated 200-language MT model so the translate
+    # action can target ALL languages (backend/api/ocr.py). Its tokenizer
+    # is SentencePiece-based, so `sentencepiece` is REQUIRED to load it —
+    # without it the endpoint falls back to the Qwen rewriter. `langdetect`
+    # auto-detects the source language → mapped to a FLORES-200 code. The
+    # NLLB weights (~2.4 GB) auto-download to ${HF_HOME} on first /translate
+    # call. Both are pure-Python wheels / tiny native builds — no apt deps.
+    "sentencepiece>=0.2.0",
+    "langdetect>=1.0.9",
+    # Commercial-safe translation engine (replaces CC-BY-NC NLLB-200 as the
+    # PRIMARY translator; see backend/api/translate_engine.py). Google
+    # MADLAD-400 3B (Apache-2.0, 400+ langs) is loaded in 8-bit via
+    # bitsandbytes (~3 GB) to fit the 8 GB GPU alongside Florence-2 + CLIP;
+    # Helsinki-NLP Opus-MT (Apache-2.0, ~0.3 GB each) fills exotic gaps like
+    # Tongan. Both MADLAD + Opus weights auto-download to ${HF_HOME} on first
+    # translate. bitsandbytes provides the int8/nf4 CUDA kernels; it's a no-op
+    # on CPU-only boxes (the engine then loads MADLAD in fp32). sentencepiece
+    # above doubles as MADLAD/T5's tokenizer dependency.
+    "bitsandbytes>=0.43; platform_system == 'Linux'",
+    # Opus-MT uses a Marian (Moses-style) tokenizer; sacremoses provides the
+    # recommended pre-tokenization for it (cleaner punctuation handling on the
+    # exotic-language paths). Pure-Python, tiny.
+    "sacremoses>=0.1.1",
     "pypdf>=5.0",
     # Layout-heavy PDFs (two-column papers, scanned pages with embedded
     # fonts) often defeat pypdf — pdfminer.six handles them. Used as a
@@ -132,6 +165,18 @@ ml = [
     "mediapipe>=0.10",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    # PowerPoint text extraction for document summaries (slides + notes).
+    "python-pptx>=1.0",
+    # Structured document translation (backend/api/translate_doc.py) —
+    # ReportLab's Platypus flowables render the translated, structure-
+    # preserving document (title / headings / bullets / paragraphs) as a
+    # clean PDF download. Registers the already-present DejaVuSans TTF
+    # (/usr/share/fonts/truetype/dejavu) so accented Latin/Cyrillic/Greek
+    # glyphs render; CJK/Arabic need a wider font and are noted as a
+    # limitation. PyMuPDF (already pinned above) does the structured PDF
+    # block extraction via page.get_text("dict"). Pure-Python wheel — no
+    # apt build deps.
+    "reportlab>=4.0",
     "sumy>=0.11.0",
     "nltk>=3.9",
     # Audio transcription for video summarize. faster-whisper is the
@@ -142,6 +187,23 @@ ml = [
     # (small / medium / large) can be swapped via a config knob if
     # the user's transcription accuracy needs go up.
     "faster-whisper>=1.0.3",
+    # Server-side neural TTS for the "Listen" feature (backend/api/tts.py).
+    # Piper (MIT, OHF-Voice/piper1-gpl) is a fast, fully-offline neural
+    # voice — commercial-safe, so the app ships ONE clear, natural voice
+    # per language independent of the user's OS voices. Runs on CPU here
+    # (onnxruntime, already pulled by insightface) to keep the GPU free for
+    # NLLB/Florence. Voice models (.onnx + .onnx.json) download lazily from
+    # HuggingFace rhasspy/piper-voices on first use and cache under
+    # ./data/models/piper. Ships manylinux wheels — no apt build deps.
+    "piper-tts>=1.4.0",
+    # In-place image translation (backend/api/translate_image.py) — the
+    # Google-Lens-style "translate the text INSIDE an image" endpoint erases
+    # the original detected text with `cv2.inpaint` (INPAINT_TELEA) before
+    # rendering the NLLB translation back into each box with PIL. The
+    # headless build pulls no GUI/X11 deps (manylinux wheel, no apt build
+    # deps) — the regular opencv-python would drag in libGL. numpy + Pillow
+    # are already pinned in the base deps above.
+    "opencv-python-headless>=4.10",
 ]
 cloud = [
     # C2 — Google Drive sync. cryptography is already pulled in transitively

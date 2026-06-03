@@ -20,9 +20,14 @@
 // cookie+legacy-bearer fetch fetchMediaBlob uses, pointed at /archives.
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import toast from "react-hot-toast";
+import "github-markdown-css/github-markdown.css";
 import { Icon } from "./icons.jsx";
 import { API_BASE_URL } from "@/api/client";
 import { CodeView, mimeFromFilename } from "./code-preview.jsx";
+// Reuse the gallery MarkdownViewer's EXACT render pipeline (fenced-code
+// Prism highlighting, safe-href links, image guard) for `.md` files
+// previewed from inside an archive — no second markdown renderer.
+import { MarkdownInline } from "./markdown-viewer.jsx";
 import { LanguageIcon, languageIcon } from "./language-icons.jsx";
 import { fileTypeInfo } from "./file-types.js";
 
@@ -32,7 +37,7 @@ import { fileTypeInfo } from "./file-types.js";
 // Uses the app's design tokens (--surface / --ink / --line / --radius-*)
 // so it tracks the light/dark theme automatically.
 const ARCHIVE_VIEWER_CSS = `
-.archive-viewer { display:flex; flex-direction:column; height:100%; min-height:0;
+.archive-viewer { display:flex; flex-direction:column; height:100%; width:100%; min-height:0;
   background:var(--surface); color:var(--ink); }
 
 /* ---------- header ---------- */
@@ -142,6 +147,22 @@ const ARCHIVE_VIEWER_CSS = `
    manages its own scroll, line gutter, and toolbar. */
 .archive-viewer__preview-body--code { padding:0; overflow:hidden; display:block; }
 .archive-viewer__preview-body--code > .code-preview { height:100%; }
+/* Rendered Markdown fills the scrollable body; github-markdown-css owns
+   the typography (.markdown-body), we just give it readable padding +
+   a centered max width so long prose doesn't run edge-to-edge. */
+.archive-viewer__preview-body--md { padding:0; display:block; }
+.archive-viewer__md { padding:22px 26px; max-width:880px; margin:0 auto; }
+.archive-viewer__md-banner { margin:-6px 0 14px; padding:7px 11px;
+  font-size:11.5px; color:var(--ink-3); background:var(--surface-2);
+  border:1px solid var(--line); border-radius:var(--radius-1); }
+/* Raw/Rendered toggle in the preview header — matches the gallery
+   MarkdownViewer's own pill. */
+.archive-viewer__md-toggle { margin-left:2px; flex-shrink:0;
+  font-size:11px; padding:3px 9px; cursor:pointer; color:var(--ink-3);
+  background:transparent; border:1px solid var(--line); border-radius:6px; }
+.archive-viewer__md-toggle[aria-pressed="true"] { color:var(--ink);
+  background:var(--surface); }
+.archive-viewer__md-toggle:hover { color:var(--ink); }
 /* A faint checkerboard behind transparent images so PNGs with alpha read
    clearly; the image itself sits on a small floating card. */
 .archive-viewer__preview-body--img {
@@ -356,7 +377,9 @@ function TreeNode({ node, depth, openSet, onToggle, onPick, selectedPath }) {
 // octet-stream) to the SAME per-type viewers the main gallery uses:
 //   image      → <img src=blobURL>
 //   pdf        → <iframe src=blobURL>
-//   code/text/markdown/json/yaml/xml/csv/notebook → <CodeView> (the rich
+//   markdown   → rendered Markdown (the gallery MarkdownViewer's exact
+//                pipeline via <MarkdownInline>), with a Raw/Rendered toggle
+//   code/text/json/yaml/xml/csv/notebook → <CodeView> (the rich
 //                syntax-highlighted viewer: gutter, find, copy, wrap)
 //   anything else (or a file that decodes as binary) → download button
 // Text is decoded from an arrayBuffer and capped at INNER_TEXT_CAP so a
@@ -364,6 +387,10 @@ function TreeNode({ node, depth, openSet, onToggle, onPick, selectedPath }) {
 // Blob URLs are revoked on unmount / re-pick to avoid leaks.
 function InnerPreview({ fileId, node }) {
   const [state, setState] = useState({ status: "loading" });
+  // Rendered ↔ raw toggle for markdown inner files (mirrors the gallery
+  // MarkdownViewer's own toggle). Reset whenever the picked file changes.
+  const [mdRaw, setMdRaw] = useState(false);
+  useEffect(() => { setMdRaw(false); }, [node.path]);
 
   useEffect(() => {
     let cancelled = false;
@@ -396,6 +423,20 @@ function InnerPreview({ fileId, node }) {
           if (cancelled) return;
           madeUrl = URL.createObjectURL(blob);
           setState({ status: "pdf", url: madeUrl });
+        } else if (kind === "markdown") {
+          // Render `.md` through the gallery's full Markdown pipeline
+          // (rendered HTML, with a raw-source toggle in the preview).
+          const buf = await res.arrayBuffer();
+          if (cancelled) return;
+          let bytes = new Uint8Array(buf);
+          let truncated = false;
+          if (bytes.byteLength > INNER_TEXT_CAP) {
+            bytes = bytes.slice(0, INNER_TEXT_CAP);
+            truncated = true;
+          }
+          const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+          if (cancelled) return;
+          setState({ status: "markdown", text, truncated });
         } else if (TEXT_KINDS.has(kind) || looksTextByCtype) {
           // Decode to text, capping the rendered bytes like code-preview
           // does for its originals so a 50 MB log doesn't lock the tab.
@@ -445,6 +486,8 @@ function InnerPreview({ fileId, node }) {
   const bodyClass =
     "archive-viewer__preview-body" +
     (state.status === "text" ? " archive-viewer__preview-body--code" : "") +
+    (state.status === "markdown" && mdRaw ? " archive-viewer__preview-body--code" : "") +
+    (state.status === "markdown" && !mdRaw ? " archive-viewer__preview-body--md" : "") +
     (state.status === "image" ? " archive-viewer__preview-body--img" : "");
 
   // Split the inner path into breadcrumb segments (the last is the file
@@ -457,6 +500,17 @@ function InnerPreview({ fileId, node }) {
         <LeafIcon name={node.name} size={13} />
         <span className="archive-viewer__preview-name">{node.name}</span>
         <span className="archive-viewer__preview-size mono">{fmtBytes(node.size)}</span>
+        {state.status === "markdown" && (
+          <button
+            type="button"
+            className="archive-viewer__md-toggle mono"
+            onClick={() => setMdRaw((v) => !v)}
+            aria-pressed={mdRaw}
+            title={mdRaw ? "Show rendered Markdown" : "Show raw source"}
+          >
+            {mdRaw ? "Rendered" : "Raw"}
+          </button>
+        )}
         {(state.status === "image" || state.status === "pdf" || state.status === "binary") && state.url && (
           <button
             type="button"
@@ -522,6 +576,26 @@ function InnerPreview({ fileId, node }) {
             byteSize={node.size}
             truncated={state.truncated}
           />
+        )}
+        {state.status === "markdown" && (
+          mdRaw ? (
+            <CodeView
+              text={state.text}
+              filename={node.name}
+              mime={mimeFromFilename(node.name)}
+              byteSize={node.size}
+              truncated={state.truncated}
+            />
+          ) : (
+            <div className="archive-viewer__md markdown-body">
+              {state.truncated && (
+                <div className="archive-viewer__md-banner">
+                  Showing the first {fmtBytes(INNER_TEXT_CAP)} of a larger file.
+                </div>
+              )}
+              <MarkdownInline text={state.text} />
+            </div>
+          )
         )}
         {state.status === "binary" && (
           <div className="archive-viewer__binary">

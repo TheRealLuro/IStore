@@ -30,6 +30,11 @@ _FILE_ENV_NAMES = {
     # list (spam / list-poisoning), so treat it like other secrets and
     # support the Docker/K8s *_FILE convention.
     "MARKETING_INTERNAL_TOKEN",
+    # Sign in with Apple — the .p8 private key that SIGNS the client-secret
+    # JWT (ES256). A leak lets an attacker mint client secrets for our
+    # Services ID, so treat it like other secrets + support the *_FILE
+    # mount convention (APPLE_PRIVATE_KEY_FILE → APPLE_PRIVATE_KEY).
+    "APPLE_PRIVATE_KEY",
 }
 
 
@@ -202,6 +207,55 @@ class Settings(BaseSettings):
     # pronoun/grammar fixes.
     rewriter_model_name: str = Field(default="Qwen/Qwen2.5-1.5B-Instruct")
     rewriter_enabled: bool = Field(default=True)
+    # ---- Handwriting OCR (TrOCR) ----
+    # Florence-2 detects WHERE text sits (bounding boxes) well even on
+    # handwriting, but READS cursive poorly. TrOCR
+    # (microsoft/trocr-base-handwritten, ~330 MB, Apache-2.0) is a dedicated
+    # handwriting line-recognizer: we crop each Florence-detected region and
+    # run TrOCR on it to read the line. It runs on **CPU on purpose** — the
+    # 8 GB GPU is already near-full with Florence + CLIP + the translator, so a
+    # resident GPU model is not affordable; ~1-3 s/line on CPU is the accepted
+    # trade for actually reading handwriting. Weights auto-download to
+    # ${HF_HOME} on first use (pre-baked in the Dockerfile so the first request
+    # doesn't pay the download). Loaded lazily + cached in a module global.
+    trocr_model_name: str = Field(default="microsoft/trocr-base-handwritten")
+    # Master switch for the TrOCR handwriting recognizer. When True (default)
+    # the in-image OCR / translate paths re-read Florence's regions with TrOCR
+    # when Florence's own read looks low-confidence (likely cursive); set False
+    # to force the pure Florence-only path everywhere (printed-text behaviour).
+    ocr_handwriting_enabled: bool = Field(default=True)
+    # Dedicated machine-translation model for the OCR "Text" tool's
+    # translate action (backend/api/ocr.py). NLLB-200 covers 200 languages;
+    # the distilled 600M variant (~2.4 GB) is the cost/quality sweet spot
+    # and auto-downloads to ${HF_HOME} on first /translate call. Requires
+    # `sentencepiece` (tokenizer) + `langdetect` (source detection); when
+    # absent the endpoint falls back to the Qwen rewriter above.
+    translate_model_name: str = Field(
+        default="facebook/nllb-200-distilled-600M"
+    )
+    # ---- Apache-2.0 translation engine (commercial-safe; replaces the
+    # CC-BY-NC NLLB-200 as the PRIMARY translator). NLLB above stays as the
+    # automatic FALLBACK when this engine can't load. See
+    # backend/api/translate_engine.py. ----
+    # PRIMARY: Google MADLAD-400 3B (Apache-2.0, 400+ languages). T5 seq2seq;
+    # translation is triggered by a `<2xx>` target token prefixed to the input.
+    # Loaded in 8-bit via bitsandbytes (~3 GB) to fit the 8 GB GPU alongside
+    # Florence-2 + CLIP. Weights auto-download to ${HF_HOME} on first translate.
+    translate_madlad_model_name: str = Field(default="google/madlad400-3b-mt")
+    # Load MADLAD in 4-bit nf4 (~1.65 GB) instead of 8-bit. Default True: 4-bit
+    # loads faster, skips the int8 kernel autotuning (the long "warming up"
+    # stall), and leaves GPU headroom alongside Florence + the 4-way OCR. Set
+    # the TRANSLATE_MADLAD_4BIT env var to 0 for 8-bit (slightly higher quality).
+    translate_madlad_4bit: bool = Field(default=True)
+    # EXOTIC GAP-FILLER: Helsinki-NLP Opus-MT (Apache-2.0, ~0.3 GB each) for
+    # languages MADLAD lacks (notably Tongan). en-mul = EN→many (needs a
+    # `>>code<<` target token); mul-en = many→EN.
+    translate_opus_en_mul_name: str = Field(
+        default="Helsinki-NLP/opus-mt-en-mul"
+    )
+    translate_opus_mul_en_name: str = Field(
+        default="Helsinki-NLP/opus-mt-mul-en"
+    )
     summarizer_model_name: str = Field(
         default="sshleifer/distilbart-cnn-12-6"
     )
@@ -283,6 +337,26 @@ class Settings(BaseSettings):
     google_signin_redirect_uri: str = Field(
         default="http://localhost:8000/auth/google/callback"
     )
+
+    # ----- Sign in with Apple (auth-screen SSO, mirrors Google) -----
+    # Apple's web OAuth differs from Google in three ways the code handles:
+    #   * the "client secret" is a short-lived ES256 JWT we SIGN with the
+    #     .p8 private key below (not a static string);
+    #   * Apple POSTs the callback (response_mode=form_post) and only ever
+    #     returns the user's name on the FIRST authorization;
+    #   * the Return URL MUST be https on a registered public domain — Apple
+    #     rejects http://localhost, so this only works once deployed.
+    # Empty values keep /auth/apple/* in the graceful "not configured"
+    # state, exactly like Google.
+    apple_client_id: str = Field(default="")   # Services ID, e.g. net.glaa.neuthek.signin
+    apple_team_id: str = Field(default="")     # 10-char Apple Team ID
+    apple_key_id: str = Field(default="")      # 10-char Key ID for the .p8
+    # The .p8 private key CONTENTS (PEM). Prefer APPLE_PRIVATE_KEY_FILE in
+    # Docker/K8s (see _FILE_ENV_NAMES); the raw value works for a local .env.
+    apple_private_key: str = Field(default="")
+    # Must EXACTLY match the Return URL registered on the Services ID. No
+    # localhost — Apple requires https on a verified domain.
+    apple_signin_redirect_uri: str = Field(default="")
 
     # §C4.6 — Dropbox OAuth client. Empty values keep the endpoint in
     # "not_configured" state. Register at https://www.dropbox.com/

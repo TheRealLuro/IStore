@@ -1,0 +1,1345 @@
+/* ===========================================================
+   LEFT TOOL-BUBBLE RAIL for the big image preview (lightbox).
+   A quiet vertical column of circular bubbles pinned to the left
+   edge; clicking one expands its tool panel (info / text) beside
+   the file. Comments reuses the existing .comment-bubble/.comment-
+   panel look; these styles match it so the rail reads as one set.
+   Loaded after the base sheets (see styles/index.css).
+   =========================================================== */
+
+/* The rail column. Pinned left, vertically centered, above the
+   lightbox backdrop (same z-index band as .comment-bubble: 9021). */
+.toolrail {
+  position: fixed;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 9021;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* One bubble — same dimensions / treatment as .comment-bubble so the
+   rail is visually consistent with the comments affordance it absorbed. */
+.toolrail__bubble {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(20, 20, 20, 0.85);
+  color: #f5f5f5;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  transition: background 160ms ease, transform 160ms ease,
+    border-color 160ms ease, opacity 200ms ease;
+}
+.toolrail__bubble:hover {
+  background: rgba(40, 40, 40, 0.95);
+  transform: scale(1.06);
+}
+/* Active bubble — filled so the user can see which tool is open. */
+.toolrail__bubble--active {
+  background: #f5f5f5;
+  color: #141414;
+  border-color: #f5f5f5;
+}
+.toolrail__bubble--active:hover {
+  background: #fff;
+  color: #141414;
+}
+.toolrail__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #fff;
+  color: #111;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  border: 2px solid rgba(20, 20, 20, 0.95);
+}
+
+/* In video-focus mode the rail dims like the comment bubble does, so
+   the moving picture keeps the eye. (Image lightbox doesn't enter
+   focus mode, but keep parity in case a future surface reuses it.) */
+.lightbox--focus .toolrail__bubble {
+  opacity: 0.35;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+.lightbox--focus .toolrail__bubble:hover {
+  opacity: 1;
+  background: rgba(40, 40, 40, 0.95);
+}
+
+/* ---------- Tool panel (info / text) ----------
+   Same geometry as .comment-panel: fixed left slide-out, 360px, full
+   height, themed surface. One above the lightbox so it isn't covered. */
+.toolpanel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 360px;
+  z-index: 9021;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+  animation: toolpanel-slide 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  cursor: default;
+}
+@keyframes toolpanel-slide {
+  from { transform: translateX(-100%); opacity: 0.6; }
+  to   { transform: translateX(0);     opacity: 1;   }
+}
+
+.toolpanel__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+.toolpanel__title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.toolpanel__count {
+  font-size: 11px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+.toolpanel__collapse { margin-left: auto; }
+
+.toolpanel__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px 18px 20px;
+}
+
+.toolpanel__filename {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  word-break: break-word;
+  margin-bottom: 6px;
+}
+.toolpanel__topic {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.toolpanel__kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.toolpanel__kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.toolpanel__kv-k { color: var(--ink-3); }
+.toolpanel__kv-v {
+  color: var(--ink);
+  text-align: right;
+  word-break: break-word;
+}
+
+.toolpanel__section { margin-top: 16px; }
+.toolpanel__section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  margin-bottom: 8px;
+}
+.toolpanel__desc {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.toolpanel__hint {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.toolpanel__loading { padding: 4px 0; }
+
+/* Empty / error state */
+.toolpanel__empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--ink-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.toolpanel__empty-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.toolpanel__empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.toolpanel__empty-body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 240px;
+}
+
+/* Controls row (box toggle / copy) */
+.toolpanel__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* Small pill toggle used for "Boxes on/off", "Copy", original/translation. */
+.chip-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.chip-toggle:hover {
+  border-color: var(--ink-3);
+  color: var(--ink);
+}
+.chip-toggle--on {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+
+/* OCR extracted lines */
+.ocr-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+.ocr-line {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink);
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: default;
+  border: 1px solid transparent;
+  transition: background 120ms ease, border-color 120ms ease;
+  word-break: break-word;
+}
+.ocr-line:hover,
+.ocr-line--active {
+  background: var(--surface-2);
+  border-color: var(--line);
+}
+.ocr-text {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-family: inherit;
+}
+
+/* Translate block */
+.toolpanel__translate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolpanel__translate-to {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+/* Searchable language picker (replaces the old <select>). Closed: a pill
+   button. Open: an absolutely-positioned popover with a sticky search box
+   and a scrollable, fixed-height list so the full 200-language set never
+   blows out the bubble panel. */
+.langpick {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.langpick__button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.langpick__button:hover { border-color: var(--ink-3); }
+.langpick__current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.langpick__pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+.langpick__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+.langpick__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-family: inherit;
+  outline: none;
+}
+.langpick__list {
+  overflow-y: auto;
+  padding: 4px;
+}
+.langpick__opt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.langpick__opt:hover { background: var(--surface-2); }
+.langpick__opt--sel { background: var(--ink); color: var(--surface); }
+.langpick__opt--sel .langpick__opt-native { color: var(--surface); opacity: 0.7; }
+.langpick__opt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.langpick__opt-native {
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.langpick__empty {
+  padding: 12px 10px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.toolpanel__translation { margin-top: 12px; }
+.toolpanel__translation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.toolpanel__lang-pill {
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+.toolpanel__note {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+/* Same-language guard prompt ("This document is already in <Lang>."): a gentle
+   accented note so it reads as an intentional message, not an error. */
+.toolpanel__note--samelang {
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+/* ---------- Image stage + OCR overlay ----------
+   The stage hugs the rendered <img> (shrink-to-fit flex item). The
+   overlay fills it exactly, so normalized 0..1 boxes expressed as
+   percentages land on the right glyphs at any rendered size. */
+.lb-stage {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  /* Don't grow past the image; the <img> caps itself at 92vw/92vh. */
+  max-width: 92vw;
+  max-height: 92vh;
+}
+.lb-stage > .lightbox__img {
+  /* Keep the existing pop animation + rounding from styles-refine4. */
+  position: relative;
+  z-index: 0;
+}
+
+/* AuthedImg branded-loader placeholder (the `loader` prop). While the
+   full-res blob loads we render a centered neuthek loader inside a calm box
+   so OPENING / SWITCHING a file shows a clean "loading" beat instead of a
+   blank flash. The box reserves a sensible square so the lb-stage doesn't
+   collapse to zero, and the loader is centered in it. Drop the inherited
+   `lb-pop` scale/`.lightbox__img` shadow — this is a placeholder, not the
+   image. The whole thing fades in only AFTER a short delay, so an instant
+   cache hit (blob ready in <~250ms) swaps straight to the <img> and the
+   loader never appears — keeping fast navigation flash-free. */
+.authed-img__loading {
+  display: grid;
+  place-items: center;
+  width: min(46vw, 360px);
+  height: min(46vh, 360px);
+  max-width: 92vw;
+  max-height: 92vh;
+  box-shadow: none;
+  border-radius: 8px;
+  /* delay the appearance so quick loads don't flash the loader */
+  opacity: 0;
+  animation: authed-img-loader-in 200ms ease 240ms forwards;
+}
+@keyframes authed-img-loader-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+/* Reduced motion: keep the delay (so quick loads stay flash-free) but skip the
+   fade — snap to visible after the same delay. */
+@keyframes authed-img-loader-show {
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .authed-img__loading { animation: authed-img-loader-show 1ms linear 240ms forwards; }
+}
+
+.ocr-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none; /* the boxes themselves opt back in below */
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ocr-box {
+  position: absolute;
+  border: 1.5px solid rgba(120, 190, 255, 0.9);
+  background: rgba(80, 160, 255, 0.16);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+  pointer-events: auto;
+  cursor: default;
+  transition: background 120ms ease, border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.ocr-box:hover,
+.ocr-box--active {
+  border-color: rgba(255, 213, 110, 0.95);
+  background: rgba(255, 200, 70, 0.26);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------- In-image translation (MAIN view) ----------
+   The translated render of the image (text erased + translation drawn in
+   place) overlays the original <img> inside the stage. The stage is sized to
+   the original image, so filling the stage exactly covers it (both images
+   share dimensions). The original stays mounted underneath so flipping back to
+   it via the toggle is instant + lossless. */
+.img-translated__img {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  /* Match the original's letterbox fit so a translated render whose aspect
+     differs slightly still sits cleanly over the source. */
+  object-fit: contain;
+  display: block;
+  /* Gentle fade-in so the hand-off from the loader to the translated render
+     reads as a soft cross-fade over the original (which stays mounted under
+     it) rather than a hard pop. The original is visible beneath during the
+     fade, so the image is never "blank". */
+  animation: img-translated-fade-in 360ms ease both;
+}
+@keyframes img-translated-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .img-translated__img { animation: none; }
+}
+
+/* Thin status bar over the top of the image stage: language pair + a live
+   "Translating image…" indicator on the left, the Show original ⇄ Show
+   translation toggle on the right. Sits above both image layers. Reuses the
+   document translator's .doc-translated__pair / __progress / __spinner pills. */
+.img-translated__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  /* Readable over any photo: a soft top-to-transparent scrim. */
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0));
+  /* The boxes/photo own clicks; only the toggle + pills here are interactive. */
+  pointer-events: none;
+  line-height: normal;
+}
+.img-translated__bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+/* Re-enable pointer events on the actual controls/labels (the bar itself is
+   pass-through so it never blocks the image underneath it). */
+.img-translated__bar > *,
+.img-translated__bar-left > * {
+  pointer-events: auto;
+}
+/* On the dark scrim the shared pills read better with a translucent dark fill
+   + light ink, so they don't depend on the app's surface tokens over a photo. */
+.img-translated__bar .doc-translated__pair {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.img-translated__bar .doc-translated__progress {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+/* ---------- Document Translate panel ----------
+   The document analogue of the image "Text" panel. Documents have far more
+   text than on-image OCR, so the panel is wider and the prose block is tuned
+   for reading: comfortable line-height, a sensible max-width via the panel
+   width, and its own scroll so a long translation never pushes the controls
+   off-screen. Reuses every .toolpanel/.chip-toggle/.langpick class — only the
+   width + the prose block differ. */
+.toolpanel--doc {
+  width: 460px;
+}
+/* The original / translated document text. Capped height with its own scroll
+   so the picker + Translate button stay reachable above a long passage; good
+   line-height + width for sustained reading. Inherits .ocr-text's wrapping. */
+.toolpanel__doc-pre {
+  max-height: 52vh;
+  overflow-y: auto;
+  line-height: 1.6;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+/* ---------- Document TTS "Listen" reader (left panel) ----------
+   The Listen control on the document Translate panel. A labeled row with
+   Play/Pause + Stop. Reuses .btn / .chip-toggle; only the row layout is new. */
+.toolpanel__tts {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.toolpanel__tts-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Active-engine badge next to the Listen/Pause + Stop controls: tells the user
+   whether the clear neural voice or the browser's system voice is reading.
+   Quiet by default; the neural state gets a faint accent tint. */
+.toolpanel__tts-engine {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--ink-3);
+  background: var(--surface-2, rgba(127, 127, 127, 0.1));
+  border: 1px solid var(--line);
+}
+
+/* ===========================================================
+   CENTER TRANSLATED-DOCUMENT VIEW
+   Renders the streaming translation in the MAIN CENTER document area,
+   overlaying the original PDF/text render (which stays mounted underneath
+   so the orig⇄translation toggle is instant + lossless). Styled as a clean,
+   readable document page — "as if the document were originally in the
+   target language". Lives over each `.pdf-modal__body`.
+   =========================================================== */
+
+/* The doc-modal body becomes a positioning context so the translated view can
+   absolutely fill it on top of the original viewer. */
+.pdf-modal__body--translatable {
+  position: relative;
+}
+
+/* The translated view — fills the modal body, opaque (covers the original). */
+.doc-translated {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+/* Thin status bar: language pair + live progress on the left, the
+   Show original / Show translation toggle on the right. */
+.doc-translated__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.doc-translated__bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.doc-translated__pair {
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.doc-translated__progress {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.doc-translated__progress--live { color: var(--ink-2); }
+/* Right-side action cluster in the translated-PDF bar: Download PDF + the
+   original/translation toggle, sitting together with a small gap. The bar is a
+   space-between flex row, so this group is pushed to the right edge. */
+.doc-translated__bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.doc-translated__spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  border: 2px solid var(--line);
+  border-top-color: var(--ink-2);
+  animation: doc-translated-spin 700ms linear infinite;
+}
+@keyframes doc-translated-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===========================================================
+   EXACT-COPY translated PDF (TranslatedPdfView). The translation is the
+   REAL PDF returned by the backend (text translated in place), rendered in
+   the browser's native PDF viewer via an <iframe>. This overlay sits on top
+   of the still-mounted original page stack; the toggle flips between them.
+   =========================================================== */
+
+/* While translating, the overlay is TRANSPARENT so the original page stack
+   shows through under the progress card (only the thin bar + the card paint).
+   The base `.doc-translated` sets an opaque `background: var(--surface)`; the
+   --overlay modifier clears it and lets pointer events fall through to the
+   original viewer EXCEPT on the bar/card (which re-enable them). */
+.doc-translated--overlay {
+  background: transparent;
+  pointer-events: none;
+}
+.doc-translated--overlay .doc-translated__bar,
+.doc-translated--overlay .doc-translated__pdf-progress-card {
+  pointer-events: auto;
+}
+/* The translating bar keeps its own opaque strip so the toggle/progress read
+   clearly over whatever page sits beneath it. */
+.doc-translated--overlay .doc-translated__bar {
+  background: var(--surface);
+}
+
+/* The native-PDF iframe — fills the body below the bar, opaque white frame
+   (the browser viewer paints its own page background + scrollbar). */
+.doc-translated__pdf-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+/* Centered progress card shown over the original while the PDF translates. */
+.doc-translated__pdf-progress {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.doc-translated__pdf-progress-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+  max-width: 80%;
+  padding: 22px 26px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+.doc-translated__pdf-progress-text {
+  font-size: 13px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.doc-translated__pdf-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.doc-translated__pdf-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary, #6ea8fe);
+  transition: width 200ms ease;
+}
+
+/* ===========================================================
+   Branded translate loader card (DocTranslateLoader). The neuthek
+   logo-in-circle loader + a cycling scribe status line + a REAL progress
+   bar, centered inside whatever positioned box it's dropped into (the doc
+   modal body / the image stage). It covers ONLY that area — the card is
+   sized to its content and centered, NOT full-screen. Used by the document
+   (PDF + structured) and image translation flows.
+   =========================================================== */
+
+/* The host fills the media/modal body. In the default (warming) mode it
+   CENTERS the branded card; in live-replace mode it stacks [strip][page]
+   vertically (see `.nk-xlate--live`). When dropped as an OVERLAY (over a
+   still-mounted original) callers add `nk-xlate--overlay`. */
+.nk-xlate {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: none; /* clicks pass through the empty area */
+}
+/* Warming overlay (no live text yet): a soft dim/blur over the still-visible
+   original so the centered card reads clearly, with a gentle fade-in. The
+   live-replace mode (below) OVERRIDES this to an opaque page that HIDES the
+   original entirely. */
+.nk-xlate--overlay:not(.nk-xlate--live) {
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  backdrop-filter: blur(2px);
+  /* Soft fade-in so the loader dissolves over the original (image / PDF /
+     document) instead of snapping in — the first half of the
+     original → loader → translated transition. */
+  animation: nk-xlate-overlay-in 260ms ease both;
+}
+@keyframes nk-xlate-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate--overlay:not(.nk-xlate--live) { animation: none; }
+}
+
+/* ── Live-replace render ───────────────────────────────────────────────────
+   While translating we HIDE the original and show a READABLE, FORMATTED live
+   render of the translation filling in top-to-bottom. The host becomes an
+   OPAQUE, full-cover surface laid out as [slim top strip][scrolling page] so
+   the branded loader (the strip) never covers the live text. */
+.nk-xlate--live {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  pointer-events: auto;       /* it's the document now — own its area */
+  background: var(--surface-2);
+  /* Gentle fade as the live render takes over from the warming card. */
+  animation: nk-xlate-overlay-in 220ms ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate--live { animation: none; }
+}
+
+/* Slim progress STRIP across the top — the compacted branded loader: a small
+   neuthek mark + a cycling scribe phrase on the left, the i/n count + language
+   pair on the right, and a hairline progress bar pinned to the strip's bottom
+   edge. Does NOT cover the live page below it. */
+.nk-xlate__strip {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.nk-xlate__strip-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;       /* let the phrase shrink instead of pushing the row wide */
+  flex: 1 1 auto;
+}
+/* The compact mark drops the loader's stacked-label gap so it sits tight
+   beside the phrase, and never shrinks — only the phrase gives way. */
+.nk-xlate__strip-mark {
+  gap: 0;
+  flex: 0 0 auto;
+}
+/* The cycling phrase takes the remaining width and truncates to one line (the
+   .nk-loader__fade--line clamp owns the ellipsis). min-width:0 is what lets it
+   shrink below its content width inside the flex row so it can never overflow
+   the strip or collide with the i/n counter. */
+.nk-xlate__strip-brand .nk-loader__fade {
+  justify-content: flex-start;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.nk-xlate__strip-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;     /* the counter keeps its width; the phrase yields first */
+}
+
+/* Strip-only variant (DocTranslateLoader variant="strip"): a normal-flow flex
+   child that sits ABOVE a caller's own readable render (e.g. the structured-doc
+   view's page), rather than the absolutely-positioned live-replace host. Its
+   inner `.nk-xlate__strip` is position:relative so the hairline bar pins to it.
+   A gentle fade-in matches the live-render hand-off. */
+.nk-xlate__strip-host {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 5;
+  animation: nk-xlate-overlay-in 220ms ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate__strip-host { animation: none; }
+}
+/* The strip's progress bar — a hairline pinned to the strip's bottom edge so
+   it reads as "this is how far along the page is". */
+.nk-xlate__strip-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--surface-3, var(--surface-2));
+  overflow: hidden;
+}
+
+/* The scrolling page area — frames the white sheet on the neutral backdrop. */
+.nk-xlate__live-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px 20px 56px;
+  display: flex;
+  justify-content: center;
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate__live-scroll { scroll-behavior: auto; }
+}
+
+/* ── Live render: STREAMED EXACT PAGE IMAGES ───────────────────────────────
+   The PDF live view shows the REAL rendered document pages (exact layout) with
+   the translation applied so far, instead of an HTML reflow approximation. The
+   pages stack vertically, centered on the neutral backdrop; each is the actual
+   page raster so the format is exact. The container is a column (the parent
+   `.nk-xlate__live-scroll` centers it horizontally via justify-content:center,
+   and `align-items:center` here keeps each page centered within the column). */
+.nk-xlate__pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  max-width: 920px;
+}
+/* One streamed page — a real white sheet matching the document's exact layout.
+   It fills the column width up to the page sheet's max, keeps its own aspect
+   ratio (height auto), and never auto-scrolls. The latest snapshot per page
+   swaps this same <img>'s src in place (keyed by page index in the JSX), so a
+   more-translated render replaces it without a flash. A soft fade-in on first
+   mount matches the live-render hand-off; subsequent src swaps don't remount,
+   so they update silently. */
+.nk-xlate__page-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.18);
+  /* Block selection/drag so dragging a streamed page doesn't ghost-drag it. */
+  -webkit-user-drag: none;
+  user-select: none;
+  animation: nk-xlate-block-in 320ms ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate__page-img { animation: none; }
+}
+
+/* The live document page — a real white sheet with readable typography and
+   paragraph spacing, NORMAL opacity, so it reads like the document becoming the
+   new language (mirrors .doc-translated__page so the live render and the final
+   render look like the same document). */
+.nk-xlate__live-page {
+  width: 100%;
+  max-width: 760px;
+  height: max-content;
+  background: #fff;
+  color: #1a1a1a;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.18);
+  padding: 52px 60px;
+  font-size: 16px;
+  line-height: 1.75;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+}
+.nk-xlate__live-p {
+  margin: 0 0 1.05em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Each newly-appended paragraph fades + rises in gently as it streams. */
+  animation: nk-xlate-block-in 320ms ease both;
+}
+.nk-xlate__live-p:last-child { margin-bottom: 0; }
+@keyframes nk-xlate-block-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate__live-p { animation: none; }
+}
+
+/* ── Live render: TYPED blocks (FIX 1) ─────────────────────────────────────
+   When the stream supplies structural `kind`s, the live page renders each block
+   STYLED to its role so it matches the real document FORMAT instead of a flat
+   wall of paragraphs. The hierarchy mirrors the final structured render
+   (.doc-translated__title/h1/h2/li) so the live render and the settled render
+   look like the same document. Every block wraps + breaks long words and fades
+   in gently as it streams. */
+.nk-xlate__live-page--structured > * { word-break: break-word; }
+.nk-xlate__live-page--structured > * {
+  animation: nk-xlate-block-in 320ms ease both;
+}
+.nk-xlate__live-page--structured > :last-child { margin-bottom: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate__live-page--structured > * { animation: none; }
+}
+
+/* Document title — large, bold, prominent lead. */
+.nk-xlate__live-title {
+  margin: 0 0 0.7em;
+  font-size: 1.85em;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #111;
+}
+.nk-xlate__live-title:not(:first-child) { margin-top: 0.4em; }
+
+/* Section heading (h1) — bold, larger than body, top margin. */
+.nk-xlate__live-h1 {
+  margin: 1.5em 0 0.5em;
+  font-size: 1.4em;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #161616;
+}
+.nk-xlate__live-h1:first-child { margin-top: 0; }
+
+/* Sub-heading (h2) — semibold. */
+.nk-xlate__live-h2 {
+  margin: 1.2em 0 0.4em;
+  font-size: 1.15em;
+  line-height: 1.3;
+  font-weight: 600;
+  color: #222;
+}
+.nk-xlate__live-h2:first-child { margin-top: 0; }
+
+/* Bulleted list item — bullet glyph + hanging indent so wrapped lines align
+   under the text, not the bullet. */
+.nk-xlate__live-li {
+  display: flex;
+  gap: 0.55em;
+  margin: 0 0 0.4em;
+  padding-left: 0.4em;
+  align-items: baseline;
+}
+.nk-xlate__live-bullet {
+  flex: 0 0 auto;
+  color: #555;
+  line-height: inherit;
+  transform: translateY(-0.04em);
+}
+.nk-xlate__live-li-text {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Tighter spacing between consecutive bullets than around prose. */
+.nk-xlate__live-li + .nk-xlate__live-li { margin-top: -0.05em; }
+
+/* Narrow screens: edge-to-edge read, lighter padding (matches the final
+   translated page's responsive treatment). */
+@media (max-width: 720px) {
+  .nk-xlate__live-scroll { padding: 14px 10px 40px; }
+  .nk-xlate__live-page {
+    padding: 28px 22px;
+    font-size: 15px;
+    border-radius: 6px;
+  }
+  .nk-xlate__strip { padding: 7px 12px 9px; gap: 8px; }
+}
+
+/* The card itself: a compact, centered sheet — logo, cycling line, bar, count.
+   Positioned so its own stacking context sits ABOVE the behind-text panel. */
+.nk-xlate__card {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: min(320px, 86%);
+  padding: 26px 28px 22px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.38);
+  text-align: center;
+}
+/* The cycling phrase spans the card's content width so the two-line clamp has
+   room to wrap; the side padding above keeps it clear of the card edges. It can
+   never grow past the card — `max-width:100%` + the .nk-loader__fade--wrap
+   line-clamp cap it, and long words break. */
+.nk-xlate__card .nk-loader__fade {
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* The progress bar — full width of the card. */
+.nk-xlate__bar {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-3, var(--surface-2));
+  overflow: hidden;
+}
+.nk-xlate__bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary, #6ea8fe);
+  transition: width 220ms ease;
+}
+/* Indeterminate (before the first progress / model warming): a slim segment
+   sweeps left↔right. We size the fill here (width fixed) and animate its
+   position so no JS is needed. */
+.nk-xlate__bar--indeterminate .nk-xlate__bar-fill {
+  width: 38%;
+  transition: none;
+  animation: nk-xlate-sweep 1.25s ease-in-out infinite;
+}
+@keyframes nk-xlate-sweep {
+  0%   { transform: translateX(-110%); }
+  50%  { transform: translateX(160%); }
+  100% { transform: translateX(-110%); }
+}
+
+/* The line under the bar: the live count (or "warming up") + optional
+   language pair. */
+.nk-xlate__meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 1.1em;
+}
+.nk-xlate__count {
+  font-size: 12px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+.nk-xlate__count--warming {
+  color: var(--ink-3);
+  font-style: italic;
+}
+.nk-xlate__pair {
+  font-size: 10.5px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nk-xlate--overlay { backdrop-filter: none; }
+  .nk-xlate__bar--indeterminate .nk-xlate__bar-fill { animation: none; width: 100%; opacity: 0.5; }
+}
+
+/* Scroll region — its own scrollbar so a long translation scrolls
+   independently of the bar. Soft neutral backdrop frames the white page. */
+.doc-translated__scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 28px 20px 56px;
+  background: var(--surface-2);
+  display: flex;
+  justify-content: center;
+}
+
+/* The page — a centered white sheet with generous padding + readable
+   typography, so the translation reads like a real document. */
+.doc-translated__page {
+  width: 100%;
+  max-width: 760px;
+  background: #fff;
+  color: #1a1a1a;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.18);
+  padding: 56px 64px;
+  font-size: 16px;
+  line-height: 1.75;
+  /* A serif face reads as "document" and distinguishes the translation from
+     the app chrome; falls back gracefully. */
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+}
+.doc-translated__p {
+  margin: 0 0 1.05em;
+  /* Preserve intra-paragraph line breaks from the source while wrapping. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.doc-translated__p:last-child { margin-bottom: 0; }
+
+/* Structured page: the translation is rendered as TYPED blocks (title,
+   headings, bullets, paragraphs) so it reads like a real formatted document
+   instead of one flat blob. The hierarchy below mirrors a clean document:
+   a large title, sans-ish weighty headings, hanging-indent bullets, and
+   comfortable body paragraphs. All blocks wrap + break long words. */
+.doc-translated__page--structured > * { word-break: break-word; }
+/* Gentle fade as each translated block streams in (mirrors the live-render
+   page's block-in). Only animates while the document is actively becoming the
+   new language; the final, settled render has no motion. */
+.doc-translated__page--structured > * {
+  animation: nk-xlate-block-in 320ms ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .doc-translated__page--structured > * { animation: none; }
+}
+
+/* Document title — large, bold, centered-feel lead. */
+.doc-translated__title {
+  margin: 0 0 0.7em;
+  font-size: 1.85em;
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #111;
+}
+.doc-translated__title:not(:first-child) { margin-top: 0.4em; }
+
+/* Section heading (h1). */
+.doc-translated__h1 {
+  margin: 1.5em 0 0.5em;
+  font-size: 1.4em;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #161616;
+}
+.doc-translated__h1:first-child { margin-top: 0; }
+
+/* Sub-heading (h2). */
+.doc-translated__h2 {
+  margin: 1.2em 0 0.4em;
+  font-size: 1.15em;
+  line-height: 1.3;
+  font-weight: 600;
+  color: #222;
+}
+.doc-translated__h2:first-child { margin-top: 0; }
+
+/* Bulleted list item — bullet glyph + hanging indent so wrapped lines align
+   under the text, not the bullet. */
+.doc-translated__li {
+  display: flex;
+  gap: 0.55em;
+  margin: 0 0 0.4em;
+  padding-left: 0.4em;
+  align-items: baseline;
+}
+.doc-translated__bullet {
+  flex: 0 0 auto;
+  color: #555;
+  line-height: inherit;
+  /* Nudge the glyph onto the text baseline. */
+  transform: translateY(-0.04em);
+}
+.doc-translated__li-text {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+}
+/* Tighter spacing between consecutive bullets than around prose. */
+.doc-translated__li + .doc-translated__li { margin-top: -0.05em; }
+
+.doc-translated__placeholder {
+  color: #8a8a8a;
+  font-style: italic;
+  text-align: center;
+  padding: 40px 0;
+}
+
+/* Narrow screens: drop the floating-sheet styling for an edge-to-edge read. */
+@media (max-width: 720px) {
+  .doc-translated__scroll { padding: 14px 10px 40px; }
+  .doc-translated__page {
+    padding: 28px 22px;
+    font-size: 15px;
+    border-radius: 6px;
+  }
+}
+
+/* Mobile / narrow: the tool panel stacks under the file like the
+   comment panel does, so it doesn't swallow the whole viewport. */
+@media (max-width: 720px) {
+  .toolpanel--doc { width: 100%; }
+
+  .toolpanel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: 60vh;
+    border-right: none;
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.35);
+    animation: none;
+  }
+  .toolrail {
+    left: 10px;
+    gap: 10px;
+  }
+  .toolrail__bubble {
+    width: 42px;
+    height: 42px;
+  }
+}

@@ -18,10 +18,10 @@ import {
   SecurityPanel,
   NotificationsPanel,
   PlaybackPanel,
+  SftpPanel,
   PlanCard,
 } from "./account-panels.jsx";
 import { CloudSyncPanel } from "./cloud-sync-panel.jsx";
-import { AboutPanel } from "./about-panel.jsx";
 import toast from "react-hot-toast";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { updateMe, linkGoogleAccount, unlinkGoogleAccount } from "@/api/auth";
@@ -433,9 +433,9 @@ function PrivacyStanceCard() {
   return (
     <div
       style={{
-        margin: "0 0 14px",
+        margin: "0 0 20px",
         padding: "14px 16px",
-        borderRadius: 12,
+        borderRadius: 14,
         background: "color-mix(in oklab, var(--success, #22c55e) 8%, transparent)",
         border: "1px solid color-mix(in oklab, var(--success, #22c55e) 28%, transparent)",
         display: "flex",
@@ -578,11 +578,11 @@ const APPSET_NAV = [
   // it's where most users will go after enabling AI features
   // ("now let me pull in my Drive photos").
   { id: "cloud",         label: "Cloud sync",    icon: "cloud",    tone: "sky"    },
+  // SFTP access — mount the library as a drive. Sits next to Cloud sync
+  // because it's the other "get files in and out" surface; it's where a
+  // user goes to bulk-move files without the browser uploader.
+  { id: "sftp",          label: "SFTP access",   icon: "key",      tone: "green"  },
   { id: "data",          label: "Your data",     icon: "download", tone: "green"  },
-  // "About" lists every shipped feature so users can see what's
-  // actually wired up in their build — useful for self-hosters who
-  // want to know whether their .env unlocks Stripe, cloud sync, etc.
-  { id: "about",         label: "About this app", icon: "info",    tone: "ink"    },
 ];
 
 // Pretty-print a granted/withdrawn ISO timestamp for the consent rows.
@@ -1077,7 +1077,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   )}
                 </div>
 
-                <Collapsible label="Sign-in & security" defaultOpen count={4} id="acct-signin">
+                <Collapsible label="Sign-in & security" count={4} id="acct-signin" alwaysOpen>
                   <div className="applist">
                     <EmailVerifyRow user={user}/>
                     <Expandable id="pwd" icon="lock" tone="red"
@@ -1092,12 +1092,12 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Account state" id="acct-state">
-                  <UserStateGrid user={user}/>
+                <Collapsible label="Plan" id="acct-plan" alwaysOpen>
+                  <PlanCard/>
                 </Collapsible>
 
-                <Collapsible label="Plan" id="acct-plan">
-                  <PlanCard/>
+                <Collapsible label="Account state" id="acct-state" alwaysOpen>
+                  <UserStateGrid user={user}/>
                 </Collapsible>
               </>
             )}
@@ -1122,14 +1122,14 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   "Manage" sends them to the canonical Account or
                   Security tab so we don't duplicate the editing UI.
                 */}
-                <Collapsible label="Account verification" defaultOpen count={2} id="priv-verify">
+                <Collapsible label="Account verification" count={2} id="priv-verify" alwaysOpen>
                   <div className="applist">
                     <EmailVerifyRow user={user}/>
                     <UserTwoFactorRow user={user} onOpenTwoFA={() => setTab("security")}/>
                   </div>
                 </Collapsible>
 
-                <Collapsible label="AI on your library" defaultOpen count={3} id="priv-ai">
+                <Collapsible label="AI on your library" count={3} id="priv-ai" alwaysOpen>
                   <div className="applist">
                     <Row icon="sparkles" tone="purple" title="AI summaries"
                          desc={subFor("ai_summary",
@@ -1154,7 +1154,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Photo metadata" count={2} id="priv-meta">
+                <Collapsible label="Photo metadata" count={2} id="priv-meta" alwaysOpen>
                   <div className="applist">
                     <Row icon="map" tone="green" title="Keep GPS from photos"
                          desc={subFor("gps_retention",
@@ -1172,7 +1172,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Diagnostics" count={1} id="priv-diag">
+                <Collapsible label="Diagnostics" count={1} id="priv-diag" alwaysOpen>
                   <div className="applist">
                     <Row icon="info" tone="blue" title="Compression telemetry"
                          desc={subFor("bandit_compression_telemetry",
@@ -1185,7 +1185,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Email from us" count={1} id="priv-newsletter">
+                <Collapsible label="Email from us" count={1} id="priv-newsletter" alwaysOpen>
                   <div className="applist">
                     <Row icon="mail" tone="blue" title="Weekly newsletter"
                          desc={subFor("newsletter",
@@ -1195,7 +1195,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Documents" count={3} id="priv-docs">
+                <Collapsible label="Documents" count={3} id="priv-docs" alwaysOpen>
                   <div className="applist">
                     <Row icon="document" tone="indigo" title="Privacy Notice"
                          desc="What we collect, why, and how to control it"
@@ -1228,7 +1228,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </div>
 
-                <Collapsible label="Features" defaultOpen count={3} id="ai-features">
+                <Collapsible label="Features" count={3} id="ai-features" alwaysOpen>
                   <div className="applist">
                     <Row icon="sparkles" tone="purple" title="AI summaries"
                          desc={subFor("ai_summary",
@@ -1248,7 +1248,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Library maintenance" count={6} id="ai-maintenance">
+                <Collapsible label="Library maintenance" count={6} id="ai-maintenance" alwaysOpen>
                   <div className="applist">
                   <Row icon="refresh" tone="purple" title="Re-summarize entire library"
                        desc={(() => {
@@ -1330,12 +1330,14 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                 <div className="appset__main-head">
                   <div>
                     <h3>Cloud sync</h3>
-                    <p>Pull files from Google Drive. Read-only. AI off by default.</p>
+                    <p>Pull files from Google Drive, iCloud, Proton Drive, MEGA, and more. Read-only — AI stays off until you turn it on per source.</p>
                   </div>
                 </div>
                 <CloudSyncPanel/>
               </>
             )}
+
+            {tab === "sftp" && <SftpPanel user={user}/>}
 
             {tab === "data" && (
               <>
@@ -1346,7 +1348,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </div>
 
-                <Collapsible label="Overview" defaultOpen count={3} id="data-overview">
+                <Collapsible label="Overview" count={3} id="data-overview" alwaysOpen>
                   <div className="applist">
                     <Expandable id="storage" icon="layers" tone="green"
                                 title="Storage"
@@ -1362,7 +1364,7 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Trash" count={1} id="data-trash">
+                <Collapsible label="Trash" count={1} id="data-trash" alwaysOpen>
                   <div className="applist">
                     <Expandable id="trash" icon="trash" tone="orange"
                                 title="Empty trash"
@@ -1371,24 +1373,12 @@ export function AccountModal({ open, onClose, onOpenSubmodal, user, onUserChange
                   </div>
                 </Collapsible>
 
-                <Collapsible label="Danger zone" count={1} id="data-danger">
+                <Collapsible label="Danger zone" count={1} id="data-danger" alwaysOpen>
                   <div className="applist">
                     <Row icon="trash" tone="red" title="Delete account" desc="Permanently remove your library"
                          tail={<Chev/>} onClick={() => onOpenSubmodal?.("delete")}/>
                   </div>
                 </Collapsible>
-              </>
-            )}
-
-            {tab === "about" && (
-              <>
-                <div className="appset__main-head">
-                  <div>
-                    <h3>About this app</h3>
-                    <p>Everything implemented in this build, grouped by area.</p>
-                  </div>
-                </div>
-                <AboutPanel/>
               </>
             )}
           </main>

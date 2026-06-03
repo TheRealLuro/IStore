@@ -2801,6 +2801,98 @@ html[data-theme="dark"] .cat-iot {
   display: flex; align-items: center; gap: 6px;
 }
 
+/* ============================================================
+   COMMAND PALETTE (⌘K) — the topbar search dropdown. Renders a
+   grouped, keyboard-first list: Commands (navigate/filter/sort/
+   actions/people) above a single Files row that runs the existing
+   semantic search. Styling mirrors .search-history / .sort-dd so
+   it reads as the same surface family.
+   ============================================================ */
+.cmdk {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+  min-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2);
+  padding: 6px;
+  z-index: 60;
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+  animation: pop 160ms var(--ease);
+}
+.cmdk__group { padding: 2px 0; }
+.cmdk__group + .cmdk__group { border-top: 1px solid var(--line); margin-top: 2px; padding-top: 4px; }
+.cmdk__group-head {
+  padding: 6px 10px 4px;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600;
+}
+.cmdk__row {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%; padding: 8px 10px;
+  border: 0; background: transparent; color: var(--ink);
+  font: inherit; font-size: 13px; text-align: left;
+  border-radius: 8px; cursor: pointer;
+  transition: background 120ms var(--ease);
+}
+/* Hover + keyboard highlight share one active state so mouse and
+   keyboard never disagree about which row is "current". */
+.cmdk__row:hover,
+.cmdk__row[data-active="true"] { background: var(--surface-2); }
+.cmdk__row-icon { color: var(--ink-3); flex-shrink: 0; }
+.cmdk__row[data-active="true"] .cmdk__row-icon { color: var(--ink); }
+.cmdk__row-label {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cmdk__row-group {
+  margin-left: auto; flex-shrink: 0;
+  font-size: 10.5px; color: var(--ink-3);
+  letter-spacing: 0.02em;
+  padding: 2px 6px; border-radius: 5px;
+  background: var(--surface-3);
+  opacity: 0; transition: opacity 120ms var(--ease);
+}
+.cmdk__row:hover .cmdk__row-group,
+.cmdk__row[data-active="true"] .cmdk__row-group { opacity: 1; }
+.cmdk__row-x {
+  margin-left: auto; flex-shrink: 0;
+  display: flex; align-items: center; padding: 4px; border-radius: 4px;
+  color: var(--ink-3); opacity: 0; transition: opacity 120ms var(--ease);
+}
+.cmdk__row:hover .cmdk__row-x { opacity: 1; }
+.cmdk__row-x:hover { background: var(--surface-3); color: var(--ink); }
+.cmdk__semantic {
+  margin: 2px 4px; padding: 8px 10px;
+  background: var(--surface-2); border-radius: 8px;
+  font-size: 11.5px; color: var(--ink-3);
+  display: flex; align-items: center; gap: 6px;
+}
+.cmdk__clear {
+  width: 100%; margin-top: 2px; padding: 8px 10px;
+  border: 0; background: transparent; color: var(--ink-3);
+  font: inherit; font-size: 12px; text-align: left;
+  display: flex; align-items: center; gap: 8px;
+  border-radius: 8px; cursor: pointer;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+.cmdk__clear:hover { background: var(--surface-2); color: var(--ink); }
+.cmdk__footer {
+  display: flex; align-items: center; gap: 14px;
+  margin-top: 4px; padding: 8px 10px 4px;
+  border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--ink-3);
+}
+.cmdk__footer span { display: inline-flex; align-items: center; gap: 5px; }
+.cmdk__footer kbd {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10.5px; line-height: 1;
+  padding: 2px 5px; border-radius: 4px;
+  background: var(--surface-3); color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+
 /* (FAB rules consolidated above — earlier .fab-top block wins) */
 
 /* logout button */

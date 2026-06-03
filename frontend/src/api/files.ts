@@ -262,6 +262,38 @@ export async function pickBestOf(
   });
 }
 
+/** One entry in an image's visually-similar / burst group. `is_anchor`
+ *  flags the image the lookup was anchored on (always similarity 1.0,
+ *  returned first). */
+export interface SimilarImage {
+  image_id: string;
+  similarity: number;
+  is_anchor: boolean;
+}
+export interface SimilarGroupResponse {
+  anchor_id: string;
+  threshold: number;
+  count: number;
+  results: SimilarImage[];
+}
+/** Feature #172 — pull one image's near-duplicate group so best-of can
+ *  run on it from a single open photo or gallery card (not just a
+ *  multi-selection). Owner-scoped pgvector KNN server-side; the anchor is
+ *  always result #0 so the returned set is self-contained. `threshold`
+ *  loosens the near-duplicate gate when a photo has only loose cousins.
+ *  Backed by the NEW unwired GET /images/{id}/similar endpoint
+ *  (backend/similar.py). */
+export async function getSimilarImages(
+  id: string,
+  opts: { limit?: number; threshold?: number } = {},
+): Promise<SimilarGroupResponse> {
+  const qs = new URLSearchParams();
+  if (opts.limit != null) qs.set("limit", String(opts.limit));
+  if (opts.threshold != null) qs.set("threshold", String(opts.threshold));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return api.get<SimilarGroupResponse>(`/images/${id}/similar${suffix}`);
+}
+
 /** Re-run the vision classification pass on images missing scene/content_type.
  *  Mainly used to populate filter-chip metadata on cloud-synced (Drive)
  *  images, since the cloud-sync ingest path intentionally skips vision at

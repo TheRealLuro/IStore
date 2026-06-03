@@ -62,6 +62,12 @@ export function CommentPanel({
   open,
   expanded = true,
   onToggleExpanded,
+  // When true, the COLLAPSED state renders nothing instead of the lone
+  // floating bubble — used when an external tool rail (image lightbox)
+  // already provides the comments bubble, so we don't show two. The
+  // expanded panel is unchanged. Defaults false so every other surface
+  // keeps its self-contained bubble + panel behavior.
+  hideBubble = false,
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -191,8 +197,10 @@ export function CommentPanel({
   // Collapsed state: a small floating bubble pinned to the left
   // edge. Click expands the panel. Count badge surfaces unread-ish
   // signal (currently total comments — once we add read-state we'll
-  // wire that here instead).
+  // wire that here instead). When `hideBubble` is set, an external rail
+  // owns the bubble, so we render nothing in the collapsed state.
   if (!expanded) {
+    if (hideBubble) return null;
     return (
       <button
         type="button"

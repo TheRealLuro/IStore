@@ -330,9 +330,17 @@ COOKIE_NAME = "neuthek_session"
 cookie_transport = CookieTransport(
     cookie_name=COOKIE_NAME,
     cookie_max_age=settings.jwt_lifetime_seconds,
-    cookie_secure=settings.is_production,
+    # SameSite=None + Secure so the session cookie is accepted when the app
+    # is loaded inside a cross-site iframe (the offline demo deck embeds the
+    # localhost app). SameSite=None REQUIRES Secure; on http://localhost the
+    # Secure flag is honoured because localhost is a secure context, so this
+    # also works in plain-http dev. Trade-off: SameSite=None drops the Lax
+    # CSRF mitigation — the API stays protected cross-site by CORS
+    # (allow_origins = the FE origin only) + JSON-only bodies, but a public
+    # production deploy should additionally carry explicit CSRF tokens.
+    cookie_secure=True,
     cookie_httponly=True,
-    cookie_samesite="lax",
+    cookie_samesite="none",
     cookie_path="/",
 )
 

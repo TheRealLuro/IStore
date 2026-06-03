@@ -360,6 +360,60 @@ def get_florence2():
 
 
 @lru_cache(maxsize=1)
+def get_trocr():
+    """Load Microsoft TrOCR (handwritten) once — the handwriting line
+    RECOGNIZER that complements Florence-2's region DETECTION.
+
+    Florence-2 finds WHERE text is (bounding boxes) reliably even on cursive,
+    but transcribes handwriting poorly. TrOCR (`microsoft/trocr-base-
+    handwritten`, ~330 MB, Apache-2.0) is trained specifically to READ a single
+    handwritten text LINE, so the OCR / in-image-translate paths crop each
+    Florence region and run it through TrOCR for an accurate read.
+
+    PINNED TO CPU on purpose: the 8 GB GPU is already near-full with Florence-2
+    + CLIP + the translator (~6.4/8 GB), so we deliberately do NOT add a
+    resident GPU model here. TrOCR runs ~1-3 s per cropped line on CPU, which is
+    the accepted trade for actually reading handwriting. The device is FORCED to
+    "cpu" regardless of `get_device()` so a CUDA box still keeps its VRAM free.
+
+    First call downloads the weights to ${HF_HOME} (pre-baked in the Dockerfile
+    so production never pays it). Returns (model, processor, device="cpu").
+    """
+    import torch
+
+    # Full-path imports bypass transformers' lazy top-level loader, which can
+    # wedge in a partial ImportError state once open_clip / insightface / the
+    # Florence loader have touched the transformers namespace (same workaround
+    # as get_doc_summarizer / the NLLB loader).
+    from transformers.models.trocr.processing_trocr import TrOCRProcessor
+    from transformers.models.vision_encoder_decoder.modeling_vision_encoder_decoder import (  # noqa: E501
+        VisionEncoderDecoderModel,
+    )
+
+    from backend.config import settings
+
+    device = "cpu"  # FORCED — never touch the GPU (see docstring).
+    model_name = getattr(
+        settings, "trocr_model_name", "microsoft/trocr-base-handwritten"
+    )
+
+    # fp32 on CPU (CPU has no usable fp16 path); low_cpu_mem_usage=False forces
+    # full materialization so a later .to() can't hit the meta-tensor error
+    # (mirrors every other loader here).
+    model = VisionEncoderDecoderModel.from_pretrained(
+        model_name, torch_dtype=torch.float32, low_cpu_mem_usage=False
+    )
+    model = _materialize_to(model, device).eval()
+    processor = TrOCRProcessor.from_pretrained(model_name)
+
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    _report_loaded("trocr", device)
+    return model, processor, device
+
+
+@lru_cache(maxsize=1)
 def get_caption_model():
     """BLIP fallback for image captioning when Florence-2 fails to load.
 

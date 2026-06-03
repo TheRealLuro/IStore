@@ -1,0 +1,24 @@
+# ngrok tunnels — expose the neuthek stack running on your 5070 box so Claude
+# (and you, from anywhere) can reach it. See NGROK_SETUP.md for full steps.
+#
+#   1) put your authtoken below (or `ngrok config add-authtoken <TOKEN>`)
+#   2) run:  ngrok start --all --config ngrok.yml
+#   3) give Claude BOTH printed URLs (web + api)
+#
+# Note: ngrok's free tier may allow only one online tunnel at a time. If so,
+# expose just the `api` tunnel (that's all Claude needs for diagnostics +
+# the translate/OCR endpoints) and run the app locally on the 5070, or upgrade
+# for both.
+version: "2"
+authtoken: PASTE_YOUR_NGROK_AUTHTOKEN_HERE
+
+tunnels:
+  # The whole app (Vite dev server / frontend). Open this in a browser to use neuthek remotely.
+  web:
+    addr: 5173
+    proto: http
+
+  # The backend API. Claude hits this for health checks + the translation/OCR/TTS endpoints.
+  api:
+    addr: 8000
+    proto: http

@@ -200,7 +200,7 @@ html[data-theme="light"] .preview-backdrop {
    * here left the height indefinite and broke the viewers' inner scroll.) */
   min-width: min(460px, 94vw);
   min-height: 220px;
-  max-width: min(1100px, 94vw);
+  max-width: min(1600px, 94vw);
   max-height: min(92vh, 1280px);
   background: var(--surface-2);
   border-radius: 18px;
@@ -212,7 +212,7 @@ html[data-theme="light"] .preview-backdrop {
   animation: lb-pop 280ms cubic-bezier(0.32, 0.72, 0, 1.05);
 }
 .pdf-modal.pdf-modal--fill {
-  width: min(1100px, 94vw);
+  width: min(1600px, 94vw);
   height: min(92vh, 1280px);
 }
 .pdf-modal.pdf-modal--fill .pdf-modal__body { flex: 1 1 auto; }

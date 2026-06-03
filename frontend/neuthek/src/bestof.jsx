@@ -476,7 +476,7 @@ export function BestOfModal({ open, onClose, imageIds = [], onAfterKeep }) {
 
               <div className="bo2-frames-label">
                 <span className="bo2-frames-label__title">All frames</span>
-                <span className="bo2-frames-label__hint">Tap to override</span>
+                <span className="bo2-frames-label__hint">Hover to compare · tap to override</span>
               </div>
               <div className="bo2-frames">
                 {shots.map((shot, i) => {

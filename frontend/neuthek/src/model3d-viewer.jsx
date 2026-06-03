@@ -89,39 +89,113 @@ function isBinarySTL(buffer) {
   return magic !== "solid";
 }
 
-// Frame the camera on the loaded object: walk its bounding box, center
-// the controls target there, and back the camera off along a fixed
-// diagonal by enough distance that the bounding sphere fits the
-// vertical FOV. Mirrors the canonical three.js "fit camera to object"
-// recipe. Also sets near/far around the model so z-fighting / clipping
-// don't bite on very large or very small models. Returns the model's
-// max dimension so the caller can size a matching ground.
-function frameObject(object, camera, controls) {
+// Frame the camera on the loaded object via its bounding SPHERE (not
+// just the box): recenter the model at the world origin, point the
+// controls target there, and back the camera off along a fixed diagonal
+// by enough distance that the sphere fits the vertical FOV. Mirrors the
+// canonical three.js "fit camera to object" recipe.
+//
+// Two things here kill the "model vanishes at certain rotation angles"
+// bug:
+//   1. near/far are derived from the sphere RADIUS (near ≈ radius/100,
+//      far ≈ radius*100 from the camera) — wide enough that no part of
+//      the model is ever clipped by the z-planes as it spins, tight
+//      enough to preserve depth precision on tiny or huge models.
+//   2. we recenter the model at the origin first, so the orbit pivot
+//      and the geometry share an origin and the bounds can't drift out
+//      of the frustum.
+// Returns the model's bounding-sphere radius so the caller can size a
+// matching ground/contact shadow.
+function frameObject(object, camera, controls, recenter = false) {
   const box = new THREE.Box3().setFromObject(object);
   if (box.isEmpty()) return 0;
-  const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+  // Recenter the model at the world origin ONCE (on first load). Shifting
+  // the object so its bounding-box center sits at (0,0,0) keeps the orbit
+  // pivot, the geometry, and the frustum all sharing an origin — the
+  // simplest guard against bounds drifting out of view at extreme angles.
+  if (recenter) {
+    object.position.sub(center);
+    object.updateMatrixWorld(true);
+    box.setFromObject(object);
+    box.getCenter(center); // now ≈ origin
+  }
+
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const radius = sphere.radius || (box.getSize(new THREE.Vector3()).length() / 2) || 1;
   const fov = (camera.fov * Math.PI) / 180;
-  const fitDist = (maxDim / 2) / Math.tan(fov / 2);
-  // 1.6× breathing room so the model doesn't touch the edges, and a
-  // diagonal vantage so depth reads at a glance.
-  const dist = fitDist * 1.6;
+  // Distance at which a sphere of `radius` exactly fills the vertical
+  // FOV, then 1.4× breathing room so the model doesn't kiss the edges.
+  const fitDist = (radius / Math.sin(fov / 2)) * 1.4;
   const dir = new THREE.Vector3(1, 0.7, 1).normalize();
-  camera.position.copy(center).addScaledVector(dir, dist);
-  camera.near = Math.max(dist / 1000, 0.01);
-  camera.far = dist * 1000;
+  camera.position.copy(sphere.center).addScaledVector(dir, fitDist);
+  // Clip planes keyed to the model size — never clip the model as it
+  // rotates (far), keep z-precision on small models (near). radius/100
+  // and radius*100 give a 4-decade depth range centered on the model.
+  camera.near = Math.max(radius / 100, 1e-4);
+  camera.far = radius * 100 + fitDist;
   camera.updateProjectionMatrix();
-  controls.target.copy(center);
-  controls.maxDistance = dist * 8;
+  controls.target.copy(sphere.center);
+  controls.minDistance = radius * 0.05;
+  controls.maxDistance = radius * 100;
   controls.update();
-  return maxDim;
+  return radius;
+}
+
+// Walk a freshly-loaded scene and make every mesh render correctly from
+// any angle and under any light:
+//   - side = THREE.DoubleSide so open / non-manifold / inward-facing
+//     meshes show their far wall instead of being back-face culled
+//     (the "only one side renders" bug). Applied to BOTH our default
+//     material and any materials a glTF/OBJ shipped.
+//   - computeVertexNormals() when a mesh has positions but no normals,
+//     so the standard material actually shades (flat unlit otherwise).
+//   - computeBoundingBox() + computeBoundingSphere() so three's
+//     frustum-culling test uses a CORRECT sphere — a stale/!null sphere
+//     from a loader (or one left over after we edited the geometry) is
+//     the other half of the "disappears at angles" bug.
+// Returns { triangles, vertices, objects, meshes } for the meta readout
+// + the wireframe toggle.
+function prepareModel(object) {
+  let triangles = 0;
+  let vertices = 0;
+  let objects = 0;
+  const meshes = [];
+  object.traverse((child) => {
+    if (!child.isMesh) return;
+    objects += 1;
+    meshes.push(child);
+    const g = child.geometry;
+    if (g) {
+      if (!g.attributes.normal && g.attributes.position) g.computeVertexNormals();
+      // Recompute bounds from the (possibly normal-augmented) geometry so
+      // frustum culling can't wrongly hide the mesh at some orientations.
+      g.computeBoundingBox();
+      g.computeBoundingSphere();
+      const pos = g.attributes.position;
+      const idx = g.index;
+      triangles += idx ? idx.count / 3 : (pos ? pos.count / 3 : 0);
+      vertices += pos ? pos.count : 0;
+    }
+    if (!child.material) child.material = defaultMaterial();
+    // Force two-sided rendering on whatever material(s) this mesh has so
+    // every face is visible + lit from either side.
+    const mats = Array.isArray(child.material) ? child.material : [child.material];
+    for (const m of mats) {
+      if (!m) continue;
+      m.side = THREE.DoubleSide;
+      m.needsUpdate = true;
+    }
+  });
+  return { triangles: Math.round(triangles), vertices, objects, meshes };
 }
 
 // Default material for geometry-only formats (STL, and OBJ files that
 // shipped no .mtl). A mid-grey physically-based surface that picks up
 // the environment map for soft, believable highlights without looking
-// flat or chromey.
+// flat or chromey. DoubleSide so open meshes don't show a hole when the
+// camera sees their inner wall.
 function defaultMaterial() {
   return new THREE.MeshStandardMaterial({
     color: 0x9aa4b2,
@@ -129,6 +203,7 @@ function defaultMaterial() {
     roughness: 0.55,
     envMapIntensity: 0.9,
     flatShading: false,
+    side: THREE.DoubleSide,
   });
 }
 
@@ -243,16 +318,27 @@ export function Model3dViewer({ fileId, fileName, fileExt }) {
     const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
     scene.environment = envRT.texture;
 
-    // A soft key + cool rim on top of the IBL so silhouette edges and
-    // contours still pop on an otherwise evenly-lit grey mesh.
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x40454f, 0.35);
+    // Multi-direction rig on top of the IBL so EVERY face is lit no
+    // matter how the model is turned (the lone key/back pair left faces
+    // pointing away from both in shadow). Ambient floor + hemisphere for
+    // even base fill, then key / fill / back / bottom directionals from
+    // four directions so silhouette edges and contours still pop.
+    const ambient = new THREE.AmbientLight(0xffffff, 0.25);
+    scene.add(ambient);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x40454f, 0.45);
     scene.add(hemi);
     const key = new THREE.DirectionalLight(0xffffff, 0.85);
     key.position.set(3, 5, 4);
     scene.add(key);
-    const back = new THREE.DirectionalLight(0xbfd4ff, 0.35); // cool back/rim light
+    const fill = new THREE.DirectionalLight(0xffffff, 0.45); // opposite the key
+    fill.position.set(-5, 2, 4);
+    scene.add(fill);
+    const back = new THREE.DirectionalLight(0xbfd4ff, 0.4); // cool back/rim light
     back.position.set(-4, 2, -5);
     scene.add(back);
+    const under = new THREE.DirectionalLight(0xffffff, 0.25); // lifts down-facing faces
+    under.position.set(0, -5, 0);
+    scene.add(under);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -313,27 +399,10 @@ export function Model3dViewer({ fileId, fileName, fileExt }) {
         setError("Model contained no renderable scene.");
         return;
       }
-      let triangles = 0;
-      let vertices = 0;
-      let objects = 0;
-      const meshes = [];
-      object.traverse((child) => {
-        if (child.isMesh) {
-          objects += 1;
-          meshes.push(child);
-          const g = child.geometry;
-          if (g) {
-            // Some loaders hand back non-indexed geometry; need normals
-            // for the standard material to shade.
-            if (!g.attributes.normal) g.computeVertexNormals();
-            const pos = g.attributes.position;
-            const idx = g.index;
-            triangles += idx ? idx.count / 3 : (pos ? pos.count / 3 : 0);
-            vertices += pos ? pos.count : 0;
-          }
-          if (!child.material) child.material = defaultMaterial();
-        }
-      });
+      // Normalize the scene: DoubleSide on every material, vertex normals
+      // + fresh bounding volumes on every geometry, and a triangle/vertex
+      // tally for the meta readout.
+      const { triangles, vertices, objects, meshes } = prepareModel(object);
       // Remember the meshes so the wireframe toggle can flip every
       // material at once.
       stateRef.current.meshes = meshes;
@@ -342,19 +411,21 @@ export function Model3dViewer({ fileId, fileName, fileExt }) {
       // whole scene, which would include the larger ground shadow).
       stateRef.current.model = object;
       onResize();
-      const maxDim = frameObject(object, camera, controls);
-      // Soft contact shadow dropped to the bottom of the bounding box so
-      // the model reads as resting on a surface, not floating.
-      if (maxDim > 0) {
+      // Recenter at the origin + fit the camera to the bounding sphere.
+      const radius = frameObject(object, camera, controls, true);
+      // Soft contact shadow dropped to the bottom of the (now recentered)
+      // bounding box so the model reads as resting on a surface, not
+      // floating.
+      if (radius > 0) {
         const box = new THREE.Box3().setFromObject(object);
         const center = box.getCenter(new THREE.Vector3());
-        const { mesh: shadow, texture: shadowTex } = makeContactShadow(maxDim / 2);
-        shadow.position.set(center.x, box.min.y + maxDim * 0.001, center.z);
+        const { mesh: shadow, texture: shadowTex } = makeContactShadow(radius);
+        shadow.position.set(center.x, box.min.y + radius * 0.001, center.z);
         scene.add(shadow);
         stateRef.current.shadow = shadow;
         stateRef.current.shadowTex = shadowTex;
       }
-      setMeta({ format, triangles: Math.round(triangles), vertices, objects });
+      setMeta({ format, triangles, vertices, objects });
       setStatus("ready");
     };
 

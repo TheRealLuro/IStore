@@ -39,12 +39,13 @@ Both are idempotent and audit-logged.
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth.users import current_active_user
@@ -119,6 +120,82 @@ def effective_quota_bytes(user: User) -> int:
     return user.quota_bytes if user.quota_bytes is not None else DEFAULT_QUOTA_BYTES
 
 
+# ---------- atomic per-user quota lock ----------
+#
+# The quota gate is a CHECK (sum the user's bytes) followed by a COMMIT
+# (the new Image row) on a DIFFERENT statement. Between the two, a second
+# uploader — another web request, OR a parallel SFTP connection in the
+# `neuthek-sftp` container, OR the next file of a bulk `put` — can run the
+# same SUM, see the same "before" total, and ALSO commit. Both pass the
+# check; together they blow past the limit. Classic TOCTOU.
+#
+# We close it with a Postgres ADVISORY TRANSACTION lock keyed on the user.
+# `pg_advisory_xact_lock(key)` blocks until this transaction holds an
+# exclusive lock on `key`, and the lock auto-releases at COMMIT/ROLLBACK —
+# so it survives across the SUM *and* the row INSERT *and* the commit, all
+# on the same session/transaction, with zero manual unlock to leak. It is
+# DB-level, so it serializes the check+commit across PROCESSES (the API and
+# the standalone SFTP server are separate containers hitting one Postgres);
+# a bare in-process asyncio.Lock could not. Two uploaders for the same user
+# now run their check+commit strictly one-after-another: the second sees the
+# first's committed bytes in its live re-read and is admitted only if it
+# still fits — "fill up to the line, reject the rest". Different users take
+# different keys, so they never block each other.
+
+# A fixed 16-bit classifier that sits in the HIGH half of the int8
+# advisory key (bits 32-47), so the per-user quota lock space can't
+# collide with any other `pg_advisory_*` user elsewhere in the app whose
+# keys land in the low 32 bits. ASCII "NQ" (Neuthek Quota).
+_QUOTA_LOCK_NAMESPACE = 0x4E51  # 'N','Q'
+
+
+def _quota_lock_key(user_id) -> int:
+    """Derive a stable signed 64-bit advisory-lock key for a user.
+
+    Layout: bits 32-47 = the fixed quota namespace; low 32 bits = a
+    deterministic hash of the user's UUID. `pg_advisory_xact_lock` takes a
+    `bigint`, so the value stays within 48 bits and we re-sign it into
+    Postgres's signed int8 range. Collisions would only mean two *distinct*
+    users
+    occasionally share a lock (a tiny, safe over-serialization — never a
+    correctness loss), and the 32-bit hash makes that astronomically
+    unlikely for any realistic user count.
+    """
+    raw = str(user_id).encode("utf-8")
+    low = int.from_bytes(hashlib.blake2b(raw, digest_size=4).digest(), "big")
+    key = (_QUOTA_LOCK_NAMESPACE << 32) | low  # 0 .. 2**48-1, fits 63 bits
+    # Map into the signed int8 range Postgres expects for bigint.
+    if key >= 2 ** 63:
+        key -= 2 ** 64
+    return key
+
+
+async def _acquire_user_quota_lock(session: AsyncSession, user_id) -> bool:
+    """Take the per-user quota advisory lock on THIS transaction.
+
+    Returns True if held (the caller must keep using this same session
+    through its commit so the lock spans the check + the row insert).
+    Returns False if the lock couldn't be acquired (transient DB issue) —
+    the caller then falls back to a best-effort non-atomic check rather
+    than blocking ingestion on infrastructure noise.
+    """
+    try:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"),
+            {"k": _quota_lock_key(user_id)},
+        )
+        return True
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning(
+            "quota lock acquire failed for %s — falling back to a "
+            "non-atomic check for this upload",
+            user_id,
+            exc_info=True,
+        )
+        return False
+
+
 async def vault_used_bytes(session: AsyncSession, user_id) -> tuple[int, int]:
     """End-to-end-encrypted Vault footprint: `(bytes, file_count)`.
 
@@ -188,8 +265,8 @@ async def compute_used_bytes_fast(
 async def enforce_storage_quota(
     session: AsyncSession, user: User, incoming_bytes: int,
 ) -> None:
-    """Reject an upload that would push the account over its storage
-    quota. Raises HTTP 413 with a clear message when over.
+    """ATOMICALLY reject an upload that would push the account over its
+    storage quota. Raises HTTP 413 with a clear message when over.
 
     This is the cumulative-footprint gate the main `POST /images/` and
     folder-archive upload routes were MISSING — `enforce_upload_limits`
@@ -201,6 +278,23 @@ async def enforce_storage_quota(
     `compute_used_bytes_fast`; this brings the primary upload paths to
     parity using the same fast SQL estimate.
 
+    ATOMICITY (TOCTOU fix). The caller's contract is:
+        enforce_storage_quota(session, user, n)   # this function
+        store_upload(session, user, ...)           # INSERTs + commits
+    BOTH on the SAME `session` (web `POST /images/`, archive extract, and
+    the SFTP `_commit_upload` all follow this). We take a per-user
+    Postgres ADVISORY TRANSACTION lock on `session` BEFORE re-reading the
+    live total, and the lock is held until the caller's COMMIT (it's a
+    `_xact_` lock — released only at transaction end). So the
+    check-and-commit of two concurrent uploaders for the same user run
+    strictly serially: the second blocks on the lock, then re-reads a
+    total that already INCLUDES the first's committed bytes, and is
+    admitted only if it still fits. That gives the user's requested
+    "fill up to the line, reject the rest" semantics AND closes the
+    cross-connection race (two parallel SFTP connections, or a bulk
+    multi-file put, can no longer both pass). The lock is DB-level, so it
+    serializes across the API and the standalone SFTP container alike.
+
     The estimate is intentionally the cheap variant (no per-video MinIO
     stat walk) so it adds one set of indexed SUM queries per upload, not
     O(videos) network round-trips. It slightly under-counts video
@@ -211,8 +305,14 @@ async def enforce_storage_quota(
     Best-effort by design: if the usage query itself fails we log and
     allow the upload rather than block ingestion on a transient DB
     hiccup (the per-file + daily-byte limits still apply, and the next
-    upload re-checks).
+    upload re-checks). The advisory lock is likewise best-effort — if it
+    can't be taken we fall back to the (non-atomic) check rather than
+    refuse the upload, preserving the prior availability guarantee.
     """
+    # Serialize the check+commit per user. Held until the caller commits
+    # the new row on this same session, so the read below and the row
+    # insert that follows are one indivisible critical section.
+    await _acquire_user_quota_lock(session, user.id)
     try:
         used = await compute_used_bytes_fast(session, user.id)
     except Exception:

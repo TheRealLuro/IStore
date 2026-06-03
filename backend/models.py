@@ -43,6 +43,13 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     google_sub: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, unique=True, index=True
     )
+    # Sign in with Apple — the OIDC `sub` for this user's Apple account
+    # (issued per our Services ID). Mirror of google_sub: nullable, unique,
+    # indexed, so /auth/apple/callback resolves the neuthek user in one
+    # lookup and no two users can ever claim the same Apple identity.
+    apple_sub: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     age_confirmed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
@@ -1243,6 +1250,84 @@ class AuditLog(Base):
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class SftpAuthorizedKey(Base):
+    """SFTP-1 — a user-registered SSH PUBLIC key (migration 0054).
+
+    The read-only SFTP server (`backend/sftp_server.py`) authenticates a
+    connecting client by matching the key it presents against this user's
+    rows. A public key is not a secret, so it's stored in clear (unlike
+    the zero-knowledge vault `ssh_key` kind, which the server can't read
+    and therefore couldn't use for auth). RLS+FORCE fences the table to
+    the owner; the SFTP auth lookup runs under `app.rls_bypass='on'`
+    because it's resolving "which user owns this key" before any user
+    context exists — once resolved, all filesystem queries pin to that
+    user_id.
+    """
+
+    __tablename__ = "sftp_authorized_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Full OpenSSH single-line public key, stored verbatim so the server
+    # re-parses it with asyncssh at auth time.
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # SHA256 fingerprint (`SHA256:...`) computed server-side at insert.
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_sftp_authorized_keys_user_id", "user_id"),
+        Index(
+            "ix_sftp_authorized_keys_user_fpr",
+            "user_id",
+            "fingerprint",
+            unique=True,
+        ),
+    )
+
+
+class SftpCredential(Base):
+    """SFTP-1 — optional per-user SFTP password, Argon2-hashed (0054).
+
+    A SEPARATE credential from the account login password: SFTP transmits
+    the password to the server on every connect, so it must never be the
+    account password. One row per user (PK = user_id); the row exists only
+    while a password is set (clearing it DELETEs the row). RLS+FORCE.
+    """
+
+    __tablename__ = "sftp_credentials"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True
     )
 
 

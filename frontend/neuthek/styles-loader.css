@@ -1,0 +1,305 @@
+/* neuthek-loader.jsx — the branded loading animation.
+ *
+ * The neuthek mark inside a ring, the same motif as the launch film
+ * (marketing/public/film.html, the "hub" beat): a faint solid rim, a
+ * dashed orbit ring sweeping around it, and the angular neuthek glyph
+ * drawing itself on in a loop with its nodes pulsing.
+ *
+ * Everything animated here is transform / opacity / stroke-dashoffset
+ * only, so it runs on the compositor (no layout/paint per frame). Colors
+ * are pulled from the app's theme tokens (--ink, --ink-3, --line,
+ * --surface) so it inverts cleanly between light and dark.
+ *
+ * prefers-reduced-motion: the loop, draw, pulse and orbit all stop and
+ * the mark is shown fully drawn with a slow opacity breathe — a calm
+ * static fallback, no motion.
+ *
+ * Imported via frontend/neuthek/styles/index.css (the barrel).
+ */
+
+.nk-loader {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--ink, #0a0a0a);
+}
+
+/* Full-screen / fill-container variant for the initial app load: centers
+ * itself on a dim app-surface backdrop so the load reads as intentional. */
+.nk-loader--full {
+  width: 100%;
+  min-height: 100vh;
+  background: var(--surface-2, #0e0e0e);
+}
+
+.nk-loader__svg {
+  display: block;
+  overflow: visible;
+}
+
+/* ---- The static rim (film .wcirc): the SOLID ring snug around the mark.
+ * Mid-tone (--ink-3) so it reads as a clear, present line in both themes —
+ * the inner frame, with the dashed orbit sweeping a step outside it. ---- */
+.nk-loader__rim {
+  fill: none;
+  stroke: var(--ink-3, #8a8a8a);
+  stroke-width: 1.8;
+  opacity: 0.55;
+}
+
+/* ---- The orbiting dashed ring (film .worbit) ---- */
+.nk-loader__orbit {
+  fill: none;
+  stroke: var(--ink, #0a0a0a);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  /* short dash + long gap → a couple of comets chasing the rim */
+  stroke-dasharray: 2 12;
+  opacity: 0.85;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: nk-orbit 5.2s linear infinite;
+}
+
+/* ---- The neuthek mark ---- */
+.nk-loader__mark {
+  /* gentle overall breathe so the whole glyph feels alive */
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: nk-breathe 2.6s ease-in-out infinite;
+}
+
+.nk-loader__stroke {
+  fill: none;
+  stroke: var(--ink, #0a0a0a);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* path length ≈ 118; 120 covers it with a hair of slack so the line
+   * fully clears on the "erase" half of the loop */
+  stroke-dasharray: 120;
+  stroke-dashoffset: 120;
+  animation: nk-draw 2.6s ease-in-out infinite;
+}
+
+.nk-loader__node {
+  fill: var(--ink, #0a0a0a);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: nk-node 2.6s ease-in-out infinite;
+}
+
+/* the core node (top-right, where the mark draws out from) leads the
+ * pulse and never fully dims — it's the anchor of the glyph */
+.nk-loader__node--core {
+  animation-name: nk-node-core;
+}
+
+.nk-loader__label {
+  font-family: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3, #8a8a8a);
+  text-align: center;
+}
+
+/* The crafty cycling line: a typewriter that types each phrase on, holds,
+ * and swaps to the next (~2s each), with a blinking caret — the way Claude
+ * Code narrates while it works. Inherits .nk-loader__label; min-height
+ * reserves the row so the layout never reflows as the text grows. */
+.nk-loader__type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.3em;
+  white-space: nowrap;
+  color: var(--ink-2, var(--ink-3, #8a8a8a));
+}
+.nk-loader__caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 3px;
+  background: currentColor;
+  border-radius: 1px;
+  animation: nk-caret 1.05s steps(1, end) infinite;
+}
+.nk-loader__caret--still {
+  animation: none;
+  opacity: 0.45;
+}
+
+@keyframes nk-caret {
+  0%, 48%   { opacity: 0.9; }
+  49%, 100% { opacity: 0; }
+}
+
+/* The gently-cycling line for the translate loaders: each phrase cross-fades
+ * in (the React `key` remount replays the keyframe), with an animated
+ * ellipsis trailing it. Inherits .nk-loader__label; min-height keeps the row
+ * from collapsing as phrases of different lengths swap.
+ *
+ * Overflow guard (works in EVERY language, incl. very long translated phrases):
+ * the line is constrained to its container — `max-width:100%` + `min-width:0`
+ * so it can shrink inside a flex parent, and `overflow:hidden` so nothing spills
+ * past the edge. The two clamp variants below decide HOW a too-long phrase is
+ * trimmed (one line + ellipsis on the slim strip, two lines in the card). */
+.nk-loader__fade {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  min-height: 1.3em;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-2, var(--ink-3, #8a8a8a));
+}
+
+/* ── Strip clamp: ONE line, ellipsis. ──
+ * Used on the slim top strip (`.nk-xlate__strip`). The word truncates to a
+ * single line; long words break rather than push the row wider, and the whole
+ * line flex-shrinks so it never collides with the fixed i/n counter. */
+.nk-loader__fade--line {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.nk-loader__fade--line .nk-loader__fade-word {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* ── Card clamp: at most TWO lines, ellipsis. ──
+ * Used in the centered warming card. The phrase wraps and is clamped to two
+ * lines with an ellipsis; long words break so width can't blow out the card. */
+.nk-loader__fade--wrap {
+  white-space: normal;
+}
+.nk-loader__fade--wrap .nk-loader__fade-word {
+  /* `-webkit-box` + `-webkit-line-clamp` collapses to 0 height for a single
+     short word (no multi-line box is established), which rendered the warming
+     card's phrase BLANK — only the separate "…" showed. A plain inline-block
+     always shows the word and only ellipsizes on genuine overflow. */
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  text-align: center;
+  opacity: 1;
+}
+
+.nk-loader__fade-word {
+  animation: nk-fade-in 360ms ease-out both;
+}
+/* The "…" — three dots that rise in sequence so the line feels alive even
+ * while a phrase holds. (Strip variant drops these; the ellipsis stands in.) */
+.nk-loader__ellipsis {
+  display: inline-block;
+  flex: 0 0 auto;
+  margin-left: 1px;
+}
+.nk-loader__ellipsis span {
+  animation: nk-ellipsis 1.2s ease-in-out infinite;
+}
+.nk-loader__ellipsis span:nth-child(2) { animation-delay: 0.16s; }
+.nk-loader__ellipsis span:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes nk-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes nk-ellipsis {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+
+/* Reduced motion: hold the phrase + show a steady ellipsis (no fade, no
+ * rising dots). */
+@media (prefers-reduced-motion: reduce) {
+  .nk-loader__fade-word { animation: none; }
+  .nk-loader__ellipsis span { animation: none; opacity: 0.6; }
+}
+
+/* ----------------------------------------------------------------------
+ * Keyframes — transform / opacity / stroke-dashoffset only.
+ * -------------------------------------------------------------------- */
+
+/* orbit: the dashed ring rotates once per cycle */
+@keyframes nk-orbit {
+  to { transform: rotate(360deg); }
+}
+
+/* draw: the mark draws on, holds, then retracts — a continuous loop that
+ * reads as the logo perpetually "appearing" inside the circle */
+@keyframes nk-draw {
+  0%   { stroke-dashoffset: 120; }
+  38%  { stroke-dashoffset: 0; }   /* fully drawn a touch sooner */
+  80%  { stroke-dashoffset: 0; }   /* longer hold on the complete mark */
+  100% { stroke-dashoffset: -120; } /* retract off the far end */
+}
+
+/* nodes pop in just behind the drawing stroke, then settle */
+@keyframes nk-node {
+  0%, 12% { opacity: 0; transform: scale(0.2); }
+  44%     { opacity: 1; transform: scale(1); }
+  82%     { opacity: 1; transform: scale(1); }
+  100%    { opacity: 0; transform: scale(0.4); }
+}
+
+/* the core node stays present throughout, just breathing in scale */
+@keyframes nk-node-core {
+  0%, 100% { opacity: 0.85; transform: scale(0.92); }
+  46%      { opacity: 1;    transform: scale(1.08); }
+}
+
+/* whole-glyph breathe — a hair of scale so the lockup feels intentional */
+@keyframes nk-breathe {
+  0%, 100% { transform: scale(0.98); }
+  50%      { transform: scale(1.02); }
+}
+
+/* ----------------------------------------------------------------------
+ * Reduced motion — calm static fallback: mark fully drawn, nodes shown,
+ * no orbit / draw / pulse. A slow opacity breathe is the only movement
+ * (and even that is gentle and pausable by the OS-level setting).
+ * -------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .nk-loader__orbit {
+    animation: none;
+    /* keep a hint of the dashed ring, static */
+    opacity: 0.5;
+  }
+  .nk-loader__mark {
+    animation: none;
+    transform: none;
+  }
+  .nk-loader__stroke {
+    animation: none;
+    stroke-dashoffset: 0; /* fully drawn, no loop */
+  }
+  .nk-loader__node,
+  .nk-loader__node--core {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  /* a single, very slow fade on the whole lockup so it still signals
+   * "working" without any spin or draw */
+  .nk-loader__svg {
+    animation: nk-rm-fade 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes nk-rm-fade {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}

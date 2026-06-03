@@ -31,6 +31,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { fetchAsBlobUrl } from "@/api/files";
+import { NeuthekLoader } from "./neuthek-loader.jsx";
 
 // Tunables. 6 concurrent authed fetches keeps the network busy without
 // burying the main thread under dozens of simultaneous blob decodes;
@@ -203,15 +204,39 @@ export function AuthedThumb({ url, className, style, placeholder, children, eage
  *  layout is preserved and the IntersectionObserver has a node to watch;
  *  it swaps to the real <img> once the blob is ready. `eager` (default
  *  false) loads immediately — appropriate for hero/lightbox images that
- *  are always on screen when mounted. */
-export function AuthedImg({ url, alt = "", eager = false, className, style, ...rest }) {
+ *  are always on screen when mounted.
+ *
+ *  `loader` (default false): while the blob is loading, center the branded
+ *  neuthek loader inside the placeholder box instead of leaving it blank.
+ *  Used by the full-display hero / lightbox so OPENING a file (or switching
+ *  to a different one) shows a clean branded "loading" state rather than an
+ *  empty flash. It's deliberately DELAYED via CSS (`.authed-img__loading`)
+ *  so an instant cache hit never reveals it — only a real fetch does. Leave
+ *  it off for cheap gallery thumbnails. */
+export function AuthedImg({ url, alt = "", eager = false, loader = false, className, style, ...rest }) {
   const ref = useRef(null);
   const inView = useInView(ref, eager);
   const blob = useAuthedBlobUrl(url, { enabled: inView });
   if (!blob) {
-    // Placeholder node holds the ref so the observer can fire. aria-hidden
-    // + role=presentation keep it out of the a11y tree. Forwards
+    // Placeholder node holds the ref so the observer can fire. Forwards
     // className/style so it occupies the same box as the eventual <img>.
+    // When `loader` is set we drop the branded NeuthekLoader into the centered
+    // box (delayed fade-in via CSS so quick loads stay flash-free); otherwise
+    // it's an inert, aria-hidden blank that just reserves layout.
+    if (loader) {
+      // Force `display:grid` AFTER any incoming style so the caller's
+      // `display:block` (set for the eventual <img>) can't override the
+      // centering of the loader inside the placeholder box.
+      return (
+        <span
+          ref={ref}
+          className={`authed-img__loading${className ? " " + className : ""}`}
+          style={{ ...style, display: "grid" }}
+        >
+          <NeuthekLoader size={72} />
+        </span>
+      );
+    }
     return <span ref={ref} className={className} style={style} aria-hidden="true" role="presentation" />;
   }
   return <img ref={ref} src={blob} alt={alt} className={className} style={style} {...rest} />;

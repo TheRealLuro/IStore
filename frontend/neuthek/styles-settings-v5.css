@@ -1,0 +1,680 @@
+/* ============================================================
+   Settings refinement v5 — full visual system, every tab
+   ------------------------------------------------------------
+   Loaded LAST among the settings sheets (see styles/index.css
+   @import order), so equal-specificity rules here win the
+   cascade without !important wherever possible.
+
+   WHY THIS SHEET EXISTS
+   A previous pass thoroughly reworked only Cloud sync + SFTP and
+   left the other seven tabs on a mix of v2/v3 rules + ad-hoc inline
+   px. The result was inconsistent spacing, mismatched card padding,
+   differently-sized buttons tab-to-tab, and several sections that
+   opened expanded. This sheet establishes ONE system and applies it
+   to EVERY tab (Account, Privacy, Security, Notifications, Playback,
+   AI features, Cloud sync, SFTP access, Your data):
+
+     1. ONE spacing scale (tokens below) used for the nav↔panel gap,
+        section gaps, card padding, row rhythm, label→control→help
+        spacing, and button gaps. No more ad-hoc px.
+     2. ONE card language: radius, border, surface, padding, header.
+     3. ONE button system: primary / secondary / ghost / destructive /
+        icon — identical size, padding, radius, weight, and
+        hover / active / focus / disabled states across all tabs.
+     4. Every Collapsible starts COLLAPSED (handled in JSX — no call
+        site passes defaultOpen) and reads as a calm, scannable
+        header the user expands on demand; this sheet styles that
+        header + the open/closed affordance.
+     5. Consistent type scale + visible keyboard focus rings; ARIA
+        markup untouched (visual only).
+
+   This sheet changes NO behavior. Selectors map to existing markup
+   (.appset*, .applist*, .collapsible*, .det-*, .csync*, .sftp*).
+   ============================================================ */
+
+/* ----------------------------------------------------------------
+   0. THE SCALE — one set of tokens every settings surface reads.
+   Re-declared on .appset so they cascade to the whole panel and
+   override the leaner v4 token set with calmer, roomier values.
+   ---------------------------------------------------------------- */
+.appset {
+  /* spacing ramp (4-based) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+
+  /* applied roles */
+  --set-section-gap: 20px;     /* between collapsible sections        */
+  --set-card-pad-y: 16px;      /* card interior vertical padding       */
+  --set-card-pad-x: 18px;      /* card interior horizontal padding     */
+  --set-row-py: 13px;          /* row vertical padding                 */
+  --set-row-px: 16px;          /* row horizontal padding               */
+  --set-gap: 13px;             /* icon → body → control gap            */
+  --set-stack: 4px;            /* label → control → help vertical step */
+  --set-btn-gap: 8px;          /* gap between buttons in an action row */
+
+  /* shape */
+  --set-card-radius: 14px;
+  --set-ctl-radius: 10px;
+
+  /* type */
+  --set-title: 13.5px;         /* row / control title                  */
+  --set-desc: 12px;            /* helper / description                 */
+  --set-label: 11px;           /* uppercase section / field labels     */
+}
+
+/* ----------------------------------------------------------------
+   1. SHELL — modal width, header, and the all-important gap between
+   the left nav rail and the content pane.
+   ---------------------------------------------------------------- */
+.modal:has(.appset) {
+  width: min(980px, calc(100vw - 32px));
+}
+.modal:has(.appset) .modal__head {
+  padding-bottom: 16px;
+}
+.modal:has(.appset) .modal__head h2 { letter-spacing: -0.02em; }
+.modal:has(.appset) .modal__head p {
+  color: var(--ink-3);
+  letter-spacing: -0.005em;
+}
+
+/* Two columns; the visual "gap" between rail and pane is the rail's
+   right border + the pane's left padding (set in §3). Keep the rail a
+   touch narrower so the content gets the room. */
+.appset {
+  grid-template-columns: 232px 1fr !important;
+  height: min(78vh, 740px);
+}
+
+/* ----------------------------------------------------------------
+   2. LEFT NAV — quiet rail, one active treatment, tidy icon tiles.
+   ---------------------------------------------------------------- */
+.appset__sidebar {
+  padding: 18px 12px !important;
+  gap: 2px;
+}
+.appset__sidebar::before {
+  padding: 4px 12px 12px !important;
+  letter-spacing: 0.08em;
+  font-size: 10.5px;
+}
+.appset__navitem {
+  padding: 8px 10px !important;
+  border-radius: 9px !important;
+  font-size: 13px !important;
+  font-weight: 450 !important;
+  gap: 11px !important;
+  letter-spacing: -0.006em;
+  color: var(--ink-2);
+  margin-bottom: 0;
+}
+.appset__navitem:hover { background: var(--surface-3) !important; color: var(--ink); }
+.appset__navitem[data-active="true"] {
+  font-weight: 550 !important;
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+}
+html:not([data-theme="dark"]) .appset__navitem[data-active="true"] {
+  box-shadow: inset 0 0 0 1px var(--line-2), 0 1px 1px rgba(0,0,0,0.03);
+}
+html[data-theme="dark"] .appset__navitem[data-active="true"] {
+  background: rgba(255,255,255,0.07) !important;
+  box-shadow: none;
+}
+.appset__navitem-icon {
+  width: 24px !important; height: 24px !important;
+  border-radius: 7px;
+  color: var(--ink-3) !important;
+}
+.appset__navitem[data-active="true"] .appset__navitem-icon { color: var(--ink) !important; }
+.appset__navitem[data-active="true"]::before {
+  left: -12px !important;
+  top: 7px !important; bottom: 7px !important;
+  width: 3px;
+}
+/* Sign out pinned at the bottom — same metrics as a nav item. */
+.appset__navitem--danger {
+  margin-bottom: 4px !important;
+  padding: 8px 10px !important;
+  font-weight: 450 !important;
+}
+
+/* ----------------------------------------------------------------
+   3. CONTENT PANE — generous, even gutters and ONE header style.
+   The left padding here IS the nav↔content gap.
+   ---------------------------------------------------------------- */
+.appset__main {
+  padding: 30px 36px 36px !important;
+}
+.appset__main-head {
+  margin-bottom: 22px !important;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line-2);
+}
+.appset__main-head h3 {
+  font-size: 21px !important;
+  letter-spacing: -0.022em !important;
+  font-weight: 600 !important;
+  line-height: 1.2;
+}
+.appset__main-head p {
+  font-size: 13px !important;
+  margin-top: 6px !important;
+  max-width: 64ch;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+@media (max-width: 720px) {
+  .appset { grid-template-columns: 1fr !important; height: auto !important; min-height: 0 !important; }
+  .appset__sidebar {
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--line) !important;
+    padding: 10px !important;
+    gap: 4px;
+  }
+  .appset__sidebar::before { display: none; }
+  .appset__sidebar-spacer { display: none; }
+  .appset__navitem { white-space: nowrap; }
+  .appset__navitem--danger { margin: 0 !important; }
+  .appset__navitem[data-active="true"]::before { display: none; }
+  .appset__main { padding: 22px 18px 28px !important; }
+}
+
+/* ----------------------------------------------------------------
+   4. PROFILE HERO (Account tab) — one balanced card.
+   ---------------------------------------------------------------- */
+.appset__profile {
+  margin: 0 0 var(--set-section-gap) !important;
+  padding: 18px 20px !important;
+  background: var(--surface-2) !important;
+  border: 1px solid var(--line-2) !important;
+  border-radius: var(--set-card-radius) !important;
+  gap: 16px !important;
+  align-items: center;
+}
+html[data-theme="dark"] .appset__profile { background: rgba(255,255,255,0.025) !important; }
+.appset__profile-avatar {
+  width: 52px !important; height: 52px !important;
+  font-size: 17px !important;
+  letter-spacing: -0.01em;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.10);
+}
+.appset__profile-name { font-size: 15.5px !important; font-weight: 600; letter-spacing: -0.012em; }
+.appset__profile-email { font-size: 12.5px !important; color: var(--ink-3); margin-top: 1px; }
+
+/* ----------------------------------------------------------------
+   5. SECTIONS — every Settings section is a titled "card group" that
+   is ALWAYS VISIBLE. The user reversed the earlier "everything is a
+   collapsed collapsible" pass: sections should not hide behind a
+   chevron, they should just be cleanly organized and quiet. So the
+   Settings call sites pass `alwaysOpen`, which renders
+   `.collapsible--static` — a plain non-interactive eyebrow header
+   (no button, no chevron, no hover) followed by the body, shown.
+
+   Generous, consistent section gaps + a quiet header give the
+   all-open stack a calm, scannable top-to-bottom rhythm.
+
+   The interactive header rules further below are RETAINED for any
+   non-static (toggle) caller of Collapsible; Settings simply never
+   takes that path now.
+   ---------------------------------------------------------------- */
+.appset__main .collapsible {
+  border-bottom: 0;
+  margin-bottom: var(--set-section-gap);
+}
+.appset__main .collapsible:last-of-type { margin-bottom: 0; }
+
+/* --- Static (always-open) header: a quiet eyebrow LABEL, not a
+   button. No hover wash, no cursor change, no chevron. Sits flush so
+   it reads as a section caption above its card rather than a tappable
+   row. A hair more bottom space than the interactive header so the
+   label breathes above the always-present card. --- */
+.appset__main .collapsible--static .collapsible__head--static {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 2px !important;
+  margin: 0 0 8px;
+  cursor: default;
+  border-radius: 0;
+}
+/* Kill every interactive affordance the shared header rules would
+   otherwise apply — the static header is a plain label, so no hover
+   wash and no hover color shift on the label. */
+.appset__main .collapsible--static .collapsible__head--static:hover {
+  background: transparent;
+  color: var(--ink-3);
+}
+.appset__main .collapsible--static .collapsible__head--static:hover .collapsible__label {
+  color: var(--ink-2);
+}
+
+/* Header: a real, comfortable click target with a clear hover and a
+   chevron that rotates open. Quiet uppercase label. (Interactive /
+   toggle mode only — Settings uses the static header above.) */
+.appset__main .collapsible__head {
+  width: 100%;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px !important;
+  margin: 0 0 4px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 130ms var(--ease);
+}
+.appset__main .collapsible__head:hover {
+  background: color-mix(in oklab, var(--ink) 3.5%, transparent);
+}
+html[data-theme="dark"] .appset__main .collapsible__head:hover {
+  background: rgba(255,255,255,0.04);
+}
+.appset__main .collapsible__head:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+html[data-theme="dark"] .appset__main .collapsible__head:focus-visible {
+  outline-color: rgba(255,255,255,0.78);
+}
+.appset__main .collapsible__label {
+  font-size: var(--set-label);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+/* Always-open sections get a slightly stronger label so the section
+   caption anchors the card beneath it (it's the only hierarchy cue now
+   that there's no chevron / open-state color shift). */
+.appset__main .collapsible[data-open="true"] .collapsible__label,
+.appset__main .collapsible--static .collapsible__label { color: var(--ink-2); }
+
+/* Count pill — a quiet neutral chip, not a loud badge. */
+.appset__main .collapsible__count {
+  display: inline-grid; place-items: center;
+  min-width: 18px; height: 18px; padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-3);
+  color: var(--ink-3);
+}
+html[data-theme="dark"] .appset__main .collapsible__count { background: rgba(255,255,255,0.07); }
+
+/* Chevron points right when closed, down when open. Pin it to the far
+   right regardless of where the count lands. (Interactive mode only —
+   the static header renders no chevron at all.) */
+.appset__main .collapsible__chev {
+  margin-left: auto;
+  display: grid; place-items: center;
+  color: var(--ink-3);
+  transition: transform 160ms var(--ease), color 130ms var(--ease);
+}
+.appset__main .collapsible[data-open="true"] .collapsible__chev {
+  transform: rotate(90deg);
+  color: var(--ink-2);
+}
+.appset__main .collapsible__head:hover .collapsible__chev { color: var(--ink-2); }
+
+/* Open body: a hair of top breathing room, no side/bottom inset (the
+   card supplies its own boundary; section gap comes from .collapsible).
+   Static sections already gave the label its bottom margin, so their
+   body needs no extra top pad. */
+.appset__main .collapsible__body { padding: 2px 0 0 !important; }
+.appset__main .collapsible--static .collapsible__body { padding: 0 !important; }
+
+/* The list inside a section: ONE bordered card, hairline rows. */
+.appset .applist {
+  border: 1px solid var(--line-2) !important;
+  border-radius: var(--set-card-radius) !important;
+  background: var(--surface) !important;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+html[data-theme="dark"] .appset .applist {
+  background: rgba(255,255,255,0.02) !important;
+  border-color: rgba(255,255,255,0.06) !important;
+}
+.appset .applist__row {
+  padding: var(--set-row-py) var(--set-row-px) !important;
+  gap: var(--set-gap);
+  align-items: center;
+}
+.appset .applist__row + .applist__row {
+  border-top: 1px solid var(--line-2) !important;
+}
+html[data-theme="dark"] .appset .applist__row + .applist__row {
+  border-top-color: rgba(255,255,255,0.055) !important;
+}
+.appset .applist__row:hover {
+  background: color-mix(in oklab, var(--ink) 3%, transparent) !important;
+}
+html[data-theme="dark"] .appset .applist__row:hover {
+  background: rgba(255,255,255,0.035) !important;
+}
+.appset .applist__row-icon {
+  width: 30px !important; height: 30px !important;
+  border-radius: 8px !important;
+  flex-shrink: 0;
+}
+.appset .applist__row-title {
+  font-size: var(--set-title) !important;
+  font-weight: 500 !important;
+  letter-spacing: -0.006em;
+  line-height: 1.3;
+}
+.appset .applist__row-desc {
+  font-size: var(--set-desc) !important;
+  line-height: 1.45;
+  color: var(--ink-3);
+  margin-top: 2px !important;
+}
+.appset .applist__row-tail {
+  gap: 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.appset .applist__row-tail .mono { color: var(--ink-3); }
+/* Chevron tail (drill-in rows) reads as an affordance. */
+.appset .applist__row-chevron { color: var(--ink-3); flex-shrink: 0; }
+
+/* ----------------------------------------------------------------
+   6. CARDS — every det-card matches the applist card exactly so a
+   form card and a list card share one language across tabs.
+   ---------------------------------------------------------------- */
+.appset .det-card {
+  border: 1px solid var(--line-2);
+  border-radius: var(--set-card-radius);
+  background: var(--surface);
+  padding: var(--set-card-pad-y) var(--set-card-pad-x);
+}
+html[data-theme="dark"] .appset .det-card {
+  background: rgba(255,255,255,0.02);
+  border-color: rgba(255,255,255,0.06);
+}
+/* A card that wraps a list shouldn't double its padding. */
+.appset .det-card:has(> .applist) { padding: 0; border: 0; }
+/* Stacked cards inside one section get a consistent gap. */
+.appset .det-card + .det-card { margin-top: var(--set-3); }
+
+/* Detail sub-sections (Security, expanded rows) share the rhythm. */
+.appset .det-section { margin-bottom: var(--set-section-gap); }
+.appset .det-section:last-child { margin-bottom: 0; }
+.appset .det-section__head { margin-bottom: 10px; }
+.appset .det-section__title {
+  font-size: var(--set-label);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+.appset .det-section__desc {
+  font-size: 12.5px; color: var(--ink-3);
+  margin: 4px 0 12px; line-height: 1.5;
+}
+
+/* Form fields — one label→input→hint rhythm everywhere. */
+.appset .det-field { gap: var(--set-stack); margin-bottom: var(--set-4); }
+.appset .det-field:last-child { margin-bottom: 0; }
+.appset .det-field__label {
+  font-size: 12.5px; font-weight: 500; color: var(--ink-2);
+  letter-spacing: -0.005em;
+}
+.appset .det-field__hint { font-size: 11.5px; color: var(--ink-3); line-height: 1.45; margin-top: 2px; }
+.appset .det-field .input,
+.appset .det-card .input {
+  font-size: 13.5px; padding: 9px 12px; width: 100%;
+  border-radius: var(--set-ctl-radius);
+}
+
+/* Explainer pill — calm, consistent. */
+.appset .det-explain {
+  border-radius: var(--set-ctl-radius);
+  font-size: 12.5px; line-height: 1.55;
+  padding: 12px 14px;
+}
+
+/* Stat tiles read as one unit. */
+.appset .stat-grid { gap: var(--set-2); }
+.appset .stat-tile {
+  border-radius: var(--set-ctl-radius);
+  padding: 13px 14px;
+}
+.appset .stat-tile__value { font-feature-settings: "tnum"; }
+
+/* ----------------------------------------------------------------
+   7. BUTTONS — ONE system for the whole settings surface. Scoped to
+   .appset so the rest of the app is untouched. Every variant shares
+   height, radius, weight, and a coherent hover/active/focus/disabled.
+   ---------------------------------------------------------------- */
+.appset .btn {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--set-ctl-radius);
+  font-size: 13px;
+  font-weight: 550;
+  letter-spacing: -0.005em;
+  gap: 7px;
+  text-decoration: none;             /* anchor-as-button (plan card links) */
+  border: 1px solid transparent;     /* unifies box model across variants */
+  transition: background 150ms var(--ease), color 150ms var(--ease),
+              border-color 150ms var(--ease), box-shadow 150ms var(--ease),
+              transform 80ms var(--ease);
+}
+.appset .btn--sm { height: 30px; padding: 0 11px; font-size: 12px; border-radius: 8px; }
+.appset .btn--lg { height: 40px; padding: 0 18px; font-size: 14px; border-radius: 12px; }
+.appset .btn svg { flex-shrink: 0; }
+
+/* Primary — solid ink. */
+.appset .btn--primary {
+  background: var(--ink); color: var(--surface);
+  border-color: var(--ink);
+}
+.appset .btn--primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--ink) 88%, var(--surface));
+  border-color: color-mix(in oklab, var(--ink) 88%, var(--surface));
+}
+
+/* Secondary — bordered surface. */
+.appset .btn--secondary {
+  background: var(--surface); color: var(--ink);
+  border-color: var(--line);
+}
+.appset .btn--secondary:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--ink-3);
+}
+html[data-theme="dark"] .appset .btn--secondary {
+  background: rgba(255,255,255,0.04);
+  border-color: var(--line);
+}
+html[data-theme="dark"] .appset .btn--secondary:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+}
+
+/* Ghost — text button, no chrome until hover. */
+.appset .btn--ghost {
+  background: transparent; color: var(--ink-2);
+  border-color: transparent;
+}
+.appset .btn--ghost:hover:not(:disabled) {
+  background: var(--surface-3); color: var(--ink);
+}
+html[data-theme="dark"] .appset .btn--ghost:hover:not(:disabled) {
+  background: rgba(255,255,255,0.07);
+}
+
+/* Destructive — soft danger tint; a ghost button tinted red via inline
+   color stays consistent because we standardize the hover here too. */
+.appset .btn--danger {
+  background: var(--danger-soft); color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 24%, transparent);
+}
+.appset .btn--danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--danger) 14%, var(--surface));
+}
+/* A secondary/ghost button the JSX tints red inline (color:var(--danger))
+   should pick up a matching soft hover instead of the neutral grey. */
+.appset .btn--secondary[style*="--danger"]:hover:not(:disabled),
+.appset .btn--ghost[style*="--danger"]:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: color-mix(in oklab, var(--danger) 24%, transparent);
+}
+
+/* Shared interaction states. */
+.appset .btn:active:not(:disabled) { transform: translateY(0.5px); }
+.appset .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.appset .btn:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+html[data-theme="dark"] .appset .btn:focus-visible { outline-color: rgba(255,255,255,0.78); }
+
+/* Buttons in a row tail never stretch the row. */
+.appset .applist__row-tail .btn { flex-shrink: 0; }
+
+/* Action footers — one gap, optional separator, no stray top borders
+   where the form already provides separation. */
+.appset .det-actions {
+  display: flex; align-items: center; gap: var(--set-btn-gap);
+  padding-top: var(--set-4); margin-top: var(--set-4);
+  border-top: 1px solid var(--line-2);
+  flex-wrap: wrap;
+}
+.appset .det-actions__sep { flex: 1; }
+/* A "plain" actions row (e.g. plan card) has no divider above it. */
+.appset .det-actions--plain { border-top: 0; padding-top: 0; margin-top: 0; }
+
+/* ----------------------------------------------------------------
+   8. CONTROLS — switch + native radios, consistent sizing + focus.
+   ---------------------------------------------------------------- */
+.appset .switch { width: 40px; height: 23px; }
+.appset .switch::after { width: 19px; height: 19px; }
+.appset .switch[data-on="true"]::after { transform: translateX(17px); }
+
+.appset .applist__row input[type="radio"] {
+  width: 18px; height: 18px;
+  accent-color: var(--ink);
+  cursor: pointer;
+}
+.appset .applist__row input[type="radio"]:focus-visible {
+  outline: 2px solid var(--ink); outline-offset: 2px;
+}
+html[data-theme="dark"] .appset .applist__row input[type="radio"]:focus-visible {
+  outline-color: rgba(255,255,255,0.78);
+}
+/* Selected choice row gets a faint wash so the active pick is legible. */
+.appset .applist__row:has(input[type="radio"]:checked) {
+  background: color-mix(in oklab, var(--ink) 3.5%, transparent);
+}
+html[data-theme="dark"] .appset .applist__row:has(input[type="radio"]:checked) {
+  background: rgba(255,255,255,0.045);
+}
+/* Radio / bytes rows wrap to multiple lines — align their icon to the
+   top so the tile sits level with the title, not the block's center. */
+.appset .applist__row:has(input[type="radio"]) { align-items: flex-start; }
+.appset .applist__row:has(input[type="radio"]) .applist__row-tail { align-self: center; }
+
+/* ----------------------------------------------------------------
+   9. ICON TONE PALETTE — complete the set the JSX uses (ink / amber /
+   sky alongside the refine3 blue/green/orange/red/purple/indigo/teal)
+   so every row icon is intentionally toned in both themes.
+   ---------------------------------------------------------------- */
+.applist__row-icon[data-tone="ink"] { background: var(--surface-3); color: var(--ink-2); }
+html[data-theme="dark"] .applist__row-icon[data-tone="ink"] {
+  background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.85);
+}
+.applist__row-icon[data-tone="amber"] {
+  background: color-mix(in oklch, #f5a623 18%, var(--surface-3)); color: #b4690e;
+}
+html[data-theme="dark"] .applist__row-icon[data-tone="amber"] {
+  background: rgba(245,166,35,0.20); color: #f0bf6a;
+}
+.applist__row-icon[data-tone="sky"] {
+  background: color-mix(in oklch, #5ac8fa 18%, var(--surface-3)); color: #2f93c4;
+}
+html[data-theme="dark"] .applist__row-icon[data-tone="sky"] {
+  background: rgba(90,200,250,0.18); color: #7fcef0;
+}
+
+/* ----------------------------------------------------------------
+   10. NOTIFICATIONS table — align to the card rhythm; toggles centered.
+   ---------------------------------------------------------------- */
+.appset .admin-table--compact th {
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 600;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: left;
+}
+.appset .admin-table--compact td {
+  padding: 13px 16px;
+  border-top: 1px solid var(--line-2);
+  vertical-align: middle;
+}
+.appset .admin-table--compact tbody tr:first-child td { border-top: 0; }
+.appset .admin-table--compact td strong { font-size: 13px; font-weight: 500; }
+.appset .admin-table--compact tbody tr:hover td {
+  background: color-mix(in oklab, var(--ink) 2.5%, transparent);
+}
+html[data-theme="dark"] .appset .admin-table--compact tbody tr:hover td {
+  background: rgba(255,255,255,0.03);
+}
+
+/* ----------------------------------------------------------------
+   11. SECURITY tab — the recovery-code grid + issued-codes block read
+   as part of the same card system (radii, mono, soft warning note).
+   ---------------------------------------------------------------- */
+.appset .det-danger { border-radius: var(--set-card-radius); padding: 16px 18px; }
+.appset .det-danger .btn {
+  background: var(--danger-soft);
+  color: var(--danger) !important;
+  border: 1px solid color-mix(in oklab, var(--danger) 30%, transparent);
+}
+.appset .det-danger .btn:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--danger) 16%, var(--surface));
+}
+/* Session card: match row metrics. */
+.appset .sess-card { padding: 14px 16px; }
+.appset .sess-card__name { font-size: 13.5px; }
+
+/* Status pill: add the warn/amber + neutral-dark tones the JSX asks for. */
+.det-status-pill[data-tone="amber"],
+.det-status-pill[data-tone="warn"] {
+  background: var(--warning-soft); color: var(--warning);
+}
+
+/* ----------------------------------------------------------------
+   12. STATE PRIMITIVES — skeleton / note / empty already defined in v4;
+   here we just guarantee they sit on the v5 radius + spacing.
+   ---------------------------------------------------------------- */
+.appset .set-note { border-radius: var(--set-ctl-radius); }
+.appset .set-empty { padding: 26px 18px; }
+.appset .set-skel-group { border-radius: var(--set-card-radius); }
+
+/* ----------------------------------------------------------------
+   13. OVERFLOW GUARDS — nothing in settings causes a sideways
+   scrollbar at any width.
+   ---------------------------------------------------------------- */
+.appset__main .det-card,
+.appset__main .applist { max-width: 100%; }
+.appset__main code,
+.appset__main .mono { overflow-wrap: anywhere; }
+.appset .stat-grid, .appset .stat-tile { min-width: 0; }
+.appset .stat-tile__value { overflow-wrap: anywhere; }
+
+/* ----------------------------------------------------------------
+   14. CLOUD SYNC + SFTP — these tabs were already refined in v4; nudge
+   their cards onto the shared v5 radius/padding so the card language
+   is identical to every other tab (v4 used a slightly different scale).
+   ---------------------------------------------------------------- */
+.appset .csync { gap: var(--set-3); }
+.appset .csync-card,
+.appset .csync__intro { border-radius: var(--set-card-radius); }
+.appset .csync-card { padding: var(--set-card-pad-y) var(--set-card-pad-x); }
+.appset .sftp-steps { border-radius: var(--set-card-radius); margin-bottom: var(--set-section-gap); }
+.appset .sftp-cmd__code { border-radius: var(--set-ctl-radius); }
