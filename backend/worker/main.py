@@ -975,13 +975,27 @@ async def main() -> None:
     # the real lru_cached loaders directly to populate the cache.) Each is
     # individually guarded — a loader that can't warm yet just logs and the
     # model loads lazily on first use instead of crashing startup.
-    import backend.vision.runtime as _rt
-    for _loader in ("get_clip", "get_florence2", "get_summary_rewriter"):
-        try:
-            getattr(_rt, _loader)()
-            logger.info("worker: warmed %s", _loader)
-        except Exception as _e:
-            logger.warning("worker: warm %s skipped (%s)", _loader, _e)
+    # Cap the worker's GPU share so it can't starve the API process.
+    try:
+        from backend.vision.gpu_budget import apply_process_memory_cap
+        apply_process_memory_cap()
+    except Exception:
+        pass
+
+    # Eager warmup is OFF by default on the 12 GB box: the worker runs
+    # latency-tolerant background jobs, so eagerly pinning CLIP+Florence+
+    # rewriter (~4 GB) at idle just duplicates what the API already holds and
+    # starves the shared card. The lru_cached + vram-managed loaders still load
+    # lazily on the first job. Set WORKER_EAGER_WARMUP=1 to restore eager warmup
+    # on boxes with VRAM to spare.
+    if os.environ.get("WORKER_EAGER_WARMUP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        import backend.vision.runtime as _rt
+        for _loader in ("get_clip", "get_florence2", "get_summary_rewriter"):
+            try:
+                getattr(_rt, _loader)()
+                logger.info("worker: warmed %s", _loader)
+            except Exception as _e:
+                logger.warning("worker: warm %s skipped (%s)", _loader, _e)
 
     # C8.2 — emit heartbeats every 30 s so /admin/processes can see us
     # even though we live in a sibling container outside the API's

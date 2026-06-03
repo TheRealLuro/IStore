@@ -108,6 +108,14 @@ async def lifespan(app: FastAPI):
     if settings.cloud_sync_hourly_enabled:
         task = asyncio.create_task(run_hourly_sweep())
 
+    # Cap this process's share of the GPU so it can't starve the ml-worker
+    # (and vice-versa) on the shared 12 GB card. See backend/vision/gpu_budget.py.
+    try:
+        from backend.vision.gpu_budget import apply_process_memory_cap
+        apply_process_memory_cap()
+    except Exception:
+        pass
+
     # Pre-warm the CLIP text encoder so the first /search?q=... request
     # doesn't pay the 5-10 s cold-load tax. We saw a real "matrix math"
     # query take 9.6 s end-to-end where ~9 s was just torch loading
@@ -153,6 +161,14 @@ async def lifespan(app: FastAPI):
         try:
             from backend.vision.runtime import get_florence2
             await asyncio.to_thread(get_florence2)
+        except Exception:
+            pass
+        # Release the throwaway-translate's transient activations so the idle
+        # footprint is the resident weights only — otherwise ~2-3 GB of reserved
+        # pool sits at the process's GPU cap and starves the worker.
+        try:
+            import torch
+            await asyncio.to_thread(torch.cuda.empty_cache)
         except Exception:
             pass
     asyncio.create_task(_prewarm_translate_ocr())

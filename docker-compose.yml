@@ -197,6 +197,15 @@ services:
       # path.
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
+      # 12 GB GPU flip (NGROK_SETUP.md §3). 0 = load MADLAD-400 in 8-bit
+      # (~3 GB, better quality); 1 = the cramped 4-bit nf4 mode the 8 GB
+      # 4060 needed. Consumed by translate_engine._load_4bit(). Default 0
+      # here since this branch targets the 5070 (12 GB) desktop.
+      TRANSLATE_MADLAD_4BIT: ${TRANSLATE_MADLAD_4BIT:-0}
+      # Per-process GPU cap (backend/vision/gpu_budget.py). The API and the
+      # ml-worker share one 12 GB card; capping each guarantees neither starves
+      # the other. API gets the larger slice (interactive translate/OCR).
+      GPU_MEMORY_FRACTION: ${BACKEND_GPU_MEMORY_FRACTION:-0.8}
     ports:
       # Loopback-only — audit CR-8. The dev backend runs with
       # SECURITY_RATE_LIMITS_ENABLED=false and the weak default JWT
@@ -315,6 +324,14 @@ services:
       RCLONE_CONFIG_ROOT: ${RCLONE_CONFIG_ROOT:-/var/neuthek/rclone}
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
+      # 12 GB GPU flip — mirror of the backend's setting so the worker's
+      # OCR/translate paths also run MADLAD in 8-bit. See NGROK_SETUP.md §3.
+      TRANSLATE_MADLAD_4BIT: ${TRANSLATE_MADLAD_4BIT:-0}
+      # Per-process GPU cap — smaller slice than the API since the worker runs
+      # latency-tolerant background jobs (gpu_budget.py). Eager model warmup is
+      # OFF by default on 12 GB (set WORKER_EAGER_WARMUP=1 to restore).
+      GPU_MEMORY_FRACTION: ${WORKER_GPU_MEMORY_FRACTION:-0.6}
+      WORKER_EAGER_WARMUP: ${WORKER_EAGER_WARMUP:-0}
       WORKER_LOG_LEVEL: INFO
     # NVIDIA GPU passthrough — required so the cu13-built torch inside
     # the worker can actually reach the host's CUDA driver. Docker
