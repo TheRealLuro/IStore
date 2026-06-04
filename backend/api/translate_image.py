@@ -1440,8 +1440,12 @@ def _analyze_region(orig_img, box) -> dict:
 
         if not confident:
             # Couldn't cleanly separate ink from background → don't trust the
-            # sampled color; fall back to high-contrast black/white. Style
+            # sampled color OR the mask's bg_dark guess (a uniform/low-contrast
+            # crop can wrongly report bg_dark, yielding WHITE ink on a light page
+            # = invisible text). Decide light/dark from the reliable luma of the
+            # crop instead, then fall back to high-contrast black/white. Style
             # estimates from a muddy mask are also unreliable, so keep them off.
+            bg_dark = _bg_is_dark(orig_img, box)
             ink = (245, 245, 245) if bg_dark else (16, 16, 16)
             bold = False
             italic = False
@@ -1533,6 +1537,35 @@ def _avail_height(box, all_boxes) -> int:
     else:
         avail = max(box_h, int(below_top - y0 - 2))
     return min(avail, int(2.5 * box_h))
+
+
+def _synth_container(box, all_boxes, iw: int, ih: int) -> tuple:
+    """A fallback 'button' area for a compact label when no real pill/border was
+    detected: pad the original box symmetrically into the free space on its row so
+    a longer translation can be centred + shrunk to fit inside it (never spilling
+    past where the button visually is), without crossing a neighbouring region or
+    the image edge."""
+    x0, y0, x1, y1 = box
+    bw = x1 - x0
+    bh = y1 - y0
+    want = int(bw * 0.6) + bh           # modest horizontal room, scaled to size
+    left_cap, right_cap = x0 - want, x1 + want
+    for b in all_boxes:
+        if tuple(b) == tuple(box):
+            continue
+        same_row = min(y1, b[3]) - max(y0, b[1]) > 0.3 * bh
+        if not same_row:
+            continue
+        if b[2] <= x0:                  # neighbour on the left
+            left_cap = max(left_cap, b[2] + 2)
+        if b[0] >= x1:                  # neighbour on the right
+            right_cap = min(right_cap, b[0] - 2)
+    nx0 = max(0, left_cap)
+    nx1 = min(iw, right_cap)
+    pad_v = int(bh * 0.3) + 2
+    ny0 = max(0, y0 - pad_v)
+    ny1 = min(ih, y1 + pad_v)
+    return (nx0, ny0, nx1, ny1)
 
 
 def _orig_line_count(parts) -> int:
@@ -1978,12 +2011,14 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             px0, py0, px1, py1 = pill
             _fit_and_draw(draw, text, pill, fill, style,
                           max_h=(py1 - py0), align="center", valign="center")
-        elif (not hw and len(text.split()) <= 6
+        elif (len(text.split()) <= 6
               and _orig_line_count(r.get("parts", [box])) == 1):
-            # Short single-line label (e.g. a borderless text button / CTA): keep
-            # it on ONE line by shrinking to fit, instead of wrapping + flowing
-            # downward — preserves the original single-line format every language.
-            _fit_and_draw(draw, text, box, fill, style, max_h=(box[3] - box[1]))
+            # Borderless button / CTA with no detected container: constrain to a
+            # synthesized button area and shrink-to-fit + centre, so a longer
+            # translation never spills past where the label visually sits.
+            cont = _synth_container(box, all_boxes, iw_img, ih_img)
+            _fit_and_draw(draw, text, cont, fill, style,
+                          max_h=(cont[3] - cont[1]), align="center", valign="center")
         else:
             # Let a longer translation flow into the whitespace beneath the box.
             max_h = _avail_height(box, all_boxes)

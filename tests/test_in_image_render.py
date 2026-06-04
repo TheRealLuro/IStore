@@ -190,6 +190,40 @@ def test_pill_bounds_detects_outlined_button():
     assert py0 <= 50 and py1 >= 70
 
 
+# ---- _synth_container (fallback when no pill detected) ----
+def test_synth_container_pads_box_into_free_space():
+    box = (100, 50, 180, 70)            # a compact label
+    cont = ti._synth_container(box, [box], iw=400, ih=120)
+    cx0, cy0, cx1, cy1 = cont
+    assert cx0 <= box[0] and cx1 >= box[2]      # widened horizontally
+    assert cy0 <= box[1] and cy1 >= box[3]      # padded vertically
+    assert cx0 >= 0 and cy0 >= 0 and cx1 <= 400 and cy1 <= 120  # on-page
+
+
+def test_synth_container_does_not_cross_neighbour():
+    box = (100, 50, 180, 70)
+    right = (240, 50, 320, 70)          # neighbour to the right on the same row
+    cont = ti._synth_container(box, [box, right], iw=400, ih=120)
+    assert cont[2] <= 240               # never expands into the neighbour
+
+
+def test_digital_label_render_stays_within_synth_container():
+    from PIL import Image
+    import numpy as np
+    orig = Image.new("RGB", (400, 120), (245, 245, 245))
+    box = (150, 50, 230, 70)
+    regions = [{"box": box, "parts": [box], "handwriting": False}]
+    long = "Comenzar ahora mismo gratis"      # longer than the EN label
+    out = ti._render_translations(orig.copy(), regions, [long], orig_img=orig)
+    arr = np.asarray(out)
+    # ink stays INSIDE the synthesized container (never spills toward the edges)
+    cont = ti._synth_container(box, [box], 400, 120)
+    ink_cols = np.where((arr < 200).any(axis=(0, 2)))[0]
+    assert ink_cols.size > 0                       # the label IS rendered (visible)
+    assert ink_cols.min() >= cont[0] and ink_cols.max() <= cont[2]
+    assert cont[0] > 0 and cont[2] < 400           # and well clear of the page edges
+
+
 # ---- _pick_font_path / _fits_in_box (hybrid handwriting placement) ----
 def test_fits_in_box_true_when_short_at_ink_size():
     from PIL import Image, ImageDraw
