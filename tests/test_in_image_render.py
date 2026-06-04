@@ -69,6 +69,26 @@ def test_no_block_merge_heading_into_body():
     assert len(out) == 2
 
 
+# ---- _dedup_regions ----
+def test_dedup_drops_contained_subspan():
+    # A sub-span box ("you") sitting inside the phrase box must be dropped,
+    # keeping the longer text — the cause of the faint stray over the hero.
+    out = ti._dedup_regions([
+        _r(10, 10, 300, 40, "Storage that thinks for you"),
+        _r(250, 14, 300, 36, "you"),
+    ])
+    assert len(out) == 1
+    assert out[0]["text"] == "Storage that thinks for you"
+
+
+def test_dedup_keeps_distinct_boxes():
+    out = ti._dedup_regions([
+        _r(10, 10, 100, 30, "alpha"),
+        _r(10, 40, 100, 60, "beta"),
+    ])
+    assert len(out) == 2
+
+
 # ---- _avail_height ----
 def test_avail_height_uses_gap_below():
     box = (10, 10, 200, 40)            # h=30

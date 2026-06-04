@@ -662,6 +662,38 @@ def _union_box(boxes):
     return (min(xs0), min(ys0), max(xs1), max(ys1))
 
 
+def _overlap_contain(a, b):
+    """(IoU, containment) for two boxes; containment = intersection / smaller
+    area (catches a sub-span box that sits inside a larger phrase box)."""
+    ix0 = max(a[0], b[0]); iy0 = max(a[1], b[1])
+    ix1 = min(a[2], b[2]); iy1 = min(a[3], b[3])
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    if inter == 0:
+        return 0.0, 0.0
+    aa = max(1, (a[2] - a[0]) * (a[3] - a[1]))
+    ab = max(1, (b[2] - b[0]) * (b[3] - b[1]))
+    return inter / (aa + ab - inter), inter / min(aa, ab)
+
+
+def _dedup_regions(regions: list[dict]) -> list[dict]:
+    """Drop near-duplicate / heavily-overlapping OCR boxes — Florence sometimes
+    emits a phrase AND a sub-span of it (the cause of the faint stray text that
+    overlapped the hero). Keep the box with the longer text; restore reading
+    order."""
+    order = sorted(regions, key=lambda r: -len((r.get("text") or "")))
+    kept: list[dict] = []
+    for r in order:
+        rb = tuple(r["box"])
+        if any(
+            (lambda io, co: io > 0.5 or co > 0.7)(*_overlap_contain(rb, k["box"]))
+            for k in kept
+        ):
+            continue
+        kept.append(r)
+    kept.sort(key=lambda r: (r["box"][1], r["box"][0]))
+    return kept
+
+
 # Looks like a brand / product / code identifier that should NOT be translated.
 _CODEISH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9./+_-]*$")
 _CAMEL_RE = re.compile(r"[a-z][A-Z]|[A-Z]{2}[a-z]")
@@ -693,6 +725,7 @@ def _merge_regions(regions: list[dict]) -> list[dict]:
     "line_h": int}. Never merges across a big horizontal gap (column break) or a
     font-size change. Reading order: top->bottom, left->right."""
     regs = [r for r in regions if (r.get("text") or "").strip()]
+    regs = _dedup_regions(regs)  # drop overlapping duplicate detections first
     if len(regs) <= 1:
         return [{"box": tuple(r["box"]), "text": (r["text"] or "").strip(),
                  "parts": [tuple(r["box"])], "line_h": r["box"][3] - r["box"][1],
@@ -750,10 +783,14 @@ def _merge_regions(regions: list[dict]) -> list[dict]:
     for lr in lines:
         if blocks:
             p = blocks[-1]
-            same_left = abs(lr["box"][0] - p["box"][0]) < 1.0 * H
+            # Thresholds relative to the LINE's OWN height (not the global median)
+            # so a huge hero (line_h ~100) merges its wrapped lines while small
+            # body text stays conservative.
+            lh = max(1, p["line_h"])
+            same_left = abs(lr["box"][0] - p["box"][0]) < 0.6 * lh
             gap = lr["box"][1] - p["box"][3]
-            small_gap = -0.5 * H < gap < 0.8 * H
-            similar_h = 0.7 <= (lr["line_h"] / max(1, p["line_h"])) <= 1.4
+            small_gap = -0.5 * lh < gap < 0.8 * lh
+            similar_h = 0.7 <= (lr["line_h"] / lh) <= 1.4
             # Only merge a TRUE wrapped continuation. NOT across a sentence end
             # (prev ends with .!?…) and NOT when the next line starts its own
             # list item (1. / a) / bullet) — otherwise consecutive list items
@@ -775,19 +812,47 @@ def _merge_regions(regions: list[dict]) -> list[dict]:
     return blocks
 
 
+def _border_ring(np_img, x0, y0, x1, y1, t: int = 5):
+    """Median colour + std of a thin ring of pixels JUST OUTSIDE a box — i.e. the
+    local background (paper / page colour) surrounding the text. Returns
+    (median_rgb_tuple, std_float) or (None, None) when there's no ring."""
+    import numpy as np
+
+    h, w = np_img.shape[:2]
+    ty0, by1 = max(0, y0 - t), min(h, y1 + t)
+    lx0, rx1 = max(0, x0 - t), min(w, x1 + t)
+    parts = []
+    if y0 > ty0:
+        parts.append(np_img[ty0:y0, lx0:rx1].reshape(-1, 3))
+    if by1 > y1:
+        parts.append(np_img[y1:by1, lx0:rx1].reshape(-1, 3))
+    if x0 > lx0:
+        parts.append(np_img[y0:y1, lx0:x0].reshape(-1, 3))
+    if rx1 > x1:
+        parts.append(np_img[y0:y1, x1:rx1].reshape(-1, 3))
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        return None, None
+    ring = np.concatenate(parts, axis=0)
+    med = tuple(int(c) for c in np.median(ring, axis=0))
+    return med, float(ring.std())
+
+
 def _inpaint_erase(img, regions: list[dict]):
-    """Erase the original text: paint each (dilated) bbox into a uint8 mask
-    and `cv2.inpaint` (INPAINT_TELEA) the image. Returns a NEW PIL RGB image
-    with the ink removed. cv2 works in BGR but inpaint is colour-agnostic for
-    a single-channel mask, so we keep the array in RGB order throughout and
-    only the pixel layout matters (we convert back to a PIL RGB image from the
-    same ordering)."""
+    """Erase the original text and restore the BACKGROUND under it. Returns a new
+    PIL RGB image. For each (dilated) box we sample the local background ring: if
+    it's uniform (flat colour — paper, a solid UI panel) we FILL the box with
+    that colour, which removes the ink cleanly with NO ghost/smear (the old
+    cv2.inpaint left faint traces of thick/handwritten ink). Only textured or
+    gradient backgrounds fall back to cv2.inpaint (TELEA), which reconstructs
+    them better than a flat fill would."""
     import cv2
     import numpy as np
 
     np_img = np.array(img)  # HxWx3, RGB, uint8
     ih, iw = np_img.shape[:2]
     mask = np.zeros((ih, iw), dtype=np.uint8)
+    _UNIFORM_STD = 22.0  # below this the local background is "flat" → fill it
 
     for r in regions:
         if r.get("skip"):
@@ -796,21 +861,23 @@ def _inpaint_erase(img, regions: list[dict]):
         # wipe whitespace/other content between words/lines).
         for (x0, y0, x1, y1) in r.get("parts", [r["box"]]):
             # Dilate so anti-aliased edges + cursive ascenders/descenders/loops
-            # that spill past the tight bbox are fully covered — otherwise the
-            # original ink ghosts through behind the translation (esp. handwriting).
-            pad = max(3, int(round((y1 - y0) * 0.20)))
-            mx0 = max(0, x0 - pad)
-            my0 = max(0, y0 - pad)
-            mx1 = min(iw, x1 + pad)
-            my1 = min(ih, y1 + pad)
-            mask[my0:my1, mx0:mx1] = 255
+            # that spill past the tight bbox are fully covered.
+            pad = max(3, int(round((y1 - y0) * 0.22)))
+            mx0 = max(0, x0 - pad); my0 = max(0, y0 - pad)
+            mx1 = min(iw, x1 + pad); my1 = min(ih, y1 + pad)
+            med, std = _border_ring(np_img, mx0, my0, mx1, my1)
+            if med is not None and std is not None and std < _UNIFORM_STD:
+                np_img[my0:my1, mx0:mx1] = med  # clean flat fill, no ghost
+            else:
+                mask[my0:my1, mx0:mx1] = 255     # textured → reconstruct
 
-    # radius=3 is the standard TELEA neighborhood; bigger blurs more.
-    inpainted = cv2.inpaint(np_img, mask, 3, cv2.INPAINT_TELEA)
+    if mask.any():
+        # radius=4 TELEA for the textured/gradient remainder.
+        np_img = cv2.inpaint(np_img, mask, 4, cv2.INPAINT_TELEA)
 
     from PIL import Image as PILImage
 
-    return PILImage.fromarray(inpainted)
+    return PILImage.fromarray(np_img)
 
 
 def _bg_is_dark(img, box) -> bool:
