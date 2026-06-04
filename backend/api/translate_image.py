@@ -651,9 +651,23 @@ def _translate_regions(texts: list[str], target: str) -> tuple[list[str], str, s
         texts, target
     )
     out = [
-        _translate_one_region(model, tokenizer, device, t, gen_kwargs) for t in texts
+        _fix_spacing(_translate_one_region(model, tokenizer, device, t, gen_kwargs))
+        for t in texts
     ]
     return out, src_flores, tgt_flores
+
+
+# lowercase/digit + .!? + uppercase: add the space the model dropped when it
+# glued two sentences ("privacidad primero.El" -> "...primero. El"). Conservative
+# so abbreviations (U.S.) and decimals (3.5) are left alone. Mirrors the same
+# fix in translate_doc.py for the document path.
+_GLUED_RE = re.compile(
+    r"(?<=[a-z0-9áéíóúñüàâçèêëîïôûœ])([.!?])(?=[A-ZÁÉÍÓÚÑÜÀÂÇÈÊËÎÏÔÛŒ])"
+)
+
+
+def _fix_spacing(text: str) -> str:
+    return _GLUED_RE.sub(r"\1 ", text or "")
 
 
 def _union_box(boxes):
@@ -839,44 +853,65 @@ def _border_ring(np_img, x0, y0, x1, y1, t: int = 5):
 
 
 def _inpaint_erase(img, regions: list[dict]):
-    """Erase the original text and restore the BACKGROUND under it. Returns a new
-    PIL RGB image. For each (dilated) box we sample the local background ring: if
-    it's uniform (flat colour — paper, a solid UI panel) we FILL the box with
-    that colour, which removes the ink cleanly with NO ghost/smear (the old
-    cv2.inpaint left faint traces of thick/handwritten ink). Only textured or
-    gradient backgrounds fall back to cv2.inpaint (TELEA), which reconstructs
-    them better than a flat fill would."""
-    import cv2
+    """Erase the original text and restore the BACKGROUND under it ("magic
+    eraser"). Returns a new PIL RGB image.
+
+    PRIMARY: LaMa deep inpainting (runtime.get_lama) — reconstructs textured /
+    photographic / gradient backgrounds (e.g. a photographed page) naturally,
+    the way editing tools' content-aware erase does.
+    FALLBACK (LaMa unavailable): per-box adaptive erase — FLAT-FILL the box with
+    the sampled local background colour when it's uniform (paper / solid panel),
+    else cv2.inpaint (TELEA) the textured remainder."""
     import numpy as np
+    from PIL import Image as PILImage
 
-    np_img = np.array(img)  # HxWx3, RGB, uint8
+    base = img.convert("RGB") if hasattr(img, "convert") else img
+    np_img = np.array(base)  # HxWx3, RGB, uint8
     ih, iw = np_img.shape[:2]
-    mask = np.zeros((ih, iw), dtype=np.uint8)
-    _UNIFORM_STD = 22.0  # below this the local background is "flat" → fill it
 
+    # Collect the dilated erase boxes for every non-skip region.
+    boxes = []
     for r in regions:
         if r.get("skip"):
             continue  # brand/logo/code or unchanged — leave the original ink
-        # Erase the PRECISE constituent boxes (not the merged union, which would
-        # wipe whitespace/other content between words/lines).
         for (x0, y0, x1, y1) in r.get("parts", [r["box"]]):
-            # Dilate so anti-aliased edges + cursive ascenders/descenders/loops
-            # that spill past the tight bbox are fully covered.
             pad = max(3, int(round((y1 - y0) * 0.22)))
-            mx0 = max(0, x0 - pad); my0 = max(0, y0 - pad)
-            mx1 = min(iw, x1 + pad); my1 = min(ih, y1 + pad)
-            med, std = _border_ring(np_img, mx0, my0, mx1, my1)
-            if med is not None and std is not None and std < _UNIFORM_STD:
-                np_img[my0:my1, mx0:mx1] = med  # clean flat fill, no ghost
-            else:
-                mask[my0:my1, mx0:mx1] = 255     # textured → reconstruct
+            boxes.append((max(0, x0 - pad), max(0, y0 - pad),
+                          min(iw, x1 + pad), min(ih, y1 + pad)))
+    if not boxes:
+        return PILImage.fromarray(np_img)
 
-    if mask.any():
-        # radius=4 TELEA for the textured/gradient remainder.
-        np_img = cv2.inpaint(np_img, mask, 4, cv2.INPAINT_TELEA)
+    mask = np.zeros((ih, iw), dtype=np.uint8)
+    for (x0, y0, x1, y1) in boxes:
+        mask[y0:y1, x0:x1] = 255
 
-    from PIL import Image as PILImage
+    # 1) LaMa magic-erase over the whole mask (best reconstruction).
+    try:
+        from backend.vision.runtime import get_lama
+        lama = get_lama()
+    except Exception:
+        lama = None
+    if lama is not None:
+        try:
+            res = lama(PILImage.fromarray(np_img),
+                       PILImage.fromarray(mask).convert("L"))
+            return res.convert("RGB").resize((iw, ih)) if res.size != (iw, ih) else res.convert("RGB")
+        except Exception:
+            logger.warning("translate-image: LaMa erase failed; cv2/bg-fill fallback",
+                           exc_info=True)
 
+    # 2) Fallback: flat-fill uniform backgrounds, cv2.inpaint the textured rest.
+    import cv2
+    _UNIFORM_STD = 22.0
+    telea = np.zeros((ih, iw), dtype=np.uint8)
+    for (x0, y0, x1, y1) in boxes:
+        med, std = _border_ring(np_img, x0, y0, x1, y1)
+        if med is not None and std is not None and std < _UNIFORM_STD:
+            np_img[y0:y1, x0:x1] = med
+        else:
+            telea[y0:y1, x0:x1] = 255
+    if telea.any():
+        np_img = cv2.inpaint(np_img, telea, 4, cv2.INPAINT_TELEA)
     return PILImage.fromarray(np_img)
 
 

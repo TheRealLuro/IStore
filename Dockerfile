@@ -91,6 +91,14 @@ RUN if [ "$INSTALL_ML" = "1" ]; then \
       /opt/venv/bin/pip install --no-cache-dir arabic-reshaper python-bidi ; \
     fi
 
+# LaMa deep-inpainting ("magic eraser") for clean in-image text removal +
+# background reconstruction (backend/vision/runtime.get_lama). --no-deps so it
+# uses the already-installed cu130 torch/torchvision/opencv rather than pulling
+# CPU wheels. The ~200 MB model downloads at first use into $TORCH_HOME.
+RUN if [ "$INSTALL_ML" = "1" ]; then \
+      /opt/venv/bin/pip install --no-cache-dir --no-deps simple-lama-inpainting ; \
+    fi
+
 # HUGGINGFACE MODEL WEIGHTS — NOT baked into the image (by design).
 # Every HF model (Florence-2, MADLAD-400, NLLB, Qwen, the summarizer, and now
 # TrOCR handwriting `microsoft/trocr-base-handwritten`, ~330 MB) is loaded from

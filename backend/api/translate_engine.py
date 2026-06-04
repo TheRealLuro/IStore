@@ -999,6 +999,67 @@ def _resolve_route(target: str, source: str | None, bundle: dict) -> dict:
     }
 
 
+def _brand_terms() -> list[str]:
+    raw = os.environ.get("BRAND_TERMS", "neuthek,istore")
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _protect_terms(text: str) -> tuple[str, dict]:
+    """Replace brand / product names with sentinels so MT doesn't mangle them
+    MID-SENTENCE (e.g. 'neuthek' -> 'neutherek'). The standalone-token skip in
+    translate_image only covers a brand on its own; this protects it wherever it
+    appears in a sentence. Returns (protected_text, {sentinel: canonical})."""
+    import difflib
+
+    terms = _brand_terms()
+
+    # Fuzzy-normalize OCR misreads of a brand token back to canonical first
+    # (Florence reads small "neuthek" as "neutherek"); then protect the clean
+    # token. Only fires on a close match to an invented brand, so a real word is
+    # never rewritten.
+    def _fuzzy(m):
+        w = m.group(0)
+        wl = w.lower()
+        for t in terms:
+            if wl != t and len(wl) >= 4 and \
+                    difflib.SequenceMatcher(None, wl, t).ratio() >= 0.82:
+                return t
+        return w
+
+    text = re.sub(r"[A-Za-z]{4,}", _fuzzy, text)
+
+    restores: dict[str, str] = {}
+    out = text
+    i = 0
+    for term in terms:
+        canonical = term
+        pat = re.compile(rf"(?i)\b{re.escape(term)}\b")
+
+        def _sub(m):
+            nonlocal i
+            tok = f"NTK{i}Z"  # uppercase+digit token MT engines tend to pass through
+            restores[tok] = canonical
+            i += 1
+            return tok
+
+        out = pat.sub(_sub, out)
+    return out, restores
+
+
+def _restore_terms(text: str, restores: dict) -> str:
+    """Put the canonical brand strings back. Tolerant of case changes and stray
+    spaces the model may introduce inside the sentinel (NTK0Z -> 'ntk 0 z')."""
+    if not restores:
+        return text
+    for tok, orig in restores.items():
+        m = re.match(r"NTK(\d+)Z", tok)
+        n = m.group(1) if m else ""
+        # exact, then a spaced/case-variant fallback (N T K <n> Z)
+        text = re.sub(re.escape(tok), orig, text, flags=re.IGNORECASE)
+        text = re.sub(rf"N\s*T\s*K\s*{n}\s*Z", orig, text, flags=re.IGNORECASE)
+    return text
+
+
 def translate_text(text: str, target: str, source: str | None = None) -> str:
     """Translate `text` into `target`, returning the translated string.
 
@@ -1022,6 +1083,8 @@ def translate_text(text: str, target: str, source: str | None = None) -> str:
     if not text:
         return ""
     text = text[:_MAX_INPUT_CHARS]
+    # Protect brand/product names so they survive MT verbatim mid-sentence.
+    text, _term_restores = _protect_terms(text)
 
     # LLM TIER (low-resource gap-languages: Tongan, …). MADLAD lacks these and
     # Opus mangles them, so for this small set we translate with the resident
@@ -1033,7 +1096,7 @@ def translate_text(text: str, target: str, source: str | None = None) -> str:
     if llm_name is not None:
         llm_out = _llm_translate_text(llm_name, text)
         if llm_out is not None:
-            return llm_out
+            return _restore_terms(llm_out, _term_restores)
 
     bundle = get_translator()  # RuntimeError → caller falls back to NLLB
     device = bundle["device"]
@@ -1065,7 +1128,7 @@ def translate_text(text: str, target: str, source: str | None = None) -> str:
                 logger.exception("translate_engine: madlad chunk failed; skipping")
                 parts.append("")
 
-    return _join(parts)
+    return _restore_terms(_join(parts), _term_restores)
 
 
 # ===========================================================================

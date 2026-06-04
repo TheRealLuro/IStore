@@ -7,6 +7,7 @@ the upload pipeline or semantic search.
 
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -455,6 +456,42 @@ def get_trocr():
     if device == "cuda":
         _vram.mark_resident("trocr"); _vram.touch("trocr")
     return model, processor, device
+
+
+@lru_cache(maxsize=1)
+def get_lama():
+    """LaMa deep-inpainting model — the 'magic eraser' for clean in-image text
+    removal + natural background reconstruction (far better than cv2.inpaint on
+    textured/photo/gradient backgrounds). Returns a callable `lama(pil_img,
+    pil_mask) -> pil_img` (mask: white where to erase), or None when LaMa isn't
+    available so the caller falls back to cv2/bg-fill. GPU when present, CPU
+    otherwise; registered evictable. The ~200 MB model downloads to $TORCH_HOME
+    (mounted at /models) on first use. NEVER raises — any failure → None."""
+    try:
+        import torch
+        from simple_lama_inpainting import SimpleLama
+
+        # Persist the downloaded weights on the mounted model cache.
+        os.environ.setdefault("TORCH_HOME", os.environ.get("HF_HOME", "/models"))
+        device = "cuda" if (get_device() == "cuda" and torch.cuda.is_available()) else "cpu"
+        if device == "cuda":
+            _vram.register("lama", est_gb=0.8, evictable=True,
+                           cache_clear=get_lama.cache_clear)
+            _vram.ensure_room(0.8)
+        try:
+            lama = SimpleLama(device=torch.device(device))
+        except TypeError:
+            lama = SimpleLama()  # older signature: auto-device
+        if device == "cuda":
+            _vram.mark_resident("lama"); _vram.touch("lama")
+        _report_loaded("lama", device)
+        return lama
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "lama unavailable; in-image erase falls back to cv2/bg-fill",
+            exc_info=True,
+        )
+        return None
 
 
 @lru_cache(maxsize=1)
