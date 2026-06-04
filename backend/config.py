@@ -205,7 +205,11 @@ class Settings(BaseSettings):
     # Small instruction LLM that rewrites caption + names + OCR + scene
     # into one natural search-friendly sentence. Replaces regex-based
     # pronoun/grammar fixes.
-    rewriter_model_name: str = Field(default="Qwen/Qwen2.5-1.5B-Instruct")
+    # Sub-project C: 7B (Apache-2.0) for real exotic/low-resource translation
+    # quality (was 1.5B). Loaded 4-bit (~4.5 GB) and swap-on-demand with MADLAD
+    # via the VRAM manager. Also serves as the caption rewriter — slower per
+    # call but far better coreference + OCR integration.
+    rewriter_model_name: str = Field(default="Qwen/Qwen2.5-7B-Instruct")
     rewriter_enabled: bool = Field(default=True)
     # ---- Handwriting OCR (TrOCR) ----
     # Florence-2 detects WHERE text sits (bounding boxes) well even on

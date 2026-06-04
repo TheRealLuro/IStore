@@ -505,7 +505,10 @@ def _build_madlad():
         # Quantize so the 3B model fits the GPU alongside Florence+CLIP.
         from backend.vision import vram_manager as _vram
         _need = 1.8 if _load_4bit() else 3.5
-        _vram.register("translator_madlad", est_gb=_need, evictable=False)
+        # Evictable so the 7B exotic-lang model can swap MADLAD out under
+        # pressure; MADLAD stays most-recently-used for the common case so
+        # CLIP/caption evict before it.
+        _vram.register("translator_madlad", est_gb=_need, evictable=True)
         _vram.ensure_room(_need)
         if _load_4bit():
             quant = BitsAndBytesConfig(
@@ -751,53 +754,111 @@ def _llm_translate_one(model, tokenizer, device, lang_name: str, text: str) -> s
     return reply
 
 
+def _translate_messages(lang_name: str, body: str) -> list[dict]:
+    """Shared strict-translation chat messages (system + user) — keeps Qwen from
+    adding any preamble so the reply is ONLY the translated string."""
+    return [
+        {"role": "system", "content": (
+            "You are a professional translator. You output ONLY the translation "
+            "of the user's text, with no preamble, no notes, no quotation marks, "
+            "and no explanation."
+        )},
+        {"role": "user", "content": (
+            f"Translate this English text to {lang_name}. Reply with ONLY the "
+            f"translation:\n\n{body}"
+        )},
+    ]
+
+
+def _llm_translate_many(
+    model, tokenizer, device, lang_name: str, texts: list[str],
+    batch_size: int | None = None,
+) -> list[str]:
+    """Translate a list of English blocks into `lang_name` with the resident LLM
+    in TRUE PADDED BATCHES (decoder-only, left-padded).
+
+    Sub-project C: replaces the old one-generate()-per-segment path that made a
+    300-segment exotic-language doc run 300 sequential generations (the "Tongan
+    stuck on warming up" stall) — now it's ceil(N / batch_size) batched calls,
+    which matters even more with the 7B (slower per call). Returns a list 1:1
+    with `texts` ("" for blank/failed). Best-effort per batch (a failing batch
+    leaves "" for its items). `LLM_TRANSLATE_BATCH` overrides the batch size.
+    """
+    import torch
+
+    if batch_size is None:
+        batch_size = int(os.environ.get("LLM_TRANSLATE_BATCH", "8"))
+    batch_size = max(1, batch_size)
+    results = [""] * len(texts)
+    idxs = [i for i, t in enumerate(texts) if (t or "").strip()]
+    if not idxs:
+        return results
+
+    with _GEN_LOCK:
+        orig_side = getattr(tokenizer, "padding_side", "right")
+        tokenizer.padding_side = "left"  # decoder-only batched gen needs left pad
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        try:
+            for s in range(0, len(idxs), batch_size):
+                group = idxs[s:s + batch_size]
+                prompts = [
+                    tokenizer.apply_chat_template(
+                        _translate_messages(lang_name, texts[i].strip()),
+                        tokenize=False, add_generation_prompt=True,
+                    )
+                    for i in group
+                ]
+                try:
+                    enc = tokenizer(
+                        prompts, return_tensors="pt", padding=True
+                    ).to(device)
+                    in_len = int(enc.input_ids.shape[1])
+                    max_new = max(48, min(512, int(in_len * 1.8) + 24))
+                    with torch.no_grad():
+                        out_ids = model.generate(
+                            **enc, max_new_tokens=max_new, do_sample=False,
+                            num_beams=1,
+                            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                            eos_token_id=tokenizer.eos_token_id,
+                        )
+                    new = out_ids[:, in_len:]  # left-pad => new tokens align right
+                    for j, i in enumerate(group):
+                        reply = tokenizer.decode(new[j], skip_special_tokens=True)
+                        reply = re.sub(r"\s+", " ", reply or "").strip().strip('"').strip("'").strip()
+                        results[i] = reply
+                except Exception:
+                    logger.exception(
+                        "translate_engine: LLM batch failed; blanks for this group"
+                    )
+        finally:
+            tokenizer.padding_side = orig_side
+    return results
+
+
 def _llm_translate_text(lang_name: str, text: str) -> str | None:
     """Translate `text` into `lang_name` via the resident LLM, chunking long
-    input on natural boundaries (reusing `_chunk`). Returns the joined
-    translation, or None when the LLM is unavailable so the caller can fall
-    back to the Opus route. Best-effort per chunk (a failing chunk is skipped),
-    matching `translate_text`'s contract."""
+    input on natural boundaries (reusing `_chunk`) and translating the chunks in
+    PADDED BATCHES. Returns the joined translation, or None when the LLM is
+    unavailable so the caller can fall back to the Opus route."""
     loaded = _get_llm()
     if loaded is None:
         return None
     model, tokenizer, device = loaded
     chunks = [c for c in _chunk(text) if c.strip()] or [text]
-    parts: list[str] = []
-    for ch in chunks:
-        try:
-            parts.append(_llm_translate_one(model, tokenizer, device, lang_name, ch))
-        except Exception:
-            logger.exception("translate_engine: LLM chunk failed; skipping")
-            parts.append("")
+    parts = _llm_translate_many(model, tokenizer, device, lang_name, chunks)
     return _join(parts)
 
 
 def _llm_translate_batch(lang_name: str, texts: list[str]) -> list[str] | None:
-    """Translate a LIST of blocks into `lang_name` via the resident LLM,
-    returning a list 1:1 with `texts` (empty input → "" at its index without a
-    model call). Returns None when the LLM is unavailable so the caller can fall
-    back to the Opus route.
-
-    The LLM is autoregressive (no cheap padded batch like the seq2seq engines),
-    so we translate one block PER generate() — matching the task's "Batch per
-    block" instruction. Best-effort per item (a failing/blank block keeps "").
-    """
+    """Translate a LIST of blocks into `lang_name` via the resident LLM in padded
+    batches, returning a list 1:1 with `texts`. Returns None when the LLM is
+    unavailable so the caller can fall back to the Opus route."""
     loaded = _get_llm()
     if loaded is None:
         return None
     model, tokenizer, device = loaded
-    out: list[str] = []
-    for t in texts:
-        body = (t or "").strip()
-        if not body:
-            out.append("")
-            continue
-        try:
-            out.append(_llm_translate_one(model, tokenizer, device, lang_name, body))
-        except Exception:
-            logger.exception("translate_engine: LLM block failed; blank for this item")
-            out.append("")
-    return out
+    return _llm_translate_many(model, tokenizer, device, lang_name, list(texts))
 
 
 # ===========================================================================

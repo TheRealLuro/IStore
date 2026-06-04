@@ -519,9 +519,11 @@ def get_summary_rewriter():
     from backend.vision.quant import rewriter_quant_config
     quant = rewriter_quant_config() if device == "cuda" else None
     if quant is not None:
-        _vram.register("rewriter", est_gb=1.0, evictable=False,
+        # 7B-4bit ~4.5 GB; evictable so it swaps with MADLAD (exotic-lang
+        # fallback is rare — MADLAD stays hot for the common case).
+        _vram.register("rewriter", est_gb=4.5, evictable=True,
                        cache_clear=get_summary_rewriter.cache_clear)
-        _vram.ensure_room(1.0)
+        _vram.ensure_room(4.5)
         # bnb path: device_map pins to GPU 0; NO low_cpu_mem_usage / post .to().
         model = AutoModelForCausalLM.from_pretrained(
             model_name, quantization_config=quant, device_map={"": 0},
