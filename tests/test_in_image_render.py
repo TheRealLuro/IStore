@@ -190,6 +190,43 @@ def test_pill_bounds_detects_outlined_button():
     assert py0 <= 50 and py1 >= 70
 
 
+# ---- _pick_font_path / _fits_in_box (hybrid handwriting placement) ----
+def test_fits_in_box_true_when_short_at_ink_size():
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(Image.new("RGB", (400, 200), (255, 255, 255)))
+    box = (10, 10, 300, 50)                      # wide box, h=40
+    style = {"klass": "sans", "ink_h": 24}
+    assert ti._fits_in_box(d, "Nope", box, style) is True
+
+
+def test_fits_in_box_false_when_long_text_in_narrow_box():
+    from PIL import Image, ImageDraw
+    d = ImageDraw.Draw(Image.new("RGB", (400, 200), (255, 255, 255)))
+    box = (10, 10, 90, 34)                        # narrow box, h=24
+    style = {"klass": "sans", "ink_h": 20}
+    long = "Se requiere incluir a la pareja en la lista de invitados"
+    assert ti._fits_in_box(d, long, box, style) is False
+
+
+def test_hybrid_handwriting_stays_within_image_bounds():
+    # A long translation in a small hw box must not draw past the image edge.
+    from PIL import Image
+    import numpy as np
+    orig = Image.new("RGB", (300, 120), (255, 255, 255))
+    # paint some dark ink so _analyze_region samples a real (dark) pen color
+    np_o = np.asarray(orig).copy()
+    np_o[20:36, 12:120] = (20, 20, 20)
+    orig = Image.fromarray(np_o)
+    regions = [{"box": (12, 18, 120, 38), "parts": [(12, 18, 120, 38)],
+                "handwriting": True}]
+    translations = ["una traducción mucho más larga que el cuadro original original"]
+    out = ti._render_translations(orig.copy(), regions, translations, orig_img=orig)
+    arr = np.asarray(out)
+    # nothing drawn in the last 2 rows / cols (stayed on-page)
+    assert (arr[-2:, :] >= 250).all()
+    assert (arr[:, -2:] >= 250).all()
+
+
 # ---- _build_context_crops (1:1 with boxes, neighbor context) ----
 def test_build_context_crops_is_one_to_one_and_marked():
     from PIL import Image

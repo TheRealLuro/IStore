@@ -1660,6 +1660,23 @@ def _pill_bounds(np_img, box, page_bg):
             min(w, max(ri, x1)), min(h, max(bi, y1)))
 
 
+def _pick_font_path(text: str, style: Optional[dict]) -> Optional[str]:
+    """Resolve the TTF path for `text` + `style` the same way for both the
+    measurement (`_fits_in_box`) and the draw (`_fit_and_draw`): script font for
+    non-Latin glyphs first, then the handwriting face for handwritten regions,
+    else the class/weight/slant-aware Latin font."""
+    bold = bool((style or {}).get("bold", False))
+    italic = bool((style or {}).get("italic", False))
+    klass = (style or {}).get("klass", "sans")
+    handwriting = bool((style or {}).get("handwriting", False))
+    fp = _script_font(text, bold)
+    if fp is None and handwriting:
+        fp = _handwriting_font()
+    if fp is None:
+        fp = _resolve_font(klass, bold, italic)
+    return fp
+
+
 def _fit_and_draw(
     draw,
     text: str,
@@ -1703,15 +1720,8 @@ def _fit_and_draw(
     bold = bool((style or {}).get("bold", False))
     italic = bool((style or {}).get("italic", False))
     handwriting = bool((style or {}).get("handwriting", False))
-    # Script font wins first so non-Latin translations (CJK/Arabic/Hebrew/Indic/
-    # Thai) get a glyph-capable Noto face instead of tofu. For HANDWRITTEN regions
-    # whose translation IS Latin, use the bundled handwriting face so it still
-    # "looks written on the paper"; otherwise the class-aware Latin font.
-    font_path = _script_font(text, bold)
-    if font_path is None and handwriting:
-        font_path = _handwriting_font()
-    if font_path is None:
-        font_path = _resolve_font(klass, bold, italic)
+    font_path = _pick_font_path(text, {"klass": klass, "bold": bold,
+                                       "italic": italic, "handwriting": handwriting})
 
     def _make(sz):
         if not font_path:
@@ -1837,6 +1847,35 @@ def _page_pen_color(inks: list[tuple], bg_dark: bool) -> tuple:
     return _ensure_contrast(med, bg_dark)
 
 
+def _fits_in_box(draw, text: str, box, style: Optional[dict]) -> bool:
+    """True when `text`, wrapped to the box width at the ORIGINAL ink size, fits
+    within the box height — i.e. it can be drawn in place (hybrid layout) without
+    shrinking or flowing into neighbouring whitespace. Mirrors `_fit_and_draw`'s
+    ceiling/wrap math so the predicate and the draw agree."""
+    from PIL import ImageFont
+
+    if not text.strip():
+        return True
+    x0, y0, x1, y1 = box
+    box_w = max(1, x1 - x0)
+    box_h = max(1, y1 - y0)
+    ink_h = int((style or {}).get("ink_h", 0) or 0)
+    size = max(6, min(int(ink_h * 1.15), 200)) if ink_h >= 6 else max(6, int(box_h * 0.72))
+    fp = _pick_font_path(text, style)
+    try:
+        font = ImageFont.truetype(fp, size) if fp else ImageFont.load_default()
+    except Exception:
+        font = ImageFont.load_default()
+    lines = _wrap_to_width(draw, text, font, box_w)
+    if not lines:
+        return True
+    widest = max(_text_w(draw, ln, font) for ln in lines)
+    lh = _line_h(font)
+    gap = max(1, int(lh * 0.12))
+    total_h = len(lines) * lh + (len(lines) - 1) * gap
+    return widest <= box_w and total_h <= box_h
+
+
 def _render_translations(inpainted, regions: list[dict], translations: list[str], orig_img=None):
     """Draw each translation back into its box on the inpainted image, matching
     the ORIGINAL ink's family/weight/slant/color and sitting in the original's
@@ -1856,6 +1895,22 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     # One page-background sample + numpy view for pill detection (digital UI).
     orig_np = np.asarray(orig_img) if orig_img is not None else None
     page_bg = _page_bg(orig_np) if orig_np is not None else (255, 255, 255)
+
+    # ONE uniform pen color for every handwriting line (sampled once across the
+    # page) so the note reads as a single consistent hand, not a shade per box.
+    hw_inks: list[tuple] = []
+    if orig_img is not None:
+        for r in regions:
+            if r.get("handwriting") and not r.get("skip"):
+                st = _analyze_region(orig_img, r.get("parts", [r["box"]])[0])
+                if st.get("ink_confident"):
+                    hw_inks.append(st["ink"])
+    page_bg_dark = bool(_bg_is_dark(orig_img, (0, 0, min(orig_img.width, 8),
+                                               min(orig_img.height, 8)))) \
+        if orig_img is not None else False
+    hw_pen = _page_pen_color(hw_inks, page_bg_dark)
+    iw_img = orig_img.width if orig_img is not None else inpainted.width
+    ih_img = orig_img.height if orig_img is not None else inpainted.height
 
     for r, translated in zip(regions, translations):
         if r.get("skip"):
@@ -1879,14 +1934,14 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             style = {"klass": "sans", "bold": False, "italic": False}
 
         if hw:
-            # Handwriting: render in the clean handwriting face with a legible
-            # dark "pen" ink (the original is often faint/pencil and unreadable
-            # when reproduced), preserving only the light/dark-background sense.
+            # Handwriting: render in the clean handwriting face with ONE uniform
+            # readable pen color shared by the whole page (computed once above), so
+            # the note reads as a single consistent hand instead of a shade per box.
             style = dict(style)
             style["handwriting"] = True
             style["bold"] = False
             style["italic"] = False
-            fill = (236, 236, 236) if style.get("bg_dark") else (26, 29, 41)
+            fill = hw_pen
 
         # Pills/buttons (digital UI): the label sits on a contained fill, so a
         # longer translation must shrink + CENTRE inside it, never flow past the
@@ -1899,12 +1954,17 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
                 pill = None
 
         if hw:
-            # Keep each handwritten item INSIDE its own vertical band (the box it
-            # originally occupied) — shrink to fit rather than flow downward — so
-            # densely-spaced lines can't overlap the next item. Top-aligned to the
-            # original top so the structure (list order + indents) is preserved.
-            _fit_and_draw(draw, text, box, fill, style,
-                          max_h=(box[3] - box[1]), valign="top")
+            # Hybrid placement: draw at the original ink size in place when it
+            # fits; else allow it to flow into the whitespace below (clamped to
+            # the image) before shrinking — so it stays legible AND on-page while
+            # preserving the original list order/indent (top-aligned).
+            box_h = box[3] - box[1]
+            if _fits_in_box(draw, text, box, style):
+                max_h = box_h
+            else:
+                max_h = min(_avail_height(box, all_boxes),
+                            max(box_h, ih_img - box[1] - 2))
+            _fit_and_draw(draw, text, box, fill, style, max_h=max_h, valign="top")
         elif pill is not None:
             px0, py0, px1, py1 = pill
             _fit_and_draw(draw, text, pill, fill, style,
