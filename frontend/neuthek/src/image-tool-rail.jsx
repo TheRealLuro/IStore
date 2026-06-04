@@ -1499,7 +1499,9 @@ export function useDocTranslation(fileId, text, isPdf = false) {
           const next = prev.slice();
           // Grow sparsely to index i, then fill the gaps so .map stays dense.
           while (next.length <= b.i) next.push(null);
-          next[b.i] = { type: b.type, text: b.text };
+          // Sub-project D: carry the original list marker through so the PDF
+          // re-render reproduces the source's exact bullet/number (or no bullet).
+          next[b.i] = { type: b.type, text: b.text, marker: b.marker };
           return next;
         });
         // Feed the behind-loader faint panel too, so non-PDF docs also show the

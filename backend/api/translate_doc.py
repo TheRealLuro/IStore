@@ -157,6 +157,13 @@ _NUM_HEADING_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)\.?\s+\S")
 class Block(BaseModel):
     type: str = Field(description="one of title|h1|h2|p|li")
     text: str
+    # Sub-project D: the original list marker for an `li`. The actual leading
+    # glyph ("•" / "-" / "*" …) when the source had one, or "" when it did NOT
+    # (e.g. a bold-lead-in pseudo-list the classifier flagged) so the renderer
+    # does NOT fabricate a bullet that wasn't there. None = marker unknown
+    # (older clients posting to /render-translated-pdf) → renderer keeps the
+    # legacy "•" default so we never silently drop a real bullet.
+    marker: Optional[str] = None
 
 
 def _norm_ws(s: str) -> str:
@@ -300,6 +307,7 @@ def _extract_pdf_blocks(raw: bytes) -> list[Block]:
     blocks: list[Block] = []
     title_used = False
     pending_bullet = False  # set when the previous line was a lone bullet glyph
+    pending_marker = ""     # the actual glyph from that lone-bullet line
     for ln in raw_lines:
         text = ln["text"]
         size = ln["size"]
@@ -309,15 +317,26 @@ def _extract_pdf_blocks(raw: bytes) -> list[Block]:
         #     Remember it and skip emitting anything for the glyph itself. ---
         if _BULLET_ONLY_RE.match(text):
             pending_bullet = True
+            pending_marker = text.strip() or "•"
             continue
 
         # A pending lone bullet OR an inline bullet-glyph prefix makes this a
-        # list item. Strip the glyph so the translator never sees it (and so a
-        # pending-bullet line with no inline glyph still becomes li).
-        is_bullet = pending_bullet or bool(_BULLET_RE.match(text))
+        # list item. Capture the ACTUAL glyph (so render reproduces it exactly,
+        # not a normalized "•"), then strip it so the translator never sees it.
+        marker: Optional[str] = None
+        if pending_bullet:
+            marker = pending_marker or "•"
+            is_bullet = True
+        elif _BULLET_RE.match(text):
+            m = _BULLET_RE.match(text)
+            marker = text[m.start():m.end()].strip() or "•"
+            is_bullet = True
+        else:
+            is_bullet = False
         if is_bullet:
             text = _strip_bullet(text)  # no-op if no inline glyph
         pending_bullet = False
+        pending_marker = ""
 
         # Classify via the shared helper (same tiering translate_pdf reuses).
         kind = _classify_line_kind(
@@ -333,7 +352,13 @@ def _extract_pdf_blocks(raw: bytes) -> list[Block]:
 
         if kind == "li":
             if text:  # drop a bullet line that was only the glyph
-                blocks.append(Block(type="li", text=text))
+                # marker = the real glyph when one was present; "" when the
+                # classifier flagged li with NO source glyph (bold-lead-in
+                # pseudo-list) so render won't fabricate a bullet.
+                blocks.append(Block(
+                    type="li", text=text,
+                    marker=(marker if marker is not None else ""),
+                ))
             continue
         if kind == "title":
             blocks.append(Block(type="title", text=text))
@@ -574,6 +599,9 @@ async def _translate_doc_stream_gen(image: Image, raw: bytes, target: str):
                     "n": n,
                     "type": b.type,
                     "text": translated,
+                    # Sub-project D: carry the original list marker so the FE can
+                    # echo it back to /render-translated-pdf for a faithful list.
+                    "marker": b.marker,
                     "source_lang": src_name,
                     "target_lang": tgt_name,
                 }
@@ -636,6 +664,9 @@ async def translate_doc_stream(
 class RenderBlock(BaseModel):
     type: str = Field(max_length=16)
     text: str = Field(default="", max_length=20_000)
+    # Sub-project D: original list marker (see Block.marker). None when the
+    # client didn't supply one → renderer uses the legacy "•" default.
+    marker: Optional[str] = Field(default=None, max_length=8)
 
 
 class RenderPdfRequest(BaseModel):
@@ -886,8 +917,17 @@ def _render_pdf_sync(req: RenderPdfRequest) -> tuple[bytes, str]:
             from reportlab.lib.styles import ParagraphStyle
             style = ParagraphStyle(name=f"{style.name}_sf", parent=style, fontName=sf)
         if btype == "li":
-            # Bullet glyph prefix → a clean, dependency-light bulleted look.
-            flow.append(Paragraph("•&nbsp;" + safe, style))
+            # Reproduce the source marker faithfully: None (unknown client) ->
+            # legacy "•"; "" (source had no glyph) -> no fabricated bullet;
+            # otherwise the original glyph (•/-/* …).
+            mk = blk.marker
+            if mk is None:
+                prefix = "•&nbsp;"
+            elif mk.strip():
+                prefix = _pdf_escape(mk) + "&nbsp;"
+            else:
+                prefix = ""
+            flow.append(Paragraph(prefix + safe, style))
         else:
             flow.append(Paragraph(safe, style))
 
