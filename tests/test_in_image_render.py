@@ -309,6 +309,36 @@ def test_orig_line_count():
     assert ti._orig_line_count([]) == 1
 
 
+def test_pill_bounds_detects_rounded_filled_pill():
+    import numpy as np
+    # filled pill with rounded corners (corner pixels left as page bg)
+    img = np.full((120, 300, 3), 255, dtype=np.uint8)
+    img[40:80, 80:220] = (36, 92, 220)        # blue filled pill
+    for (yy, xx) in [(40, 80), (40, 219), (79, 80), (79, 219)]:
+        img[yy, xx] = (255, 255, 255)         # rounded corners
+    text_box = (110, 54, 190, 66)
+    out = ti._pill_bounds(img, text_box, page_bg=(255, 255, 255))
+    assert out is not None
+    px0, py0, px1, py1 = out
+    assert px0 <= 90 and px1 >= 210
+
+
+def test_pill_bounds_detects_antialiased_outlined_button():
+    import numpy as np
+    # outlined button whose 2px border has a 1px anti-aliased halo on each side
+    img = np.full((120, 300, 3), 255, dtype=np.uint8)
+    halo = (150, 150, 150)
+    core = (60, 60, 60)
+    img[39, 80:220] = halo
+    img[40:42, 80:220] = core; img[42, 80:220] = halo          # top
+    img[77, 80:220] = halo; img[78:80, 80:220] = core; img[80, 80:220] = halo  # bottom
+    img[40:80, 79] = halo; img[40:80, 80:82] = core; img[40:80, 82] = halo     # left
+    img[40:80, 217] = halo; img[40:80, 218:220] = core; img[40:80, 220] = halo # right
+    text_box = (120, 54, 180, 66)
+    out = ti._pill_bounds(img, text_box, page_bg=(255, 255, 255))
+    assert out is not None
+
+
 def test_pill_bounds_none_for_word_between_neighbours():
     import numpy as np
     # A word with other words to its LEFT and RIGHT (like a nav row) but nothing

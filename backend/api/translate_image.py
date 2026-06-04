@@ -1082,9 +1082,16 @@ def _merge_regions(regions: list[dict]) -> list[dict]:
 
 
 def _border_ring(np_img, x0, y0, x1, y1, t: int = 5):
-    """Median colour + std of a thin ring of pixels JUST OUTSIDE a box — i.e. the
-    local background (paper / page colour) surrounding the text. Returns
-    (median_rgb_tuple, std_float) or (None, None) when there's no ring."""
+    """Median colour + SPATIAL std of a thin ring of pixels JUST OUTSIDE a box —
+    i.e. the local background (paper / page / pill colour) surrounding the text.
+    Returns (median_rgb_tuple, std_float) or (None, None) when there's no ring.
+
+    The std is the MEAN of the three PER-CHANNEL stds, i.e. how much the ring
+    varies SPATIALLY — NOT the std of the flattened RGB values. A flat but
+    saturated colour (e.g. a solid blue pill (36,92,220)) is spatially uniform yet
+    has a large cross-channel spread; the old flattened std reported ~77 for it and
+    wrongly classified every coloured pill as "textured". Per-channel std reports
+    ~0 for any solid colour and stays high only for genuinely textured rings."""
     import numpy as np
 
     h, w = np_img.shape[:2]
@@ -1104,7 +1111,7 @@ def _border_ring(np_img, x0, y0, x1, y1, t: int = 5):
         return None, None
     ring = np.concatenate(parts, axis=0)
     med = tuple(int(c) for c in np.median(ring, axis=0))
-    return med, float(ring.std())
+    return med, float(ring.std(axis=0).mean())
 
 
 def _inpaint_erase(img, regions: list[dict]):
@@ -1597,13 +1604,15 @@ def _pill_bounds(np_img, box, page_bg):
     med, std = _border_ring(np_img, x0, y0, x1, y1, t=5)
 
     # --- FILLED pill: ring uniform AND distinct from the page background -------
-    if (med is not None and std is not None and std <= 18
+    # `std` is now the per-channel spatial std (see `_border_ring`), so a solid
+    # COLOURED pill reads as uniform; <=26 also tolerates a mild fill gradient.
+    if (med is not None and std is not None and std <= 26
             and not _color_close(med, page_bg, tol=22)):
         def _scan_fill(start, stop, step, horiz):
             ext, i = 0, start
             while i != stop:
                 px = _line(i, horiz)
-                if px is None or not _color_close(px, med, tol=20):
+                if px is None or not _color_close(px, med, tol=28):
                     break
                 ext += 1; i += step
             return ext
