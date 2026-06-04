@@ -684,6 +684,52 @@ def _looks_degenerate(s: str) -> bool:
     return False
 
 
+def _context_band(boxes: list[tuple], i: int, iw: int, ih: int,
+                  pad_x_frac: float = 0.06, pad_y_frac: float = 0.35):
+    """Crop window for reading line `i` WITH its neighbors visible: a vertical
+    band spanning the previous line's top to the next line's bottom (clamped to
+    the image), wide enough to show the neighbors' text too. Returns
+    (band_box, target_local_box) where target_local_box is line i's box expressed
+    in band-local coordinates (for `_mark_target`). Reading order assumed (boxes
+    already top->bottom from `_merge_regions`)."""
+    x0, y0, x1, y1 = boxes[i]
+    px = int((x1 - x0) * pad_x_frac) + 4
+    py = int((y1 - y0) * pad_y_frac) + 4
+    xs0, xs1 = [x0], [x1]
+    top = y0 - py
+    bot = y1 + py
+    if i > 0:
+        p = boxes[i - 1]
+        xs0.append(p[0]); xs1.append(p[2]); top = min(top, p[1])
+    if i + 1 < len(boxes):
+        n = boxes[i + 1]
+        xs0.append(n[0]); xs1.append(n[2]); bot = max(bot, n[3])
+    bx0 = max(0, min(xs0) - px)
+    bx1 = min(iw, max(xs1) + px)
+    by0 = max(0, top)
+    by1 = min(ih, bot)
+    local = (x0 - bx0, y0 - by0, x1 - bx0, y1 - by0)
+    return (bx0, by0, bx1, by1), local
+
+
+def _mark_target(crop, target_local_box):
+    """Return a COPY of `crop` with a small bracket drawn in the LEFT margin
+    beside the target line, so the VL knows which line to transcribe. Never drawn
+    over the text itself. Input image is not mutated."""
+    from PIL import ImageDraw
+
+    c = crop.copy()
+    d = ImageDraw.Draw(c)
+    _x0, y0, _x1, y1 = target_local_box
+    yc = (y0 + y1) // 2
+    half = max(4, (y1 - y0) // 2)
+    # a left-margin "‹" bracket: vertical bar + two short arms
+    d.line([(3, yc - half), (3, yc + half)], fill=(220, 40, 40), width=2)
+    d.line([(3, yc - half), (10, yc - half)], fill=(220, 40, 40), width=2)
+    d.line([(3, yc + half), (10, yc + half)], fill=(220, 40, 40), width=2)
+    return c
+
+
 def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optional[str]]:
     """Transcribe each box crop with Qwen2.5-VL, batched. Returns a read per box
     (None where the VL is unavailable / fails). Crops carry a little padding so a

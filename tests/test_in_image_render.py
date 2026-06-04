@@ -190,6 +190,40 @@ def test_pill_bounds_detects_outlined_button():
     assert py0 <= 50 and py1 >= 70
 
 
+# ---- _context_band / _mark_target (neighbor-context VL crops) ----
+def test_context_band_spans_prev_and_next_rows():
+    boxes = [(10, 10, 90, 30), (10, 40, 120, 60), (10, 70, 80, 90)]
+    band, local = ti._context_band(boxes, 1, iw=200, ih=200)
+    bx0, by0, bx1, by1 = band
+    assert by0 <= 10 and by1 >= 90          # covers prev top .. next bottom
+    # target's local box sits inside the band and is offset by the band origin
+    lx0, ly0, lx1, ly1 = local
+    assert ly0 == 40 - by0 and ly1 == 60 - by0
+    assert 0 <= lx0 and lx1 <= (bx1 - bx0)
+
+
+def test_context_band_first_and_last_have_no_oob():
+    boxes = [(10, 10, 90, 30), (10, 40, 120, 60)]
+    b0, _ = ti._context_band(boxes, 0, iw=200, ih=200)   # no prev
+    b1, _ = ti._context_band(boxes, 1, iw=200, ih=200)   # no next
+    assert b0[1] >= 0 and b1[3] <= 200
+
+
+def test_mark_target_draws_in_left_margin_without_touching_target_ink():
+    from PIL import Image
+    crop = Image.new("RGB", (120, 90), (255, 255, 255))
+    marked = ti._mark_target(crop, (20, 30, 110, 50))   # target line band
+    assert marked.size == crop.size
+    import numpy as np
+    before = np.asarray(crop)
+    after = np.asarray(marked)
+    # input is not mutated (a fresh image is returned)
+    assert np.array_equal(before, np.full_like(before, 255))
+    # some marker pixels appear in the LEFT margin beside the target rows
+    left_margin = after[30:50, 0:18]
+    assert (left_margin < 200).any()
+
+
 # ---- _page_pen_color (uniform handwriting ink) ----
 def test_page_pen_color_keeps_saturated_blue_pen():
     # A blue ballpoint: every line should share this readable blue, not per-region.
