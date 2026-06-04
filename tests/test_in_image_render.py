@@ -190,6 +190,26 @@ def test_pill_bounds_detects_outlined_button():
     assert py0 <= 50 and py1 >= 70
 
 
+# ---- _build_context_crops (1:1 with boxes, neighbor context) ----
+def test_build_context_crops_is_one_to_one_and_marked():
+    from PIL import Image
+    import numpy as np
+    img = Image.new("RGB", (200, 200), (255, 255, 255))
+    boxes = [(10, 10, 90, 30), (10, 40, 120, 60), (10, 70, 80, 90)]
+    crops = ti._build_context_crops(img, boxes)
+    assert len(crops) == len(boxes)                 # strict 1:1 with input boxes
+    for c in crops:
+        assert c.width > 0 and c.height > 0
+        assert (np.asarray(c) < 200).any()          # each carries the target marker
+
+
+def test_build_context_crops_single_box():
+    from PIL import Image
+    img = Image.new("RGB", (100, 50), (255, 255, 255))
+    crops = ti._build_context_crops(img, [(10, 10, 60, 30)])
+    assert len(crops) == 1
+
+
 # ---- _context_band / _mark_target (neighbor-context VL crops) ----
 def test_context_band_spans_prev_and_next_rows():
     boxes = [(10, 10, 90, 30), (10, 40, 120, 60), (10, 70, 80, 90)]

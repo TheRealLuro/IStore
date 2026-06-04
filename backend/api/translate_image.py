@@ -730,11 +730,32 @@ def _mark_target(crop, target_local_box):
     return c
 
 
+def _build_context_crops(full_img, boxes: list[tuple]) -> list:
+    """For each detected line, build a neighbor-context crop (the line plus the
+    lines above/below) with the target line marked, upscaling short crops for
+    legibility. Returns one RGB crop per box, strictly 1:1 with `boxes`."""
+    from PIL import Image as PILImage
+
+    iw, ih = full_img.width, full_img.height
+    crops = []
+    for i in range(len(boxes)):
+        band, local = _context_band(boxes, i, iw, ih)
+        bx0, by0, bx1, by1 = band
+        c = full_img.crop((bx0, by0, bx1, by1)).convert("RGB")
+        c = _mark_target(c, local)
+        if c.height and c.height < 96:   # upscale so target glyphs stay legible
+            s = 96.0 / c.height
+            c = c.resize((max(1, int(c.width * s)), 96), PILImage.LANCZOS)
+        crops.append(c)
+    return crops
+
+
 def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optional[str]]:
-    """Transcribe each box crop with Qwen2.5-VL, batched. Returns a read per box
-    (None where the VL is unavailable / fails). Crops carry a little padding so a
-    descender/ascender isn't clipped, and tiny crops are upscaled for legibility.
-    NEVER raises — returns Nones on any failure so the caller keeps Florence."""
+    """Transcribe each line with Qwen2.5-VL, batched, reading each line WITH its
+    neighbors visible (context) so a single-word misread can't change the meaning.
+    Returns a read per box (None where the VL is unavailable / fails). Output stays
+    strictly 1:1 with `boxes`. NEVER raises — returns Nones on any failure so the
+    caller keeps Florence."""
     from backend.vision.runtime import get_qwen_vl
 
     vl = get_qwen_vl()
@@ -742,24 +763,15 @@ def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optio
         return [None] * len(boxes)
     model, processor, device = vl
     import torch
-    from PIL import Image as PILImage
 
-    iw, ih = full_img.width, full_img.height
-    crops = []
-    for (x0, y0, x1, y1) in boxes:
-        pad_x = int((x1 - x0) * 0.05) + 4
-        pad_y = int((y1 - y0) * 0.35) + 4
-        c = full_img.crop((max(0, x0 - pad_x), max(0, y0 - pad_y),
-                           min(iw, x1 + pad_x), min(ih, y1 + pad_y)))
-        if c.height and c.height < 48:  # upscale short lines so glyphs are legible
-            s = 48.0 / c.height
-            c = c.resize((max(1, int(c.width * s)), 48), PILImage.LANCZOS)
-        crops.append(c.convert("RGB"))
+    crops = _build_context_crops(full_img, list(boxes))
 
     prompt = (
-        "Transcribe the handwritten text in this image exactly as written, "
-        "preserving spelling, numbers and punctuation. Output ONLY the "
-        "transcription with no quotes, labels or commentary."
+        "Several handwritten lines are shown. Transcribe ONLY the line marked "
+        "with the red bracket on the left edge, exactly as written, preserving "
+        "spelling, numbers and punctuation. Use the other lines only as context "
+        "to choose the right word. Output ONLY that one line's transcription — "
+        "no quotes, labels or commentary."
     )
     reads: list[Optional[str]] = []
     for i in range(0, len(crops), batch):
