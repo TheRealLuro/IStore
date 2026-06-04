@@ -121,6 +121,7 @@ import base64
 import io
 import json
 import logging
+import re
 from typing import Annotated, Optional
 from uuid import UUID
 
@@ -655,6 +656,125 @@ def _translate_regions(texts: list[str], target: str) -> tuple[list[str], str, s
     return out, src_flores, tgt_flores
 
 
+def _union_box(boxes):
+    xs0 = [b[0] for b in boxes]; ys0 = [b[1] for b in boxes]
+    xs1 = [b[2] for b in boxes]; ys1 = [b[3] for b in boxes]
+    return (min(xs0), min(ys0), max(xs1), max(ys1))
+
+
+# Looks like a brand / product / code identifier that should NOT be translated.
+_CODEISH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9./+_-]*$")
+_CAMEL_RE = re.compile(r"[a-z][A-Z]|[A-Z]{2}[a-z]")
+
+
+def _should_skip_region(text: str) -> bool:
+    """True when a region's text should be left UNTOUCHED (not inpainted or
+    re-rendered) because translating it would mangle a brand / logo / code
+    identifier. Conservative: only single tokens, never multi-word text."""
+    t = (text or "").strip()
+    if not t or " " in t:
+        return False
+    # CamelCase product names (OpenCLIP, PyTorch, MinIO), letters+digits mixed
+    # (h264, S3), or short ALL-CAPS tokens (FAQ, API) — leave as-is.
+    if _CAMEL_RE.search(t):
+        return True
+    if _CODEISH_RE.match(t) and any(c.isdigit() for c in t) and any(c.isalpha() for c in t):
+        return True
+    if t.isupper() and t.isalpha() and len(t) <= 4:
+        return True
+    return False
+
+
+def _merge_regions(regions: list[dict]) -> list[dict]:
+    """Merge raw OCR boxes into logical LINES then conservative BLOCKS so the
+    translator gets sentence context (fixes fragment mistranslations) and the
+    renderer recomposes the layout (fixes inconsistent per-box sizing). Returns
+    merged regions {"box": union, "text": merged, "parts": [orig boxes],
+    "line_h": int}. Never merges across a big horizontal gap (column break) or a
+    font-size change. Reading order: top->bottom, left->right."""
+    regs = [r for r in regions if (r.get("text") or "").strip()]
+    if len(regs) <= 1:
+        return [{"box": tuple(r["box"]), "text": (r["text"] or "").strip(),
+                 "parts": [tuple(r["box"])], "line_h": r["box"][3] - r["box"][1],
+                 "skip": _should_skip_region((r["text"] or "").strip())}
+                for r in regs]
+
+    def bh(b):
+        return max(1, b[3] - b[1])
+
+    def yc(b):
+        return (b[1] + b[3]) / 2.0
+
+    H = sorted(bh(r["box"]) for r in regs)[len(regs) // 2]  # median text height
+
+    # --- pass 1: group boxes into LINES (same row + horizontally adjacent) ---
+    ordered = sorted(regs, key=lambda r: (yc(r["box"]), r["box"][0]))
+    used = [False] * len(ordered)
+    line_segs: list[list[dict]] = []
+    for i, r in enumerate(ordered):
+        if used[i]:
+            continue
+        used[i] = True
+        row = [r]
+        ci = yc(r["box"])
+        for j in range(i + 1, len(ordered)):
+            if used[j]:
+                continue
+            bj = ordered[j]["box"]
+            if abs(yc(bj) - ci) >= 0.6 * H:
+                continue
+            ay0, ay1 = r["box"][1], r["box"][3]
+            if min(ay1, bj[3]) - max(ay0, bj[1]) > 0:  # vertical overlap
+                row.append(ordered[j]); used[j] = True
+        row.sort(key=lambda g: g["box"][0])
+        # split the row on big horizontal gaps (column boundaries)
+        seg = [row[0]]
+        for g in row[1:]:
+            if g["box"][0] - seg[-1]["box"][2] < 1.5 * H:
+                seg.append(g)
+            else:
+                line_segs.append(seg); seg = [g]
+        line_segs.append(seg)
+
+    lines = []
+    for seg in line_segs:
+        seg.sort(key=lambda g: g["box"][0])
+        boxes = [tuple(g["box"]) for g in seg]
+        text = " ".join((g["text"] or "").strip() for g in seg).strip()
+        ub = _union_box(boxes)
+        lines.append({"box": ub, "text": text, "parts": boxes, "line_h": bh(ub)})
+    lines.sort(key=lambda r: (r["box"][1], r["box"][0]))
+
+    # --- pass 2: merge consecutive LINES into a paragraph BLOCK (conservative) ---
+    blocks: list[dict] = []
+    for lr in lines:
+        if blocks:
+            p = blocks[-1]
+            same_left = abs(lr["box"][0] - p["box"][0]) < 1.0 * H
+            gap = lr["box"][1] - p["box"][3]
+            small_gap = -0.5 * H < gap < 0.8 * H
+            similar_h = 0.7 <= (lr["line_h"] / max(1, p["line_h"])) <= 1.4
+            # Only merge a TRUE wrapped continuation. NOT across a sentence end
+            # (prev ends with .!?…) and NOT when the next line starts its own
+            # list item (1. / a) / bullet) — otherwise consecutive list items
+            # ("9. … 10. … 11. …") get glued into one blob and lose their
+            # structure. This keeps lists intact in every language.
+            prev_ends = bool(re.search(r"[.!?:;)。！？]\s*$", p["text"]))
+            next_is_item = bool(re.match(
+                r"^\s*(\d+[.)]|[a-zA-Z][.)]|[•‣◦▪·*\-–—])\s", lr["text"]))
+            if (same_left and small_gap and similar_h
+                    and not prev_ends and not next_is_item):
+                p["parts"] += lr["parts"]
+                p["text"] = (p["text"] + " " + lr["text"]).strip()
+                p["box"] = _union_box([p["box"], lr["box"]])
+                continue
+        blocks.append({"box": lr["box"], "text": lr["text"],
+                       "parts": list(lr["parts"]), "line_h": lr["line_h"]})
+    for b in blocks:
+        b["skip"] = _should_skip_region(b["text"])
+    return blocks
+
+
 def _inpaint_erase(img, regions: list[dict]):
     """Erase the original text: paint each (dilated) bbox into a uint8 mask
     and `cv2.inpaint` (INPAINT_TELEA) the image. Returns a NEW PIL RGB image
@@ -670,16 +790,20 @@ def _inpaint_erase(img, regions: list[dict]):
     mask = np.zeros((ih, iw), dtype=np.uint8)
 
     for r in regions:
-        x0, y0, x1, y1 = r["box"]
-        # Dilate the box a few px so anti-aliased edges of the glyphs are
-        # covered and the inpaint doesn't leave a hairline of the old text.
-        # Scale the pad a touch with box height so big headlines get more.
-        pad = max(2, int(round((y1 - y0) * 0.12)))
-        mx0 = max(0, x0 - pad)
-        my0 = max(0, y0 - pad)
-        mx1 = min(iw, x1 + pad)
-        my1 = min(ih, y1 + pad)
-        mask[my0:my1, mx0:mx1] = 255
+        if r.get("skip"):
+            continue  # brand/logo/code or unchanged — leave the original ink
+        # Erase the PRECISE constituent boxes (not the merged union, which would
+        # wipe whitespace/other content between words/lines).
+        for (x0, y0, x1, y1) in r.get("parts", [r["box"]]):
+            # Dilate so anti-aliased edges + cursive ascenders/descenders/loops
+            # that spill past the tight bbox are fully covered — otherwise the
+            # original ink ghosts through behind the translation (esp. handwriting).
+            pad = max(3, int(round((y1 - y0) * 0.20)))
+            mx0 = max(0, x0 - pad)
+            my0 = max(0, y0 - pad)
+            mx1 = min(iw, x1 + pad)
+            my1 = min(ih, y1 + pad)
+            mask[my0:my1, mx0:mx1] = 255
 
     # radius=3 is the standard TELEA neighborhood; bigger blurs more.
     inpainted = cv2.inpaint(np_img, mask, 3, cv2.INPAINT_TELEA)
@@ -896,6 +1020,21 @@ def _estimate_serif(fg_mask) -> bool:
     return (edge / middle) > 2.2
 
 
+def _ensure_contrast(ink, bg_dark: bool):
+    """Guarantee the rendered text is READABLE. Faithfully sampling the original
+    ink reproduces faint pencil/low-contrast writing, which is unreadable after
+    re-render — so when the sampled ink is too close to the background luminance
+    we snap it to near-black (light bg) / near-white (dark bg)."""
+    try:
+        r, g, b = ink
+    except Exception:
+        return (235, 235, 235) if bg_dark else (24, 24, 24)
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if bg_dark:
+        return ink if lum >= 150 else (235, 235, 235)
+    return ink if lum <= 110 else (24, 24, 24)
+
+
 def _analyze_region(orig_img, box) -> dict:
     """Analyze the ORIGINAL (pre-inpaint) image crop for `box` and return the
     inferred render style:
@@ -919,6 +1058,17 @@ def _analyze_region(orig_img, box) -> dict:
         crop = np.asarray(orig_img.crop((x0, y0, x1, y1)))
         fg_mask, ink, bg_dark, confident = _ink_mask_and_color(crop)
 
+        # ORIGINAL text pixel height (vertical extent of the ink) — drives the
+        # render font size so the translation matches the SOURCE size instead of
+        # ballooning to fill a loose bounding box.
+        ink_h = 0
+        try:
+            rows = np.where(fg_mask.any(axis=1))[0]
+            if len(rows):
+                ink_h = int(rows[-1] - rows[0] + 1)
+        except Exception:
+            ink_h = 0
+
         bold = _estimate_bold(fg_mask)
         italic = _estimate_italic(fg_mask)
         serif = _estimate_serif(fg_mask)
@@ -932,12 +1082,17 @@ def _analyze_region(orig_img, box) -> dict:
             bold = False
             italic = False
             klass = "sans"
+        else:
+            # Faithful sampling reproduces faint pencil/low-contrast ink, which
+            # is unreadable after re-render — guarantee a readable contrast.
+            ink = _ensure_contrast(ink, bg_dark)
 
         return {
             "klass": klass,
             "bold": bold,
             "italic": italic,
             "ink": ink,
+            "ink_h": ink_h,
             "bg_dark": bg_dark,
             "ink_confident": confident,
         }
@@ -993,12 +1148,36 @@ def _line_h(font) -> int:
         return font.size
 
 
+def _avail_height(box, all_boxes) -> int:
+    """Vertical room a translation may use = box height + whitespace BELOW it
+    (down to the nearest region whose x-range overlaps), capped at 2.5x the box
+    height. Lets a longer translation flow into real whitespace instead of
+    shrinking to nothing or overlapping the next region."""
+    x0, y0, x1, y1 = box
+    box_h = max(1, y1 - y0)
+    bw = max(1, x1 - x0)
+    below_top = None
+    for b in all_boxes:
+        if b[0] == x0 and b[1] == y0 and b[2] == x1 and b[3] == y1:
+            continue
+        # strictly below + horizontally overlapping this box
+        if b[1] >= y1 - 0.3 * box_h and min(x1, b[2]) - max(x0, b[0]) > 0.3 * bw:
+            if below_top is None or b[1] < below_top:
+                below_top = b[1]
+    if below_top is None:
+        avail = int(2.5 * box_h)
+    else:
+        avail = max(box_h, int(below_top - y0 - 2))
+    return min(avail, int(2.5 * box_h))
+
+
 def _fit_and_draw(
     draw,
     text: str,
     box,
     fill,
     style: Optional[dict] = None,
+    max_h: Optional[int] = None,
 ) -> None:
     """Pick the LARGEST size of the STYLE-MATCHED bundled font whose word-wrapped
     `text` fits the box WIDTH and HEIGHT, then draw it so it occupies the same
@@ -1020,6 +1199,11 @@ def _fit_and_draw(
     x0, y0, x1, y1 = box
     box_w = max(1, x1 - x0)
     box_h = max(1, y1 - y0)
+    # Total vertical budget: the box plus any whitespace below it (so a longer
+    # translation flows into real empty space instead of shrinking/overlapping).
+    if max_h is None:
+        max_h = box_h
+    max_h = max(int(max_h), box_h)
 
     if not text.strip():
         return
@@ -1048,9 +1232,17 @@ def _fit_and_draw(
             except Exception:
                 return ImageFont.load_default()
 
-    # Ceiling = the box height (one line can't be taller than the box); floor
-    # keeps tiny boxes legible-ish. Step down until the wrapped block fits.
-    hi = max(6, min(box_h, 200))
+    # Ceiling = the ORIGINAL text height (measured ink extent) so the
+    # translation renders at the SOURCE size instead of ballooning to fill a
+    # loose box — the #1 cause of the inconsistent giant/tiny mix. +15% headroom
+    # (font size runs a bit larger than cap height). Fall back to a fraction of
+    # the box height when the ink couldn't be measured. The loop still shrinks
+    # below this when a long translation would overflow the width.
+    ink_h = int((style or {}).get("ink_h", 0) or 0)
+    if ink_h >= 6:
+        hi = max(6, min(int(ink_h * 1.15), max_h, 200))
+    else:
+        hi = max(6, min(int(box_h * 0.72), 200))
     lo = 6
     chosen_font = None
     chosen_lines: list[str] = []
@@ -1068,7 +1260,7 @@ def _fit_and_draw(
         lh = _line_h(font)
         gap = max(1, int(lh * 0.12))
         total_h = len(lines) * lh + (len(lines) - 1) * gap
-        if widest <= box_w and total_h <= box_h:
+        if widest <= box_w and total_h <= max_h:
             chosen_font = font
             chosen_lines = lines
             line_gap = gap
@@ -1110,8 +1302,10 @@ def _fit_and_draw(
         # Keep it inside the box top if the box is shorter than the cell.
         y = max(y0, y)
     else:
-        y = y0 + max(0, (box_h - block_h) // 2)
-        y = max(y0, y)
+        # Multi-line / extends past the original box: TOP-align at the box top so
+        # the block flows DOWNWARD into the whitespace budget (max_h) instead of
+        # centering (which would push the first line up over the line above).
+        y = y0
 
     for ln in chosen_lines:
         # Draw left-aligned at the box's left edge (same left edge as the
@@ -1135,26 +1329,31 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(inpainted)
+    all_boxes = [r["box"] for r in regions]
 
     for r, translated in zip(regions, translations):
+        if r.get("skip"):
+            continue  # brand/logo/code or unchanged — original ink kept
         text = (translated or "").strip()
         if not text:
             continue
         box = r["box"]
+        # Style/ink/ink_h come from the FIRST constituent line (a tight original
+        # text box), not the merged union (which spans whitespace/multiple lines)
+        # — so the font matches the source size + ink, not the block geometry.
+        rep = r.get("parts", [box])[0]
 
         if orig_img is not None:
-            # Infer family/weight/slant + the ACTUAL ink color from the original
-            # ink in this box (before it was erased).
-            style = _analyze_region(orig_img, box)
+            style = _analyze_region(orig_img, rep)
             fill = style["ink"]
         else:
-            # No original to sample (defensive) — fall back to high-contrast
-            # black/white against the reconstructed background.
             dark_bg = _bg_is_dark(inpainted, box)
             fill = (245, 245, 245) if dark_bg else (16, 16, 16)
             style = {"klass": "sans", "bold": False, "italic": False}
 
-        _fit_and_draw(draw, text, box, fill, style)
+        # Let a longer translation flow into the whitespace beneath the box.
+        max_h = _avail_height(box, all_boxes)
+        _fit_and_draw(draw, text, box, fill, style, max_h=max_h)
 
     return inpainted
 
@@ -1266,9 +1465,13 @@ def _ocr_stage(raw_bytes: bytes, *, four_way: bool | None = None, on_regions=Non
     regions = _scale_regions(best_regions, sx, sy, fw, fh)
     # FAST Florence-only recognizer: the detected boxes carry Florence's own
     # read. The CPU TrOCR handwriting re-read is intentionally OUT of this hot
-    # path — on a full handwritten page it stalled the request for 60s+
-    # ("warming up") and pulled in a 1.3 GB model. `_trocr_rewrite_regions`
-    # stays defined but is no longer called, so in-image translate stays fast.
+    # path. `_trocr_rewrite_regions` stays defined but is no longer called.
+    #
+    # Merge the raw per-line/per-phrase OCR boxes into logical lines + blocks so
+    # the translator gets sentence context and the renderer recomposes the
+    # layout (the single point all three translate paths share). See
+    # `_merge_regions`.
+    regions = _merge_regions(regions)
     return img, best_k, best_img, regions
 
 
@@ -1278,6 +1481,12 @@ def _compose_png(best_img, best_k: int, regions: list[dict], translations: list[
     finished composite BACK to the user's original orientation, and encode PNG.
     Shared by the non-streaming and streaming paths so the rendered output is
     identical."""
+    # Skip regions whose translation didn't change (already in the target
+    # language, or a brand/code token the engine echoed) — leave the original
+    # ink rather than re-render an identical string in a different font.
+    for r, t in zip(regions, translations):
+        if not r.get("skip") and (t or "").strip().lower() == (r.get("text") or "").strip().lower():
+            r["skip"] = True
     inpainted = _inpaint_erase(best_img, regions)
     # Pass `best_img` (the ORIGINAL, pre-erase) so per-region style + ink color
     # are inferred from the real ink; we DRAW on `inpainted`.
