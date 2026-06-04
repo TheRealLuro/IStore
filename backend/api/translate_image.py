@@ -310,6 +310,84 @@ _FONT_LAST_RESORT = (
 # first use so we stat each candidate at most once per process.
 _FONT_RESOLVED: dict[tuple[str, bool, bool], object] = {}
 
+# ---------------------------------------------------------------------------
+# NON-LATIN SCRIPT COVERAGE (sub-project B). Liberation + DejaVu cover only
+# Latin / Cyrillic / Greek, so translating image text INTO Chinese / Japanese /
+# Korean / Arabic / Hebrew / Indic / Thai rendered as tofu (□□□). Noto fills the
+# gap: fonts-noto-cjk (CJK) + fonts-noto-core (per-script NotoSans) are installed
+# in the Dockerfile. When the text to RENDER contains a covered non-Latin script
+# we pick the matching Noto face; otherwise the class-aware `_resolve_font` wins.
+# RTL/Indic shaping comes from Pillow's RAQM layout engine when available (see
+# `_make` in the renderer), which also does the bidi reordering for Arabic/Hebrew.
+_NOTO_TTF = "/usr/share/fonts/truetype/noto"
+_NOTO_OTF = "/usr/share/fonts/opentype/noto"
+
+# (script key, codepoint ranges, regular candidates, bold candidates)
+_SCRIPT_FONTS: tuple = (
+    ("cjk",
+     ((0x4E00, 0x9FFF), (0x3040, 0x30FF), (0xAC00, 0xD7A3), (0x3400, 0x4DBF),
+      (0xF900, 0xFAFF)),
+     (f"{_NOTO_OTF}/NotoSansCJK-Regular.ttc",
+      f"{_NOTO_OTF}/NotoSansCJKsc-Regular.otf"),
+     (f"{_NOTO_OTF}/NotoSansCJK-Bold.ttc",
+      f"{_NOTO_OTF}/NotoSansCJKsc-Bold.otf")),
+    ("arabic",
+     ((0x0600, 0x06FF), (0x0750, 0x077F), (0x08A0, 0x08FF), (0xFB50, 0xFDFF),
+      (0xFE70, 0xFEFF)),
+     (f"{_NOTO_TTF}/NotoSansArabic-Regular.ttf",
+      f"{_NOTO_TTF}/NotoNaskhArabic-Regular.ttf"),
+     (f"{_NOTO_TTF}/NotoSansArabic-Bold.ttf",
+      f"{_NOTO_TTF}/NotoNaskhArabic-Bold.ttf")),
+    ("hebrew", ((0x0590, 0x05FF), (0xFB1D, 0xFB4F)),
+     (f"{_NOTO_TTF}/NotoSansHebrew-Regular.ttf",),
+     (f"{_NOTO_TTF}/NotoSansHebrew-Bold.ttf",)),
+    ("devanagari", ((0x0900, 0x097F),),
+     (f"{_NOTO_TTF}/NotoSansDevanagari-Regular.ttf",),
+     (f"{_NOTO_TTF}/NotoSansDevanagari-Bold.ttf",)),
+    ("thai", ((0x0E00, 0x0E7F),),
+     (f"{_NOTO_TTF}/NotoSansThai-Regular.ttf",),
+     (f"{_NOTO_TTF}/NotoSansThai-Bold.ttf",)),
+    ("bengali", ((0x0980, 0x09FF),),
+     (f"{_NOTO_TTF}/NotoSansBengali-Regular.ttf",),
+     (f"{_NOTO_TTF}/NotoSansBengali-Bold.ttf",)),
+    ("tamil", ((0x0B80, 0x0BFF),),
+     (f"{_NOTO_TTF}/NotoSansTamil-Regular.ttf",),
+     (f"{_NOTO_TTF}/NotoSansTamil-Bold.ttf",)),
+)
+
+_SCRIPT_FONT_RESOLVED: dict[tuple[str, bool], object] = {}
+
+
+def _script_font(text: str, bold: bool) -> Optional[str]:
+    """If `text` contains a covered non-Latin script, return a glyph-capable Noto
+    face for it (bold variant when present, else regular), or None so the caller
+    uses the class-aware Latin font. Picks the script with the most matching
+    chars. Cached per (script, bold)."""
+    import os
+
+    if not text:
+        return None
+    counts: dict[int, int] = {}
+    for ch in text:
+        cp = ord(ch)
+        for idx, (_k, ranges, _r, _b) in enumerate(_SCRIPT_FONTS):
+            if any(lo <= cp <= hi for lo, hi in ranges):
+                counts[idx] = counts.get(idx, 0) + 1
+                break
+    if not counts:
+        return None
+    idx = max(counts, key=counts.get)
+    cache_key = (_SCRIPT_FONTS[idx][0], bold)
+    if cache_key in _SCRIPT_FONT_RESOLVED:
+        v = _SCRIPT_FONT_RESOLVED[cache_key]
+        return v if isinstance(v, str) else None
+    cands = _SCRIPT_FONTS[idx][3 if bold else 2]
+    if bold:
+        cands = cands + _SCRIPT_FONTS[idx][2]  # regular if no bold file
+    chosen = next((p for p in cands if os.path.isfile(p)), None)
+    _SCRIPT_FONT_RESOLVED[cache_key] = chosen if chosen else False
+    return chosen
+
 
 class TranslateImageRequest(BaseModel):
     # Target language: a FLORES-200 code (spa_Latn, …) or an ISO-639-1 code
@@ -949,13 +1027,26 @@ def _fit_and_draw(
     klass = (style or {}).get("klass", "sans")
     bold = bool((style or {}).get("bold", False))
     italic = bool((style or {}).get("italic", False))
-    font_path = _resolve_font(klass, bold, italic)
+    # Sub-project B: if the translated text is a non-Latin script (CJK/Arabic/
+    # Hebrew/Indic/Thai), use a glyph-capable Noto face so it doesn't render as
+    # tofu; otherwise the class-aware Latin font.
+    font_path = _script_font(text, bold) or _resolve_font(klass, bold, italic)
 
     def _make(sz):
-        try:
-            return ImageFont.truetype(font_path, sz) if font_path else ImageFont.load_default()
-        except Exception:
+        if not font_path:
             return ImageFont.load_default()
+        # Prefer RAQM layout — proper shaping + bidi for Arabic/Hebrew/Indic, and
+        # harmless for CJK/Latin. Falls back to the basic layout when Pillow has
+        # no libraqm, then to the bitmap default.
+        try:
+            return ImageFont.truetype(
+                font_path, sz, layout_engine=ImageFont.Layout.RAQM
+            )
+        except Exception:
+            try:
+                return ImageFont.truetype(font_path, sz)
+            except Exception:
+                return ImageFont.load_default()
 
     # Ceiling = the box height (one line can't be taller than the box); floor
     # keeps tiny boxes legible-ish. Step down until the wrapped block fits.

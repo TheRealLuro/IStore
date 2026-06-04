@@ -152,6 +152,7 @@ RUN apt-get update \
          espeak-ng \
          libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
          fonts-liberation fonts-dejavu-core \
+         fonts-noto-cjk fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
 
 # §C4.6 — Install rclone for Proton Drive + MEGA sync. Both services
