@@ -683,6 +683,45 @@ def _first_existing(paths) -> Optional[str]:
     return None
 
 
+# Sub-project D: Noto coverage for the RENDERED translation PDF so a document
+# translated INTO CJK/Arabic/Hebrew/Indic/Thai shows real glyphs instead of tofu
+# (the same gap sub-project B closed for in-image text). Registered with
+# ReportLab on demand and selected per block by the block's dominant script.
+_PDF_NOTO = {
+    # ReportLab can't embed NotoSansCJK (CFF/PostScript outlines); WenQuanYi
+    # Micro Hei is TrueType and covers CJK. (The PIL image path uses Noto CJK.)
+    "cjk": ("CJKHei", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+    "arabic": ("NotoArabic", "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf", None),
+    "hebrew": ("NotoHebrew", "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf", None),
+    "devanagari": ("NotoDeva", "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf", None),
+    "thai": ("NotoThai", "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf", None),
+}
+_PDF_SCRIPT_RANGES = (
+    ("cjk", ((0x4E00, 0x9FFF), (0x3040, 0x30FF), (0xAC00, 0xD7A3), (0x3400, 0x4DBF))),
+    ("arabic", ((0x0600, 0x06FF), (0x0750, 0x077F), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF))),
+    ("hebrew", ((0x0590, 0x05FF),)),
+    ("devanagari", ((0x0900, 0x097F),)),
+    ("thai", ((0x0E00, 0x0E7F),)),
+)
+# script key -> registered ReportLab font name (populated by _register_unicode_font).
+_PDF_SCRIPT_FONTS: dict[str, str] = {}
+
+
+def _pdf_script_for(text: str) -> Optional[str]:
+    """Dominant covered non-Latin script in `text`, or None (Latin/Cyrillic/Greek
+    -> the base DejaVu font is fine)."""
+    if not text:
+        return None
+    counts: dict[str, int] = {}
+    for ch in text:
+        cp = ord(ch)
+        for key, ranges in _PDF_SCRIPT_RANGES:
+            if any(lo <= cp <= hi for lo, hi in ranges):
+                counts[key] = counts.get(key, 0) + 1
+                break
+    return max(counts, key=counts.get) if counts else None
+
+
 def _register_unicode_font() -> Optional[str]:
     """Register DejaVuSans (regular + bold) with ReportLab so accented Latin /
     Cyrillic / Greek glyphs render. Returns the registered family base name
@@ -693,9 +732,25 @@ def _register_unicode_font() -> Optional[str]:
         return _UNICODE_FONT
     _FONTS_REGISTERED = True
 
+    import os
+
     from reportlab.lib.fonts import addMapping
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
+
+    # Register Noto faces for non-Latin scripts first (independent of DejaVu) so
+    # translated documents in CJK/Arabic/etc. render real glyphs, not tofu.
+    for _key, (_name, _path, _idx) in _PDF_NOTO.items():
+        if _key in _PDF_SCRIPT_FONTS or not os.path.isfile(_path):
+            continue
+        try:
+            if _idx is None:
+                pdfmetrics.registerFont(TTFont(_name, _path))
+            else:
+                pdfmetrics.registerFont(TTFont(_name, _path, subfontIndex=_idx))
+            _PDF_SCRIPT_FONTS[_key] = _name
+        except Exception:
+            logger.exception("render-pdf: Noto %s registration failed", _key)
 
     reg = _first_existing(_DEJAVU_REGULAR_CANDIDATES)
     if not reg:
@@ -791,11 +846,15 @@ def _render_pdf_sync(req: RenderPdfRequest) -> tuple[bytes, str]:
 
     note_bits: list[str] = []
     if font:
+        extra = (
+            f" Non-Latin scripts use bundled Noto fonts "
+            f"({', '.join(sorted(_PDF_SCRIPT_FONTS))})."
+            if _PDF_SCRIPT_FONTS else
+            " CJK/Arabic scripts are not covered and may appear as boxes."
+        )
         note_bits.append(
             "Rendered with the DejaVuSans Unicode font (Latin/Cyrillic/Greek "
-            "accents render correctly). CJK and Arabic scripts are not covered "
-            "by this font and may appear as boxes — a wider font would need to "
-            "be bundled for those."
+            "accents render correctly)." + extra
         )
     else:
         note_bits.append(
@@ -820,6 +879,12 @@ def _render_pdf_sync(req: RenderPdfRequest) -> tuple[bytes, str]:
         used += len(text)
         safe = _pdf_escape(text)
         style = styles[btype]
+        # Sub-project D: render non-Latin blocks with the matching Noto face so
+        # CJK/Arabic/etc. don't become tofu; Latin blocks keep the base font.
+        sf = _PDF_SCRIPT_FONTS.get(_pdf_script_for(text) or "")
+        if sf:
+            from reportlab.lib.styles import ParagraphStyle
+            style = ParagraphStyle(name=f"{style.name}_sf", parent=style, fontName=sf)
         if btype == "li":
             # Bullet glyph prefix → a clean, dependency-light bulleted look.
             flow.append(Paragraph("•&nbsp;" + safe, style))
