@@ -121,6 +121,7 @@ import base64
 import io
 import json
 import logging
+import os
 import re
 from typing import Annotated, Optional
 from uuid import UUID
@@ -202,13 +203,14 @@ _STREAM_FOUR_WAY_DEFAULT = False
 _OCR_MAX_NEW_TOKENS = 512
 _OCR_NUM_BEAMS = 1
 
-# HARD wall-clock ceiling for the OCR stage (decode + any orientation passes).
-# The streaming route wraps the to_thread OCR in `asyncio.wait_for(timeout=...)`
-# at this value so the stage can NEVER hang forever; on timeout the generator
-# emits a terminal {"error": …} line. Generous enough for a normal photo on a
-# busy GPU, short enough that a pathological dense page fails fast with a clear
-# message instead of spinning indefinitely.
-_OCR_DEADLINE_S = 45.0
+# HARD wall-clock ceiling for the OCR stage (decode + any orientation passes +
+# the optional VL handwriting re-read). The streaming route wraps the to_thread
+# OCR in `asyncio.wait_for(timeout=...)` at this value so the stage can NEVER
+# hang forever; on timeout the generator emits a terminal {"error": …} line.
+# Digital pages return in a few seconds (no VL); the ceiling is generous because
+# a handwriting page swaps in Qwen2.5-VL (~6 GB) and re-reads every line crop,
+# which legitimately takes up to a couple of minutes on a busy 12 GB card.
+_OCR_DEADLINE_S = 180.0
 
 # ---------------------------------------------------------------------------
 # FONT REGISTRY — pick a bundled TTF that matches the ORIGINAL region's style.
@@ -240,6 +242,13 @@ _OCR_DEADLINE_S = 45.0
 _LIB = "/usr/share/fonts/truetype/liberation"
 _DJV = "/usr/share/fonts/truetype/dejavu"
 _MPL = "/opt/venv/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf"
+
+# Handwriting face for re-rendering HANDWRITTEN regions so the translation still
+# "looks written on the paper" (clean + legible, not a typewriter font). Patrick
+# Hand is a single-weight neat handprint (SIL OFL) downloaded in the Dockerfile.
+# Latin/accented coverage only — non-Latin translations fall back to the Noto
+# script face (which won't look handwritten, but at least renders the glyphs).
+_HANDWRITING_FONT = "/usr/share/fonts/truetype/handwriting/PatrickHand-Regular.ttf"
 
 # (class, bold, italic) -> ordered candidate paths. Liberation first (true
 # italics everywhere); DejaVu as the Unicode-broad fallback. For serif/sans
@@ -388,6 +397,19 @@ def _script_font(text: str, bold: bool) -> Optional[str]:
     chosen = next((p for p in cands if os.path.isfile(p)), None)
     _SCRIPT_FONT_RESOLVED[cache_key] = chosen if chosen else False
     return chosen
+
+
+def _handwriting_font() -> Optional[str]:
+    """Return the bundled handwriting TTF if present, else None (caller falls
+    back to the class-aware Latin font). Cached after the first stat."""
+    import os
+    global _HANDWRITING_FONT_RESOLVED
+    try:
+        return _HANDWRITING_FONT_RESOLVED  # type: ignore[name-defined]
+    except NameError:
+        pass
+    _HANDWRITING_FONT_RESOLVED = _HANDWRITING_FONT if os.path.isfile(_HANDWRITING_FONT) else None
+    return _HANDWRITING_FONT_RESOLVED
 
 
 class TranslateImageRequest(BaseModel):
@@ -581,6 +603,181 @@ def _trocr_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
         return out
     except Exception:
         logger.exception("translate-image: TrOCR region re-read failed; keeping Florence")
+        return regions
+
+
+# ---------------------------------------------------------------------------
+# CONTEXT-AWARE HANDWRITING RECOGNITION (Qwen2.5-VL).
+#
+# Florence reads cursive poorly and TrOCR reads a line in isolation, so meaning-
+# changing single-char misreads survive ("Rome"->"home", "Nope"->"hope"). A
+# vision-language model re-reads each detected LINE crop WITH its in-line context
+# and recovers the right word. Gated to handwriting pages only (low Florence
+# confidence) because it's far heavier than Florence; controlled by:
+#   IMG_VL_RECOG          = auto | on | off   (default auto)
+#   IMG_VL_CONF_THRESHOLD = float             (default -0.6; below ⇒ handwriting)
+# Calibrated 2026-06-04: Florence mean per-token logprob ≈ -0.81 on a handwritten
+# note vs ≈ -0.36 on a clean digital screenshot, so -0.6 separates them cleanly.
+# ---------------------------------------------------------------------------
+def _vl_recog_mode() -> str:
+    v = (os.environ.get("IMG_VL_RECOG", "auto") or "auto").strip().lower()
+    return v if v in {"auto", "on", "off"} else "auto"
+
+
+def _vl_conf_threshold() -> float:
+    try:
+        return float(os.environ.get("IMG_VL_CONF_THRESHOLD", "-0.6"))
+    except (TypeError, ValueError):
+        return -0.6
+
+
+def _is_handwriting(conf) -> bool:
+    """Decide whether to run the VL handwriting re-read for this page."""
+    mode = _vl_recog_mode()
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    # auto: a low mean Florence confidence is the handwriting signal.
+    return conf is not None and float(conf) < _vl_conf_threshold()
+
+
+_VL_PREFIX_RE = re.compile(
+    r"^\s*(the\s+)?(text|transcription|handwriting|it)\s*(reads?|says?|is)?\s*[:\-]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _clean_vl_text(t: str) -> str:
+    """Strip the boilerplate a chat VL sometimes wraps a transcription in
+    ('The text reads: "…"', surrounding quotes, trailing commentary newlines)."""
+    s = (t or "").strip()
+    if not s:
+        return ""
+    # Keep only the first line block; VLs sometimes append an explanation.
+    s = s.strip().strip("`")
+    s = _VL_PREFIX_RE.sub("", s)
+    # Drop matching surrounding quotes.
+    if len(s) >= 2 and s[0] in "\"'“”«" and s[-1] in "\"'“”»":
+        s = s[1:-1].strip()
+    return s
+
+
+_VL_REPEAT_RE = re.compile(r"(.{1,4})\1{4,}")
+
+
+def _looks_degenerate(s: str) -> bool:
+    """True when a VL transcription looks like decoder garbage (a loop / mostly
+    punctuation) so the caller can fall back to Florence rather than render soup
+    like '323223.33.123' or 'cya.cya.cya.cya'."""
+    s = (s or "").strip()
+    if len(s) < 6:
+        return False
+    words = s.split()
+    if len(words) >= 5 and len(set(words)) / len(words) < 0.45:
+        return True  # the same few words repeated
+    if _VL_REPEAT_RE.search(s.replace(" ", "")):
+        return True  # a short substring repeated many times
+    letters = sum(c.isalpha() for c in s)
+    if len(s) > 10 and letters / len(s) < 0.3:
+        return True  # almost no letters (digit/punctuation soup)
+    return False
+
+
+def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optional[str]]:
+    """Transcribe each box crop with Qwen2.5-VL, batched. Returns a read per box
+    (None where the VL is unavailable / fails). Crops carry a little padding so a
+    descender/ascender isn't clipped, and tiny crops are upscaled for legibility.
+    NEVER raises — returns Nones on any failure so the caller keeps Florence."""
+    from backend.vision.runtime import get_qwen_vl
+
+    vl = get_qwen_vl()
+    if vl is None or not boxes:
+        return [None] * len(boxes)
+    model, processor, device = vl
+    import torch
+    from PIL import Image as PILImage
+
+    iw, ih = full_img.width, full_img.height
+    crops = []
+    for (x0, y0, x1, y1) in boxes:
+        pad_x = int((x1 - x0) * 0.05) + 4
+        pad_y = int((y1 - y0) * 0.35) + 4
+        c = full_img.crop((max(0, x0 - pad_x), max(0, y0 - pad_y),
+                           min(iw, x1 + pad_x), min(ih, y1 + pad_y)))
+        if c.height and c.height < 48:  # upscale short lines so glyphs are legible
+            s = 48.0 / c.height
+            c = c.resize((max(1, int(c.width * s)), 48), PILImage.LANCZOS)
+        crops.append(c.convert("RGB"))
+
+    prompt = (
+        "Transcribe the handwritten text in this image exactly as written, "
+        "preserving spelling, numbers and punctuation. Output ONLY the "
+        "transcription with no quotes, labels or commentary."
+    )
+    reads: list[Optional[str]] = []
+    for i in range(0, len(crops), batch):
+        chunk = crops[i:i + batch]
+        try:
+            msgs = [
+                [{"role": "user", "content": [
+                    {"type": "image"}, {"type": "text", "text": prompt}]}]
+                for _ in chunk
+            ]
+            texts = [
+                processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
+                for m in msgs
+            ]
+            inputs = processor(
+                text=texts, images=chunk, padding=True, return_tensors="pt"
+            ).to(device)
+            with torch.no_grad():
+                # A single text LINE is short; cap tokens low and apply anti-
+                # repetition so an ambiguous crop can't send the decoder into a
+                # loop (the "323223.33…" / "cyceLLing.cya" digit/letter soup).
+                gen = model.generate(
+                    **inputs,
+                    max_new_tokens=64,
+                    do_sample=False,
+                    repetition_penalty=1.3,
+                    no_repeat_ngram_size=3,
+                )
+            # LEFT padding (set on the processor) ⇒ all rows share the prompt
+            # length, so the new tokens are the tail past input width.
+            new = gen[:, inputs.input_ids.shape[1]:]
+            outs = processor.batch_decode(
+                new, skip_special_tokens=True, clean_up_tokenization_spaces=True
+            )
+            reads.extend(_clean_vl_text(o) for o in outs)
+        except Exception:
+            logger.exception("translate-image: VL batch read failed; Florence kept")
+            reads.extend([None] * len(chunk))
+    return reads
+
+
+def _vl_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
+    """Re-read every (non-skip) region with Qwen2.5-VL on the FULL-RES frame and
+    substitute its text — the accurate, context-aware handwriting read. Marks each
+    region `handwriting=True` so the renderer uses the handwriting font + clean
+    ink. Region ↔ text alignment is preserved; any line the VL can't read keeps
+    Florence's text. NEVER raises — returns `regions` unchanged on failure."""
+    if not regions:
+        return regions
+    try:
+        idxs = [i for i, r in enumerate(regions) if not r.get("skip")]
+        boxes = [tuple(regions[i]["box"]) for i in idxs]
+        reads = _vl_read_regions(full_img, boxes)
+        got = 0
+        for i, t in zip(idxs, reads):
+            regions[i]["handwriting"] = True  # the page IS handwriting
+            if t and t.strip() and not _looks_degenerate(t):
+                regions[i]["text"] = t.strip()
+                got += 1
+        logger.info("translate-image: VL re-read %d/%d handwritten regions",
+                    got, len(boxes))
+        return regions
+    except Exception:
+        logger.exception("translate-image: VL region re-read failed; keeping Florence")
         return regions
 
 
@@ -1273,6 +1470,138 @@ def _avail_height(box, all_boxes) -> int:
     return min(avail, int(2.5 * box_h))
 
 
+def _orig_line_count(parts) -> int:
+    """How many distinct text ROWS the original region spanned (its parts). Used
+    to preserve the original line structure: a label that was ONE line should
+    stay one line after translation rather than wrapping + flowing downward."""
+    if not parts:
+        return 1
+    centers = sorted(((p[1] + p[3]) / 2.0, p[3] - p[1]) for p in parts)
+    avg_h = sum(h for _c, h in centers) / len(centers)
+    tol = max(2.0, 0.6 * avg_h)
+    rows = 1
+    prev = centers[0][0]
+    for c, _h in centers[1:]:
+        if c - prev > tol:
+            rows += 1
+        prev = c
+    return rows
+
+
+def _color_close(a, b, tol: int = 24) -> bool:
+    """True when two RGB tuples are within `tol` on every channel."""
+    try:
+        return all(abs(int(a[i]) - int(b[i])) <= tol for i in range(3))
+    except Exception:
+        return False
+
+
+def _page_bg(np_img):
+    """Dominant page background colour, sampled as the median of the four corner
+    patches (corners are almost always background, not text/UI)."""
+    import numpy as np
+
+    h, w = np_img.shape[:2]
+    s = max(4, min(h, w) // 20)
+    corners = [
+        np_img[0:s, 0:s], np_img[0:s, w - s:w],
+        np_img[h - s:h, 0:s], np_img[h - s:h, w - s:w],
+    ]
+    px = np.concatenate([c.reshape(-1, 3) for c in corners], axis=0)
+    return tuple(int(c) for c in np.median(px, axis=0))
+
+
+def _pill_bounds(np_img, box, page_bg):
+    """If `box` sits inside a CONTAINED UI element (a button / pill / badge),
+    return that element's inner rect (x0,y0,x1,y1) so the translation can be
+    centred and fit INSIDE it instead of flowing past its edge. Handles BOTH:
+      * FILLED pills — the surround is a uniform colour distinct from the page;
+      * OUTLINED/ghost buttons — the surround is the page colour but a thin
+        border stroke encloses the label within a short distance.
+    Returns None for plain text on the page (no container) or a textured
+    surround. All scans are capped so a mis-detection can't run across the
+    image."""
+    import numpy as np
+
+    h, w = np_img.shape[:2]
+    x0, y0, x1, y1 = box
+    bh = max(1, y1 - y0)
+    bw = max(1, x1 - x0)
+    cap_v = int(bh * 1.6) + 8          # buttons have modest vertical padding
+    cap_h = int(bw * 1.0) + int(bh * 2.0) + 8
+
+    def _line(i, horiz):
+        sl = np_img[i, x0:x1] if horiz else np_img[y0:y1, i]
+        if sl.size == 0:
+            return None
+        return tuple(int(c) for c in np.median(sl, axis=0))
+
+    med, std = _border_ring(np_img, x0, y0, x1, y1, t=5)
+
+    # --- FILLED pill: ring uniform AND distinct from the page background -------
+    if (med is not None and std is not None and std <= 18
+            and not _color_close(med, page_bg, tol=22)):
+        def _scan_fill(start, stop, step, horiz):
+            ext, i = 0, start
+            while i != stop:
+                px = _line(i, horiz)
+                if px is None or not _color_close(px, med, tol=20):
+                    break
+                ext += 1; i += step
+            return ext
+        up = _scan_fill(y0 - 1, max(-1, y0 - 1 - cap_v), -1, True)
+        down = _scan_fill(y1, min(h, y1 + cap_v), 1, True)
+        left = _scan_fill(x0 - 1, max(-1, x0 - 1 - cap_h), -1, False)
+        right = _scan_fill(x1, min(w, x1 + cap_h), 1, False)
+        if left >= 2 or right >= 2:    # real horizontal padding ⇒ a pill
+            return (max(0, x0 - left), max(0, y0 - up),
+                    min(w, x1 + right), min(h, y1 + down))
+        return None
+
+    # --- OUTLINED button: page-coloured interior bounded by a THIN border ------
+    # Walk outward over page-coloured pixels; the first run that deviates from the
+    # page colour is a border candidate. Confirm it's a THIN stroke (page colour
+    # resumes within a few px beyond it) so adjacent TEXT/graphics aren't taken
+    # for a border, and return the stroke colour. Require a confirmed stroke on
+    # ALL FOUR sides AND that the four stroke colours match each other — a real
+    # button border is one uniform colour all the way round, which rejects random
+    # noise / a word that merely has neighbours. `bg_tol=14` is tight enough that
+    # JPEG noise/gradient stays "page" yet a faint grey border (Δ~26) registers.
+    def _scan_border(start, stop, step, horiz):
+        i = start
+        while i != stop:
+            px = _line(i, horiz)
+            if px is None:
+                return None
+            if not _color_close(px, page_bg, tol=14):
+                j, run = i, 0          # confirm the non-page run is thin
+                while j != stop and run <= 7:
+                    pj = _line(j, horiz)
+                    if pj is None:
+                        return None
+                    if _color_close(pj, page_bg, tol=14):
+                        return (i - step, px)  # (inside edge, stroke colour)
+                    run += 1; j += step
+                return None            # thick non-page run ⇒ not a border
+            i += step
+        return None
+
+    sides = [
+        _scan_border(x0 - 1, max(-1, x0 - 1 - cap_h), -1, False),
+        _scan_border(x1, min(w, x1 + cap_h), 1, False),
+        _scan_border(y0 - 1, max(-1, y0 - 1 - cap_v), -1, True),
+        _scan_border(y1, min(h, y1 + cap_v), 1, True),
+    ]
+    if any(s is None for s in sides):  # not a 4-sided enclosure ⇒ not a button
+        return None
+    (li, lc), (ri, rc), (ti_, tc), (bi, bc) = sides
+    cols = [lc, rc, tc, bc]            # the four strokes must be ONE border colour
+    if not all(_color_close(cols[0], c, tol=30) for c in cols[1:]):
+        return None
+    return (max(0, min(li, x0)), max(0, min(ti_, y0)),
+            min(w, max(ri, x1)), min(h, max(bi, y1)))
+
+
 def _fit_and_draw(
     draw,
     text: str,
@@ -1280,6 +1609,8 @@ def _fit_and_draw(
     fill,
     style: Optional[dict] = None,
     max_h: Optional[int] = None,
+    align: str = "left",
+    valign: str = "baseline",
 ) -> None:
     """Pick the LARGEST size of the STYLE-MATCHED bundled font whose word-wrapped
     `text` fits the box WIDTH and HEIGHT, then draw it so it occupies the same
@@ -1313,10 +1644,16 @@ def _fit_and_draw(
     klass = (style or {}).get("klass", "sans")
     bold = bool((style or {}).get("bold", False))
     italic = bool((style or {}).get("italic", False))
-    # Sub-project B: if the translated text is a non-Latin script (CJK/Arabic/
-    # Hebrew/Indic/Thai), use a glyph-capable Noto face so it doesn't render as
-    # tofu; otherwise the class-aware Latin font.
-    font_path = _script_font(text, bold) or _resolve_font(klass, bold, italic)
+    handwriting = bool((style or {}).get("handwriting", False))
+    # Script font wins first so non-Latin translations (CJK/Arabic/Hebrew/Indic/
+    # Thai) get a glyph-capable Noto face instead of tofu. For HANDWRITTEN regions
+    # whose translation IS Latin, use the bundled handwriting face so it still
+    # "looks written on the paper"; otherwise the class-aware Latin font.
+    font_path = _script_font(text, bold)
+    if font_path is None and handwriting:
+        font_path = _handwriting_font()
+    if font_path is None:
+        font_path = _resolve_font(klass, bold, italic)
 
     def _make(sz):
         if not font_path:
@@ -1398,7 +1735,13 @@ def _fit_and_draw(
     except Exception:
         ascent, descent = lh, 0
 
-    if n_lines == 1 and block_h <= box_h:
+    if valign == "center":
+        # Centre the whole block in the box — used for pills/buttons so the label
+        # sits dead-centre in the container regardless of length.
+        y = y0 + max(0, (box_h - block_h) // 2)
+    elif valign == "top":
+        y = y0
+    elif n_lines == 1 and block_h <= box_h:
         # top of the single glyph cell = bottom - descent - ascent.
         y = y1 - descent - ascent
         # Keep it inside the box top if the box is shorter than the cell.
@@ -1410,12 +1753,30 @@ def _fit_and_draw(
         y = y0
 
     for ln in chosen_lines:
-        # Draw left-aligned at the box's left edge (same left edge as the
-        # original). anchor="la" = left/ascent so y is the top of the glyph
-        # cell (consistent line stacking). PIL anti-aliases TTF glyphs by
-        # default, so edges are smooth.
-        draw.text((x0, y), ln, font=chosen_font, fill=fill, anchor="la")
+        if align == "center":
+            lw = _text_w(draw, ln, chosen_font)
+            lx = x0 + max(0, (box_w - lw) // 2)
+        else:
+            lx = x0
+        # anchor="la" = left/ascent so y is the top of the glyph cell (consistent
+        # line stacking). PIL anti-aliases TTF glyphs by default, so edges smooth.
+        draw.text((lx, y), ln, font=chosen_font, fill=fill, anchor="la")
         y += lh + line_gap
+
+
+def _page_pen_color(inks: list[tuple], bg_dark: bool) -> tuple:
+    """Pick ONE pen color for ALL handwriting lines from the per-region sampled
+    `inks` so the whole note renders in a uniform, readable hand instead of a
+    different shade per box. Median the sampled inks, then guarantee readable
+    contrast for the page background. Falls back to a near-black ('pen on paper')
+    or near-white (dark page) when no confident ink was sampled."""
+    import numpy as np
+
+    if not inks:
+        return (236, 236, 236) if bg_dark else (26, 29, 41)
+    arr = np.array(inks, dtype=np.float32)
+    med = tuple(int(c) for c in np.median(arr, axis=0))
+    return _ensure_contrast(med, bg_dark)
 
 
 def _render_translations(inpainted, regions: list[dict], translations: list[str], orig_img=None):
@@ -1428,10 +1789,15 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     infer per-region style + ink color via `_analyze_region`; `inpainted` is the
     surface we draw on. When `orig_img` is None we degrade to the previous
     black/white-by-background behavior (sampling the inpainted surface)."""
+    import numpy as np
     from PIL import ImageDraw
 
     draw = ImageDraw.Draw(inpainted)
     all_boxes = [r["box"] for r in regions]
+
+    # One page-background sample + numpy view for pill detection (digital UI).
+    orig_np = np.asarray(orig_img) if orig_img is not None else None
+    page_bg = _page_bg(orig_np) if orig_np is not None else (255, 255, 255)
 
     for r, translated in zip(regions, translations):
         if r.get("skip"):
@@ -1440,6 +1806,7 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
         if not text:
             continue
         box = r["box"]
+        hw = bool(r.get("handwriting", False))
         # Style/ink/ink_h come from the FIRST constituent line (a tight original
         # text box), not the merged union (which spans whitespace/multiple lines)
         # — so the font matches the source size + ink, not the block geometry.
@@ -1453,9 +1820,47 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             fill = (245, 245, 245) if dark_bg else (16, 16, 16)
             style = {"klass": "sans", "bold": False, "italic": False}
 
-        # Let a longer translation flow into the whitespace beneath the box.
-        max_h = _avail_height(box, all_boxes)
-        _fit_and_draw(draw, text, box, fill, style, max_h=max_h)
+        if hw:
+            # Handwriting: render in the clean handwriting face with a legible
+            # dark "pen" ink (the original is often faint/pencil and unreadable
+            # when reproduced), preserving only the light/dark-background sense.
+            style = dict(style)
+            style["handwriting"] = True
+            style["bold"] = False
+            style["italic"] = False
+            fill = (236, 236, 236) if style.get("bg_dark") else (26, 29, 41)
+
+        # Pills/buttons (digital UI): the label sits on a contained fill, so a
+        # longer translation must shrink + CENTRE inside it, never flow past the
+        # edge. Only meaningful for non-handwriting pages.
+        pill = None
+        if orig_np is not None and not hw:
+            try:
+                pill = _pill_bounds(orig_np, box, page_bg)
+            except Exception:
+                pill = None
+
+        if hw:
+            # Keep each handwritten item INSIDE its own vertical band (the box it
+            # originally occupied) — shrink to fit rather than flow downward — so
+            # densely-spaced lines can't overlap the next item. Top-aligned to the
+            # original top so the structure (list order + indents) is preserved.
+            _fit_and_draw(draw, text, box, fill, style,
+                          max_h=(box[3] - box[1]), valign="top")
+        elif pill is not None:
+            px0, py0, px1, py1 = pill
+            _fit_and_draw(draw, text, pill, fill, style,
+                          max_h=(py1 - py0), align="center", valign="center")
+        elif (not hw and len(text.split()) <= 6
+              and _orig_line_count(r.get("parts", [box])) == 1):
+            # Short single-line label (e.g. a borderless text button / CTA): keep
+            # it on ONE line by shrinking to fit, instead of wrapping + flowing
+            # downward — preserves the original single-line format every language.
+            _fit_and_draw(draw, text, box, fill, style, max_h=(box[3] - box[1]))
+        else:
+            # Let a longer translation flow into the whitespace beneath the box.
+            max_h = _avail_height(box, all_boxes)
+            _fit_and_draw(draw, text, box, fill, style, max_h=max_h)
 
     return inpainted
 
@@ -1527,14 +1932,23 @@ def _ocr_stage(raw_bytes: bytes, *, four_way: bool | None = None, on_regions=Non
             "translate-image: best orientation k=%d (%d deg CW); scores=%s",
             best_k, 90 * best_k, [round(s, 1) for s in scores],
         )
+        # `_ocr_best_orientation` ranks by an alnum/region score, not Florence's
+        # log-prob confidence — re-read the winning frame once for the conf the
+        # handwriting gate needs (this route is the rare non-streaming one).
+        try:
+            _r2, _iw2, _ih2, conf = _regions_pixels(
+                best_ocr_img, return_confidence=True
+            )
+        except Exception:
+            conf = None
     else:
         # SINGLE orientation (0° only) — the fast, never-hanging streaming
         # default. One Florence pass on the upright frame; no sweep.
-        _text, _n, _conf, best_regions = _read(ocr_img)
+        _text, _n, conf, best_regions = _read(ocr_img)
         best_k, best_ocr_img = 0, ocr_img
         logger.info(
-            "translate-image: single-orientation OCR (0deg); %d regions",
-            len(best_regions or []),
+            "translate-image: single-orientation OCR (0deg); %d regions; conf=%s",
+            len(best_regions or []), None if conf is None else round(conf, 3),
         )
 
     best_regions = best_regions or []
@@ -1574,6 +1988,19 @@ def _ocr_stage(raw_bytes: bytes, *, four_way: bool | None = None, on_regions=Non
     # layout (the single point all three translate paths share). See
     # `_merge_regions`.
     regions = _merge_regions(regions)
+
+    # HANDWRITING: a low Florence confidence means cursive/handwritten text it
+    # reads poorly (meaning-changing misreads). Re-read each merged LINE crop
+    # with the context-aware VL so the translation starts from the right words,
+    # and flag the regions so the renderer uses the handwriting font + clean ink.
+    # Gated (auto/on/off + conf threshold); degrades to Florence if VL is absent.
+    if _is_handwriting(conf):
+        logger.info(
+            "translate-image: handwriting detected (conf=%s) — VL re-read",
+            None if conf is None else round(conf, 3),
+        )
+        regions = _vl_rewrite_regions(best_img, regions)
+
     return img, best_k, best_img, regions
 
 

@@ -112,3 +112,118 @@ def test_contrast_keeps_dark_ink_on_light_bg():
 
 def test_contrast_lightens_dark_ink_on_dark_bg():
     assert ti._ensure_contrast((30, 30, 30), bg_dark=True) == (235, 235, 235)
+
+
+# ---- _clean_vl_text (handwriting VL output sanitising) ----
+def test_clean_vl_strips_label_prefix_and_quotes():
+    assert ti._clean_vl_text('The text reads: "going to Rome"') == "going to Rome"
+    assert ti._clean_vl_text("Transcription: Nope") == "Nope"
+    assert ti._clean_vl_text('“Loud Noises / yelling”') == "Loud Noises / yelling"
+
+
+def test_clean_vl_keeps_plain_text():
+    assert ti._clean_vl_text("Significant others must be included") == \
+        "Significant others must be included"
+    assert ti._clean_vl_text("") == ""
+
+
+# ---- _is_handwriting (auto gate + on/off override) ----
+def test_handwriting_gate_auto_threshold(monkeypatch):
+    monkeypatch.setenv("IMG_VL_RECOG", "auto")
+    monkeypatch.delenv("IMG_VL_CONF_THRESHOLD", raising=False)
+    assert ti._is_handwriting(-0.81) is True    # handwriting note (measured)
+    assert ti._is_handwriting(-0.36) is False   # digital screenshot (measured)
+    assert ti._is_handwriting(None) is False
+
+
+def test_handwriting_gate_on_off_override(monkeypatch):
+    monkeypatch.setenv("IMG_VL_RECOG", "off")
+    assert ti._is_handwriting(-0.99) is False
+    monkeypatch.setenv("IMG_VL_RECOG", "on")
+    assert ti._is_handwriting(-0.01) is True
+
+
+# ---- _color_close / _pill_bounds (digital pill detection) ----
+def test_color_close():
+    assert ti._color_close((10, 10, 10), (20, 18, 12), tol=24) is True
+    assert ti._color_close((10, 10, 10), (200, 10, 10), tol=24) is False
+
+
+def test_pill_bounds_detects_contained_button():
+    import numpy as np
+    # White page with a dark rounded "pill" rectangle; the label box sits inside
+    # the pill with padding on every side. _pill_bounds should expand the text
+    # box out to (roughly) the pill, not return None.
+    img = np.full((120, 300, 3), 255, dtype=np.uint8)
+    img[40:80, 80:220] = (30, 30, 30)          # the pill fill
+    text_box = (110, 52, 190, 68)              # label inside the pill
+    out = ti._pill_bounds(img, text_box, page_bg=(255, 255, 255))
+    assert out is not None
+    px0, py0, px1, py1 = out
+    assert px0 <= 85 and px1 >= 215           # widened toward the pill edges
+    assert py0 <= 45 and py1 >= 75
+
+
+def test_pill_bounds_none_for_plain_text_on_page():
+    import numpy as np
+    img = np.full((120, 300, 3), 255, dtype=np.uint8)   # text on the page bg
+    text_box = (110, 52, 190, 68)
+    assert ti._pill_bounds(img, text_box, page_bg=(255, 255, 255)) is None
+
+
+def test_pill_bounds_detects_outlined_button():
+    import numpy as np
+    # White page with a thin RECTANGLE BORDER (ghost/outline button) and a label
+    # inside it. The interior is page-coloured, so only the 4-sided thin stroke
+    # marks the container — _pill_bounds must still find it.
+    img = np.full((120, 300, 3), 255, dtype=np.uint8)
+    # 2px dark border ring of the button at x:80..220, y:40..80
+    img[40:42, 80:220] = (40, 40, 40)   # top
+    img[78:80, 80:220] = (40, 40, 40)   # bottom
+    img[40:80, 80:82] = (40, 40, 40)    # left
+    img[40:80, 218:220] = (40, 40, 40)  # right
+    text_box = (110, 54, 190, 66)
+    out = ti._pill_bounds(img, text_box, page_bg=(255, 255, 255))
+    assert out is not None
+    px0, py0, px1, py1 = out
+    assert px0 <= 100 and px1 >= 200    # expanded toward the border
+    assert py0 <= 50 and py1 >= 70
+
+
+# ---- _page_pen_color (uniform handwriting ink) ----
+def test_page_pen_color_keeps_saturated_blue_pen():
+    # A blue ballpoint: every line should share this readable blue, not per-region.
+    out = ti._page_pen_color([(30, 42, 175), (22, 36, 160), (28, 40, 168)], bg_dark=False)
+    assert out[2] > out[0] and out[2] > out[1]      # still clearly blue
+    # readable on a light page (dark enough luma)
+    assert 0.299 * out[0] + 0.587 * out[1] + 0.114 * out[2] < 128
+
+
+def test_page_pen_color_snaps_faint_pencil_to_near_black():
+    out = ti._page_pen_color([(176, 176, 180), (182, 178, 181)], bg_dark=False)
+    assert out == (24, 24, 24)
+
+
+def test_page_pen_color_default_when_empty():
+    assert ti._page_pen_color([], bg_dark=False) == (26, 29, 41)
+    assert ti._page_pen_color([], bg_dark=True) == (236, 236, 236)
+
+
+def test_orig_line_count():
+    # One row of word boxes ⇒ single line.
+    assert ti._orig_line_count([(10, 10, 50, 30), (55, 11, 90, 31)]) == 1
+    # Three stacked rows ⇒ three lines.
+    assert ti._orig_line_count(
+        [(10, 10, 200, 30), (10, 40, 200, 60), (10, 70, 200, 90)]) == 3
+    assert ti._orig_line_count([]) == 1
+
+
+def test_pill_bounds_none_for_word_between_neighbours():
+    import numpy as np
+    # A word with other words to its LEFT and RIGHT (like a nav row) but nothing
+    # above/below must NOT be mistaken for a button — no 4-sided enclosure.
+    img = np.full((120, 400, 3), 255, dtype=np.uint8)
+    img[52:68, 40:70] = (20, 20, 20)     # left neighbour word
+    img[52:68, 330:360] = (20, 20, 20)   # right neighbour word
+    text_box = (180, 52, 240, 68)        # the middle word
+    assert ti._pill_bounds(img, text_box, page_bg=(255, 255, 255)) is None
