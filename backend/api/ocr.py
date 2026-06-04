@@ -918,6 +918,10 @@ _ISO_TO_FLORES: dict[str, str] = {
     "so": "som_Latn", "rw": "kin_Latn", "ny": "nya_Latn", "sn": "sna_Latn",
     "st": "sot_Latn", "tn": "tsn_Latn", "lg": "lug_Latn", "wo": "wol_Latn",
     "ff": "fuv_Latn", "ti": "tir_Ethi", "om": "gaz_Latn", "ln": "lin_Latn",
+    # Pacific / Polynesian — exotic langs the doc path silently dropped to
+    # English before (routed via the 7B / Opus / NLLB which DO cover them).
+    "to": "ton_Latn", "ton": "ton_Latn", "sm": "smo_Latn", "smo": "smo_Latn",
+    "mi": "mri_Latn", "mri": "mri_Latn", "fj": "fij_Latn", "fij": "fij_Latn",
     # Other
     "eo": "epo_Latn", "la": "lat_Latn", "ht": "hat_Latn",
 }
@@ -936,6 +940,8 @@ _FLORES_NAMES: dict[str, str] = {
     "ind_Latn": "Indonesian", "swh_Latn": "Swahili", "ron_Latn": "Romanian",
     "ces_Latn": "Czech", "hun_Latn": "Hungarian", "swe_Latn": "Swedish",
     "fin_Latn": "Finnish", "dan_Latn": "Danish", "nob_Latn": "Norwegian",
+    "ton_Latn": "Tongan", "smo_Latn": "Samoan", "mri_Latn": "Maori",
+    "fij_Latn": "Fijian",
 }
 
 # Default FLORES target when nothing usable is supplied.

@@ -146,6 +146,9 @@ ml = [
     # recommended pre-tokenization for it (cleaner punctuation handling on the
     # exotic-language paths). Pure-Python, tiny.
     "sacremoses>=0.1.1",
+    # RTL shaping + bidi for the translated-document PDF render (arabic-reshaper,
+    # python-bidi) are installed as a dedicated cheap layer in the Dockerfile so
+    # the heavy [ml] layer stays cached; _shape_rtl degrades gracefully if absent.
     "pypdf>=5.0",
     # Layout-heavy PDFs (two-column papers, scanned pages with embedded
     # fonts) often defeat pypdf — pdfminer.six handles them. Used as a

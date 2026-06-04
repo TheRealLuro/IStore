@@ -83,6 +83,14 @@ RUN if [ "$INSTALL_ML" = "1" ]; then \
         punkt_tab averaged_perceptron_tagger_eng wordnet omw-1.4 ; \
     fi
 
+# RTL shaping for the translated-document PDF render (Arabic/Hebrew): ReportLab
+# does no reshaping or bidi, so backend/api/translate_doc._shape_rtl uses these.
+# Separate cheap layer (tiny pure-Python wheels) so the heavy [ml] layer above
+# stays cached on a rebuild.
+RUN if [ "$INSTALL_ML" = "1" ]; then \
+      /opt/venv/bin/pip install --no-cache-dir arabic-reshaper python-bidi ; \
+    fi
+
 # HUGGINGFACE MODEL WEIGHTS — NOT baked into the image (by design).
 # Every HF model (Florence-2, MADLAD-400, NLLB, Qwen, the summarizer, and now
 # TrOCR handwriting `microsoft/trocr-base-handwritten`, ~330 MB) is loaded from

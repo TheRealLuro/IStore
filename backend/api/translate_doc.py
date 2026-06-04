@@ -369,28 +369,54 @@ def _extract_pdf_blocks(raw: bytes) -> list[Block]:
     return _merge_adjacent_paragraphs(blocks)
 
 
-def _merge_adjacent_paragraphs(blocks: list[Block]) -> list[Block]:
-    """Glue consecutive `p` blocks that are obviously one wrapped paragraph.
+def _ends_sentence(text: str) -> bool:
+    """True when `text` ends on sentence-final punctuation (so the NEXT block is
+    a new sentence, not a soft-wrap continuation)."""
+    return bool(re.search(r"[.!?:;)。！？]\s*$", text or ""))
 
-    PyMuPDF emits one line per visual row, so a flowing paragraph arrives as
-    several `p` lines. We join consecutive `p` blocks into one when the prior
-    line doesn't end on sentence-final punctuation (a soft wrap) — this gives
-    the translator whole sentences (better quality) and the renderer real
-    paragraphs. Headings / titles / list items are never merged."""
+
+def _merge_adjacent_paragraphs(blocks: list[Block]) -> list[Block]:
+    """Glue blocks that are obviously one wrapped sentence so the translator
+    sees whole sentences (much better quality) and the renderer gets real
+    paragraphs.
+
+    Two cases:
+      (a) consecutive `p` lines (PyMuPDF emits one block per visual row) where
+          the prior line doesn't end on sentence-final punctuation — a soft wrap.
+      (b) a `li` cut MID-SENTENCE + its continuation `p`. A bold-lead-in feature
+          item ("Content-aware compression. Photos compress with…") often
+          arrives as an `li` whose sentence spills into the next `p`
+          ("and illustrations fall to lossless…"). Translating the fragments
+          separately dropped the lead-in term and mistranslated dangling words
+          ("Uses" → "Usos"), so we absorb the continuation INTO the li (keeping
+          its marker) until the sentence actually ends. Guarded by length >= 30
+          so a short all-caps label ("IP RIGHTS") is never swallowed.
+    Headings / titles are never merged."""
     out: list[Block] = []
     for b in blocks:
+        prev = out[-1] if out else None
         if (
-            b.type == "p"
-            and out
-            and out[-1].type == "p"
-            and not re.search(r"[.!?:;)。！？]\s*$", out[-1].text)
-            and len(out[-1].text) < 2000
+            b.type == "p" and prev is not None and prev.type == "p"
+            and not _ends_sentence(prev.text) and len(prev.text) < 2000
         ):
-            joiner = "" if out[-1].text.endswith("-") else " "
-            merged = (out[-1].text.rstrip("-") + joiner + b.text).strip()
-            out[-1] = Block(type="p", text=merged)
-        else:
-            out.append(b)
+            joiner = "" if prev.text.endswith("-") else " "
+            out[-1] = Block(
+                type="p", marker=prev.marker,
+                text=(prev.text.rstrip("-") + joiner + b.text).strip(),
+            )
+            continue
+        if (
+            b.type == "p" and prev is not None and prev.type == "li"
+            and not _ends_sentence(prev.text)
+            and 30 <= len(prev.text) < 2000
+        ):
+            joiner = "" if prev.text.endswith("-") else " "
+            out[-1] = Block(
+                type="li", marker=prev.marker,
+                text=(prev.text.rstrip("-") + joiner + b.text).strip(),
+            )
+            continue
+        out.append(b)
     return out
 
 
@@ -513,6 +539,42 @@ class TranslateDocStreamRequest(BaseModel):
     target: str = Field(default="eng_Latn", max_length=40)
 
 
+def _reconcile_numbers(src: str, tr: str) -> str:
+    """Repair MT digit-scrambles: if a number present in the SOURCE is missing
+    from the translation but the translation contains a digit-permutation of it
+    ("2026" -> "2206"), restore the source number. Only fires on a clear scramble
+    of an otherwise-lost number, so legitimately-reordered dates stay untouched."""
+    num_re = re.compile(r"\d[\d,.]*\d|\d+")
+    src_nums = num_re.findall(src or "")
+    if not src_nums:
+        return tr
+    tr_nums = num_re.findall(tr or "")
+    used: set[int] = set()
+    for sn in src_nums:
+        if sn in tr_nums:
+            continue  # present verbatim — fine
+        key = sorted(c for c in sn if c.isdigit())
+        for i, tn in enumerate(tr_nums):
+            if i in used or tn == sn or tn in src_nums:
+                continue
+            if sorted(c for c in tn if c.isdigit()) == key:
+                tr = tr.replace(tn, sn, 1)
+                used.add(i)
+                break
+    return tr
+
+
+def _fix_spacing(text: str) -> str:
+    """Add a missing space after sentence punctuation when the model glued the
+    next sentence on ("privacidad.El" -> "privacidad. El"). Conservative —
+    lowercase/digit + .!? + uppercase — so abbreviations (U.S., e.g.) and
+    decimals (3.5) are left alone."""
+    return re.sub(
+        r"(?<=[a-z0-9áéíóúñüàâçèêëîïôûœ])([.!?])(?=[A-ZÁÉÍÓÚÑÜÀÂÇÈÊËÎÏÔÛŒ])",
+        r"\1 ", text or "",
+    )
+
+
 def _translate_block_text_sync(
     model, tokenizer, device, text: str, gen_kwargs: dict
 ) -> str:
@@ -533,7 +595,11 @@ def _translate_block_text_sync(
         )
     # Most blocks are a single chunk; multi-chunk blocks rejoin with a space
     # (they were split mid-paragraph), collapsing accidental double spaces.
-    return _norm_ws(" ".join(p for p in parts if p))
+    out = _norm_ws(" ".join(p for p in parts if p))
+    # Repair the two recurring MT artifacts: scrambled digits + glued sentences.
+    out = _reconcile_numbers(text, out)
+    out = _fix_spacing(out)
+    return out
 
 
 async def _translate_doc_stream_gen(image: Image, raw: bytes, target: str):
@@ -738,6 +804,22 @@ _PDF_SCRIPT_RANGES = (
 _PDF_SCRIPT_FONTS: dict[str, str] = {}
 
 
+def _shape_rtl(text: str, script: Optional[str]) -> str:
+    """Reshape + bidi-reorder Arabic/Hebrew to VISUAL order so ReportLab (which
+    does neither) draws joined, correctly-ordered glyphs. Best-effort: returns
+    the text unchanged if the libs are missing or it isn't RTL."""
+    if script not in ("arabic", "hebrew"):
+        return text
+    try:
+        from bidi.algorithm import get_display
+        if script == "arabic":
+            import arabic_reshaper
+            text = arabic_reshaper.reshape(text)
+        return get_display(text)
+    except Exception:
+        return text
+
+
 def _pdf_script_for(text: str) -> Optional[str]:
     """Dominant covered non-Latin script in `text`, or None (Latin/Cyrillic/Greek
     -> the base DejaVu font is fine)."""
@@ -908,14 +990,25 @@ def _render_pdf_sync(req: RenderPdfRequest) -> tuple[bytes, str]:
             truncated = True
             break
         used += len(text)
-        safe = _pdf_escape(text)
-        style = styles[btype]
         # Sub-project D: render non-Latin blocks with the matching Noto face so
         # CJK/Arabic/etc. don't become tofu; Latin blocks keep the base font.
-        sf = _PDF_SCRIPT_FONTS.get(_pdf_script_for(text) or "")
-        if sf:
+        # RTL (Arabic/Hebrew) is reshaped + bidi-reordered and right-aligned.
+        script = _pdf_script_for(text)
+        rtl = script in ("arabic", "hebrew")
+        if rtl:
+            text = _shape_rtl(text, script)
+        safe = _pdf_escape(text)
+        style = styles[btype]
+        sf = _PDF_SCRIPT_FONTS.get(script or "")
+        if sf or rtl:
+            from reportlab.lib.enums import TA_RIGHT
             from reportlab.lib.styles import ParagraphStyle
-            style = ParagraphStyle(name=f"{style.name}_sf", parent=style, fontName=sf)
+            over = {"parent": style, "name": f"{style.name}_sf"}
+            if sf:
+                over["fontName"] = sf
+            if rtl:
+                over["alignment"] = TA_RIGHT
+            style = ParagraphStyle(**over)
         if btype == "li":
             # Reproduce the source marker faithfully: None (unknown client) ->
             # legacy "•"; "" (source had no glyph) -> no fabricated bullet;

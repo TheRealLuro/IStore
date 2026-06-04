@@ -743,6 +743,10 @@ def _llm_translate_one(model, tokenizer, device, lang_name: str, text: str) -> s
                 max_new_tokens=max_new,
                 do_sample=False,
                 num_beams=1,
+                # Anti-degeneration on low-resource targets (Tongan etc.): greedy
+                # decode would otherwise loop ("e fakaunua e fakaunua …").
+                repetition_penalty=1.2,
+                no_repeat_ngram_size=3,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
@@ -819,6 +823,10 @@ def _llm_translate_many(
                         out_ids = model.generate(
                             **enc, max_new_tokens=max_new, do_sample=False,
                             num_beams=1,
+                            # Anti-degeneration on low-resource targets (Tongan
+                            # etc.) — batched greedy decode loops without this.
+                            repetition_penalty=1.2,
+                            no_repeat_ngram_size=3,
                             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
                             eos_token_id=tokenizer.eos_token_id,
                         )
