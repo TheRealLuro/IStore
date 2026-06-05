@@ -1579,6 +1579,28 @@ def _synth_container(box, all_boxes, iw: int, ih: int) -> tuple:
     return (nx0, ny0, nx1, ny1)
 
 
+def _slot_height(box, all_boxes) -> int:
+    """Vertical room a HANDWRITING line may use WITHOUT colliding with the next
+    line in its column: the distance from this box's TOP to the top of the nearest
+    box below it that horizontally overlaps (same column). Unlike `_avail_height`,
+    a box counts as 'below' when its TOP is lower (not its bottom) — so a tall,
+    overlapping multi-line detection box still yields a BOUNDED slot, guaranteeing
+    the rendered (top-aligned) line can't overlap the next on a dense page. Falls
+    back to the box's own height when nothing follows in the column."""
+    x0, y0, x1, y1 = box
+    bw = max(1, x1 - x0)
+    nxt = None
+    for b in all_boxes:
+        if b[0] == x0 and b[1] == y0 and b[2] == x1 and b[3] == y1:
+            continue
+        if b[1] > y0 and (min(x1, b[2]) - max(x0, b[0])) > 0.3 * bw:
+            if nxt is None or b[1] < nxt:
+                nxt = b[1]
+    if nxt is None:
+        return max(8, y1 - y0)
+    return max(8, nxt - y0 - 2)
+
+
 def _orig_line_count(parts) -> int:
     """How many distinct text ROWS the original region spanned (its parts). Used
     to preserve the original line structure: a label that was ONE line should
@@ -1739,6 +1761,7 @@ def _fit_and_draw(
     max_h: Optional[int] = None,
     align: str = "left",
     valign: str = "baseline",
+    clamp_box: bool = True,
 ) -> None:
     """Pick the LARGEST size of the STYLE-MATCHED bundled font whose word-wrapped
     `text` fits the box WIDTH and HEIGHT, then draw it so it occupies the same
@@ -1762,9 +1785,12 @@ def _fit_and_draw(
     box_h = max(1, y1 - y0)
     # Total vertical budget: the box plus any whitespace below it (so a longer
     # translation flows into real empty space instead of shrinking/overlapping).
+    # `clamp_box=False` lets the budget go BELOW the box height — needed when a
+    # dense handwriting line must shrink into a tight slot to avoid overlapping the
+    # next line (a tall, overlapping detection box would otherwise force overlap).
     if max_h is None:
         max_h = box_h
-    max_h = max(int(max_h), box_h)
+    max_h = max(int(max_h), box_h if clamp_box else 8)
 
     if not text.strip():
         return
@@ -1995,17 +2021,15 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
                 pill = None
 
         if hw:
-            # Hybrid placement: draw at the original ink size in place when it
-            # fits; else allow it to flow into the whitespace below (clamped to
-            # the image) before shrinking — so it stays legible AND on-page while
-            # preserving the original list order/indent (top-aligned).
-            box_h = box[3] - box[1]
-            if _fits_in_box(draw, text, box, style):
-                max_h = box_h
-            else:
-                max_h = min(_avail_height(box, all_boxes),
-                            max(box_h, ih_img - box[1] - 2))
-            _fit_and_draw(draw, text, box, fill, style, max_h=max_h, valign="top")
+            # Hybrid placement bounded by the line's SLOT (top of this box → top of
+            # the next line in its column), top-aligned. The slot guarantees the
+            # rendered line can't overlap the next one even when detection boxes are
+            # tall and overlapping (the dense column). It renders at the original
+            # ink size when the slot allows, and shrinks into the slot otherwise —
+            # so the page stays clean and on-page with the list order preserved.
+            max_h = _slot_height(box, all_boxes)
+            _fit_and_draw(draw, text, box, fill, style, max_h=max_h,
+                          valign="top", clamp_box=False)
         elif pill is not None:
             px0, py0, px1, py1 = pill
             _fit_and_draw(draw, text, pill, fill, style,

@@ -119,6 +119,25 @@ def test_avail_height_caps_when_nothing_below():
     assert ti._avail_height(box, [box]) == 75  # 2.5 * 30
 
 
+# ---- _slot_height (no-overlap budget for dense handwriting) ----
+def test_slot_height_caps_at_next_region_in_column():
+    box = (1000, 90, 1800, 255)        # tall right-column box
+    nxt = (1150, 197, 1815, 309)       # overlaps just below, same column
+    far = (100, 100, 700, 200)         # left column, no horizontal overlap
+    assert ti._slot_height(box, [box, nxt, far]) == 197 - 90 - 2
+
+
+def test_slot_height_last_in_column_uses_box_height():
+    box = (1000, 90, 1800, 255)
+    assert ti._slot_height(box, [box]) == 255 - 90
+
+
+def test_slot_height_ignores_other_column():
+    box = (1000, 90, 1800, 200)
+    other_col = (100, 150, 700, 260)   # left column only — not in this column
+    assert ti._slot_height(box, [box, other_col]) == 200 - 90
+
+
 # ---- _ensure_contrast ----
 def test_contrast_darkens_faint_on_light_bg():
     assert ti._ensure_contrast((180, 180, 180), bg_dark=False) == (24, 24, 24)
