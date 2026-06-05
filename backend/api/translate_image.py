@@ -1147,10 +1147,20 @@ def _inpaint_erase(img, regions: list[dict]):
     for r in regions:
         if r.get("skip"):
             continue  # brand/logo/code or unchanged — leave the original ink
-        for (x0, y0, x1, y1) in r.get("parts", [r["box"]]):
-            pad = max(3, int(round((y1 - y0) * 0.22)))
+        if r.get("handwriting"):
+            # Handwriting ink is loopy and bleeds INTO the gaps between the detected
+            # lines, so the tight per-line boxes leave strokes behind (ghosting).
+            # Erase the whole MERGED region box, generously padded, so no original
+            # stroke shows through behind the translation.
+            x0, y0, x1, y1 = r["box"]
+            pad = max(6, int(round((y1 - y0) * 0.14)))
             boxes.append((max(0, x0 - pad), max(0, y0 - pad),
                           min(iw, x1 + pad), min(ih, y1 + pad)))
+        else:
+            for (x0, y0, x1, y1) in r.get("parts", [r["box"]]):
+                pad = max(3, int(round((y1 - y0) * 0.22)))
+                boxes.append((max(0, x0 - pad), max(0, y0 - pad),
+                              min(iw, x1 + pad), min(ih, y1 + pad)))
     if not boxes:
         return PILImage.fromarray(np_img)
 
@@ -2056,7 +2066,9 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             style["bold"] = False
             style["italic"] = False
             if hw_size >= 6:
-                style["ink_h"] = hw_size      # uniform size ceiling for the page
+                # Uniform size ceiling, scaled down a touch so sparse lines don't
+                # balloon to the slot and the whole hand reads evenly.
+                style["ink_h"] = max(12, int(hw_size * 0.8))
             fill = hw_pen
 
         # Pills/buttons (digital UI): the label sits on a contained fill, so a
