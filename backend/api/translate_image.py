@@ -2167,6 +2167,57 @@ def _page_hw_size(orig_img, regions: list[dict]) -> int:
     return hs[len(hs) // 2]
 
 
+def _cluster_columns(items: list[dict], iw: int) -> list[list[dict]]:
+    """Group regions into left-to-right COLUMNS by their left-edge x, splitting where
+    there's a wide horizontal gap. Returns columns (each a list of regions), ordered
+    left-to-right. Generalizes to 1, 2 or more columns on any image."""
+    if not items:
+        return []
+    ordered = sorted(items, key=lambda r: r["box"][0])
+    thr = max(60, int(iw * 0.12))
+    cols: list[list[dict]] = [[ordered[0]]]
+    last_x = ordered[0]["box"][0]
+    for r in ordered[1:]:
+        x = r["box"][0]
+        cols.append([r]) if x - last_x > thr else cols[-1].append(r)
+        last_x = x
+    return cols
+
+
+def _flow_layout(regions: list[dict], translations: list[str], iw: int, ih: int) -> dict:
+    """Lay handwriting items out cleanly using the ERASED space instead of cramming
+    each into its original tight box. Detect columns, then distribute each column's
+    items with EVEN vertical spacing across the span they occupy — clamped to safe
+    page margins so nothing runs off an edge and a top item is pulled DOWN into a
+    safe band. Returns {id(region): (x0,y0,x1,y1)} target draw boxes. Generalizes to
+    any image (1/2/N columns); items keep their reading order + column."""
+    mx = max(14, int(iw * 0.02))
+    my = max(14, int(ih * 0.02))
+    tr = {id(r): (t or "").strip() for r, t in zip(regions, translations)}
+    items = [r for r in regions
+             if r.get("handwriting") and not r.get("skip") and tr.get(id(r))]
+    if not items:
+        return {}
+    cols = _cluster_columns(items, iw)
+    lefts = [max(mx, min(r["box"][0] for r in col)) for col in cols]
+    layout: dict = {}
+    for i, col in enumerate(cols):
+        col = sorted(col, key=lambda r: r["box"][1])
+        cx0 = lefts[i]
+        cx1 = (lefts[i + 1] - 18) if i + 1 < len(cols) else (iw - mx)
+        cx1 = max(cx0 + 60, cx1)
+        top = max(my, min(r["box"][1] for r in col))
+        bot = min(ih - my, max(r["box"][3] for r in col))
+        bot = max(bot, top + 60)
+        n = len(col)
+        slot = (bot - top) / n
+        for k, r in enumerate(col):
+            y0 = int(round(top + k * slot))
+            y1 = int(round(top + (k + 1) * slot))
+            layout[id(r)] = (cx0, y0, cx1, y1)
+    return layout
+
+
 def _render_translations(inpainted, regions: list[dict], translations: list[str], orig_img=None):
     """Draw each translation back into its box on the inpainted image, matching
     the ORIGINAL ink's family/weight/slant/color and sitting in the original's
@@ -2200,12 +2251,10 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     # own width). Clamped to a sane range off the page's median ink height.
     hw_size = _page_hw_size(orig_img, regions)
     hw_fixed = max(22, min(hw_size, 40)) if hw_size >= 6 else 0
-    # Column boundary: where the RIGHT column starts. A handwriting line extends RIGHT
-    # into its column's free space (instead of shrinking) up to this boundary (left
-    # column) or the page margin (right column), so same-size items stay same-size.
-    _right_x0s = [r["box"][0] for r in regions
-                  if r.get("handwriting") and not r.get("skip") and r["box"][0] > iw_img * 0.45]
-    col_boundary = (min(_right_x0s) - 16) if _right_x0s else (iw_img - 14)
+    # Clean column-aware layout into the ERASED space: even spacing, safe margins (no
+    # edge run-off, top items pulled into a safe band). General across image types.
+    hw_layout = (_flow_layout(regions, translations, iw_img, ih_img)
+                 if any(r.get("handwriting") for r in regions) else {})
 
     for r, translated in zip(regions, translations):
         if r.get("skip"):
@@ -2252,18 +2301,16 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
                 pill = None
 
         if hw:
-            # Render at the FIXED page size and let the line extend RIGHT into the
-            # free space of its column (up to the column boundary / page margin)
-            # instead of shrinking to its own box width — so every same-size item
-            # renders the SAME size. The vertical SLOT (top of this box → top of the
-            # next line in the column) caps height so lines can't overlap, and a hard
-            # 12px margin keeps text fully ON-PAGE (no run-off at the edges). Only a
-            # line too long even for the full column width shrinks.
-            right = col_boundary if box[0] < iw_img * 0.45 else (iw_img - 14)
-            cb = (max(12, box[0]), max(12, box[1]),
-                  max(box[0] + 24, min(right, iw_img - 12)), min(ih_img - 12, box[3]))
-            max_h = _slot_height(box, all_boxes)
-            _fit_and_draw(draw, text, cb, fill, style, max_h=max_h,
+            # Draw into the clean column-flow slot (even spacing + safe margins), at
+            # the fixed page size, top-aligned. The slot is wide (full column) so the
+            # line renders at the uniform size instead of shrinking; its height caps
+            # the block so items never overlap. Falls back to a margin-clamped
+            # original box if the layout has no slot for this region.
+            cb = hw_layout.get(id(r))
+            if cb is None:
+                cb = (max(14, box[0]), max(14, box[1]),
+                      min(iw_img - 14, box[2]), min(ih_img - 14, box[3]))
+            _fit_and_draw(draw, text, cb, fill, style, max_h=(cb[3] - cb[1]),
                           valign="top", clamp_box=False)
         elif pill is not None:
             px0, py0, px1, py1 = pill

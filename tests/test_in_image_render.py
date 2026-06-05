@@ -119,6 +119,47 @@ def test_avail_height_caps_when_nothing_below():
     assert ti._avail_height(box, [box]) == 75  # 2.5 * 30
 
 
+# ---- _cluster_columns / _flow_layout (clean column-aware layout) ----
+def test_cluster_columns_two_columns():
+    items = [
+        {"box": (75, 100, 700, 130)}, {"box": (80, 200, 700, 230)},
+        {"box": (1020, 100, 1700, 130)}, {"box": (1030, 200, 1700, 230)},
+    ]
+    cols = ti._cluster_columns(items, 1880)
+    assert len(cols) == 2
+    assert len(cols[0]) == 2 and len(cols[1]) == 2
+
+
+def test_cluster_columns_single_column():
+    items = [{"box": (50, 10, 700, 40)}, {"box": (55, 60, 700, 90)}]
+    assert len(ti._cluster_columns(items, 1880)) == 1
+
+
+def test_flow_layout_even_spacing_within_margins():
+    regions = [
+        {"box": (75, 20, 700, 50), "handwriting": True, "parts": [(75, 20, 700, 50)]},
+        {"box": (75, 900, 700, 930), "handwriting": True, "parts": [(75, 900, 700, 930)]},
+    ]
+    lay = ti._flow_layout(regions, ["uno", "dos"], 1000, 1000)
+    b0 = lay[id(regions[0])]
+    b1 = lay[id(regions[1])]
+    assert b0[0] >= 14 and b0[1] >= 14            # inside the top/left margin
+    assert b1[3] <= 1000 - 14                      # inside the bottom margin
+    assert b0[3] <= b1[1] + 2                       # ordered, no overlap
+    # the top item was pulled DOWN off the very edge into a safe band
+    assert b0[1] >= 14
+
+
+def test_flow_layout_pulls_top_item_into_safe_band():
+    # an item hard against the top edge (y0=2) must be moved down to the margin
+    regions = [
+        {"box": (1020, 2, 1700, 30), "handwriting": True, "parts": [(1020, 2, 1700, 30)]},
+        {"box": (1020, 400, 1700, 430), "handwriting": True, "parts": [(1020, 400, 1700, 430)]},
+    ]
+    lay = ti._flow_layout(regions, ["a", "b"], 1880, 1000)
+    assert lay[id(regions[0])][1] >= 14            # top item no longer at the edge
+
+
 # ---- _slot_height (no-overlap budget for dense handwriting) ----
 def test_slot_height_caps_at_next_region_in_column():
     box = (1000, 90, 1800, 255)        # tall right-column box
