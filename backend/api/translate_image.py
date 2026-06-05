@@ -1954,6 +1954,38 @@ def _pick_font_path(text: str, style: Optional[dict]) -> Optional[str]:
     return fp
 
 
+def _is_script_font(path) -> bool:
+    """True when `path` is one of the non-Latin Noto SCRIPT faces (CJK/Arabic/Thai/
+    Indic/…) — i.e. not a Latin face."""
+    if not path:
+        return False
+    for _k, _ranges, reg, bold in _SCRIPT_FONTS:
+        if path in reg or path in bold:
+            return True
+    return False
+
+
+_FONT_DIGIT_CACHE: dict = {}
+
+
+def _font_lacks_ascii_digits(path) -> bool:
+    """True when the font has NO Latin digit glyphs (e.g. NotoSansThai), so a leading
+    list number rendered in it would tofu (□). Cached per path; never raises."""
+    if not path:
+        return False
+    if path in _FONT_DIGIT_CACHE:
+        return _FONT_DIGIT_CACHE[path]
+    lacks = False
+    try:
+        from fontTools.ttLib import TTFont
+        cmap = TTFont(path, fontNumber=0, lazy=True).getBestCmap()
+        lacks = ord("0") not in cmap
+    except Exception:
+        lacks = False
+    _FONT_DIGIT_CACHE[path] = lacks
+    return lacks
+
+
 def _fit_and_draw(
     draw,
     text: str,
@@ -2106,12 +2138,38 @@ def _fit_and_draw(
     # legible on a busy / shadowed / photographic background (handwriting on a
     # photographed page). Width scales with the font so it never dominates small text.
     stroke_w = max(1, round(getattr(chosen_font, "size", 12) / 22)) if halo is not None else 0
-    for ln in chosen_lines:
+
+    # MIXED-FONT marker: if the body uses a SCRIPT font that has no Latin digits
+    # (e.g. NotoSansThai), the leading list number would tofu — so draw that marker
+    # in a Latin font and the rest in the script font. Only when truly needed, so
+    # RTL/CJK/Indic (whose fonts DO carry digits) are untouched.
+    lat_font = None
+    if font_path and _is_script_font(font_path) and _font_lacks_ascii_digits(font_path):
+        _lp = _resolve_font("sans", False, False)
+        if _lp:
+            try:
+                lat_font = ImageFont.truetype(_lp, getattr(chosen_font, "size", 24))
+            except Exception:
+                lat_font = None
+
+    for li, ln in enumerate(chosen_lines):
         if align == "center":
             lw = _text_w(draw, ln, chosen_font)
             lx = x0 + max(0, (box_w - lw) // 2)
         else:
             lx = x0
+        # First line + a Latin marker the script font can't render → split the draw.
+        if li == 0 and lat_font is not None:
+            mm = _LEAD_MARK_RE.match(ln)
+            if mm:
+                mk, rest = ln[:mm.end()], ln[mm.end():]
+                draw.text((lx, y), mk, font=lat_font, fill=fill, anchor="la",
+                          stroke_width=stroke_w, stroke_fill=halo)
+                lx += _text_w(draw, mk, lat_font)
+                draw.text((lx, y), rest, font=chosen_font, fill=fill, anchor="la",
+                          stroke_width=stroke_w, stroke_fill=halo)
+                y += lh + line_gap
+                continue
         # anchor="la" = left/ascent so y is the top of the glyph cell (consistent
         # line stacking). PIL anti-aliases TTF glyphs by default, so edges smooth.
         draw.text((lx, y), ln, font=chosen_font, fill=fill, anchor="la",
@@ -2210,30 +2268,65 @@ def _cluster_columns(items: list[dict], iw: int) -> list[list[dict]]:
     return cols
 
 
-def _flow_layout(regions: list[dict], translations: list[str], iw: int, ih: int) -> dict:
+def _content_bounds(np_img) -> tuple:
+    """Bounding box of the bright 'PAGE' region inside the photo — i.e. the actual
+    paper, EXCLUDING a dark spiral binding / shadow border around it. Text laid out
+    to the image edge runs off the page (into the binding); fitting to this region
+    keeps it on the real page. Columns/rows whose mean brightness is well below the
+    page's are treated as border. Falls back to the full frame when there's no clear
+    border (e.g. a screenshot that fills the image, or a dark UI)."""
+    import numpy as np
+
+    g = np_img.mean(axis=2) if getattr(np_img, "ndim", 2) == 3 else np_img
+    h, w = g.shape[:2]
+    col = g.mean(axis=0)
+    row = g.mean(axis=1)
+    cth = 0.62 * float(col.max())
+    rth = 0.62 * float(row.max())
+    cols = np.where(col > cth)[0]
+    rows = np.where(row > rth)[0]
+    if len(cols) < 2 or len(rows) < 2:
+        return (0, 0, w, h)
+    left, right = int(cols[0]), int(cols[-1]) + 1
+    top, bot = int(rows[0]), int(rows[-1]) + 1
+    # Guard: if the detected page is implausibly small, use the whole frame.
+    if (right - left) < 0.4 * w or (bot - top) < 0.4 * h:
+        return (0, 0, w, h)
+    return (left, top, right, bot)
+
+
+def _flow_layout(regions: list[dict], translations: list[str], iw: int, ih: int,
+                 bounds: tuple = None) -> dict:
     """Lay handwriting items out cleanly using the ERASED space instead of cramming
     each into its original tight box. Detect columns, then distribute each column's
-    items with EVEN vertical spacing across the span they occupy — clamped to safe
-    page margins so nothing runs off an edge and a top item is pulled DOWN into a
-    safe band. Returns {id(region): (x0,y0,x1,y1)} target draw boxes. Generalizes to
-    any image (1/2/N columns); items keep their reading order + column."""
-    mx = max(20, int(iw * 0.03))      # side margin (also clears a notebook binding)
-    my = max(16, int(ih * 0.02))      # top/bottom margin
+    items with EVEN vertical spacing across the span they occupy — all clamped to
+    INSIDE the page `bounds` (the bright paper region, not the image edge) so nothing
+    runs off the page (e.g. into the left binding) and the top item is pulled DOWN
+    into a safe band. Returns {id(region): (x0,y0,x1,y1)} target draw boxes.
+    Generalizes to any image (1/2/N columns); items keep reading order + column."""
+    cl, ct, cr, cb = bounds if bounds else (0, 0, iw, ih)
+    cw, chh = max(1, cr - cl), max(1, cb - ct)
+    mx = max(20, int(cw * 0.03))       # margins are insets from the PAGE, not the image
+    my = max(16, int(chh * 0.02))
+    left_lim, right_lim = cl + mx, cr - mx
+    top_lim, bot_lim = ct + my, cb - my
     tr = {id(r): (t or "").strip() for r, t in zip(regions, translations)}
     items = [r for r in regions
              if r.get("handwriting") and not r.get("skip") and tr.get(id(r))]
     if not items:
         return {}
     cols = _cluster_columns(items, iw)
-    lefts = [max(mx, min(r["box"][0] for r in col)) for col in cols]
+    # each column's left edge = its leftmost item, but never left of the page margin
+    lefts = [min(max(left_lim, min(r["box"][0] for r in col)), right_lim - 60)
+             for col in cols]
     layout: dict = {}
     for i, col in enumerate(cols):
         col = sorted(col, key=lambda r: r["box"][1])
         cx0 = lefts[i]
-        cx1 = (lefts[i + 1] - 18) if i + 1 < len(cols) else (iw - mx)
-        cx1 = max(cx0 + 60, cx1)
-        top = max(my, min(r["box"][1] for r in col))
-        bot = min(ih - my, max(r["box"][3] for r in col))
+        cx1 = (lefts[i + 1] - 18) if i + 1 < len(cols) else right_lim
+        cx1 = min(right_lim, max(cx0 + 60, cx1))
+        top = max(top_lim, min(r["box"][1] for r in col))
+        bot = min(bot_lim, max(r["box"][3] for r in col))
         bot = max(bot, top + 60)
         n = len(col)
         slot = (bot - top) / n
@@ -2277,9 +2370,11 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     # own width). Clamped to a sane range off the page's median ink height.
     hw_size = _page_hw_size(orig_img, regions)
     hw_fixed = max(22, min(hw_size, 40)) if hw_size >= 6 else 0
-    # Clean column-aware layout into the ERASED space: even spacing, safe margins (no
-    # edge run-off, top items pulled into a safe band). General across image types.
-    hw_layout = (_flow_layout(regions, translations, iw_img, ih_img)
+    # Clean column-aware layout into the ERASED space, fit INSIDE the page (bright
+    # paper) bounds so nothing runs off into a binding/border: even spacing, safe
+    # margins, top items pulled into a safe band. General across image types.
+    page_bounds = _content_bounds(orig_np) if orig_np is not None else None
+    hw_layout = (_flow_layout(regions, translations, iw_img, ih_img, page_bounds)
                  if any(r.get("handwriting") for r in regions) else {})
 
     for r, translated in zip(regions, translations):

@@ -146,6 +146,35 @@ def test_wrap_normal_words_unchanged():
     assert ti._wrap_to_width(d, "hello world", f, 4000) == ["hello world"]
 
 
+# ---- _content_bounds (fit to the bright PAGE, not the photo edge) ----
+def test_content_bounds_excludes_dark_side_border():
+    import numpy as np
+    img = np.full((200, 300, 3), 230, dtype=np.uint8)   # bright paper
+    img[:, 0:40] = 20                                     # dark left binding
+    img[:, 280:300] = 20                                  # dark right border
+    left, top, right, bot = ti._content_bounds(img)
+    assert left >= 30 and right <= 285                    # excluded the dark sides
+    assert top == 0 and bot == 200
+
+
+def test_content_bounds_full_frame_when_uniform():
+    import numpy as np
+    img = np.full((100, 100, 3), 240, dtype=np.uint8)     # uniform bright screenshot
+    assert ti._content_bounds(img) == (0, 0, 100, 100)
+
+
+def test_flow_layout_fits_inside_page_bounds():
+    regions = [
+        {"box": (5, 20, 280, 50), "handwriting": True, "parts": [(5, 20, 280, 50)]},
+        {"box": (5, 150, 280, 180), "handwriting": True, "parts": [(5, 150, 280, 180)]},
+    ]
+    bounds = (40, 10, 280, 190)                            # paper inside the image
+    lay = ti._flow_layout(regions, ["uno", "dos"], 300, 200, bounds)
+    for b in lay.values():
+        assert b[0] >= 40 and b[2] <= 280                  # within the page L/R
+        assert b[1] >= 10 and b[3] <= 190                  # within the page T/B
+
+
 # ---- _cluster_columns / _flow_layout (clean column-aware layout) ----
 def test_cluster_columns_two_columns():
     items = [
