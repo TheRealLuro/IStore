@@ -1669,22 +1669,48 @@ def _analyze_region(orig_img, box) -> dict:
 
 
 def _wrap_to_width(draw, text: str, font, max_w: int) -> list[str]:
-    """Greedy word-wrap `text` so each line's rendered width <= max_w. A
-    single word longer than max_w is kept on its own line (no mid-word
-    breaking — the size search will shrink the font instead)."""
+    """Greedy word-wrap `text` so each line's rendered width <= max_w. A word (or a
+    space-less run — CJK / Thai, a URL, a glued token) that is itself WIDER than
+    max_w is HARD-BROKEN at the character level so it can't run off the side of the
+    column. Without this, CJK/Thai text (no spaces) became one un-wrappable line that
+    overflowed the page edge."""
     words = text.split()
     if not words:
         return []
+
+    def _hard_break(word: str) -> list[str]:
+        chunks: list[str] = []
+        chunk = ""
+        for ch in word:
+            if not chunk or _text_w(draw, chunk + ch, font) <= max_w:
+                chunk += ch
+            else:
+                chunks.append(chunk)
+                chunk = ch
+        if chunk:
+            chunks.append(chunk)
+        return chunks
+
     lines: list[str] = []
-    cur = words[0]
-    for w in words[1:]:
-        trial = f"{cur} {w}"
+    cur = ""
+    for w in words:
+        if _text_w(draw, w, font) > max_w:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            parts = _hard_break(w)
+            lines.extend(parts[:-1])
+            cur = parts[-1] if parts else ""
+            continue
+        trial = (cur + " " + w).strip()
         if _text_w(draw, trial, font) <= max_w:
             cur = trial
         else:
-            lines.append(cur)
+            if cur:
+                lines.append(cur)
             cur = w
-    lines.append(cur)
+    if cur:
+        lines.append(cur)
     return lines
 
 
@@ -2191,8 +2217,8 @@ def _flow_layout(regions: list[dict], translations: list[str], iw: int, ih: int)
     page margins so nothing runs off an edge and a top item is pulled DOWN into a
     safe band. Returns {id(region): (x0,y0,x1,y1)} target draw boxes. Generalizes to
     any image (1/2/N columns); items keep their reading order + column."""
-    mx = max(14, int(iw * 0.02))
-    my = max(14, int(ih * 0.02))
+    mx = max(20, int(iw * 0.03))      # side margin (also clears a notebook binding)
+    my = max(16, int(ih * 0.02))      # top/bottom margin
     tr = {id(r): (t or "").strip() for r, t in zip(regions, translations)}
     items = [r for r in regions
              if r.get("handwriting") and not r.get("skip") and tr.get(id(r))]

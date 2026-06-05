@@ -119,6 +119,33 @@ def test_avail_height_caps_when_nothing_below():
     assert ti._avail_height(box, [box]) == 75  # 2.5 * 30
 
 
+# ---- _wrap_to_width (hard-break CJK / overlong words so nothing runs off-side) ----
+def test_wrap_hard_breaks_overlong_word():
+    from PIL import Image, ImageDraw, ImageFont
+    d = ImageDraw.Draw(Image.new("RGB", (200, 50), "white"))
+    f = ImageFont.load_default()
+    lines = ti._wrap_to_width(d, "x" * 200, f, 40)     # one unbreakable Latin run
+    assert len(lines) > 1
+    for ln in lines:
+        assert ti._text_w(d, ln, f) <= 40 or len(ln) == 1
+
+
+def test_wrap_breaks_spaceless_run_to_multiple_lines():
+    from PIL import Image, ImageDraw, ImageFont
+    d = ImageDraw.Draw(Image.new("RGB", (200, 50), "white"))
+    f = ImageFont.load_default()
+    # a long space-less run (stands in for CJK/Thai) must wrap, not overflow
+    lines = ti._wrap_to_width(d, "abcdefghij" * 10, f, 50)
+    assert len(lines) >= 2
+
+
+def test_wrap_normal_words_unchanged():
+    from PIL import Image, ImageDraw, ImageFont
+    d = ImageDraw.Draw(Image.new("RGB", (400, 50), "white"))
+    f = ImageFont.load_default()
+    assert ti._wrap_to_width(d, "hello world", f, 4000) == ["hello world"]
+
+
 # ---- _cluster_columns / _flow_layout (clean column-aware layout) ----
 def test_cluster_columns_two_columns():
     items = [
