@@ -1762,6 +1762,7 @@ def _fit_and_draw(
     align: str = "left",
     valign: str = "baseline",
     clamp_box: bool = True,
+    halo: Optional[tuple] = None,
 ) -> None:
     """Pick the LARGEST size of the STYLE-MATCHED bundled font whose word-wrapped
     `text` fits the box WIDTH and HEIGHT, then draw it so it occupies the same
@@ -1899,6 +1900,10 @@ def _fit_and_draw(
         # centering (which would push the first line up over the line above).
         y = y0
 
+    # Optional HALO: a thin contrasting outline behind the glyphs so the text stays
+    # legible on a busy / shadowed / photographic background (handwriting on a
+    # photographed page). Width scales with the font so it never dominates small text.
+    stroke_w = max(1, round(getattr(chosen_font, "size", 12) / 22)) if halo is not None else 0
     for ln in chosen_lines:
         if align == "center":
             lw = _text_w(draw, ln, chosen_font)
@@ -1907,7 +1912,8 @@ def _fit_and_draw(
             lx = x0
         # anchor="la" = left/ascent so y is the top of the glyph cell (consistent
         # line stacking). PIL anti-aliases TTF glyphs by default, so edges smooth.
-        draw.text((lx, y), ln, font=chosen_font, fill=fill, anchor="la")
+        draw.text((lx, y), ln, font=chosen_font, fill=fill, anchor="la",
+                  stroke_width=stroke_w, stroke_fill=halo)
         y += lh + line_gap
 
 
@@ -1976,6 +1982,9 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
                                                min(orig_img.height, 8)))) \
         if orig_img is not None else False
     hw_pen = _page_pen_color(page_bg_dark)
+    # A thin contrasting halo behind the pen so it stays legible on a shadowed /
+    # textured photo background (the dense, dim right column of a photographed note).
+    hw_halo = (15, 15, 15) if page_bg_dark else (245, 245, 245)
     iw_img = orig_img.width if orig_img is not None else inpainted.width
     ih_img = orig_img.height if orig_img is not None else inpainted.height
 
@@ -2029,21 +2038,26 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             # so the page stays clean and on-page with the list order preserved.
             max_h = _slot_height(box, all_boxes)
             _fit_and_draw(draw, text, box, fill, style, max_h=max_h,
-                          valign="top", clamp_box=False)
+                          valign="top", clamp_box=False, halo=hw_halo)
         elif pill is not None:
             px0, py0, px1, py1 = pill
             _fit_and_draw(draw, text, pill, fill, style,
                           max_h=(py1 - py0), align="center", valign="center")
-        elif (len(text.split()) <= 6
-              and _orig_line_count(r.get("parts", [box])) == 1):
-            # Borderless button / CTA with no detected container: constrain to a
-            # synthesized button area and shrink-to-fit + centre, so a longer
-            # translation never spills past where the label visually sits.
-            cont = _synth_container(box, all_boxes, iw_img, ih_img)
-            _fit_and_draw(draw, text, cont, fill, style,
-                          max_h=(cont[3] - cont[1]), align="center", valign="center")
+        elif _orig_line_count(r.get("parts", [box])) == 1:
+            # The original was ONE line (button label, nav row, or banner). Keep it
+            # ONE line by shrinking to fit — never wrap + flow downward (which cramps
+            # the layout and overlaps the next element). A SHORT label gets a
+            # synthesized button area + centre (button feel); a longer single line
+            # (a nav row / banner) fits its OWN box, left-aligned where it sat.
+            if len(text.split()) <= 6:
+                cont = _synth_container(box, all_boxes, iw_img, ih_img)
+                _fit_and_draw(draw, text, cont, fill, style,
+                              max_h=(cont[3] - cont[1]), align="center", valign="center")
+            else:
+                _fit_and_draw(draw, text, box, fill, style, max_h=(box[3] - box[1]))
         else:
-            # Let a longer translation flow into the whitespace beneath the box.
+            # Genuinely multi-line original: let a longer translation flow into the
+            # whitespace beneath the box.
             max_h = _avail_height(box, all_boxes)
             _fit_and_draw(draw, text, box, fill, style, max_h=max_h)
 

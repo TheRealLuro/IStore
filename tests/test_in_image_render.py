@@ -273,6 +273,35 @@ def test_synth_container_does_not_cross_neighbour():
     assert cont[2] <= 240               # never expands into the neighbour
 
 
+def test_fit_and_draw_halo_renders_outline_and_core():
+    from PIL import Image, ImageDraw
+    import numpy as np
+    img = Image.new("RGB", (300, 80), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    ti._fit_and_draw(d, "Hola", (10, 10, 290, 70), (10, 10, 10),
+                     style={"klass": "sans", "ink_h": 30}, halo=(255, 0, 0))
+    arr = np.asarray(img)
+    red = (arr[:, :, 0] > 180) & (arr[:, :, 1] < 80) & (arr[:, :, 2] < 80)
+    assert red.any()                              # the halo outline rendered
+    assert (arr.sum(axis=2) < 120).any()          # the dark glyph core rendered
+
+
+def test_digital_nav_long_single_line_stays_one_line():
+    from PIL import Image
+    import numpy as np
+    orig = Image.new("RGB", (900, 120), (255, 255, 255))
+    box = (50, 40, 850, 64)                       # one-line nav row (one part)
+    regions = [{"box": box, "parts": [box], "handwriting": False}]
+    long = ("Características Hosting Desarrolladores Roadmap "
+            "Actualizaciones Comparar Preguntas")
+    out = ti._render_translations(orig.copy(), regions, [long], orig_img=orig)
+    arr = np.asarray(out)
+    ink_rows = np.where((arr < 200).any(axis=(1, 2)))[0]
+    assert ink_rows.size > 0
+    # stayed ~one line in the nav band — did NOT wrap + flow well below the row
+    assert ink_rows.max() <= box[3] + 8
+
+
 def test_digital_label_render_stays_within_synth_container():
     from PIL import Image
     import numpy as np
