@@ -356,6 +356,47 @@ def test_hybrid_handwriting_stays_within_image_bounds():
     assert (arr[:, -2:] >= 250).all()
 
 
+# ---- _page_is_dark (whole-image median, robust to a dark photo corner) ----
+def test_page_is_dark_false_for_bright_paper_with_dark_corner():
+    from PIL import Image
+    import numpy as np
+    arr = np.full((100, 100, 3), 230, dtype=np.uint8)   # bright paper
+    arr[0:12, 0:12] = 10                                  # dark binding/shadow corner
+    assert ti._page_is_dark(Image.fromarray(arr)) is False
+
+
+def test_page_is_dark_true_for_dark_ui():
+    from PIL import Image
+    import numpy as np
+    assert ti._page_is_dark(Image.fromarray(np.full((60, 60, 3), 18, dtype=np.uint8))) is True
+
+
+# ---- _page_hw_size (uniform handwriting size) ----
+def test_page_hw_size_zero_without_handwriting():
+    from PIL import Image
+    import numpy as np
+    img = Image.fromarray(np.full((50, 50, 3), 255, dtype=np.uint8))
+    r = {"box": (0, 0, 10, 10), "parts": [(0, 0, 10, 10)], "handwriting": False}
+    assert ti._page_hw_size(img, [r]) == 0
+    assert ti._page_hw_size(None, []) == 0
+
+
+def test_page_hw_size_medians_measured_ink_heights():
+    from PIL import Image
+    import numpy as np
+    arr = np.full((200, 200, 3), 255, dtype=np.uint8)
+    arr[10:30, 10:100] = 20      # ~20px ink
+    arr[60:84, 10:100] = 20      # ~24px ink
+    arr[110:140, 10:100] = 20    # ~30px ink
+    img = Image.fromarray(arr)
+    regions = [
+        {"box": (8, 8, 102, 32), "parts": [(8, 8, 102, 32)], "handwriting": True},
+        {"box": (8, 58, 102, 86), "parts": [(8, 58, 102, 86)], "handwriting": True},
+        {"box": (8, 108, 102, 142), "parts": [(8, 108, 102, 142)], "handwriting": True},
+    ]
+    assert 12 <= ti._page_hw_size(img, regions) <= 36   # ~ the median ink height
+
+
 # ---- _page_pen_color (one clean BLACK pen for all handwriting) ----
 def test_page_pen_color_is_strong_black_on_light_page():
     out = ti._page_pen_color(bg_dark=False)

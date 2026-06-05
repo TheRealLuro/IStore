@@ -1955,6 +1955,42 @@ def _fits_in_box(draw, text: str, box, style: Optional[dict]) -> bool:
     return widest <= box_w and total_h <= box_h
 
 
+def _page_is_dark(img) -> bool:
+    """Whether the PAGE background is dark, from the MEDIAN luminance of the whole
+    image. The previous check sampled only the top-left 8×8 px, which on a
+    PHOTOGRAPHED note is the dark spiral binding / shadow — so it wrongly flipped
+    the pen to white on a clearly light page. The median over the whole frame is
+    dominated by the actual page, so a bright paper reads light (black pen) and a
+    genuine dark UI reads dark (white pen)."""
+    import numpy as np
+
+    arr = np.asarray(img.convert("RGB")).astype(np.float32)
+    luma = 0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]
+    return float(np.median(luma)) < 110.0
+
+
+def _page_hw_size(orig_img, regions: list[dict]) -> int:
+    """One target ink height for ALL handwriting lines = the MEDIAN measured ink
+    height across the handwriting regions. Used as a uniform font CEILING so the
+    note renders as an even hand instead of a jarring mix of giant and tiny lines
+    (long lines still shrink below it to fit their slot). 0 when nothing measured
+    (caller falls back to per-region sizing)."""
+    if orig_img is None:
+        return 0
+    hs = []
+    for r in regions:
+        if not r.get("handwriting") or r.get("skip"):
+            continue
+        st = _analyze_region(orig_img, r.get("parts", [r["box"]])[0])
+        ih = int(st.get("ink_h", 0) or 0)
+        if ih >= 6:
+            hs.append(ih)
+    if not hs:
+        return 0
+    hs.sort()
+    return hs[len(hs) // 2]
+
+
 def _render_translations(inpainted, regions: list[dict], translations: list[str], orig_img=None):
     """Draw each translation back into its box on the inpainted image, matching
     the ORIGINAL ink's family/weight/slant/color and sitting in the original's
@@ -1975,16 +2011,17 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     orig_np = np.asarray(orig_img) if orig_img is not None else None
     page_bg = _page_bg(orig_np) if orig_np is not None else (255, 255, 255)
 
-    # ONE clean, uniform BLACK pen for every handwriting line (white on a dark
-    # page) so the note reads as a single bold, legible hand — not a faint grey
-    # shade sampled per box.
-    page_bg_dark = bool(_bg_is_dark(orig_img, (0, 0, min(orig_img.width, 8),
-                                               min(orig_img.height, 8)))) \
-        if orig_img is not None else False
+    # ONE clean, uniform BLACK pen for every handwriting line (white on a genuinely
+    # dark page) so the note reads as a single bold, legible hand — not a faint grey
+    # shade per box. Page darkness from the WHOLE-image median (not a corner that
+    # may be the dark binding/shadow of a photo).
+    page_bg_dark = _page_is_dark(orig_img) if orig_img is not None else False
     hw_pen = _page_pen_color(page_bg_dark)
     # A thin contrasting halo behind the pen so it stays legible on a shadowed /
     # textured photo background (the dense, dim right column of a photographed note).
     hw_halo = (15, 15, 15) if page_bg_dark else (245, 245, 245)
+    # One uniform target size for the whole hand so lines don't balloon/shrink wildly.
+    hw_size = _page_hw_size(orig_img, regions)
     iw_img = orig_img.width if orig_img is not None else inpainted.width
     ih_img = orig_img.height if orig_img is not None else inpainted.height
 
@@ -2011,12 +2048,15 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
 
         if hw:
             # Handwriting: render in the clean handwriting face with ONE uniform
-            # readable pen color shared by the whole page (computed once above), so
-            # the note reads as a single consistent hand instead of a shade per box.
+            # readable pen color AND one uniform target size shared by the whole
+            # page, so the note reads as a single consistent hand instead of a
+            # shade/size per box.
             style = dict(style)
             style["handwriting"] = True
             style["bold"] = False
             style["italic"] = False
+            if hw_size >= 6:
+                style["ink_h"] = hw_size      # uniform size ceiling for the page
             fill = hw_pen
 
         # Pills/buttons (digital UI): the label sits on a contained fill, so a
@@ -2037,7 +2077,11 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             # ink size when the slot allows, and shrinks into the slot otherwise —
             # so the page stays clean and on-page with the list order preserved.
             max_h = _slot_height(box, all_boxes)
-            _fit_and_draw(draw, text, box, fill, style, max_h=max_h,
+            # Clamp the draw box fully ON-PAGE so a line near an edge (e.g. item 20
+            # at the very top-right) can't render off the image.
+            cb = (max(2, box[0]), max(2, box[1]),
+                  min(iw_img - 2, box[2]), min(ih_img - 2, box[3]))
+            _fit_and_draw(draw, text, cb, fill, style, max_h=max_h,
                           valign="top", clamp_box=False, halo=hw_halo)
         elif pill is not None:
             px0, py0, px1, py1 = pill
