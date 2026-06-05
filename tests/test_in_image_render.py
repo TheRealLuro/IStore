@@ -121,6 +121,35 @@ def test_clean_vl_strips_label_prefix_and_quotes():
     assert ti._clean_vl_text('“Loud Noises / yelling”') == "Loud Noises / yelling"
 
 
+# ---- _looks_degenerate / _accept_vl_read (VL read gating) ----
+def test_looks_degenerate_catches_loops():
+    assert ti._looks_degenerate("AunderAunderAunderAunder") is True
+    assert ti._looks_degenerate("eacheacheacheachyear each year") is True
+    assert ti._looks_degenerate("↓ ↓↓↓ ▲ ↓↑↓↓↑↑↓ ↓ ▼ ↓ ▼↓↓▼") is True
+    assert ti._looks_degenerate("each year each year each year each year") is True
+
+
+def test_looks_degenerate_keeps_good_reads():
+    assert ti._looks_degenerate("6.nope") is False
+    assert ti._looks_degenerate("14.going to Rome or pompeii") is False
+    assert ti._looks_degenerate("Significant other are required to be included!!") is False
+
+
+def test_accept_vl_read_replaces_good_reads():
+    assert ti._accept_vl_read("6. hope", "6.nope") is True
+    assert ti._accept_vl_read("14. going to Home", "14.going to Rome") is True
+
+
+def test_accept_vl_read_rejects_bleed_and_garbage():
+    # multi-line read (crop bled into a neighbour line)
+    assert ti._accept_vl_read("21. A dress", "20 Take bubble bath\nA dress 1 pair") is False
+    # degenerate loop
+    assert ti._accept_vl_read("6. nope", "AunderAunderAunderAunder") is False
+    # runaway: far longer than the detected line
+    assert ti._accept_vl_read(
+        "8. die", "8. die and then a whole lot of extra hallucinated words here yes") is False
+
+
 def test_clean_vl_keeps_plain_text():
     assert ti._clean_vl_text("Significant others must be included") == \
         "Significant others must be included"

@@ -320,7 +320,16 @@ def get_florence2():
 
     device = get_device()
     model_name = settings.caption_model_name
-    _managed_load("florence2", 1.14, False, get_florence2.cache_clear)
+    # EVICTABLE: Florence is the text DETECTOR; once a page is detected the heavier
+    # Qwen2.5-VL handwriting RECOGNIZER (~6.5 GB) needs the room, and on a 12 GB card
+    # a resident Florence (~3-6 GB working set) leaves too little — the VL then can't
+    # load and handwriting silently falls back to Florence's poor cursive read. Every
+    # other heavy model (CLIP, NLLB, LaMa, Qwen-VL, rewriter) is already evictable;
+    # Florence was the lone non-evictable outlier blocking the recognizer. The single-
+    # threaded inference pool means it's never evicted mid-request (e.g. mid 4-way
+    # sweep); it just reloads on the next caption/OCR call. est bumped to ~3.4 GB
+    # (its real resident size) so the LRU accounting reflects the reclaimable room.
+    _managed_load("florence2", 3.4, True, get_florence2.cache_clear)
 
     dtype = torch.float16 if device == "cuda" else torch.float32
     # Florence-2's bundled modeling code predates the `_supports_sdpa`
@@ -489,6 +498,82 @@ def get_lama():
     except Exception:
         logging.getLogger(__name__).warning(
             "lama unavailable; in-image erase falls back to cv2/bg-fill",
+            exc_info=True,
+        )
+        return None
+
+
+@lru_cache(maxsize=1)
+def get_qwen_vl():
+    """Context-aware HANDWRITING recognizer — Qwen2.5-VL-7B-Instruct.
+
+    Florence-2 detects WHERE handwriting sits but transcribes cursive poorly, and
+    TrOCR reads a line in isolation (context-blind), so meaning-changing single-
+    char misreads survive ("Rome"->"home", "Nope"->"hope"). A vision-language
+    model READS each cropped line WITH its in-line context, recovering the right
+    word. The in-image translate path crops each detected line and asks the VL to
+    transcribe it (see translate_image._vl_rewrite_regions).
+
+    Loaded 4-bit nf4 (~6 GB; 16 GB fp16 won't co-reside on a 12 GB card) and
+    registered EVICTABLE so the VRAM fabric swaps it against the other 7B (the
+    Qwen text rewriter / MADLAD) on demand — handwriting pages are the only ones
+    that pay for it. The processor is capped (min/max pixels) so a line crop
+    can't explode into thousands of vision tokens.
+
+    First call downloads the weights to ${HF_HOME}. Returns (model, processor,
+    device), or **None** on any failure so handwriting gracefully degrades to
+    Florence's read instead of breaking the pipeline. NEVER raises."""
+    try:
+        import torch
+        from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+        from backend.config import settings
+        from backend.vision.quant import vl_quant_config
+
+        device = get_device()
+        model_name = settings.vlm_recognizer_model
+        quant = vl_quant_config() if device == "cuda" else None
+
+        if quant is not None:
+            # 7B-VL nf4 ~6 GB; evictable so it swaps with the other 7B models.
+            _vram.register("qwen_vl", est_gb=6.5, evictable=True,
+                           cache_clear=get_qwen_vl.cache_clear)
+            _vram.ensure_room(6.5)
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_name, quantization_config=quant, device_map={"": 0},
+                torch_dtype=torch.float16,
+            ).eval()
+        else:
+            dtype = torch.float16 if device == "cuda" else torch.float32
+            _managed_load("qwen_vl", 16.0, True, get_qwen_vl.cache_clear)
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_name, torch_dtype=dtype, low_cpu_mem_usage=False,
+            )
+            model = _materialize_to(model, device).eval()
+
+        # Cap vision tokens: a single text LINE never needs high resolution, and
+        # an uncapped processor can emit thousands of vision tokens per crop (huge
+        # activation memory). 64..1024 patches keeps line crops cheap + legible.
+        processor = AutoProcessor.from_pretrained(
+            model_name, min_pixels=64 * 28 * 28, max_pixels=1024 * 28 * 28,
+        )
+        # Batched decoder generation needs LEFT padding so the trailing new tokens
+        # align across the batch.
+        try:
+            processor.tokenizer.padding_side = "left"
+        except Exception:
+            pass
+
+        for p in model.parameters():
+            p.requires_grad_(False)
+
+        _report_loaded("qwen_vl", device)
+        if device == "cuda":
+            _vram.mark_resident("qwen_vl"); _vram.touch("qwen_vl")
+        return model, processor, device
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "qwen-vl unavailable; handwriting recognition falls back to Florence",
             exc_info=True,
         )
         return None

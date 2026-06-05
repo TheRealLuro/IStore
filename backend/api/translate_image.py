@@ -683,24 +683,28 @@ def _clean_vl_text(t: str) -> str:
     return s
 
 
-_VL_REPEAT_RE = re.compile(r"(.{1,4})\1{4,}")
+_VL_REPEAT_RE = re.compile(r"(.{1,8})\1{3,}")
 
 
 def _looks_degenerate(s: str) -> bool:
     """True when a VL transcription looks like decoder garbage (a loop / mostly
-    punctuation) so the caller can fall back to Florence rather than render soup
-    like '323223.33.123' or 'cya.cya.cya.cya'."""
+    symbols) so the caller falls back to Florence rather than render soup like
+    'AunderAunderAunder', 'eacheacheach', '↓ ↓↓↓ ▲', or '323223.33.123'."""
     s = (s or "").strip()
     if len(s) < 6:
         return False
+    nospace = s.replace(" ", "")
+    if _VL_REPEAT_RE.search(nospace):
+        return True  # a short substring repeated many times (AunderAunder, eacheach)
     words = s.split()
-    if len(words) >= 5 and len(set(words)) / len(words) < 0.45:
-        return True  # the same few words repeated
-    if _VL_REPEAT_RE.search(s.replace(" ", "")):
-        return True  # a short substring repeated many times
+    if len(words) >= 4:
+        if len(set(words)) / len(words) < 0.5:
+            return True  # the same few words repeated
+        if any(words.count(w) >= 4 for w in set(words)):
+            return True  # one word repeated a lot ("each … each … each … each")
     letters = sum(c.isalpha() for c in s)
-    if len(s) > 10 and letters / len(s) < 0.3:
-        return True  # almost no letters (digit/punctuation soup)
+    if len(s) > 10 and letters / len(s) < 0.35:
+        return True  # almost no letters (digit / symbol / arrow soup)
     return False
 
 
@@ -729,14 +733,25 @@ def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optio
     iw, ih = full_img.width, full_img.height
     crops = []
     for (x0, y0, x1, y1) in boxes:
+        # TIGHT vertical padding so the crop doesn't bleed into the line above /
+        # below (dense handwriting) — a bled crop makes the VL transcribe several
+        # lines and loop. A little horizontal slack keeps the line's own context.
         pad_x = int((x1 - x0) * 0.05) + 4
-        pad_y = int((y1 - y0) * 0.35) + 4
+        pad_y = int((y1 - y0) * 0.15) + 3
         c = full_img.crop((max(0, x0 - pad_x), max(0, y0 - pad_y),
-                           min(iw, x1 + pad_x), min(ih, y1 + pad_y)))
-        if c.height and c.height < 64:  # upscale short lines so glyphs are legible
+                           min(iw, x1 + pad_x), min(ih, y1 + pad_y))).convert("RGB")
+        # Bound the crop so the VL's vision-token count (attention memory + latency)
+        # stays small — a big crop OOMed / ran for minutes on the 12 GB card.
+        cap = 640
+        longest = max(c.width, c.height)
+        if longest > cap:
+            s = cap / float(longest)
+            c = c.resize((max(1, int(c.width * s)), max(1, int(c.height * s))),
+                         PILImage.LANCZOS)
+        if c.height and c.height < 64:  # upscale short lines so glyphs stay legible
             s = 64.0 / c.height
             c = c.resize((max(1, int(c.width * s)), 64), PILImage.LANCZOS)
-        crops.append(c.convert("RGB"))
+        crops.append(c)
 
     prompt = (
         "Transcribe the handwritten text in this image exactly as written, "
@@ -783,12 +798,30 @@ def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optio
     return reads
 
 
+def _accept_vl_read(florence_text: str, vl_text: str) -> bool:
+    """Decide whether the VL read REPLACES Florence's read for a line. Reject the
+    bleed/loop artifacts a crop can still produce: empty, degenerate, a MULTI-LINE
+    read (the crop caught a neighbour line), or a read wildly longer than Florence's
+    (a runaway). Keeping Florence on reject is safe — it stays box-accurate even
+    when its word choice is poor."""
+    v = (vl_text or "").strip()
+    if not v or _looks_degenerate(v):
+        return False
+    if "\n" in v:                       # bled into an adjacent line
+        return False
+    f = (florence_text or "").strip()
+    if f and len(v) > max(2.5 * len(f), len(f) + 24):
+        return False                    # runaway vs the detected line length
+    return True
+
+
 def _vl_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
     """Re-read every (non-skip) region with Qwen2.5-VL on the FULL-RES frame and
     substitute its text — the accurate, context-aware handwriting read. Marks each
     region `handwriting=True` so the renderer uses the handwriting font + clean
-    ink. Region ↔ text alignment is preserved; any line the VL can't read keeps
-    Florence's text. NEVER raises — returns `regions` unchanged on failure."""
+    ink. Region ↔ text alignment is preserved; any line whose VL read is rejected
+    (`_accept_vl_read`) keeps Florence's text. NEVER raises — returns `regions`
+    unchanged on failure."""
     if not regions:
         return regions
     try:
@@ -798,7 +831,7 @@ def _vl_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
         got = 0
         for i, t in zip(idxs, reads):
             regions[i]["handwriting"] = True  # the page IS handwriting
-            if t and t.strip() and not _looks_degenerate(t):
+            if _accept_vl_read(regions[i].get("text", ""), t):
                 regions[i]["text"] = t.strip()
                 got += 1
         logger.info("translate-image: VL re-read %d/%d handwritten regions",
@@ -2099,27 +2132,31 @@ def _ocr_stage(raw_bytes: bytes, *, four_way: bool | None = None, on_regions=Non
     sx = fw / float(ow) if ow else 1.0
     sy = fh / float(oh) if oh else 1.0
     regions = _scale_regions(best_regions, sx, sy, fw, fh)
-    # FAST Florence-only recognizer: the detected boxes carry Florence's own
-    # read. The CPU TrOCR handwriting re-read is intentionally OUT of this hot
-    # path. `_trocr_rewrite_regions` stays defined but is no longer called.
+    # FAST Florence-only recognizer: the detected boxes carry Florence's own read.
+    # The CPU TrOCR handwriting re-read is intentionally OUT of this hot path.
+    # `_trocr_rewrite_regions` stays defined but is no longer called.
     #
-    # Merge the raw per-line/per-phrase OCR boxes into logical lines + blocks so
-    # the translator gets sentence context and the renderer recomposes the
-    # layout (the single point all three translate paths share). See
-    # `_merge_regions`.
-    regions = _merge_regions(regions)
-
-    # HANDWRITING: a low Florence confidence means cursive/handwritten text it
-    # reads poorly (meaning-changing misreads). Re-read each merged LINE crop
-    # with the context-aware VL so the translation starts from the right words,
-    # and flag the regions so the renderer uses the handwriting font + clean ink.
-    # Gated (auto/on/off + conf threshold); degrades to Florence if VL is absent.
-    if _is_handwriting(conf):
+    # HANDWRITING: a low Florence confidence means cursive it reads poorly
+    # (meaning-changing misreads). Re-read each RAW single-line crop with the
+    # context-aware VL BEFORE merging — merged blocks span several lines, and a
+    # multi-line crop makes the VL bleed into neighbours and loop. Reading single
+    # lines first keeps each crop clean; the merge then recomposes the CORRECTED
+    # lines. Gated (auto/on/off + conf threshold); degrades to Florence if absent.
+    handwriting = _is_handwriting(conf)
+    if handwriting:
         logger.info(
             "translate-image: handwriting detected (conf=%s) — VL re-read",
             None if conf is None else round(conf, 3),
         )
         regions = _vl_rewrite_regions(best_img, regions)
+
+    # Merge the (now VL-corrected) per-line/per-phrase boxes into logical lines +
+    # blocks so the translator gets sentence context and the renderer recomposes
+    # the layout (the single point all three translate paths share).
+    regions = _merge_regions(regions)
+    if handwriting:
+        for r in regions:
+            r["handwriting"] = True   # propagate the flag onto the merged blocks
 
     return img, best_k, best_img, regions
 
