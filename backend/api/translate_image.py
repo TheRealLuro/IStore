@@ -680,6 +680,9 @@ def _clean_vl_text(t: str) -> str:
     # Drop matching surrounding quotes.
     if len(s) >= 2 and s[0] in "\"'“”«" and s[-1] in "\"'“”»":
         s = s[1:-1].strip()
+    # Add the space the VL drops after a leading list number ("10.Favorite" ->
+    # "10. Favorite") for a clean read; `(?!\d)` leaves a decimal "3.5" alone.
+    s = re.sub(r"^(\s*\d+[.)])(?!\d)(\S)", r"\1 \2", s)
     return s
 
 
@@ -1069,8 +1072,13 @@ def _merge_regions(regions: list[dict]) -> list[dict]:
             # ("9. … 10. … 11. …") get glued into one blob and lose their
             # structure. This keeps lists intact in every language.
             prev_ends = bool(re.search(r"[.!?:;)。！？]\s*$", p["text"]))
+            # A list marker at line start ("10.", "11)", "a.", "•") — do NOT require
+            # a space after it: handwriting VL reads often glue it to the word
+            # ("10.Favorite"), and requiring the space let SEVEN list items merge
+            # into one blob. `(?!\d)` keeps a decimal like "3.5" from looking like
+            # an item marker.
             next_is_item = bool(re.match(
-                r"^\s*(\d+[.)]|[a-zA-Z][.)]|[•‣◦▪·*\-–—])\s", lr["text"]))
+                r"^\s*(\d+[.)]|[a-zA-Z][.)]|[•‣◦▪·*\-–—])(?!\d)", lr["text"]))
             if (same_left and small_gap and similar_h
                     and not prev_ends and not next_is_item):
                 p["parts"] += lr["parts"]

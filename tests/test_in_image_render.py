@@ -51,6 +51,24 @@ def test_no_block_merge_across_list_items():
     assert len(out) == 3
 
 
+def test_no_block_merge_across_list_items_without_space():
+    # VL often glues the marker to the word ("10.Favorite"); these are still
+    # distinct list items and must NOT merge into one blob.
+    out = ti._merge_regions([
+        _r(10, 10, 200, 30, "10.Favorite Movies"),
+        _r(10, 35, 200, 55, "11.Scuba diving"),
+        _r(10, 60, 200, 80, "12.plantain chips"),
+    ])
+    assert len(out) == 3
+
+
+def test_clean_vl_adds_space_after_list_number():
+    assert ti._clean_vl_text("10.Favorite Movies") == "10. Favorite Movies"
+    assert ti._clean_vl_text("6.nope") == "6. nope"
+    # a decimal must be left alone
+    assert ti._clean_vl_text("3.5 mm wide") == "3.5 mm wide"
+
+
 def test_no_block_merge_across_sentence_end():
     # Prev line ends a sentence → next line is a new thought, don't merge.
     out = ti._merge_regions([
