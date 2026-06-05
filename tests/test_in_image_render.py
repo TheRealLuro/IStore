@@ -158,6 +158,41 @@ def test_clean_vl_strips_label_prefix_and_quotes():
     assert ti._clean_vl_text('“Loud Noises / yelling”') == "Loud Noises / yelling"
 
 
+# ---- _translate_regions_best (VL-for-handwriting routing) ----
+def test_translate_best_uses_vl_for_handwriting(monkeypatch):
+    regions = [{"box": (0, 0, 9, 9), "parts": [(0, 0, 9, 9)], "handwriting": True}]
+    monkeypatch.setattr(ti, "_vl_translate_texts", lambda texts, name, **k: ["VL:" + texts[0]])
+    out, src, tgt = ti._translate_regions_best(["6. nope"], regions, "es")
+    assert out == ["VL:6. nope"]                 # used the VL translator
+
+
+def test_translate_best_falls_back_to_nllb_per_missing_line(monkeypatch):
+    regions = [
+        {"box": (0, 0, 9, 9), "parts": [(0, 0, 9, 9)], "handwriting": True},
+        {"box": (0, 0, 9, 9), "parts": [(0, 0, 9, 9)], "handwriting": True},
+    ]
+    # VL translates the first line, returns None for the second
+    monkeypatch.setattr(ti, "_vl_translate_texts", lambda texts, name, **k: ["VL:uno", None])
+    monkeypatch.setattr(ti, "_translate_regions",
+                        lambda texts, target: (["NLLB:" + texts[0]], "eng_Latn", "spa_Latn"))
+    out, src, tgt = ti._translate_regions_best(["uno", "dos"], regions, "es")
+    assert out[0] == "VL:uno" and out[1] == "NLLB:dos"   # gap filled by NLLB
+
+
+def test_translate_best_uses_nllb_for_digital(monkeypatch):
+    regions = [{"box": (0, 0, 9, 9), "parts": [(0, 0, 9, 9)], "handwriting": False}]
+    called = {"vl": False}
+
+    def _no_vl(texts, name, **k):
+        called["vl"] = True
+        return [None]
+    monkeypatch.setattr(ti, "_vl_translate_texts", _no_vl)
+    monkeypatch.setattr(ti, "_translate_regions",
+                        lambda texts, target: (["NLLB:" + texts[0]], "eng_Latn", "spa_Latn"))
+    out, src, tgt = ti._translate_regions_best(["Get started"], regions, "es")
+    assert out == ["NLLB:Get started"] and called["vl"] is False   # VL not used for digital
+
+
 # ---- _looks_degenerate / _accept_vl_read (VL read gating) ----
 def test_looks_degenerate_catches_loops():
     assert ti._looks_degenerate("AunderAunderAunderAunder") is True

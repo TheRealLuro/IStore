@@ -845,6 +845,60 @@ def _vl_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
         return regions
 
 
+def _vl_translate_texts(texts: list[str], target_name: str, batch: int = 4) -> list[Optional[str]]:
+    """Translate each text into `target_name` with Qwen2.5-VL used as a TEXT LLM —
+    far better than NLLB on informal handwriting: it infers run-together words
+    ('ridinginahelicopter' -> 'riding in a helicopter'), fixes small misspellings,
+    and handles idioms ('significant other', 'waitlist'). Returns a translation per
+    input, 1:1, with None where the VL is unavailable / fails / returns garbage so
+    the caller can fall back to NLLB for that line. NEVER raises."""
+    from backend.vision.runtime import get_qwen_vl
+
+    vl = get_qwen_vl()
+    if vl is None or not texts:
+        return [None] * len(texts)
+    model, processor, device = vl
+    import torch
+
+    tok = processor.tokenizer
+    sys_inst = (
+        f"You are a professional translator. Translate the user's text into "
+        f"{target_name}. The text is a short handwritten note or to-do list item and "
+        f"may contain run-together words or small misspellings — silently infer the "
+        f"intended words. Preserve a leading list number or letter exactly (e.g. "
+        f"'14.', 'a.'). Reply with ONLY the {target_name} translation as plain text — "
+        f"no quotes, no commentary, no original text."
+    )
+    out: list[Optional[str]] = [None] * len(texts)
+    items = [(i, t) for i, t in enumerate(texts) if (t or "").strip()]
+    for b in range(0, len(items), batch):
+        chunk = items[b:b + batch]
+        try:
+            prompts = [
+                tok.apply_chat_template(
+                    [{"role": "system", "content": sys_inst},
+                     {"role": "user", "content": t}],
+                    tokenize=False, add_generation_prompt=True,
+                )
+                for _i, t in chunk
+            ]
+            inputs = tok(prompts, return_tensors="pt", padding=True).to(device)
+            with torch.no_grad():
+                gen = model.generate(
+                    **inputs, max_new_tokens=128, do_sample=False,
+                    repetition_penalty=1.2, no_repeat_ngram_size=3,
+                )
+            new = gen[:, inputs.input_ids.shape[1]:]
+            decs = tok.batch_decode(new, skip_special_tokens=True)
+            for (i, _t), d in zip(chunk, decs):
+                tr = _clean_vl_text(d)
+                if tr and not _looks_degenerate(tr):
+                    out[i] = tr
+        except Exception:
+            logger.exception("translate-image: VL translate batch failed; NLLB fallback")
+    return out
+
+
 def _prepare_translation(texts: list[str], target: str):
     """Resolve EVERYTHING needed to translate the image's regions, ONCE, before
     any region is translated. Returns
@@ -916,6 +970,32 @@ def _translate_regions(texts: list[str], target: str) -> tuple[list[str], str, s
         for t in texts
     ]
     return out, src_flores, tgt_flores
+
+
+def _translate_regions_best(texts: list[str], regions: list[dict], target: str):
+    """Translate the page's region texts, choosing the best engine per page.
+
+    HANDWRITING pages route through Qwen2.5-VL (`_vl_translate_texts`) — a strong,
+    context-aware LLM that handles informal notes + run-together words far better
+    than NLLB; any line the VL can't translate falls back to NLLB. DIGITAL pages use
+    NLLB as before. Returns (translations aligned to `texts`, src_flores,
+    tgt_flores). Raises RuntimeError only when NLLB is needed but can't load."""
+    is_hw = any(r.get("handwriting") for r in regions)
+    if is_hw:
+        tgt_flores = _to_flores(target)
+        vl = _vl_translate_texts(texts, _flores_name(tgt_flores))
+        if any(vl):
+            out = list(vl)
+            missing = [i for i, v in enumerate(out) if not v and (texts[i] or "").strip()]
+            if missing:
+                nllb, src_flores, _ = _translate_regions([texts[i] for i in missing], target)
+                for k, i in enumerate(missing):
+                    out[i] = nllb[k]
+            else:
+                joined = "\n".join(t for t in texts if t).strip()
+                src_flores = _detect_src_flores(joined) if joined else "eng_Latn"
+            return [_fix_spacing(o or "") for o in out], src_flores, tgt_flores
+    return _translate_regions(texts, target)
 
 
 # lowercase/digit + .!? + uppercase: add the space the model dropped when it
@@ -2313,9 +2393,10 @@ def _run_pipeline(raw_bytes: bytes, target: str) -> tuple[bytes, str, str]:
         # unchanged, signal "no text" via an empty source language.
         return _encode_png(img), "", tgt_name
 
-    # Translate every region (detect source ONCE). RuntimeError → 503.
+    # Translate every region (detect source ONCE). RuntimeError → 503. Handwriting
+    # pages route through the strong VL translator; digital pages use NLLB.
     texts = [r["text"] for r in regions]
-    translations, src_flores, tgt_flores = _translate_regions(texts, target)
+    translations, src_flores, tgt_flores = _translate_regions_best(texts, regions, target)
     src_name = _flores_name(src_flores)
     tgt_name = _flores_name(tgt_flores)
 
@@ -2475,29 +2556,38 @@ async def _translate_image_stream_gen(raw_bytes: bytes, target: str):
             ) + "\n"
             return
 
-        # 2) Resolve source + target ONCE (detect over the joined region text),
-        #    then translate region-by-region, flushing each as it lands.
+        # 2) Translate. HANDWRITING pages route through the strong VL translator in
+        #    ONE batched pass (Qwen is already resident from the read); DIGITAL pages
+        #    keep the per-region NLLB stream so the FE writing fills in live.
         texts = [r["text"] for r in regions]
-        (
-            model,
-            tokenizer,
-            device,
-            gen_kwargs,
-            src_flores,
-            tgt_flores,
-        ) = await asyncio.to_thread(_prepare_translation, texts, target)
-        src_name = _flores_name(src_flores)
-        tgt_name = _flores_name(tgt_flores)
-
         total = len(texts)
-        translations: list[str] = []
-        for i, t in enumerate(texts):
-            translated = await asyncio.to_thread(
-                _translate_one_region, model, tokenizer, device, t, gen_kwargs
+        if any(r.get("handwriting") for r in regions):
+            translations, src_flores, tgt_flores = await asyncio.to_thread(
+                _translate_regions_best, texts, regions, target
             )
-            translations.append(translated)
-            # One line per region so the FE writing fills in live.
-            yield json.dumps({"i": i, "n": total, "text": translated}) + "\n"
+            src_name = _flores_name(src_flores)
+            tgt_name = _flores_name(tgt_flores)
+            for i, translated in enumerate(translations):
+                yield json.dumps({"i": i, "n": total, "text": translated}) + "\n"
+        else:
+            (
+                model,
+                tokenizer,
+                device,
+                gen_kwargs,
+                src_flores,
+                tgt_flores,
+            ) = await asyncio.to_thread(_prepare_translation, texts, target)
+            src_name = _flores_name(src_flores)
+            tgt_name = _flores_name(tgt_flores)
+            translations = []
+            for i, t in enumerate(texts):
+                translated = await asyncio.to_thread(
+                    _translate_one_region, model, tokenizer, device, t, gen_kwargs
+                )
+                translations.append(translated)
+                # One line per region so the FE writing fills in live.
+                yield json.dumps({"i": i, "n": total, "text": translated}) + "\n"
 
         # 3) Erase + render + rotate-back + encode (off the event loop), then
         #    send the finished PNG + the language pair.
