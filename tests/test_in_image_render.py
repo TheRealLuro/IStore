@@ -158,6 +158,27 @@ def test_clean_vl_strips_label_prefix_and_quotes():
     assert ti._clean_vl_text('“Loud Noises / yelling”') == "Loud Noises / yelling"
 
 
+# ---- _split_into_lines (break a multi-line blob into single text lines) ----
+def test_split_into_lines_splits_two_rows():
+    from PIL import Image
+    import numpy as np
+    arr = np.full((100, 200, 3), 255, dtype=np.uint8)
+    arr[10:30, 10:180] = 20      # line 1 ink
+    arr[60:80, 10:180] = 20      # line 2 ink, with a clear gap between
+    subs = ti._split_into_lines(Image.fromarray(arr), (0, 0, 200, 100))
+    assert len(subs) == 2
+    assert subs[0][3] <= subs[1][1] + 6          # first line sits above the second
+
+
+def test_split_into_lines_single_line_returns_box():
+    from PIL import Image
+    import numpy as np
+    arr = np.full((40, 200, 3), 255, dtype=np.uint8)
+    arr[10:30, 10:180] = 20
+    box = (0, 0, 200, 40)
+    assert ti._split_into_lines(Image.fromarray(arr), box) == [box]
+
+
 # ---- _split_list_marker (preserve list numbers through VL translation) ----
 def test_split_list_marker():
     assert ti._split_list_marker("14. going to Rome") == ("14.", "going to Rome")

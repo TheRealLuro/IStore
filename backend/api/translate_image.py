@@ -829,16 +829,38 @@ def _vl_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
         return regions
     try:
         idxs = [i for i, r in enumerate(regions) if not r.get("skip")]
-        boxes = [tuple(regions[i]["box"]) for i in idxs]
-        reads = _vl_read_regions(full_img, boxes)
+        # Split each region into single text lines first (a tall handwriting blob
+        # spans several), so the VL reads ONE physical line per crop instead of
+        # transcribing the whole blob and duplicating lines.
+        flat_boxes: list[tuple] = []
+        owner: list[int] = []
+        for i in idxs:
+            for sb in _split_into_lines(full_img, tuple(regions[i]["box"])):
+                flat_boxes.append(tuple(sb)); owner.append(i)
+        reads = _vl_read_regions(full_img, flat_boxes)
+        per_region: dict[int, list[str]] = {i: [] for i in idxs}
+        for oi, t in zip(owner, reads):
+            if t and t.strip() and not _looks_degenerate(t):
+                per_region[oi].append(t.strip())
         got = 0
-        for i, t in zip(idxs, reads):
+        for i in idxs:
             regions[i]["handwriting"] = True  # the page IS handwriting
-            if _accept_vl_read(regions[i].get("text", ""), t):
-                regions[i]["text"] = t.strip()
+            subs = per_region[i]
+            joined = " ".join(subs).strip()
+            if not joined:
+                continue
+            if len(subs) >= 2:
+                # multi-line region read ONE line at a time: the joined transcription
+                # is legitimately the full text, so trust it (skip the single-line
+                # length guard which would reject it for being longer than Florence).
+                if not _looks_degenerate(joined):
+                    regions[i]["text"] = joined
+                    got += 1
+            elif _accept_vl_read(regions[i].get("text", ""), joined):
+                regions[i]["text"] = joined
                 got += 1
-        logger.info("translate-image: VL re-read %d/%d handwritten regions",
-                    got, len(boxes))
+        logger.info("translate-image: VL re-read %d/%d handwritten regions (%d line-crops)",
+                    got, len(idxs), len(flat_boxes))
         return regions
     except Exception:
         logger.exception("translate-image: VL region re-read failed; keeping Florence")
@@ -857,6 +879,46 @@ def _split_list_marker(text: str) -> tuple[str, str]:
     if not m:
         return "", (text or "").strip()
     return m.group(0).strip(), (text[m.end():]).strip()
+
+
+def _split_into_lines(orig_img, box, min_gap_frac: float = 0.45) -> list[tuple]:
+    """Split a region box that spans SEVERAL text lines into one box per line via a
+    horizontal ink-row projection (rows that contain foreground ink vs blank gaps).
+    Florence often detects a dense handwriting item as one tall multi-line blob; the
+    VL then reads the blob and DUPLICATES lines. Reading one physical line per crop
+    fixes that. Returns [box] for a single line. Full box width is kept per line."""
+    import numpy as np
+
+    x0, y0, x1, y1 = box
+    crop = np.asarray(orig_img.crop((x0, y0, x1, y1)).convert("L"))
+    if crop.size == 0 or crop.shape[0] < 10:
+        return [box]
+    w = crop.shape[1]
+    thr = max(60, int(crop.mean()) - 25)          # ink = darker than local bg
+    is_ink = (crop < thr).sum(axis=1) > max(2, int(0.02 * w))
+    # contiguous ink bands
+    bands: list[list[int]] = []
+    s = None
+    for i, v in enumerate(is_ink):
+        if v and s is None:
+            s = i
+        elif not v and s is not None:
+            bands.append([s, i]); s = None
+    if s is not None:
+        bands.append([s, len(is_ink)])
+    if len(bands) <= 1:
+        return [box]
+    # merge bands separated only by a tiny gap (ascender/descender within a line)
+    line_h = max(b[1] - b[0] for b in bands)
+    merged = [list(bands[0])]
+    for a, b in bands[1:]:
+        if a - merged[-1][1] < min_gap_frac * line_h:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    if len(merged) <= 1:
+        return [box]
+    return [(x0, y0 + a, x1, y0 + b) for a, b in merged]
 
 
 def _vl_translate_texts(texts: list[str], target_name: str, batch: int = 4) -> list[Optional[str]]:
