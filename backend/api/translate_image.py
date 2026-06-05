@@ -2295,6 +2295,30 @@ def _content_bounds(np_img) -> tuple:
     return (left, top, right, bot)
 
 
+def _text_bg_is_dark(np_img, regions: list[dict]) -> bool:
+    """Whether the LOCAL background UNDER the text is dark — sampled where the
+    handwriting actually sits (the paper / sticky note), NOT the whole photo. A note
+    shot on a dark countertop is mostly dark, but the text is on LIGHT paper; judging
+    darkness from the whole frame wrongly picks a white pen (white-on-light = faint /
+    unreadable). Median brightness of the region crops; whole-frame median fallback."""
+    import numpy as np
+
+    h, w = np_img.shape[:2]
+    vals = []
+    for r in regions:
+        if r.get("skip"):
+            continue
+        x0, y0, x1, y1 = r["box"]
+        patch = np_img[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
+        if patch.size:
+            vals.append(float((patch.mean(axis=2) if patch.ndim == 3 else patch).mean()))
+    if not vals:
+        g = np_img.mean(axis=2) if np_img.ndim == 3 else np_img
+        return float(np.median(g)) < 110.0
+    vals.sort()
+    return vals[len(vals) // 2] < 110.0
+
+
 def _flow_layout(regions: list[dict], translations: list[str], iw: int, ih: int,
                  bounds: tuple = None) -> dict:
     """Lay handwriting items out cleanly using the ERASED space instead of cramming
@@ -2361,7 +2385,10 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     # dark page) so the note reads as a single bold, legible hand — not a faint grey
     # shade per box. Page darkness from the WHOLE-image median (not a corner that
     # may be the dark binding/shadow of a photo).
-    page_bg_dark = _page_is_dark(orig_img) if orig_img is not None else False
+    # Darkness judged from UNDER the text (the paper), not the whole photo — so a
+    # note on a dark countertop still gets a readable BLACK pen on its light paper.
+    page_bg_dark = (_text_bg_is_dark(orig_np, regions) if orig_np is not None
+                    else (_page_is_dark(orig_img) if orig_img is not None else False))
     hw_pen = _page_pen_color(page_bg_dark)
     iw_img = orig_img.width if orig_img is not None else inpainted.width
     ih_img = orig_img.height if orig_img is not None else inpainted.height

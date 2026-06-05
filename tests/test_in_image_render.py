@@ -146,6 +146,21 @@ def test_wrap_normal_words_unchanged():
     assert ti._wrap_to_width(d, "hello world", f, 4000) == ["hello world"]
 
 
+# ---- _text_bg_is_dark (pen color from UNDER the text, not the whole photo) ----
+def test_text_bg_is_dark_light_note_on_dark_scene():
+    import numpy as np
+    img = np.full((200, 200, 3), 30, dtype=np.uint8)     # dark countertop
+    img[80:120, 60:140] = 190                             # a light sticky note
+    regions = [{"box": (60, 80, 140, 120)}]               # text sits on the note
+    assert ti._text_bg_is_dark(img, regions) is False     # light note -> black pen
+
+
+def test_text_bg_is_dark_true_for_dark_page():
+    import numpy as np
+    img = np.full((100, 100, 3), 20, dtype=np.uint8)
+    assert ti._text_bg_is_dark(img, [{"box": (10, 10, 90, 90)}]) is True
+
+
 # ---- _content_bounds (fit to the bright PAGE, not the photo edge) ----
 def test_content_bounds_excludes_dark_side_border():
     import numpy as np
