@@ -2193,13 +2193,19 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     # may be the dark binding/shadow of a photo).
     page_bg_dark = _page_is_dark(orig_img) if orig_img is not None else False
     hw_pen = _page_pen_color(page_bg_dark)
-    # A thin contrasting halo behind the pen so it stays legible on a shadowed /
-    # textured photo background (the dense, dim right column of a photographed note).
-    hw_halo = (15, 15, 15) if page_bg_dark else (245, 245, 245)
-    # One uniform target size for the whole hand so lines don't balloon/shrink wildly.
-    hw_size = _page_hw_size(orig_img, regions)
     iw_img = orig_img.width if orig_img is not None else inpainted.width
     ih_img = orig_img.height if orig_img is not None else inpainted.height
+    # ONE FIXED size for every handwriting line — the whole hand renders at the same
+    # size (the #1 thing that made it look uneven was each line shrinking to fit its
+    # own width). Clamped to a sane range off the page's median ink height.
+    hw_size = _page_hw_size(orig_img, regions)
+    hw_fixed = max(22, min(hw_size, 40)) if hw_size >= 6 else 0
+    # Column boundary: where the RIGHT column starts. A handwriting line extends RIGHT
+    # into its column's free space (instead of shrinking) up to this boundary (left
+    # column) or the page margin (right column), so same-size items stay same-size.
+    _right_x0s = [r["box"][0] for r in regions
+                  if r.get("handwriting") and not r.get("skip") and r["box"][0] > iw_img * 0.45]
+    col_boundary = (min(_right_x0s) - 16) if _right_x0s else (iw_img - 14)
 
     for r, translated in zip(regions, translations):
         if r.get("skip"):
@@ -2231,10 +2237,8 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
             style["handwriting"] = True
             style["bold"] = False
             style["italic"] = False
-            if hw_size >= 6:
-                # Uniform size ceiling, scaled down a touch so sparse lines don't
-                # balloon to the slot and the whole hand reads evenly.
-                style["ink_h"] = max(12, int(hw_size * 0.8))
+            if hw_fixed >= 6:
+                style["ink_h"] = hw_fixed     # one fixed size for the whole page
             fill = hw_pen
 
         # Pills/buttons (digital UI): the label sits on a contained fill, so a
@@ -2248,19 +2252,19 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
                 pill = None
 
         if hw:
-            # Hybrid placement bounded by the line's SLOT (top of this box → top of
-            # the next line in its column), top-aligned. The slot guarantees the
-            # rendered line can't overlap the next one even when detection boxes are
-            # tall and overlapping (the dense column). It renders at the original
-            # ink size when the slot allows, and shrinks into the slot otherwise —
-            # so the page stays clean and on-page with the list order preserved.
+            # Render at the FIXED page size and let the line extend RIGHT into the
+            # free space of its column (up to the column boundary / page margin)
+            # instead of shrinking to its own box width — so every same-size item
+            # renders the SAME size. The vertical SLOT (top of this box → top of the
+            # next line in the column) caps height so lines can't overlap, and a hard
+            # 12px margin keeps text fully ON-PAGE (no run-off at the edges). Only a
+            # line too long even for the full column width shrinks.
+            right = col_boundary if box[0] < iw_img * 0.45 else (iw_img - 14)
+            cb = (max(12, box[0]), max(12, box[1]),
+                  max(box[0] + 24, min(right, iw_img - 12)), min(ih_img - 12, box[3]))
             max_h = _slot_height(box, all_boxes)
-            # Clamp the draw box fully ON-PAGE so a line near an edge (e.g. item 20
-            # at the very top-right) can't render off the image.
-            cb = (max(2, box[0]), max(2, box[1]),
-                  min(iw_img - 2, box[2]), min(ih_img - 2, box[3]))
             _fit_and_draw(draw, text, cb, fill, style, max_h=max_h,
-                          valign="top", clamp_box=False, halo=hw_halo)
+                          valign="top", clamp_box=False)
         elif pill is not None:
             px0, py0, px1, py1 = pill
             _fit_and_draw(draw, text, pill, fill, style,
