@@ -845,13 +845,28 @@ def _vl_rewrite_regions(full_img, regions: list[dict]) -> list[dict]:
         return regions
 
 
+# Leading list marker: a number (opt . / )) or a single letter+./) at line start.
+_LEAD_MARK_RE = re.compile(r"^\s*(\d{1,3}[.)]?|[a-zA-Z][.)])\s*")
+
+
+def _split_list_marker(text: str) -> tuple[str, str]:
+    """Split a leading list marker ('14.', '20', 'a.') off the body so the marker
+    can be re-attached VERBATIM after translation — the LLM must never renumber the
+    list (it loves to 'fix' 20->2, 10->1, or explode a line into a sub-list)."""
+    m = _LEAD_MARK_RE.match(text or "")
+    if not m:
+        return "", (text or "").strip()
+    return m.group(0).strip(), (text[m.end():]).strip()
+
+
 def _vl_translate_texts(texts: list[str], target_name: str, batch: int = 4) -> list[Optional[str]]:
     """Translate each text into `target_name` with Qwen2.5-VL used as a TEXT LLM —
     far better than NLLB on informal handwriting: it infers run-together words
     ('ridinginahelicopter' -> 'riding in a helicopter'), fixes small misspellings,
-    and handles idioms ('significant other', 'waitlist'). Returns a translation per
-    input, 1:1, with None where the VL is unavailable / fails / returns garbage so
-    the caller can fall back to NLLB for that line. NEVER raises."""
+    and handles idioms ('significant other'). Returns a translation per input, 1:1,
+    with None where the VL is unavailable / fails / returns garbage so the caller can
+    fall back to NLLB. The leading list number is STRIPPED before translation and
+    re-attached verbatim (the LLM can't be trusted to preserve it). NEVER raises."""
     from backend.vision.runtime import get_qwen_vl
 
     vl = get_qwen_vl()
@@ -863,24 +878,33 @@ def _vl_translate_texts(texts: list[str], target_name: str, batch: int = 4) -> l
     tok = processor.tokenizer
     sys_inst = (
         f"You are a professional translator. Translate the user's text into "
-        f"{target_name}. The text is a short handwritten note or to-do list item and "
-        f"may contain run-together words or small misspellings — silently infer the "
-        f"intended words. Preserve a leading list number or letter exactly (e.g. "
-        f"'14.', 'a.'). Reply with ONLY the {target_name} translation as plain text — "
-        f"no quotes, no commentary, no original text."
+        f"{target_name}. It is a short handwritten note; it may contain run-together "
+        f"words or small misspellings — silently infer the intended words. Reply with "
+        f"ONLY the {target_name} translation on ONE single line of plain text — no "
+        f"numbering, no bullet points, no quotes, no commentary, no original text."
     )
     out: list[Optional[str]] = [None] * len(texts)
-    items = [(i, t) for i, t in enumerate(texts) if (t or "").strip()]
-    for b in range(0, len(items), batch):
-        chunk = items[b:b + batch]
+    # (index, original marker, body-to-translate)
+    work: list[tuple] = []
+    for i, t in enumerate(texts):
+        if not (t or "").strip():
+            continue
+        marker, body = _split_list_marker(t)
+        if not body:
+            out[i] = marker          # just a number / nothing to translate
+            continue
+        work.append((i, marker, body))
+
+    for b in range(0, len(work), batch):
+        chunk = work[b:b + batch]
         try:
             prompts = [
                 tok.apply_chat_template(
                     [{"role": "system", "content": sys_inst},
-                     {"role": "user", "content": t}],
+                     {"role": "user", "content": body}],
                     tokenize=False, add_generation_prompt=True,
                 )
-                for _i, t in chunk
+                for _i, _mk, body in chunk
             ]
             inputs = tok(prompts, return_tensors="pt", padding=True).to(device)
             with torch.no_grad():
@@ -890,10 +914,10 @@ def _vl_translate_texts(texts: list[str], target_name: str, batch: int = 4) -> l
                 )
             new = gen[:, inputs.input_ids.shape[1]:]
             decs = tok.batch_decode(new, skip_special_tokens=True)
-            for (i, _t), d in zip(chunk, decs):
-                tr = _clean_vl_text(d)
+            for (i, marker, _body), d in zip(chunk, decs):
+                tr = re.sub(r"\s{2,}", " ", _clean_vl_text(d).replace("\n", " ")).strip()
                 if tr and not _looks_degenerate(tr):
-                    out[i] = tr
+                    out[i] = (f"{marker} {tr}".strip() if marker else tr)
         except Exception:
             logger.exception("translate-image: VL translate batch failed; NLLB fallback")
     return out

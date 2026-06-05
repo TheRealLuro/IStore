@@ -158,6 +158,17 @@ def test_clean_vl_strips_label_prefix_and_quotes():
     assert ti._clean_vl_text('“Loud Noises / yelling”') == "Loud Noises / yelling"
 
 
+# ---- _split_list_marker (preserve list numbers through VL translation) ----
+def test_split_list_marker():
+    assert ti._split_list_marker("14. going to Rome") == ("14.", "going to Rome")
+    assert ti._split_list_marker("20 Take a bath") == ("20", "Take a bath")
+    assert ti._split_list_marker("a.past") == ("a.", "past")
+    assert ti._split_list_marker("6. nope") == ("6.", "nope")
+    assert ti._split_list_marker("just some words") == ("", "just some words")
+    # not a marker: a word that merely starts with a capital + multiple letters
+    assert ti._split_list_marker("Shint. 1 pair") == ("", "Shint. 1 pair")
+
+
 # ---- _translate_regions_best (VL-for-handwriting routing) ----
 def test_translate_best_uses_vl_for_handwriting(monkeypatch):
     regions = [{"box": (0, 0, 9, 9), "parts": [(0, 0, 9, 9)], "handwriting": True}]
