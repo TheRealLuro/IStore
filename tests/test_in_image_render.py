@@ -261,77 +261,25 @@ def test_hybrid_handwriting_stays_within_image_bounds():
     assert (arr[:, -2:] >= 250).all()
 
 
-# ---- _build_context_crops (1:1 with boxes, neighbor context) ----
-def test_build_context_crops_is_one_to_one_and_marked():
-    from PIL import Image
-    import numpy as np
-    img = Image.new("RGB", (200, 200), (255, 255, 255))
-    boxes = [(10, 10, 90, 30), (10, 40, 120, 60), (10, 70, 80, 90)]
-    crops = ti._build_context_crops(img, boxes)
-    assert len(crops) == len(boxes)                 # strict 1:1 with input boxes
-    for c in crops:
-        assert c.width > 0 and c.height > 0
-        assert (np.asarray(c) < 200).any()          # each carries the target marker
+# ---- _page_pen_color (one clean BLACK pen for all handwriting) ----
+def test_page_pen_color_is_strong_black_on_light_page():
+    out = ti._page_pen_color(bg_dark=False)
+    assert out == (20, 20, 20)
+    # genuinely dark (a clean black pen, not a faint grey)
+    assert 0.299 * out[0] + 0.587 * out[1] + 0.114 * out[2] < 40
 
 
-def test_build_context_crops_single_box():
-    from PIL import Image
-    img = Image.new("RGB", (100, 50), (255, 255, 255))
-    crops = ti._build_context_crops(img, [(10, 10, 60, 30)])
-    assert len(crops) == 1
+def test_page_pen_color_is_near_white_on_dark_page():
+    assert ti._page_pen_color(bg_dark=True) == (236, 236, 236)
 
 
-# ---- _context_band / _mark_target (neighbor-context VL crops) ----
-def test_context_band_spans_prev_and_next_rows():
-    boxes = [(10, 10, 90, 30), (10, 40, 120, 60), (10, 70, 80, 90)]
-    band, local = ti._context_band(boxes, 1, iw=200, ih=200)
-    bx0, by0, bx1, by1 = band
-    assert by0 <= 10 and by1 >= 90          # covers prev top .. next bottom
-    # target's local box sits inside the band and is offset by the band origin
-    lx0, ly0, lx1, ly1 = local
-    assert ly0 == 40 - by0 and ly1 == 60 - by0
-    assert 0 <= lx0 and lx1 <= (bx1 - bx0)
-
-
-def test_context_band_first_and_last_have_no_oob():
-    boxes = [(10, 10, 90, 30), (10, 40, 120, 60)]
-    b0, _ = ti._context_band(boxes, 0, iw=200, ih=200)   # no prev
-    b1, _ = ti._context_band(boxes, 1, iw=200, ih=200)   # no next
-    assert b0[1] >= 0 and b1[3] <= 200
-
-
-def test_mark_target_draws_in_left_margin_without_touching_target_ink():
-    from PIL import Image
-    crop = Image.new("RGB", (120, 90), (255, 255, 255))
-    marked = ti._mark_target(crop, (20, 30, 110, 50))   # target line band
-    assert marked.size == crop.size
-    import numpy as np
-    before = np.asarray(crop)
-    after = np.asarray(marked)
-    # input is not mutated (a fresh image is returned)
-    assert np.array_equal(before, np.full_like(before, 255))
-    # some marker pixels appear in the LEFT margin beside the target rows
-    left_margin = after[30:50, 0:18]
-    assert (left_margin < 200).any()
-
-
-# ---- _page_pen_color (uniform handwriting ink) ----
-def test_page_pen_color_keeps_saturated_blue_pen():
-    # A blue ballpoint: every line should share this readable blue, not per-region.
-    out = ti._page_pen_color([(30, 42, 175), (22, 36, 160), (28, 40, 168)], bg_dark=False)
-    assert out[2] > out[0] and out[2] > out[1]      # still clearly blue
-    # readable on a light page (dark enough luma)
-    assert 0.299 * out[0] + 0.587 * out[1] + 0.114 * out[2] < 128
-
-
-def test_page_pen_color_snaps_faint_pencil_to_near_black():
-    out = ti._page_pen_color([(176, 176, 180), (182, 178, 181)], bg_dark=False)
-    assert out == (24, 24, 24)
-
-
-def test_page_pen_color_default_when_empty():
-    assert ti._page_pen_color([], bg_dark=False) == (26, 29, 41)
-    assert ti._page_pen_color([], bg_dark=True) == (236, 236, 236)
+# ---- _clean_vl_text: markdown / LaTeX escaping the VL sometimes emits ----
+def test_clean_vl_strips_latex_escaping():
+    assert "\\" not in ti._clean_vl_text("21\\. A dress \\(underwear\\)s")
+    assert ti._clean_vl_text("16\\. A beautiful place") == "16. A beautiful place"
+    assert ti._clean_vl_text("a \\quad b") == "a b"
+    out = ti._clean_vl_text("19\\. yes.\\, k., kitty,\\ babydoll\\. muffin pie")
+    assert "\\" not in out and "muffin pie" in out
 
 
 def test_orig_line_count():

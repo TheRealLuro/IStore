@@ -648,14 +648,34 @@ _VL_PREFIX_RE = re.compile(
 )
 
 
+def _strip_latex_md(s: str) -> str:
+    """Remove the markdown / LaTeX escaping a chat VL sometimes emits in a
+    transcription ('21\\. A dress \\(underwear\\)s \\n I black-shirt' ->
+    '21. A dress (underwear)s I black-shirt'). Plain handwriting is plain text, so
+    these backslashes are always artifacts."""
+    if "\\" not in s:
+        return s
+    # literal escape sequences the model typed as two characters
+    s = s.replace("\\n", " ").replace("\\t", " ").replace("\\r", " ")
+    # LaTeX spacing macros -> a space
+    s = re.sub(r"\\(?:quad|qquad|,|;|:|!|>)", " ", s)
+    # backslash-escaped punctuation / space -> the bare character
+    s = re.sub(r"\\([(){}\[\].,;:!?+\-*/=&%#_~^'\"| ])", r"\1", s)
+    # any remaining lone backslashes
+    s = s.replace("\\", "")
+    return re.sub(r"[ \t]{2,}", " ", s).strip()
+
+
 def _clean_vl_text(t: str) -> str:
     """Strip the boilerplate a chat VL sometimes wraps a transcription in
-    ('The text reads: "…"', surrounding quotes, trailing commentary newlines)."""
+    ('The text reads: "…"', surrounding quotes, trailing commentary newlines) and
+    any markdown / LaTeX escaping it emits."""
     s = (t or "").strip()
     if not s:
         return ""
     # Keep only the first line block; VLs sometimes append an explanation.
     s = s.strip().strip("`")
+    s = _strip_latex_md(s)
     s = _VL_PREFIX_RE.sub("", s)
     # Drop matching surrounding quotes.
     if len(s) >= 2 and s[0] in "\"'“”«" and s[-1] in "\"'“”»":
@@ -684,78 +704,19 @@ def _looks_degenerate(s: str) -> bool:
     return False
 
 
-def _context_band(boxes: list[tuple], i: int, iw: int, ih: int,
-                  pad_x_frac: float = 0.06, pad_y_frac: float = 0.35):
-    """Crop window for reading line `i` WITH its neighbors visible: a vertical
-    band spanning the previous line's top to the next line's bottom (clamped to
-    the image), wide enough to show the neighbors' text too. Returns
-    (band_box, target_local_box) where target_local_box is line i's box expressed
-    in band-local coordinates (for `_mark_target`). Reading order assumed (boxes
-    already top->bottom from `_merge_regions`)."""
-    x0, y0, x1, y1 = boxes[i]
-    px = int((x1 - x0) * pad_x_frac) + 4
-    py = int((y1 - y0) * pad_y_frac) + 4
-    xs0, xs1 = [x0], [x1]
-    top = y0 - py
-    bot = y1 + py
-    if i > 0:
-        p = boxes[i - 1]
-        xs0.append(p[0]); xs1.append(p[2]); top = min(top, p[1])
-    if i + 1 < len(boxes):
-        n = boxes[i + 1]
-        xs0.append(n[0]); xs1.append(n[2]); bot = max(bot, n[3])
-    bx0 = max(0, min(xs0) - px)
-    bx1 = min(iw, max(xs1) + px)
-    by0 = max(0, top)
-    by1 = min(ih, bot)
-    local = (x0 - bx0, y0 - by0, x1 - bx0, y1 - by0)
-    return (bx0, by0, bx1, by1), local
-
-
-def _mark_target(crop, target_local_box):
-    """Return a COPY of `crop` with a small bracket drawn in the LEFT margin
-    beside the target line, so the VL knows which line to transcribe. Never drawn
-    over the text itself. Input image is not mutated."""
-    from PIL import ImageDraw
-
-    c = crop.copy()
-    d = ImageDraw.Draw(c)
-    _x0, y0, _x1, y1 = target_local_box
-    yc = (y0 + y1) // 2
-    half = max(4, (y1 - y0) // 2)
-    # a left-margin "‹" bracket: vertical bar + two short arms
-    d.line([(3, yc - half), (3, yc + half)], fill=(220, 40, 40), width=2)
-    d.line([(3, yc - half), (10, yc - half)], fill=(220, 40, 40), width=2)
-    d.line([(3, yc + half), (10, yc + half)], fill=(220, 40, 40), width=2)
-    return c
-
-
-def _build_context_crops(full_img, boxes: list[tuple]) -> list:
-    """For each detected line, build a neighbor-context crop (the line plus the
-    lines above/below) with the target line marked, upscaling short crops for
-    legibility. Returns one RGB crop per box, strictly 1:1 with `boxes`."""
-    from PIL import Image as PILImage
-
-    iw, ih = full_img.width, full_img.height
-    crops = []
-    for i in range(len(boxes)):
-        band, local = _context_band(boxes, i, iw, ih)
-        bx0, by0, bx1, by1 = band
-        c = full_img.crop((bx0, by0, bx1, by1)).convert("RGB")
-        c = _mark_target(c, local)
-        if c.height and c.height < 96:   # upscale so target glyphs stay legible
-            s = 96.0 / c.height
-            c = c.resize((max(1, int(c.width * s)), 96), PILImage.LANCZOS)
-        crops.append(c)
-    return crops
-
-
 def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optional[str]]:
-    """Transcribe each line with Qwen2.5-VL, batched, reading each line WITH its
-    neighbors visible (context) so a single-word misread can't change the meaning.
-    Returns a read per box (None where the VL is unavailable / fails). Output stays
-    strictly 1:1 with `boxes`. NEVER raises — returns Nones on any failure so the
-    caller keeps Florence."""
+    """Transcribe each detected line with Qwen2.5-VL, batched. Returns a read per
+    box (None where the VL is unavailable / fails). Each line is cropped TIGHT (its
+    own box + a little padding so a descender/ascender isn't clipped) and read on
+    its own — the line itself already carries the in-line context that
+    disambiguates words ("going to ___ or pompeii" -> Rome). Output stays strictly
+    1:1 with `boxes`. NEVER raises — returns Nones on any failure so the caller
+    keeps Florence.
+
+    (An earlier multi-line "neighbor context band" variant was tried and reverted:
+    on a two-column page the bands spanned both columns, the VL ignored the target
+    marker and read neighbours -> duplicate/fragmented reads, and the large crops
+    OOMed the 12 GB card. Tight per-line crops are clean 1:1 and fast.)"""
     from backend.vision.runtime import get_qwen_vl
 
     vl = get_qwen_vl()
@@ -763,15 +724,24 @@ def _vl_read_regions(full_img, boxes: list[tuple], batch: int = 6) -> list[Optio
         return [None] * len(boxes)
     model, processor, device = vl
     import torch
+    from PIL import Image as PILImage
 
-    crops = _build_context_crops(full_img, list(boxes))
+    iw, ih = full_img.width, full_img.height
+    crops = []
+    for (x0, y0, x1, y1) in boxes:
+        pad_x = int((x1 - x0) * 0.05) + 4
+        pad_y = int((y1 - y0) * 0.35) + 4
+        c = full_img.crop((max(0, x0 - pad_x), max(0, y0 - pad_y),
+                           min(iw, x1 + pad_x), min(ih, y1 + pad_y)))
+        if c.height and c.height < 64:  # upscale short lines so glyphs are legible
+            s = 64.0 / c.height
+            c = c.resize((max(1, int(c.width * s)), 64), PILImage.LANCZOS)
+        crops.append(c.convert("RGB"))
 
     prompt = (
-        "Several handwritten lines are shown. Transcribe ONLY the line marked "
-        "with the red bracket on the left edge, exactly as written, preserving "
-        "spelling, numbers and punctuation. Use the other lines only as context "
-        "to choose the right word. Output ONLY that one line's transcription — "
-        "no quotes, labels or commentary."
+        "Transcribe the handwritten text in this image exactly as written, "
+        "preserving spelling, numbers and punctuation. Output PLAIN TEXT only — "
+        "no markdown, no LaTeX, no quotes, labels or commentary."
     )
     reads: list[Optional[str]] = []
     for i in range(0, len(crops), batch):
@@ -1874,19 +1844,13 @@ def _fit_and_draw(
         y += lh + line_gap
 
 
-def _page_pen_color(inks: list[tuple], bg_dark: bool) -> tuple:
-    """Pick ONE pen color for ALL handwriting lines from the per-region sampled
-    `inks` so the whole note renders in a uniform, readable hand instead of a
-    different shade per box. Median the sampled inks, then guarantee readable
-    contrast for the page background. Falls back to a near-black ('pen on paper')
-    or near-white (dark page) when no confident ink was sampled."""
-    import numpy as np
-
-    if not inks:
-        return (236, 236, 236) if bg_dark else (26, 29, 41)
-    arr = np.array(inks, dtype=np.float32)
-    med = tuple(int(c) for c in np.median(arr, axis=0))
-    return _ensure_contrast(med, bg_dark)
+def _page_pen_color(bg_dark: bool) -> tuple:
+    """ONE clean, uniform PEN color for every handwriting line: a strong near-black
+    on a light page (near-white on a dark page). Handwritten notes are usually
+    faint pencil / pale ballpoint, so reproducing the SAMPLED ink reads as a
+    washed-out grey — instead we render a single bold black ink so the translation
+    looks like it was cleanly written on the paper and stays legible everywhere."""
+    return (236, 236, 236) if bg_dark else (20, 20, 20)
 
 
 def _fits_in_box(draw, text: str, box, style: Optional[dict]) -> bool:
@@ -1938,19 +1902,13 @@ def _render_translations(inpainted, regions: list[dict], translations: list[str]
     orig_np = np.asarray(orig_img) if orig_img is not None else None
     page_bg = _page_bg(orig_np) if orig_np is not None else (255, 255, 255)
 
-    # ONE uniform pen color for every handwriting line (sampled once across the
-    # page) so the note reads as a single consistent hand, not a shade per box.
-    hw_inks: list[tuple] = []
-    if orig_img is not None:
-        for r in regions:
-            if r.get("handwriting") and not r.get("skip"):
-                st = _analyze_region(orig_img, r.get("parts", [r["box"]])[0])
-                if st.get("ink_confident"):
-                    hw_inks.append(st["ink"])
+    # ONE clean, uniform BLACK pen for every handwriting line (white on a dark
+    # page) so the note reads as a single bold, legible hand — not a faint grey
+    # shade sampled per box.
     page_bg_dark = bool(_bg_is_dark(orig_img, (0, 0, min(orig_img.width, 8),
                                                min(orig_img.height, 8)))) \
         if orig_img is not None else False
-    hw_pen = _page_pen_color(hw_inks, page_bg_dark)
+    hw_pen = _page_pen_color(page_bg_dark)
     iw_img = orig_img.width if orig_img is not None else inpainted.width
     ih_img = orig_img.height if orig_img is not None else inpainted.height
 
