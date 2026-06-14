@@ -211,6 +211,14 @@ class Settings(BaseSettings):
     # call but far better coreference + OCR integration.
     rewriter_model_name: str = Field(default="Qwen/Qwen2.5-7B-Instruct")
     rewriter_enabled: bool = Field(default=True)
+    # Sub-project: context-aware HANDWRITING recognizer. Florence-2 reads cursive
+    # poorly and TrOCR is context-blind, so meaning-changing single-char misreads
+    # survive ("Rome"->"home", "Nope"->"hope"). Qwen2.5-VL-7B is a vision-language
+    # model that READS each handwritten line WITH its sentence context, fixing
+    # those. ~16 GB fp16 -> ~6 GB nf4 (see vl_quant_config), swapped in on demand
+    # by the VRAM fabric. Used by the in-image translate path when a page reads
+    # low-confidence (handwriting); see IMG_VL_RECOG / IMG_VL_CONF_THRESHOLD.
+    vlm_recognizer_model: str = Field(default="Qwen/Qwen2.5-VL-7B-Instruct")
     # ---- Handwriting OCR (TrOCR) ----
     # Florence-2 detects WHERE text sits (bounding boxes) well even on
     # handwriting, but READS cursive poorly. TrOCR

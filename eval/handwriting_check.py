@@ -25,6 +25,9 @@ print(f"[ocr] {len(regions)} regions in {time.time()-t0:.1f}s (best_k={best_k}, 
       f"hw={any(r.get('handwriting') for r in regions)})")
 texts = [r["text"] for r in regions]
 
+# Translate ALL targets first (Qwen stays resident — no reload per language), then
+# compose (LaMa load may evict Qwen, but every translation is already done).
+done = []
 for TGT in TGTS:
     trans, src, tgt = ti._translate_regions_best(texts, regions, TGT)
     print(f"\n=== [{TGT}] {ti._flores_name(src)} -> {ti._flores_name(tgt)} ===")
@@ -34,7 +37,9 @@ for TGT in TGTS:
         flag = "HW" if r.get("handwriting") else "  "
         skip = " [SKIP]" if r.get("skip") else ""
         print(f"{i:2d} {flag} {b} p{len(r.get('parts', []))} | {o!r} -> {t!r}{skip}")
-    # deep-copy regions so per-language skip flags don't leak between targets
+    done.append((TGT, trans))
+
+for TGT, trans in done:
     png = ti._compose_png(best_img, best_k, copy.deepcopy(regions), trans)
     dest = OUT.replace(".png", f"_{TGT}.png")
     open(dest, "wb").write(png)

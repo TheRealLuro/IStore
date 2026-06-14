@@ -172,6 +172,16 @@ RUN apt-get update \
          fonts-wqy-microhei \
     && rm -rf /var/lib/apt/lists/*
 
+# Handwriting face (Patrick Hand, SIL OFL) — a clean, legible handprint used to
+# re-render TRANSLATED handwritten notes so they still "look written on the
+# paper" instead of in a typewriter font. Single ~150 KB TTF from Google Fonts;
+# its own cheap layer so it doesn't bust the apt cache. fc-cache makes it visible
+# to fontconfig (Pillow loads by absolute path, but this keeps the system tidy).
+RUN mkdir -p /usr/share/fonts/truetype/handwriting \
+    && curl -fsSL -o /usr/share/fonts/truetype/handwriting/PatrickHand-Regular.ttf \
+         https://github.com/google/fonts/raw/main/ofl/patrickhand/PatrickHand-Regular.ttf \
+    && fc-cache -f /usr/share/fonts/truetype/handwriting
+
 # §C4.6 — Install rclone for Proton Drive + MEGA sync. Both services
 # are end-to-end encrypted with fragile Python clients (mega.py
 # breaks every few months, proton-python-client lags upstream); the
