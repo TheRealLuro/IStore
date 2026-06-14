@@ -81,7 +81,8 @@ const CATEGORIES: CategorySection[] = [
       { title: "Synonym-aware", body: "\"Vibrant\" finds photos tagged \"colorful\" or \"vivid\". \"Sunset\" matches \"golden hour\" and \"dusk\"." },
       { title: "Filter by scene", body: "Indoor, outdoor, beach, classroom, whiteboard, restaurant — one click each." },
       { title: "Filter by content type", body: "Photos, screenshots, documents, illustrations, video. Mix and match." },
-      { title: "Filter by people", body: "Once you've named someone, every future photo of them is one click away." },
+      { title: "Filter by people", body: "Once you've named someone, every future photo of them is one click away. Merge clusters, reassign, or mark a crop \"not a person\" and it stays marked." },
+      { title: "Filter by auto-tags", body: "Descriptive tags pulled from each file's AI summary — \"whiteboard\", \"receipt\", \"golden retriever\" — become one-click filters without manual tagging." },
       { title: "Filter by location", body: "On a real Leaflet map. Click a pin to open the photo." },
       { title: "Star the keepers", body: "Hit ★ on anything you want to find later. \"Starred\" view is one click in the sidebar." },
       { title: "Reverse-geocoded places", body: "Photos show \"Big Sur, CA\" not raw lat/lng — names looked up from coordinates automatically." },
@@ -96,21 +97,32 @@ const CATEGORIES: CategorySection[] = [
   {
     id: "preview",
     eyebrow: "Inline preview",
-    heading: "Open anything without downloading",
+    heading: "A viewer for every file type",
     tiles: [
-      { title: "Image lightbox", body: "Click any photo for full-resolution view with zoom, pan, and arrow-key next/prev." },
+      { title: "Image lightbox", body: "Click any photo for full-resolution view with zoom, pan, and arrow-key next/prev. HEIC and SVG included." },
       { title: "Multi-page PDF stack", body: "Every page rendered server-side, lazy-loaded as you scroll. Retina-crisp, no flashing on fast scroll." },
-      { title: "Syntax-highlighted code", body: "Open .py / .js / .rs / Dockerfile and ~40 more languages with proper color coding — Prism under the hood." },
+      { title: "Syntax-highlighted code", body: "100+ languages with proper color coding and find-in-file — search within a long file, step through matches, copy, word-wrap." },
+      { title: "GitHub-style Markdown", body: "Headings, tables, task lists, and fenced code blocks rendered the way they'd look in a README." },
+      { title: "Live spreadsheets", body: "xlsx, xls, and ods open as real cells with sticky row/column headers and a tab strip to switch sheets." },
+      { title: "Interactive 3D models", body: "STL, OBJ, and glTF render in an orbit-able WebGL viewer with triangle/vertex counts — plus a source pane for the text formats." },
+      { title: "EPUB reader", body: "Open an e-book and page through it in the browser — chapters, text reflow, no separate app." },
+      { title: "Browsable archives", body: "Open a .zip / .tar / .7z / .rar and walk the tree inside, previewing a single file from within the archive." },
+      { title: "Jupyter notebooks", body: "Cells, code, and rendered outputs laid out the way the notebook was authored." },
+      { title: "JSON / YAML / XML trees", body: "Structured data opens as a collapsible tree you expand node by node — not a wall of text." },
+      { title: "CSV grids", body: "Comma- and tab-separated files render as a real table instead of raw comma-soup." },
+      { title: "Contact & calendar cards", body: "vCard (.vcf) opens as a contact card; iCal (.ics) opens as a readable event view." },
+      { title: "Font specimens", body: "Drop a .ttf / .otf / .woff and see the typeface laid out as a specimen sheet." },
+      { title: "Level-colored logs", body: ".log files render with per-line error / warn / info coloring so failures jump out." },
+      { title: "Sandboxed HTML", body: "A saved web page renders in a scripts-disabled, sandboxed iframe — you see it, it can't run anything." },
       { title: "Inline GPS pin", body: "Photos with EXIF coordinates show their place name right in the preview panel." },
       { title: "Tag + star + share inline", body: "Manage everything about a file from the same panel — no second modal." },
-      { title: "Esc-stacked modals", body: "Open a PDF inside the preview pane; Esc closes the PDF first, then the preview." },
-      { title: "Drag-and-drop to folders", body: "Drag a file onto any folder card to move it. No menus, no clicks." },
-      { title: "Folder breadcrumbs", body: "Click any ancestor folder in the trail to jump back. Works with browser back/forward too." },
+      { title: "Esc-stacked modals", body: "Open a viewer inside the preview pane; Esc closes the inner one first, then the preview." },
     ],
     securityNote:
-      "Every preview fetches through a JWT-gated route — no public " +
-      "links unless you create them. Even shared previews go through " +
-      "signed URLs with a TTL you control.",
+      "Every preview fetches through a JWT-gated route fenced to your " +
+      "user_id — no public links unless you create them. Office, " +
+      "spreadsheet, and archive parsing runs server-side under " +
+      "timeouts + rate limits; HTML renders scripts-disabled.",
   },
   {
     id: "organize",
@@ -139,6 +151,7 @@ const CATEGORIES: CategorySection[] = [
     heading: "AI that does the busy work",
     tiles: [
       { title: "Auto-summaries", body: "Every photo gets a caption + topic tags + bullet points. Lives in the search index too." },
+      { title: "Tags from the summary", body: "Descriptive tags are auto-derived from each file's AI summary — \"whiteboard\", \"receipt\", \"golden retriever\" become clickable filters with no manual tagging." },
       { title: "AI filename suggestions", body: "Click \"Suggest names\" to get three rename options built from the photo's actual content." },
       { title: "Best Of picker", body: "Multi-select 2-30 photos, click Pick Best Of — AI ranks them on sharpness, exposure, face quality, and your chosen use case." },
       { title: "Use-case scoring", body: "25 preset categories (Portrait, Sunset, Document, Pet, ...) plus a free-text input — type \"vintage car\" and we'll match." },
@@ -148,6 +161,7 @@ const CATEGORIES: CategorySection[] = [
       { title: "Reclassify on demand", body: "Library Maintenance → Reclassify re-runs the classifier on photos that skipped vision at upload." },
       { title: "Re-summarize the library", body: "After a model upgrade, regenerate every summary in one click." },
       { title: "Summarising banner with self-heal", body: "Live \"Summarising N of M\" counter at the top while AI catches up — auto-clears stuck rows." },
+      { title: "Crash-safe job queue", body: "Retries with backoff, a dead-letter lane for poison files, self-healing reapers, and a per-job watchdog — one bad file can't wedge the pipeline." },
     ],
     securityNote:
       "Every AI feature is independently opt-in. Work runs on the " +
@@ -158,20 +172,26 @@ const CATEGORIES: CategorySection[] = [
   {
     id: "formats",
     eyebrow: "Formats",
-    heading: "Every format just works",
+    heading: "50+ file types, every one just works",
     tiles: [
-      { title: "HEIC, AVIF, JPEG, PNG, WebP", body: "All the modern photo formats decoded server-side and served as compressed WebP for delivery." },
+      { title: "HEIC, AVIF, JPEG, PNG, WebP, SVG", body: "All the modern photo formats decoded server-side and served as compressed WebP for delivery; SVG renders on a clean canvas." },
       { title: "Camera RAW", body: "NEF, CR2, ARW, DNG, RAF, ORF, RW2, PEF — decoded via LibRaw into the full sensor image, not the embedded preview." },
       { title: "Animated GIFs preserved", body: "Frame-by-frame passthrough. No flattening to a single frame, ever." },
-      { title: "Video", body: "MP4, MOV, WebM, MKV with frame-grab thumbnails so you can see what you've got without playback." },
-      { title: "PDFs", body: "Every page rasterised + the text extracted into the search index. Search \"lease agreement\" and the PDF surfaces." },
-      { title: "Source code", body: "40+ languages with inline syntax highlighting in a PDF-style modal. Python, JS, Rust, Go, Dockerfile, Markdown, more." },
-      { title: "Archives extracted", body: ".zip, .tar, .7z, .rar all inspected and unpacked into folders at upload time." },
+      { title: "Video & audio", body: "MP4, MOV, WebM, MKV with frame-grab thumbnails; audio files get an inline player. See and hear without downloading." },
+      { title: "PDFs & Office", body: "Every page rasterised + the text extracted into the search index. Office documents handled alongside PDF." },
+      { title: "Source code (100+ languages)", body: "Inline syntax highlighting with find-in-file. Python, JS, TS, Rust, Go, Dockerfile, and a hundred more grammars." },
+      { title: "Markdown & data trees", body: "GitHub-style Markdown; JSON / YAML / XML as a collapsible tree; CSV / TSV as a grid; logs with level coloring." },
+      { title: "Spreadsheets", body: "xlsx, xls (legacy BIFF), xlsm, xlsb, and ods all parse into a live cell grid with sheet tabs." },
+      { title: "3D models", body: "STL, OBJ, glTF, GLB render in an orbit-able WebGL viewer, with a source pane for the text-based formats." },
+      { title: "E-books, fonts & contacts", body: "EPUB reader, font specimen sheets for .ttf / .otf / .woff, vCard contact cards, iCal event views." },
+      { title: "Jupyter notebooks", body: ".ipynb opens with cells and rendered outputs laid out the way it was authored." },
+      { title: "Archives, browsable", body: ".zip, .tar, .7z, .rar inspected and unpacked at upload — and browsable in-place so you can preview a file from inside one." },
     ],
     securityNote:
       "Every upload validated by MIME + magic-byte + re-decode " +
-      "before storage. EXIF stripped on the way in unless you opt " +
-      "to keep GPS or camera data.",
+      "before storage. Server-side parsers (spreadsheets, Office, " +
+      "archives) run under timeouts + rate limits; HTML previews are " +
+      "scripts-disabled. EXIF stripped on the way in unless you opt to keep it.",
   },
   {
     id: "connect",
@@ -246,6 +266,7 @@ const CATEGORIES: CategorySection[] = [
       { title: "Real face-data counts", body: "Settings shows the actual number of face templates, persons named, faces detected. No marketing-speak placeholders." },
       { title: "Real location-data counts", body: "Same for GPS — see exactly how many points are stored before you decide whether to keep the consent on." },
       { title: "Storage breakdown", body: "Sidebar shows usage by Photos / Videos / Documents / Other. Know what's eating your quota at a glance." },
+      { title: "Per-user quota + backpressure", body: "A real ceiling per account: once you hit it, work is refused cleanly with an \"over quota\" prompt — a runaway import can't fill the disk." },
       { title: "Account export ZIP", body: "Download every file + every embedding + every summary + your audit log in one ZIP. GDPR Article 20 by default." },
       { title: "Account deletion — 30-day grace", body: "Schedule deletion and you have 30 days to cancel. After the window, every byte is hard-deleted: blobs, embeddings, face templates, share grants." },
       { title: "Account deletion — instant purge", body: "Don't want to wait? Instant purge wipes everything in one transaction." },
@@ -263,13 +284,13 @@ export default function Features() {
   usePageSeo({
     title: "Features — what neuthek actually does — neuthek",
     description:
-      "~70 capabilities across 9 categories: semantic search (OpenCLIP + pgvector), Florence-2 captions, content-aware compression, camera RAW, five-provider cloud sync (Google Drive / Dropbox / iCloud / Proton / MEGA), BIPA-compliant face recognition, passwordless sign-in + TOTP 2FA, signed share links.",
+      "A viewer for every file type (50+ — code in 100+ languages, spreadsheets, 3D models, EPUB, notebooks, archives), semantic search, content-aware compression, a zero-knowledge vault with client-side auto-import, BIPA-compliant face recognition, Google Drive sync, TOTP 2FA, signed share links.",
     path: "/features",
     jsonLd: [
       webPage({
         name: "Features — what neuthek does",
         description:
-          "Complete feature inventory of neuthek: search, preview, organize, AI, formats, cloud sync (Google Drive, Dropbox, iCloud, Proton Drive, MEGA), sharing, account + security, control. Each capability is shipped today in the development build with tests.",
+          "Complete feature inventory of neuthek: search, a fitted in-browser viewer for 50+ file types, organize, AI, formats, Google Drive cloud sync, a zero-knowledge end-to-end-encrypted vault with auto-import, sharing, account + security, control. Each capability is shipped in the development build with tests.",
         path: "/features",
         about: "AI-aware personal cloud storage features",
       }),
@@ -364,37 +385,44 @@ export default function Features() {
       {/* ===== Spotlight 2: Inline preview ===== */}
       <section className="section">
         <div className="container split">
-          <Panel title="Preview" tag="in-browser">
-            <SpecRow label="Images" value="zoom, pan, arrow-key nav" />
-            <SpecRow label="PDFs" value="multi-page, lazy-loaded" />
-            <SpecRow label="Code" value="40+ languages, highlighted" />
-            <SpecRow label="RAW" value="NEF / CR2 / ARW / DNG decoded" />
-            <SpecRow label="Animated GIF" value="every frame preserved" />
-            <SpecRow label="Video" value="frame-grab thumbnails" />
-            <SpecRow label="Archives" value=".zip / .tar / .7z extracted" />
+          <Panel title="Preview — a viewer per type" tag="in-browser">
+            <SpecRow label="Code" value="100+ langs, find-in-file" />
+            <SpecRow label="Spreadsheets" value="xlsx / xls / ods, sheet tabs" />
+            <SpecRow label="3D models" value="STL / OBJ / glTF, orbit + source" />
+            <SpecRow label="Markdown" value="GitHub-style render" />
+            <SpecRow label="Data" value="JSON / YAML / XML tree, CSV grid" />
+            <SpecRow label="Books & fonts" value="EPUB reader, font specimens" />
+            <SpecRow label="Archives" value="browse + preview inside a zip" />
+            <SpecRow label="Notebooks" value=".ipynb cells + outputs" />
           </Panel>
           <div>
             <span className="eyebrow">Inline preview</span>
-            <h2>Open it, don't download it.</h2>
+            <h2>A viewer for every file type.</h2>
             <p style={{ marginTop: 16 }}>
               Click any file in your library and it opens — in your
-              browser, full quality, no download required. Images
-              get a lightbox with zoom and arrow-key navigation.
-              PDFs get a multi-page stack that lazy-loads as you
-              scroll. Source code opens with syntax highlighting
-              for ~40 languages. Geotagged photos show their place
-              name (\"Big Sur, CA\") right in the panel.
+              browser, full quality, no download required. Over{" "}
+              <strong>50 file types</strong> each get a custom,
+              fitted viewer: syntax-highlighted code in 100+
+              languages with find-in-file, GitHub-style Markdown,
+              live spreadsheets (xlsx / xls / ods) rendered as real
+              cells with sheet tabs, interactive 3D models you can
+              orbit, an EPUB reader, font specimens, Jupyter
+              notebooks, JSON / YAML / XML trees, CSV grids, vCard
+              and iCal cards, level-colored logs, sandboxed HTML —
+              alongside images, video, audio, and PDF.
             </p>
             <p style={{ marginTop: 12 }}>
-              Tag, star, rename, share — all from the same panel.
-              Esc closes nested modals in the right order so a PDF
-              inside the preview pane doesn't trap you.
+              Archives are browsable in place: open a zip and preview
+              a single file from inside it. Tag, star, rename, share —
+              all from the same panel. Esc closes nested viewers in
+              the right order so a viewer inside the preview pane
+              doesn't trap you.
             </p>
             <p className="security-note">
-              Every preview fetches through a JWT-gated route — no
-              public links unless you explicitly create them. Even
-              shared previews go through signed URLs with a TTL you
-              control.
+              Every preview fetches through a JWT-gated route fenced
+              to your account — no public links unless you create
+              them. Server-side parsers run under timeouts and rate
+              limits; HTML renders with scripts disabled.
             </p>
           </div>
         </div>
@@ -466,11 +494,12 @@ export default function Features() {
               Per-source AI toggle: Drive content is fenced out of
               AI training by default (Google Limited Use compliance).
               Flip it on per source if you want summaries and face
-              detection on synced files. <strong>Dropbox</strong>,
-              {" "}<strong>iCloud Drive</strong> (Apple-ID + HSA-2 2FA),
-              {" "}<strong>Proton Drive</strong> and{" "}
-              <strong>MEGA</strong> (email + password via rclone)
-              are all live. Five providers total at the time of writing.
+              detection on synced files. Google Drive is the fully
+              wired provider today; connectors for{" "}
+              <strong>Dropbox</strong>, <strong>iCloud Drive</strong>,{" "}
+              <strong>Proton Drive</strong> and <strong>MEGA</strong>{" "}
+              are scaffolded in the same framework and being finished
+              ahead of launch.
             </p>
             <p className="security-note">
               Drive scope is <code>drive.readonly</code> only — we
@@ -480,6 +509,53 @@ export default function Features() {
               your Google account drops sync immediately.
             </p>
           </div>
+        </div>
+      </section>
+
+      {/* ===== Spotlight 5: Zero-knowledge Vault ===== */}
+      <section className="section">
+        <div className="container split">
+          <div>
+            <span className="eyebrow">Vault</span>
+            <h2>A zero-knowledge vault that imports itself.</h2>
+            <p style={{ marginTop: 16 }}>
+              The Vault is a drive-like store that's end-to-end
+              encrypted: files of any type in nested folders, plus
+              structured secure items — Contacts, Logins, Cards/IDs,
+              and Notes. Everything is encrypted{" "}
+              <strong>in your browser</strong> with a key derived from
+              your master password before it's uploaded. We only ever
+              store ciphertext; your password and keys never reach the
+              server, and no AI ever touches Vault contents.
+            </p>
+            <p style={{ marginTop: 12 }}>
+              New this cycle: <strong>auto-import</strong>. Drop a{" "}
+              <code>.vcf</code>, a password export (browser,
+              Bitwarden, or 1Password), a card/ID, or a note, and it's
+              parsed client-side and saved as the matching structured
+              item — Contact, Login, Card, or Note. Plus{" "}
+              <strong>shareable public links</strong>: hand a single
+              item to someone without an account, still end-to-end
+              encrypted, scoped to that one item, revocable anytime.
+            </p>
+            <p className="security-note">
+              Parsing happens entirely in your browser — the import
+              code never touches a key, a nonce, the network, or the
+              server, so the zero-knowledge guarantee is untouched.
+              The normal Drive stays server-readable so AI features
+              work; the Vault is the corner we can't read.
+            </p>
+          </div>
+          <Panel title="Vault — drop a file, get an encrypted item" tag="end-to-end">
+            <StepRow n={1}>Drop a .vcf / export / card / note</StepRow>
+            <StepRow n={2}>Parsed in your browser, mapped to a type</StepRow>
+            <StepRow n={3}>Encrypted on-device → only ciphertext uploads</StepRow>
+            <SpecRow label=".vcf" value="→ Contact" />
+            <SpecRow label="password export" value="→ Login (per row)" />
+            <SpecRow label="card JSON" value="→ Card / ID" />
+            <SpecRow label=".txt / .md" value="→ Note" />
+            <SpecRow label="Share" value="public link to one item, revocable" />
+          </Panel>
         </div>
       </section>
 
@@ -571,8 +647,9 @@ export default function Features() {
           <span className="eyebrow">Coming next</span>
           <h2>On the roadmap.</h2>
           <p className="lead" style={{ marginTop: 12 }}>
-            What's still on the way. None of these are in the
-            engine yet.
+            What's still on the way. These aren't finished in the
+            engine yet — see the <Link to="/roadmap">roadmap</Link>{" "}
+            for the full picture.
           </p>
           <div className="cards">
             <div className="card">
@@ -584,19 +661,17 @@ export default function Features() {
               </p>
             </div>
             <div className="card">
-              <h3>End-to-end encrypted Vault</h3>
+              <h3>End-to-end encryption beyond the Vault</h3>
               <p>
-                The <strong>Vault is live</strong> — a drive-like store
-                that's end-to-end encrypted. Files of any type, nested
-                folders, and secure items (passwords, notes, crypto seed
-                phrases, cards/IDs) are encrypted in your browser with a
-                key derived from your master password; we store only
-                ciphertext and no AI ever touches it. Share a single item
-                with another account by sealing it to their key on your
-                device — only they can open it, no comments or public
-                links, revocable anytime. The normal Drive stays
-                server-readable so the AI features work; the Vault is the
-                zero-knowledge corner.
+                The <strong>zero-knowledge Vault is live</strong> —
+                end-to-end encrypted files and secure items, now with
+                client-side auto-import and shareable per-item links
+                (see above). What's still ahead is letting the
+                AI-readable Drive go end-to-end too, feature by
+                feature, with explicit "this loses AI capability when
+                you turn on E2E" trade-offs. Until then the Drive is
+                encrypted in transit + at rest, not end-to-end — only
+                the Vault is end-to-end today.
               </p>
             </div>
             <div className="card">

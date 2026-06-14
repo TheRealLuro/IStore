@@ -7,13 +7,13 @@ export default function Home() {
   usePageSeo({
     title: "neuthek — AI-aware personal cloud storage",
     description:
-      "neuthek is the next best cloud storage solution: AI-aware personal cloud in active development. Semantic search by what you remember, content-aware compression, privacy-first design. We don't collect what we don't need, don't train AI on your content, don't sell or share your data. Self-host + hosted both planned — join the waitlist.",
+      "neuthek is the next best cloud storage solution: AI-aware personal cloud in active development. Semantic search by what you remember, a fitted in-browser viewer for 50+ file types, a zero-knowledge encrypted vault, content-aware compression, privacy-first design. We don't collect what we don't need, don't train AI on your content, don't sell or share your data. Self-host + hosted both planned — join the waitlist.",
     path: "/",
     jsonLd: [
       webPage({
         name: "neuthek — AI-aware personal cloud storage",
         description:
-          "Home page for neuthek, the AI-aware personal cloud storage product in active development. Semantic image search via OpenCLIP, content-aware compression, BIPA-compliant face recognition, five-provider cloud-sync ingest (Google Drive, Dropbox, iCloud, Proton Drive, MEGA), encrypted in transit + at rest, end-to-end encryption on the roadmap.",
+          "Home page for neuthek, the AI-aware personal cloud storage product in active development. Semantic image search via OpenCLIP, a custom in-browser viewer for 50+ file types, a zero-knowledge end-to-end-encrypted vault with client-side auto-import, content-aware compression, BIPA-compliant face recognition, Google Drive cloud-sync ingest, encrypted in transit + at rest, end-to-end encryption beyond the vault on the roadmap.",
         path: "/",
         about: "AI-aware personal cloud storage",
       }),
@@ -29,9 +29,10 @@ export default function Home() {
           </h1>
           <p className="lead hero__sub">
             An AI-aware personal cloud. Search by what you remember,
-            compression that knows a screenshot from a sunset, and a
-            privacy model that doesn't sell you out. In active
-            development — join the waitlist for launch.
+            a fitted in-browser viewer for every file type, a
+            zero-knowledge encrypted vault, and a privacy model that
+            doesn't sell you out. In active development — join the
+            waitlist for launch.
           </p>
           <div className="hero__ctas">
             <Link to="/waitlist" className="btn btn--primary btn--lg">
@@ -114,6 +115,49 @@ export default function Home() {
                 Your bytes, embeddings, and search history never train
                 a public model. Self-host on your own hardware or use
                 managed hosting — your data, either way.
+              </p>
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="container">
+          <Reveal>
+            <span className="eyebrow">More than photos</span>
+            <h2>Open every file. Lock the secret ones.</h2>
+          </Reveal>
+          <div className="cards">
+            <Reveal as="div" className="card" delay={0}>
+              <div className="card__icon">50+</div>
+              <h3>A viewer for every file type</h3>
+              <p>
+                Over 50 file types open in custom, fitted viewers —
+                syntax-highlighted code in 100+ languages with
+                find-in-file, GitHub-style Markdown, live spreadsheets
+                with sheet tabs, interactive 3D models, an EPUB
+                reader, Jupyter notebooks, JSON/YAML/XML trees, CSV
+                grids, browsable archives, and more. No download to
+                see what you've got.
+              </p>
+              <p style={{ marginTop: 16 }}>
+                <Link to="/features" className="btn btn--ghost">See the viewers</Link>
+              </p>
+            </Reveal>
+            <Reveal as="div" className="card" delay={120}>
+              <div className="card__icon">E2E</div>
+              <h3>A zero-knowledge vault</h3>
+              <p>
+                Files and secure items (Contacts, Logins, Cards/IDs,
+                Notes) encrypted in your browser before upload — we
+                store only ciphertext, no AI ever touches it. Drop a
+                .vcf, a password export, or a note and it's parsed
+                client-side into a structured item. Share a single
+                item by link, still end-to-end encrypted, revocable
+                anytime.
+              </p>
+              <p style={{ marginTop: 16 }}>
+                <Link to="/privacy" className="btn btn--ghost">How it stays private</Link>
               </p>
             </Reveal>
           </div>

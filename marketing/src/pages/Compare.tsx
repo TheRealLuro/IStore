@@ -104,6 +104,17 @@ const EXPERIENCE: Row[] = [
       { label: "Provider default" },
     ],
   },
+  {
+    feature: "Open 50+ file types in-browser (code, sheets, 3D, EPUB, archives)",
+    cells: [
+      { label: "Shipped — a fitted viewer per type", tone: "good" },
+      { label: "Photos & video" },
+      { label: "Photos & video" },
+      { label: "Preview / download" },
+      { label: "Many types previewable" },
+      { label: "Photos & video" },
+    ],
+  },
 ];
 
 // ----- Group 2: Trust (what's behind the experience) -----

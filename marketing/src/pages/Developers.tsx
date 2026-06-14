@@ -49,9 +49,9 @@ const STACK: Item[] = [
     why: "TanStack Query removes most of the reasons people reach for Redux, Vite's HMR is the fastest dev loop we've used, and React 18's concurrent features (filter-chip transitions, lightbox Suspense) are load-bearing for perceived responsiveness.",
   },
   {
-    name: "Prism (~40 grammars)",
-    what: "Syntax highlighting for the in-browser code-file preview surface.",
-    why: "highlight.js auto-detect misfires on small files. Prism's per-language grammars are explicit, ship as small modules, and we eager-load the 40 that cover almost every source file people store in a personal cloud.",
+    name: "Prism (100+ grammars) + find-in-file",
+    what: "Syntax highlighting for the in-browser code viewer — one of 50+ fitted file viewers — with a real in-file search box (match highlighting, next/previous), word-wrap, and copy.",
+    why: "highlight.js auto-detect misfires on small files. Prism's per-language grammars are explicit and ship as small modules, so we cover 100+ languages and still keep the bundle lean. The find-in-file layer composes with the per-line render so searching a 4,000-line file is instant instead of a manual scroll.",
   },
   {
     name: "Docker Compose",

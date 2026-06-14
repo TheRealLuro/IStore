@@ -63,13 +63,17 @@ export default function Terms() {
             we operate with frozen pre-trained model weights — your
             content never leaves to a third-party inference API and
             is never used to train any model, ours or anyone else's.
-            Five cloud-sync providers are wired for one-way ingest
-            (Google Drive, Dropbox, iCloud, Proton Drive, MEGA). Two
-            delivery modes planned: open-source self-host (free) and
-            managed hosted (waitlist, pricing announced with launch).
-            Encryption is in transit + at rest today; end-to-end
-            encryption is on the roadmap. These Terms set out the
-            rules that apply when you use any of it.
+            Google Drive is wired for one-way read-only ingest today;
+            connectors for Dropbox, iCloud, Proton Drive, and MEGA are
+            in development. Over 50 file types open in fitted in-browser
+            viewers, and a zero-knowledge, end-to-end-encrypted Vault
+            holds files plus structured secure items. Two delivery
+            modes planned: open-source self-host (free) and managed
+            hosted (waitlist, pricing announced with launch). The Vault
+            is end-to-end encrypted today; the rest is encrypted in
+            transit + at rest, with end-to-end encryption beyond the
+            Vault on the roadmap. These Terms set out the rules that
+            apply when you use any of it.
           </p>
         </div>
       </section>

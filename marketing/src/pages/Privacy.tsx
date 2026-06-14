@@ -70,14 +70,18 @@ export default function Privacy() {
             active development. The product lets users store photos,
             videos, and documents in their own tenant; search them by
             natural language using OpenCLIP image embeddings and
-            Florence-2 captions; ingest from five external clouds
-            (Google Drive, Dropbox, iCloud, Proton Drive, MEGA) on a
-            one-way read-only basis; opt in to face recognition with
-            a BIPA-compliant separate written-release consent flow;
-            and export the full library in one click. Two delivery
-            modes are planned: open-source self-host (free) and
-            managed hosted (waitlist). Encryption is in transit and
-            at rest today; end-to-end encryption is on the roadmap.
+            Florence-2 captions; open 50+ file types in fitted
+            in-browser viewers; keep files and structured secure items
+            in a zero-knowledge, end-to-end-encrypted Vault; ingest
+            from Google Drive on a one-way read-only basis (further
+            cloud connectors are in development); opt in to face
+            recognition with a BIPA-compliant separate written-release
+            consent flow; and export the full library in one click.
+            Two delivery modes are planned: open-source self-host
+            (free) and managed hosted (waitlist). The Vault is
+            end-to-end encrypted today; the rest of the product is
+            encrypted in transit and at rest, with end-to-end
+            encryption beyond the Vault on the roadmap.
             This Privacy Policy governs what data we hold for these
             functions, why we hold it, how long we hold it, and how
             to make it stop.

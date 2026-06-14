@@ -6,10 +6,14 @@
 > natural language — "snowy roof at sunset", "whiteboard photos from
 > last week's meeting" — instead of remembering filenames or scrolling.
 > Photos, videos, documents (PDFs with OCR), and content imported from
-> connected Google Drive, Dropbox, iCloud, Proton Drive, and MEGA
-> accounts all live in one library. Two delivery modes planned:
-> open-source self-host (free) and managed hosted (waitlist). Nothing
-> publicly released yet — pricing announced with launch.
+> a connected Google Drive account live in one library (Drive sync is
+> fully wired today; Dropbox, iCloud, Proton Drive, and MEGA connectors
+> are scaffolded and being finished pre-launch). Over 50 file types open
+> in custom, fitted in-browser viewers, and a zero-knowledge,
+> end-to-end-encrypted Vault holds files plus structured secure items.
+> Two delivery modes planned: open-source self-host (free) and managed
+> hosted (waitlist). Nothing publicly released yet — pricing announced
+> with launch.
 
 ## Trust posture (three substantiated claims)
 
@@ -22,16 +26,25 @@
   behavioral advertising as defined by CCPA/CPRA. The Global Privacy
   Control browser signal is honored as an opt-out anyway.
 
-## End-to-end encryption — roadmap, not today
+## End-to-end encryption — the Vault today, the Drive on the roadmap
 
-Today neuthek is encrypted in transit (HTTPS) and at rest (on-disk
-encryption + Fernet for credentials). The server holds the keys so
-AI can run on user content. **End-to-end encryption** (Mega/Proton-
-class, where the user device holds the key and we hold only
-ciphertext) is on the roadmap and will ship feature by feature with
-explicit "this feature loses AI capability when you turn on E2E"
-trade-offs. We do NOT call neuthek end-to-end encrypted today — the
-FTC sanctioned Zoom in 2020 for making exactly that misrepresentation.
+The **Vault is end-to-end encrypted today**: files of any type plus
+structured secure items (Contact / Login / Card / Note) are encrypted
+in the browser with a key derived from the user's master password
+(PBKDF2-SHA256 → AES-256-GCM) before upload. The server stores only
+ciphertext and no AI ever touches Vault contents. Users can drop a
+.vcf, a password export, a card, or a note in and it's parsed
+client-side into a structured item, and can share a single item by
+sealing it to another account's key or via a public link scoped to
+that one item. The **normal Drive is NOT end-to-end encrypted** — it's
+encrypted in transit (HTTPS) and at rest (on-disk + Fernet for
+credentials), with the server holding the keys so AI can run on
+consented content. Extending E2E to the AI-readable Drive is on the
+roadmap and will ship feature by feature with explicit "this feature
+loses AI capability when you turn on E2E" trade-offs. We do NOT call
+the whole product end-to-end encrypted — only the Vault is — because
+the FTC sanctioned Zoom in 2020 for making exactly that
+misrepresentation.
 
 ## What neuthek is
 
@@ -43,12 +56,35 @@ FTC sanctioned Zoom in 2020 for making exactly that misrepresentation.
   codec (WebP / MozJPEG / AVIF / JXL) and quality (55-92) from a
   32-dimensional context vector. Animated GIFs and detected
   screenshots bypass lossy paths.
-- **Five cloud-sync providers** for one-way ingest from existing
-  accounts: Google Drive (OAuth, drive.readonly), Dropbox (OAuth,
-  files.content.read), iCloud Drive (Apple-ID + HSA-2 push + SMS
-  fallback via pyicloud), Proton Drive (email + password via rclone),
-  MEGA (email + password via rclone). Read-only — we never write
-  back to your source.
+- **A viewer for every file type.** 50+ file types open in custom,
+  fitted in-browser viewers routed by a single preview dispatcher:
+  syntax-highlighted code (100+ languages, find-in-file), GitHub-style
+  Markdown, live spreadsheets (xlsx / xls / ods rendered as real cells
+  with sheet tabs, parsed server-side with python-calamine), interactive
+  3D models (STL / OBJ / glTF via three.js, with a source pane), an EPUB
+  reader, font specimens, browsable archives (preview a file inside a
+  zip), Jupyter notebooks, JSON / YAML / XML trees, CSV grids, vCard and
+  iCal cards, level-colored logs, sandboxed (scripts-disabled) HTML,
+  SVG, HEIC, plus video / audio / PDF / Office.
+- **Zero-knowledge Vault with client-side auto-import.** End-to-end
+  encrypted files + structured secure items (Contact / Login / Card /
+  Note). Dropping a .vcf, a password export (browser / Bitwarden /
+  1Password), a card JSON, or a note parses it in the browser and maps
+  it to the matching item shape; only ciphertext is uploaded. Shareable
+  public links scope a single item to a recipient without an account.
+- **Cloud-sync ingest.** Google Drive is fully wired today (OAuth with
+  PKCE, drive.readonly — read-only, never writes back; encrypted refresh
+  tokens; hourly sweep; conflict detection). Connectors for Dropbox
+  (OAuth, files.content.read), iCloud Drive (Apple-ID + HSA-2 push + SMS
+  fallback via pyicloud), Proton Drive and MEGA (email + password via
+  rclone) are scaffolded in the same framework and being finished
+  pre-launch.
+- **A hardened, reliable core.** Crash-safe job queue (retries with
+  backoff, dead-letter lane, self-healing reapers for orphaned jobs,
+  per-job watchdog), per-user storage quotas with backpressure, a
+  per-user fair scheduler, and per-endpoint rate limits + timeouts.
+  Framed as reliability + security hardening built to scale — not a
+  claim of operating at million-user scale today.
 - **Privacy-first.** EXIF metadata stripped on upload by default;
   GPS and camera fingerprints opt-in per scope. Postgres FORCE
   Row-Level Security fences every per-user query at the database
@@ -112,11 +148,13 @@ FTC sanctioned Zoom in 2020 for making exactly that misrepresentation.
 ## Status
 
 In active development. The engine runs on a Docker compose stack
-today; ~35 capabilities are shipped (semantic search, content-aware
-compression, five-provider cloud sync, BIPA-compliant face rec,
-passwordless sign-in + TOTP 2FA, soft trash + tested hard-delete).
-The hosted instance and public open-source release are both being
-prepared. Pricing for the hosted tier is **not announced** — it
+today; many capabilities are shipped (semantic search, a fitted
+in-browser viewer for 50+ file types, a zero-knowledge end-to-end-
+encrypted Vault with client-side auto-import, content-aware
+compression, Google Drive sync, BIPA-compliant face rec, passwordless
+sign-in + TOTP 2FA, a crash-safe job queue with per-user quotas, soft
+trash + tested hard-delete). The hosted instance and public
+open-source release are both being prepared. Pricing for the hosted tier is **not announced** — it
 publishes on /hosting at launch, not before. Users can
 [join the waitlist](https://neuthek.com/waitlist) to be notified
 when either ships.
